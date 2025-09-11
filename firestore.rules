@@ -1,0 +1,447 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Fonctions utilitaires
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function isAdmin() {
+      let userData = getUserData();
+      return userData != null && (userData.role == 'admin' || userData.role == 'superadmin');
+    }
+
+    function isSuperAdmin() {
+      let userData = getUserData();
+      return userData != null && userData.status == 'superadmin';
+    }
+
+    function canAccessStructure(structureId) {
+      let userData = getUserData();
+      return userData != null && userData.status in ['membre', 'admin'] && 
+             userData.structureId == structureId;
+    }
+
+    // Fonction pour vérifier si l'utilisateur accède à ses propres données
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    // Règles pour la collection missions
+    match /missions/{missionId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        getUserData().status in ['admin', 'member'] ||
+        resource.data.structureId == getUserData().structureId
+      );
+      
+      allow list: if isAuthenticated() && (
+        isSuperAdmin() || 
+        getUserData().status in ['admin', 'member']
+      );
+      
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          getUserData().status in ['admin', 'member'] && 
+          request.resource.data.structureId == getUserData().structureId
+        )
+      );
+
+      // Règles pour la sous-collection generatedDocuments
+      match /generatedDocuments/{documentId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated();
+        allow update: if isAuthenticated();
+        allow delete: if isAuthenticated();
+      }
+    }
+
+    // Règles pour la collection companies
+    match /companies/{companyId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId
+      );
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+    }
+
+    // Règles pour la collection descriptions
+    match /descriptions/{descriptionId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId
+      );
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+    }
+
+    // Règles pour la collection missionTypes
+    match /missionTypes/{missionTypeId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId
+      );
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+    }
+
+    // Règles pour la collection applications
+    match /applications/{applicationId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        getUserData().status in ['admin', 'superadmin']
+      );
+
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['missionId', 'userId', 'userEmail', 'submittedAt', 'status']) &&
+        request.resource.data.status == 'En attente'
+      );
+
+      allow update: if isAuthenticated() && (
+        getUserData().status in ['admin', 'superadmin']
+      );
+
+      allow delete: if false;
+    }
+
+    // Règles pour la collection users
+    match /users/{userId} {
+      // Autoriser la création même si l'utilisateur n'est pas encore authentifié (inscription)
+      allow create: if request.auth == null || request.auth.uid == userId;
+      // Lecture et update seulement pour l'utilisateur connecté sur son propre doc
+      allow read, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    // Règles pour la collection structures
+    match /structures/{structureId} {
+      allow read: if true;
+      allow write: if isAuthenticated() && isSuperAdmin();
+
+      // Règles pour la sous-collection permissions
+      match /permissions/{permissionId} {
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() || 
+          getUserData().status in ['admin', 'member'] &&
+          getUserData().structureId == structureId
+        );
+        allow write: if isAuthenticated() && (
+          isSuperAdmin() || 
+          getUserData().status == 'admin' &&
+          getUserData().structureId == structureId
+        );
+      }
+    }
+
+    // Permettre la lecture des domaines pour la vérification des emails
+    match /structures/{structureId} {
+      allow read: if request.auth != null;
+    }
+
+    // Collection reports
+    match /reports/{reportId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isAuthenticated();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Règles pour la collection templates
+    match /templates/{templateId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+
+    // Ajouter les règles pour templateAssignments
+    match /templateAssignments/{assignmentId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && 
+        request.resource.data.structureId == getUserData().structureId;
+      allow update: if request.auth != null && 
+        resource.data.structureId == getUserData().structureId;
+      allow delete: if request.auth != null && 
+        resource.data.structureId == getUserData().structureId;
+    }
+
+    // Règles pour la collection programs
+    match /programs/{structureId} {
+      allow read: if true;
+      allow write: if isAuthenticated() && isSuperAdmin();
+    }
+
+    // Règles pour la collection prospects
+    match /prospects/{prospectId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId
+      );
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['member', 'admin']
+        )
+      );
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['member', 'admin']
+        )
+      );
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['member', 'admin']
+        )
+      );
+
+      // Règles pour la sous-collection activities
+      match /activities/{activityId} {
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() || 
+          get(/databases/$(database)/documents/prospects/$(prospectId)).data.structureId == getUserData().structureId
+        );
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (
+            get(/databases/$(database)/documents/prospects/$(prospectId)).data.structureId == getUserData().structureId &&
+            getUserData().status in ['member', 'admin']
+          )
+        );
+        allow update: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (
+            get(/databases/$(database)/documents/prospects/$(prospectId)).data.structureId == getUserData().structureId &&
+            getUserData().status in ['member', 'admin']
+          )
+        );
+        allow delete: if isAuthenticated() && (
+          isSuperAdmin() || 
+          (
+            get(/databases/$(database)/documents/prospects/$(prospectId)).data.structureId == getUserData().structureId &&
+            getUserData().status == 'admin'
+          )
+        );
+      }
+    }
+
+    // Règles pour la collection contracts
+    match /contracts/{contractId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          getUserData().status in ['admin', 'member'] &&
+          (
+            resource.data.structureId == getUserData().structureId ||
+            exists(/databases/$(database)/documents/structures/$(getUserData().structureId)/permissions/tresorerie_read) &&
+            (
+              get(/databases/$(database)/documents/structures/$(getUserData().structureId)/permissions/tresorerie_read).data.allowedRoles.hasAny(['admin', 'member']) ||
+              get(/databases/$(database)/documents/structures/$(getUserData().structureId)/permissions/tresorerie_read).data.allowedPoles.hasAny(['dev'])
+            )
+          )
+        )
+      );
+      
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          getUserData().status in ['admin', 'member'] &&
+          resource.data.structureId == getUserData().structureId &&
+          exists(/databases/$(database)/documents/structures/$(getUserData().structureId)/permissions/tresorerie) &&
+          get(/databases/$(database)/documents/structures/$(getUserData().structureId)/permissions/tresorerie).data.allowedRoles.hasAny(['admin', 'member'])
+        )
+      );
+    }
+
+    // Règles pour les autres collections
+    match /{collection}/{document=**} {
+      allow read, write: if isAuthenticated() && (
+        isSuperAdmin() ||
+        getUserData().status in ["admin", "member"]
+      );
+    }
+
+    // Règle par défaut - refuser tout accès non explicitement autorisé
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Règles pour la collection notifications
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && isOwner(resource.data.userId);
+      allow create: if isAuthenticated() && isOwner(request.resource.data.userId);
+      allow update: if isAuthenticated() && isOwner(resource.data.userId);
+      allow delete: if isAuthenticated() && isOwner(resource.data.userId);
+    }
+
+    // Règles pour la collection users (DOUBLON BLOQUANT, À NE PAS UTILISER)
+    /*
+    match /users/{userId} {
+      allow read: if canAccessUser(userId);
+      allow write: if canEditUser(userId);
+    }
+    */
+
+    // Règles pour la collection missions
+    match /missions/{missionId} {
+      allow read: if canAccessMission(missionId);
+      allow write: if canEditMission(missionId);
+    }
+
+    // Règles pour la collection subscriptions
+    match /subscriptions/{subscriptionId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId &&
+        getUserData().status == 'admin'
+      );
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || 
+        request.resource.data.structureId == getUserData().structureId &&
+        getUserData().status == 'admin'
+      );
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId &&
+        getUserData().status == 'admin'
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Règles pour la collection stripeCustomers
+    match /stripeCustomers/{customerId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId &&
+        getUserData().status == 'admin'
+      );
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        request.resource.data.structureId == getUserData().structureId &&
+        getUserData().status == 'admin'
+      );
+    }
+
+    // Règles pour la collection companies
+    match /companies/{companyId} {
+      allow read: if canAccessCompany(companyId);
+      allow write: if canEditCompany(companyId);
+    }
+
+    // Règles pour la collection applications
+    match /applications/{applicationId} {
+      allow read: if canAccessApplication(applicationId);
+      allow write: if canEditApplication(applicationId);
+    }
+
+    // Règles pour la collection expenseNotes
+    match /expenseNotes/{expenseNoteId} {
+      allow read: if canAccessExpenseNote(expenseNoteId);
+      allow write: if canEditExpenseNote(expenseNoteId);
+    }
+
+    // Règles pour la collection workingHours
+    match /workingHours/{workingHourId} {
+      allow read: if canAccessWorkingHour(workingHourId);
+      allow write: if canEditWorkingHour(workingHourId);
+    }
+
+    // Règles pour la collection amendments
+    match /amendments/{amendmentId} {
+      allow read: if canAccessAmendment(amendmentId);
+      allow write: if canEditAmendment(amendmentId);
+    }
+
+    // Règles pour la collection notes
+    match /notes/{noteId} {
+      allow read: if canAccessNote(noteId);
+      allow write: if canEditNote(noteId);
+    }
+
+    // Règles pour la collection generatedDocuments
+    match /generatedDocuments/{documentId} {
+      allow read: if canAccessGeneratedDocument(documentId);
+      allow write: if canEditGeneratedDocument(documentId);
+    }
+
+    // Règles pour la collection templates
+    match /templates/{templateId} {
+      allow read: if canAccessTemplate(templateId);
+      allow write: if canEditTemplate(templateId);
+    }
+
+    // Règles pour la collection templateVariables
+    match /templateVariables/{variableId} {
+      allow read: if canAccessVariable(variableId);
+      allow write: if canEditVariable(variableId);
+    }
+
+    // Règles pour la collection documentTags
+    match /documentTags/{tagId} {
+      allow read: if canAccessTag(tagId);
+      allow write: if canEditTag(tagId);
+    }
+
+    // Règles pour la collection missionTypes
+    match /missionTypes/{typeId} {
+      allow read: if canAccessMissionType(typeId);
+      allow write: if canEditMissionType(typeId);
+    }
+
+    // Règles pour la collection structures
+    match /structures/{structureId} {
+      allow read: if canAccessStructureData(structureId);
+      allow write: if canEditStructureData(structureId);
+    }
+
+    // Règles pour la collection contacts
+    match /contacts/{contactId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId
+      );
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+    }
+
+    // Règles pour la collection defaultTemplateAssignments
+    match /defaultTemplateAssignments/{documentType} {
+      allow read: if request.auth != null;
+      allow write: if isSuperAdmin();
+    }
+  }
+}

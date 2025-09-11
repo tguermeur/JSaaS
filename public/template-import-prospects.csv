@@ -1,0 +1,4 @@
+nom,entreprise,email,telephone,adresse,secteur,source,notes,linkedinUrl,statut
+Jean Dupont,Entreprise A,jean.dupont@entreprisea.com,0123456789,123 Rue de la Paix 75001 Paris,Technologie,LinkedIn,Prospect intéressé par notre solution,https://linkedin.com/in/jeandupont,non_qualifie
+Marie Martin,Société B,marie.martin@societeb.fr,0987654321,456 Avenue des Champs 69000 Lyon,Finance,Salon professionnel,Contacté lors du salon,https://linkedin.com/in/mariemartin,contacte
+Pierre Durand,Corporation C,pierre.durand@corporationc.com,0555666777,789 Boulevard Central 13000 Marseille,Consulting,Recommandation,Recommandé par un client existant,https://linkedin.com/in/pierredurand,negociation 

@@ -1,0 +1,55 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Styles globaux pour les Snackbars - s'assurer qu'ils s'affichent au premier plan */
+.MuiSnackbar-root {
+  z-index: 9999 !important;
+}
+
+.MuiSnackbar-root .MuiAlert-root {
+  z-index: 9999 !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* S'assurer que les popups de notification sont toujours visibles */
+.MuiSnackbar-root[style*="z-index"] {
+  z-index: 9999 !important;
+}
+
+/* S'assurer que les Alert et les popups d'erreur sont toujours visibles */
+.MuiAlert-root {
+  z-index: 9999 !important;
+}
+
+.MuiAlert-standardError,
+.MuiAlert-standardWarning,
+.MuiAlert-standardInfo,
+.MuiAlert-standardSuccess {
+  z-index: 9999 !important;
+  position: relative !important;
+}
+
+/* S'assurer que les popups d'erreur sont au-dessus du header */
+.MuiSnackbar-root {
+  position: fixed !important;
+  z-index: 9999 !important;
+} 

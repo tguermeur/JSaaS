@@ -1,0 +1,261 @@
+:root {
+  --primary-color: #007AFF;
+  --success-color: #34C759;
+  --error-color: #FF3B30;
+  --background-color: #FFFFFF;
+  --text-color: #1D1D1F;
+  --secondary-text: #86868B;
+  --border-color: #E5E5EA;
+}
+
+body {
+  width: 320px;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  margin: 0;
+  background: var(--background-color);
+  color: var(--text-color);
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-color);
+  text-align: center;
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  font-size: 15px;
+  background: #F5F5F7;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  background: var(--background-color);
+}
+
+button {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 10px;
+  background: var(--primary-color);
+  color: white;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  transform: scale(1.02);
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.2);
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+#loggedIn {
+  text-align: center;
+}
+
+#userEmail {
+  color: var(--primary-color);
+  font-weight: 500;
+}
+
+.status {
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 14px;
+  text-align: center;
+  opacity: 0;
+  transition: all 0.3s ease;
+}
+
+.status.visible {
+  opacity: 1;
+}
+
+.success {
+  background: var(--success-color);
+  color: white;
+}
+
+.error {
+  background: var(--error-color);
+  color: white;
+}
+
+.loading {
+  display: none;
+  text-align: center;
+  color: var(--secondary-text);
+}
+
+/* Animation Apple Pay style */
+@keyframes successAnimation {
+  0% {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.success-animation {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.95);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.success-animation.visible {
+  opacity: 1;
+  animation: successAnimation 0.6s ease forwards;
+}
+
+.success-icon {
+  width: 60px;
+  height: 60px;
+  background: var(--success-color);
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: white;
+  font-size: 30px;
+}
+
+.user-info {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  color: var(--secondary-text);
+}
+
+.user-info span {
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+.prospect-info {
+  margin: 12px 0;
+  padding: 12px;
+  background: #F5F5F7;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--secondary-text);
+}
+
+.prospect-info .info-line {
+  margin: 6px 0;
+  line-height: 1.4;
+}
+
+.prospect-info .info-line i {
+  width: 16px;
+  color: var(--secondary-text);
+}
+
+.prospect-info .email-info {
+  font-size: 12px;
+  color: var(--secondary-text);
+}
+
+.prospect-info span {
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+/* Animation de chargement initial style Apple */
+.initial-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100px;
+}
+
+.spinner {
+  position: relative;
+  width: 24px;
+  height: 24px;
+}
+
+.spinner-circle {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--primary-color);
+  animation: spin 1s linear infinite;
+}
+
+.spinner-circle-inner {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--primary-color);
+  animation: spin 0.75s linear infinite;
+  opacity: 0.5;
+  scale: 0.8;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Ajustement des transitions */
+#loginForm, #loggedIn {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+#loginForm.visible, #loggedIn.visible {
+  opacity: 1;
+}
+
+.initial-loading {
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+.initial-loading.hidden {
+  opacity: 0;
+  pointer-events: none;
+} 
