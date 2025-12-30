@@ -102,7 +102,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
   junior: {
     title: "Pilotez votre Junior-Entreprise de A à Z",
     subtitle: "La solution tout-en-un pour la gestion, le recrutement et la conformité de votre structure.",
-    cta: "Mois gratuit",
+    cta: "Essai gratuit",
     ctaAction: () => {
       const contactSection = document.getElementById('contact');
       if (contactSection) {

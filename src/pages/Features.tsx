@@ -383,8 +383,10 @@ const Features: React.FC = () => {
 
     switch (selectedProfile) {
       case 'junior':
-        // Junior : toutes les fonctionnalités
-        return features;
+        // Junior : toutes les fonctionnalités sauf "Talents Étudiants d'Excellence"
+        return features.filter(feature => 
+          feature.title !== "Talents Étudiants d'Excellence"
+        );
       case 'company':
         // Entreprise : fonctionnalités pertinentes pour les clients
         return features.filter(feature => 

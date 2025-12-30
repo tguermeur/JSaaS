@@ -75,7 +75,7 @@ export default function Pricing(): JSX.Element {
     {
       title: "Premium",
       subtitle: "L'essentiel pour démarrer",
-      price: "149.90€",
+      price: "199.90€",
       priceSuffix: "/mois",
       button: "Souscrire",
       featured: true
@@ -212,7 +212,7 @@ export default function Pricing(): JSX.Element {
       {/* Header (identique Home) */}
       <AppBar position="fixed" elevation={0} sx={{ bgcolor: 'rgba(255,255,255,0.8)', backdropFilter: 'blur(20px)', borderBottom: '1px solid #e5e5ea', transition: 'all 0.3s' }}>
         <Toolbar sx={{ minHeight: '56px !important', py: 1.2, pl: 4 }}>
-          <Box component="img" src="/images/logo.png" alt="JS Connect Logo" sx={{ height: 24, mr: 4, transition: 'transform 0.3s', '&:hover': { transform: 'scale(1.05)' } }} />
+          <Box component="img" src="/images/logo.png" alt="JS Connect Logo" sx={{ height: 40, mr: 4, transition: 'transform 0.3s', '&:hover': { transform: 'scale(1.05)' } }} />
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, ml: 8 }}>
             <Button 
               onClick={() => handleNavigation('/')} 
