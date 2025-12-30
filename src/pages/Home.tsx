@@ -18,7 +18,9 @@ import {
   alpha,
   keyframes,
   Snackbar,
-  Alert
+  Alert,
+  Dialog,
+  DialogContent
 } from '@mui/material';
 import { 
   LinkedIn, 
@@ -30,7 +32,14 @@ import {
   CheckCircle,
   Business,
   People,
-  Assignment
+  Assignment,
+  RocketLaunch,
+  School,
+  Euro,
+  Schedule,
+  TrendingUp,
+  Receipt,
+  VerifiedUser
 } from '@mui/icons-material';
 import Footer from '../components/Footer';
 
@@ -70,55 +79,193 @@ const gradientFlow = keyframes`
   }
 `;
 
-const features = [
-  {
-    title: "Gestion des Missions",
-    description: "Optimisez la gestion de vos missions étudiantes avec notre plateforme dédiée aux Job Services.",
-    icon: <Assignment sx={{ fontSize: 40, color: '#000' }} />
-  },
-  {
-    title: "Recrutement Simplifié",
-    description: "Trouvez et gérez vos étudiants en mission en quelques clics grâce à notre système de matching intelligent.",
-    icon: <People sx={{ fontSize: 40, color: '#000' }} />
-  },
-  {
-    title: "Conformité RGPD",
-    description: "Une solution 100% conforme aux normes françaises et européennes pour la gestion de vos données.",
-    icon: <Security sx={{ fontSize: 40, color: '#000' }} />
-  }
-];
+// Configuration du contenu par profil
+type ProfileType = 'junior' | 'company' | 'student' | null;
 
-const steps = [
-  {
-    title: "Créez votre espace",
-    description: "Inscription rapide et personnalisation de votre espace Job Service en quelques minutes"
+interface ProfileContent {
+  title: string;
+  subtitle: string;
+  cta: string;
+  ctaAction: () => void;
+  features: Array<{
+    title: string;
+    description: string;
+    icon: JSX.Element;
+  }>;
+  steps: Array<{
+    title: string;
+    description: string;
+  }>;
+}
+
+const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
+  junior: {
+    title: "Pilotez votre Junior-Entreprise de A à Z",
+    subtitle: "La solution tout-en-un pour la gestion, le recrutement et la conformité de votre structure.",
+    cta: "Mois gratuit",
+    ctaAction: () => {
+      const contactSection = document.getElementById('contact');
+      if (contactSection) {
+        contactSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    },
+    features: [
+      {
+        title: "Gestion des missions",
+        description: "Optimisez la gestion de vos missions étudiantes avec notre plateforme dédiée aux Juniors.",
+        icon: <Assignment sx={{ fontSize: 40, color: '#000' }} />
+      },
+      {
+        title: "Recrutement simplifié",
+        description: "Trouvez et gérez vos étudiants en mission en quelques clics grâce à notre système de matching intelligent.",
+        icon: <People sx={{ fontSize: 40, color: '#000' }} />
+      },
+      {
+        title: "Conformité RGPD",
+        description: "Une solution 100% conforme aux normes françaises et européennes pour la gestion de vos données.",
+        icon: <Security sx={{ fontSize: 40, color: '#000' }} />
+      }
+    ],
+    steps: [
+      {
+        title: "Créez votre espace",
+        description: "Inscription rapide et personnalisation de votre espace Junior en quelques minutes"
+      },
+      {
+        title: "Gérez vos missions",
+        description: "Publiez et suivez vos missions étudiantes en temps réel avec notre interface intuitive"
+      },
+      {
+        title: "Sécurité & Conformité",
+        description: "Bénéficiez d'une solution 100% RGPD et sécurisée pour la gestion de vos données sensibles"
+      },
+      {
+        title: "Extension LinkedIn",
+        description: "Développez votre réseau de clients grâce à notre extension LinkedIn dédiée aux Juniors"
+      },
+      {
+        title: "Suivi Commercial",
+        description: "Pilotez votre activité avec des tableaux de bord et des indicateurs de performance"
+      },
+      {
+        title: "Documents Personnalisés",
+        description: "Générez des documents 100% personnalisés avec votre charte graphique et vos informations"
+      }
+    ]
   },
-  {
-    title: "Gérez vos missions",
-    description: "Publiez et suivez vos missions étudiantes en temps réel avec notre interface intuitive"
+  company: {
+    title: "Accédez aux meilleurs talents étudiants",
+    subtitle: "Confiez vos missions ponctuelles à des étudiants qualifiés via les Junior-Entreprises. Simple, rapide, légal.",
+    cta: "Déposer une mission",
+    ctaAction: () => {
+      const contactSection = document.getElementById('contact');
+      if (contactSection) {
+        contactSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    },
+    features: [
+      {
+        title: "Facturation simplifiée",
+        description: "Une seule facture pour toutes vos missions, sans complexité administrative supplémentaire.",
+        icon: <Receipt sx={{ fontSize: 40, color: '#000' }} />
+      },
+      {
+        title: "Profils sélectifs",
+        description: "Accédez à des étudiants triés sur le volet, formés et encadrés par les Junior-Entreprises.",
+        icon: <VerifiedUser sx={{ fontSize: 40, color: '#000' }} />
+      },
+      {
+        title: "Réactivité",
+        description: "Bénéficiez d'une réponse rapide et d'une mise en relation efficace avec les meilleurs profils.",
+        icon: <Speed sx={{ fontSize: 40, color: '#000' }} />
+      }
+    ],
+    steps: [
+      {
+        title: "Déposez votre besoin",
+        description: "Décrivez votre mission en quelques clics via notre formulaire simplifié"
+      },
+      {
+        title: "Recevez des propositions",
+        description: "Les Junior-Entreprises vous proposent des étudiants qualifiés pour votre projet"
+      },
+      {
+        title: "Validez et lancez",
+        description: "Choisissez la meilleure proposition et démarrez votre mission en toute sérénité"
+      },
+      {
+        title: "Suivez l'avancement",
+        description: "Restez informé de l'évolution de votre mission en temps réel"
+      },
+      {
+        title: "Facturation unique",
+        description: "Recevez une facture claire et simplifiée pour toutes vos missions"
+      },
+      {
+        title: "Bénéficiez de la qualité",
+        description: "Profitez de l'expertise et du professionnalisme des Junior-Entreprises"
+      }
+    ]
   },
-  {
-    title: "Sécurité & Conformité",
-    description: "Bénéficiez d'une solution 100% RGPD et sécurisée pour la gestion de vos données sensibles"
-  },
-  {
-    title: "Extension LinkedIn",
-    description: "Développez votre réseau de clients grâce à notre extension LinkedIn dédiée aux Job Services"
-  },
-  {
-    title: "Suivi Commercial",
-    description: "Pilotez votre activité avec des tableaux de bord et des indicateurs de performance"
-  },
-  {
-    title: "Documents Personnalisés",
-    description: "Générez des documents 100% personnalisés avec votre charte graphique et vos informations"
+  student: {
+    title: "Boostez vos revenus et votre CV",
+    subtitle: "Accédez à des missions rémunérées compatibles avec votre emploi du temps.",
+    cta: "S'inscrire maintenant",
+    ctaAction: () => {
+      window.location.href = '/register';
+    },
+    features: [
+      {
+        title: "Paiement rapide",
+        description: "Recevez votre rémunération rapidement et de manière sécurisée après chaque mission.",
+        icon: <Euro sx={{ fontSize: 40, color: '#000' }} />
+      },
+      {
+        title: "Missions flexibles",
+        description: "Choisissez des missions qui s'adaptent à votre emploi du temps étudiant.",
+        icon: <Schedule sx={{ fontSize: 40, color: '#000' }} />
+      },
+      {
+        title: "Expérience pro",
+        description: "Développez vos compétences et enrichissez votre CV avec des missions concrètes.",
+        icon: <TrendingUp sx={{ fontSize: 40, color: '#000' }} />
+      }
+    ],
+    steps: [
+      {
+        title: "Créez votre compte",
+        description: "Inscription gratuite et rapide en quelques minutes seulement"
+      },
+      {
+        title: "Complétez votre profil",
+        description: "Présentez vos compétences et vos disponibilités pour être visible"
+      },
+      {
+        title: "Explorez les missions",
+        description: "Parcourez les missions disponibles et postulez à celles qui vous intéressent"
+      },
+      {
+        title: "Travaillez en équipe",
+        description: "Rejoignez une Junior-Entreprise et collaborez avec d'autres étudiants"
+      },
+      {
+        title: "Développez vos compétences",
+        description: "Acquérez de l'expérience professionnelle tout en gagnant de l'argent"
+      },
+      {
+        title: "Construisez votre réseau",
+        description: "Rencontrez des entreprises et développez votre réseau professionnel"
+      }
+    ]
   }
-];
+};
 
 export default function Home(): JSX.Element {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const navigate = useNavigate();
+  const [selectedProfile, setSelectedProfile] = useState<ProfileType>(null);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
     company: '',
     email: '',
@@ -131,6 +278,66 @@ export default function Home(): JSX.Element {
     severity: 'success' as 'success' | 'error'
   });
   const contactRef = useRef<HTMLDivElement>(null);
+
+  const currentContent = selectedProfile ? contentByProfile[selectedProfile] : null;
+
+  // Ouvrir la modal au chargement si aucun profil n'est sélectionné
+  // Une fois qu'un profil est sélectionné, il ne peut plus être changé
+  useEffect(() => {
+    if (!selectedProfile) {
+      setProfileDialogOpen(true);
+    } else {
+      setProfileDialogOpen(false);
+    }
+  }, [selectedProfile]);
+
+  const handleProfileSelect = (profile: NonNullable<ProfileType>) => {
+    setSelectedProfile(profile);
+    setProfileDialogOpen(false);
+  };
+
+  // Empêcher le swipe down qui fermerait la modal
+  useEffect(() => {
+    if (profileDialogOpen) {
+      let startY = 0;
+      let isScrolling = false;
+
+      const handleTouchStart = (e: TouchEvent) => {
+        startY = e.touches[0].clientY;
+        isScrolling = false;
+      };
+
+      const handleTouchMove = (e: TouchEvent) => {
+        const currentY = e.touches[0].clientY;
+        const diffY = currentY - startY;
+        const target = e.target as HTMLElement;
+        const dialogContent = target.closest('.MuiDialogContent-root') as HTMLElement;
+        
+        if (dialogContent) {
+          const scrollTop = dialogContent.scrollTop;
+          // Si on est en haut du contenu et qu'on swipe vers le bas, empêcher
+          if (scrollTop === 0 && diffY > 0) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        } else {
+          // Si on swipe sur le backdrop, empêcher complètement
+          if (diffY > 10) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }
+      };
+
+      document.addEventListener('touchstart', handleTouchStart, { passive: true });
+      document.addEventListener('touchmove', handleTouchMove, { passive: false });
+
+      return () => {
+        document.removeEventListener('touchstart', handleTouchStart);
+        document.removeEventListener('touchmove', handleTouchMove);
+      };
+    }
+  }, [profileDialogOpen]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -220,7 +427,7 @@ export default function Home(): JSX.Element {
             src="/images/logo.png"
             alt="JS Connect Logo"
             sx={{
-              height: 24,
+              height: 40,
               mr: 4,
               transition: 'transform 0.3s ease',
               '&:hover': {
@@ -324,306 +531,625 @@ export default function Home(): JSX.Element {
             >
               Connexion
             </Button>
-            <Button
-              onClick={() => handleNavigation('/register')}
-              variant="contained"
-              sx={{
-                bgcolor: '#000',
-                color: '#fff',
-                fontWeight: 400,
-                fontSize: '0.85rem',
-                textTransform: 'none',
-                borderRadius: '20px',
-                px: 3,
-                '&:hover': {
+            {selectedProfile ? (
+              <Button
+                onClick={() => {
+                  if (selectedProfile === 'student') {
+                    handleNavigation('/register');
+                  } else if (selectedProfile === 'company' || selectedProfile === 'junior') {
+                    handleContactClick();
+                  }
+                }}
+                variant="contained"
+                sx={{
                   bgcolor: '#000',
-                  opacity: 0.9
-                }
-              }}
-            >
-              Inscription
-            </Button>
+                  color: '#fff',
+                  fontWeight: 400,
+                  fontSize: '0.85rem',
+                  textTransform: 'none',
+                  borderRadius: '20px',
+                  px: 3,
+                  animation: `${fadeIn} 0.5s ease-out`,
+                  '&:hover': {
+                    bgcolor: '#000',
+                    opacity: 0.9
+                  }
+                }}
+              >
+                {selectedProfile === 'student' && "S'inscrire"}
+                {selectedProfile === 'company' && "Déposer une mission"}
+                {selectedProfile === 'junior' && "Mois gratuit"}
+              </Button>
+            ) : (
+              <Button
+                onClick={() => handleNavigation('/register')}
+                variant="contained"
+                sx={{
+                  bgcolor: '#000',
+                  color: '#fff',
+                  fontWeight: 400,
+                  fontSize: '0.85rem',
+                  textTransform: 'none',
+                  borderRadius: '20px',
+                  px: 3,
+                  '&:hover': {
+                    bgcolor: '#000',
+                    opacity: 0.9
+                  }
+                }}
+              >
+                Inscription
+              </Button>
+            )}
           </Box>
         </Toolbar>
       </AppBar>
 
-      {/* Hero Section */}
-      <Box 
-        sx={{ 
-          pt: { xs: 12, md: 16 },
-          pb: { xs: 8, md: 12 },
-          bgcolor: '#fff',
-          position: 'relative',
-          overflow: 'hidden',
-          '&::before': {
-            content: '""',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
-            animation: `${gradientFlow} 15s ease infinite`,
-            backgroundSize: '200% 200%',
-            zIndex: 0
+      {/* Profile Selector Modal */}
+      <Dialog
+        open={profileDialogOpen}
+        onClose={() => {}} // Empêcher la fermeture en cliquant en dehors
+        maxWidth="lg"
+        fullWidth
+        scroll="paper"
+        disableScrollLock={false}
+        PaperProps={{
+          sx: {
+            borderRadius: '24px',
+            bgcolor: '#fff',
+            maxHeight: '90vh',
+            m: 2,
+            position: 'relative',
+            overflow: 'hidden'
+          }
+        }}
+        sx={{
+          '& .MuiBackdrop-root': {
+            bgcolor: 'rgba(0, 0, 0, 0.5)',
+            backdropFilter: 'blur(8px)',
+            touchAction: 'none'
+          },
+          '& .MuiDialog-container': {
+            overflow: 'hidden'
           }
         }}
       >
-        <Container maxWidth="lg" sx={{ position: 'relative', zIndex: 1 }}>
-          <Grid container spacing={4} alignItems="center">
-            <Grid item xs={12} md={6}>
-              <Box
-                sx={{
-                  animation: `${fadeIn} 1s ease-out`,
-                }}
-              >
-                <Typography 
-                  variant="h1" 
-                  component="h1" 
-                  gutterBottom 
-                  sx={{ 
-                    fontWeight: 600,
-                    fontSize: { xs: '2.5rem', md: '3.5rem' },
-                    lineHeight: 1.2,
-                    letterSpacing: '-0.02em',
-                    background: 'linear-gradient(45deg, #000 30%, #333 90%)',
-                    backgroundClip: 'text',
-                    textFillColor: 'transparent',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent'
-                  }}
-                >
-                  La solution complète pour les Job Services
-                </Typography>
-                <Typography 
-                  variant="h5" 
-                  sx={{ 
-                    mb: 4, 
-                    color: '#666',
-                    fontWeight: 400,
-                    lineHeight: 1.5,
-                    animation: `${fadeIn} 1s ease-out 0.2s both`
-                  }}
-                >
-                  Optimisez la gestion de vos missions étudiantes et développez votre activité avec notre plateforme dédiée
-                </Typography>
-                <Button
-                  component={Link}
-                  to="/register"
-                  variant="contained"
-                  size="large"
-                  sx={{
-                    bgcolor: '#000',
-                    color: '#fff',
-                    px: 4,
-                    py: 1.5,
-                    borderRadius: '20px',
-                    fontSize: '1.1rem',
-                    fontWeight: 500,
-                    transition: 'all 0.3s ease',
-                    animation: `${fadeIn} 1s ease-out 0.4s both`,
-                    '&:hover': {
-                      bgcolor: '#333',
-                      transform: 'translateY(-2px)',
-                      boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
-                    }
-                  }}
-                >
-                  Étudiant ? Inscris-toi !
-                </Button>
-              </Box>
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <Box
-                sx={{
-                  position: 'relative',
-                  display: { xs: 'none', md: 'block' },
-                  '&::before': {
-                    content: '""',
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: '100%',
-                    height: '100%',
-                    background: 'radial-gradient(circle at center, rgba(0,0,0,0.03) 0%, rgba(0,0,0,0) 70%)',
-                    borderRadius: '30px',
-                    zIndex: 0
-                  }
-                }}
-              >
-                <Box
-                  component="img"
-                  src="/images/hero-illustration.png"
-                  alt="Job Service Platform"
-                  sx={{
-                    width: '100%',
-                    maxWidth: 600,
-                    height: 'auto',
-                    borderRadius: '24px',
-                    boxShadow: '0 20px 40px rgba(0,0,0,0.08)',
-                    position: 'relative',
-                    zIndex: 1,
-                    transition: 'all 0.3s ease',
-                    '&:hover': {
-                      transform: 'translateY(-10px)',
-                      boxShadow: '0 30px 60px rgba(0,0,0,0.12)'
-                    }
-                  }}
-                />
-                <Box
-                  sx={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: '100%',
-                    height: '100%',
-                    background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
-                    borderRadius: '30px',
-                    filter: 'blur(20px)',
-                    zIndex: 0,
-                    animation: `${gradientFlow} 15s ease infinite`
-                  }}
-                />
-              </Box>
-            </Grid>
-          </Grid>
-        </Container>
-      </Box>
-
-      {/* Features Section */}
-      <Box sx={{ py: { xs: 8, md: 12 }, bgcolor: '#fafafa' }}>
-        <Container maxWidth="lg">
-          <Typography 
-            variant="h2" 
-            component="h2" 
-            textAlign="center" 
-            gutterBottom
+        <DialogContent 
+          sx={{ 
+            p: { xs: 3, md: 4 }, 
+            overflow: 'hidden',
+            position: 'relative',
+            maxHeight: 'calc(90vh - 48px)',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+        >
+          {/* Logo en haut à gauche */}
+          <Box
             sx={{
-              fontWeight: 600,
-              fontSize: { xs: '2rem', md: '2.5rem' },
-              mb: 8,
-              animation: `${fadeIn} 1s ease-out`
+              position: 'absolute',
+              top: { xs: 16, md: 20 },
+              left: { xs: 16, md: 20 },
+              zIndex: 10
             }}
           >
-            Pourquoi Choisir JS Connect ?
-          </Typography>
-          <Grid container spacing={6}>
-            {features.map((feature, index) => (
-              <Grid item xs={12} md={4} key={index}>
-                <Card 
+            <Box
+              component="img"
+              src="/images/logo.png"
+              alt="JS Connect Logo"
+              sx={{
+                height: { xs: 32, md: 36 },
+                transition: 'transform 0.3s ease',
+                '&:hover': {
+                  transform: 'scale(1.05)'
+                }
+              }}
+            />
+          </Box>
+          <Container maxWidth="lg" sx={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+            <Box sx={{ textAlign: 'center', mb: { xs: 3, md: 4 } }}>
+              <Typography 
+                variant="h2" 
+                component="h1" 
+                gutterBottom 
+                sx={{ 
+                  fontWeight: 600,
+                  fontSize: { xs: '1.75rem', md: '2.5rem' },
+                  lineHeight: 1.2,
+                  letterSpacing: '-0.02em',
+                  color: '#1d1d1f',
+                  mb: 1,
+                  animation: `${fadeIn} 1s ease-out`
+                }}
+              >
+                Quel est votre profil ?
+              </Typography>
+              <Typography 
+                variant="h6" 
+                sx={{ 
+                  color: '#666',
+                  fontWeight: 400,
+                  fontSize: { xs: '0.95rem', md: '1rem' },
+                  animation: `${fadeIn} 1s ease-out 0.2s both`
+                }}
+              >
+                Choisissez votre profil pour découvrir une expérience personnalisée
+              </Typography>
+            </Box>
+            <Grid container spacing={3} sx={{ mt: 0 }}>
+              <Grid item xs={12} md={4}>
+                <Card
                   elevation={0}
-                  sx={{ 
+                  onClick={() => handleProfileSelect('junior')}
+                  sx={{
+                    p: { xs: 2.5, md: 3 },
                     height: '100%',
-                    bgcolor: 'transparent',
-                    transition: 'all 0.3s ease',
-                    animation: `${fadeIn} 1s ease-out ${index * 0.2}s both`,
+                    cursor: 'pointer',
+                    border: '1px solid rgba(0,0,0,0.08)',
+                    borderRadius: '24px',
+                    bgcolor: '#fff',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    animation: `${fadeIn} 1s ease-out 0.3s both`,
                     '&:hover': {
-                      transform: 'translateY(-8px)',
-                      '& .feature-icon': {
-                        transform: 'scale(1.1) rotate(5deg)'
-                      }
-                    }
-                  }}
-                >
-                  <CardContent>
-                    <Box 
-                      className="feature-icon"
-                      sx={{ 
-                        display: 'flex', 
-                        justifyContent: 'center', 
-                        mb: 3,
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      {feature.icon}
-                    </Box>
-                    <Typography 
-                      variant="h5" 
-                      component="h3" 
-                      textAlign="center" 
-                      gutterBottom
-                      sx={{ fontWeight: 600, mb: 2 }}
-                    >
-                      {feature.title}
-                    </Typography>
-                    <Typography 
-                      textAlign="center" 
-                      sx={{ color: '#666', lineHeight: 1.6 }}
-                    >
-                      {feature.description}
-                    </Typography>
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </Grid>
-        </Container>
-      </Box>
-
-      {/* How it works Section */}
-      <Box sx={{ py: { xs: 8, md: 12 } }}>
-        <Container maxWidth="lg">
-          <Typography 
-            variant="h2" 
-            component="h2" 
-            textAlign="center" 
-            gutterBottom
-            sx={{
-              fontWeight: 600,
-              fontSize: { xs: '2rem', md: '2.5rem' },
-              mb: 8,
-              animation: `${fadeIn} 1s ease-out`
-            }}
-          >
-            Comment ça marche
-          </Typography>
-          <Grid container spacing={4}>
-            {steps.map((step, index) => (
-              <Grid item xs={12} md={4} key={index}>
-                <Box 
-                  sx={{ 
-                    textAlign: 'center',
-                    transition: 'all 0.3s ease',
-                    animation: `${fadeIn} 1s ease-out ${index * 0.1}s both`,
-                    '&:hover': {
-                      transform: 'translateY(-8px)',
-                      '& .step-number': {
-                        transform: 'scale(1.1)',
+                      transform: 'translateY(-8px) scale(1.02)',
+                      boxShadow: '0 20px 40px rgba(0,0,0,0.12)',
+                      borderColor: 'rgba(0,0,0,0.15)',
+                      '& .profile-icon': {
+                        transform: 'scale(1.1) rotate(5deg)',
                         color: '#000'
                       }
                     }
                   }}
                 >
-                  <Typography 
-                    variant="h3" 
-                    className="step-number"
-                    sx={{ 
-                      color: '#666',
-                      fontWeight: 600,
+                  <Box
+                    className="profile-icon"
+                    sx={{
+                      display: 'flex',
+                      justifyContent: 'center',
                       mb: 2,
-                      transition: 'all 0.3s ease'
+                      transition: 'all 0.3s ease',
+                      color: '#666'
                     }}
                   >
-                    {index + 1}
+                    <RocketLaunch sx={{ fontSize: { xs: 48, md: 56 } }} />
+                  </Box>
+                  <Typography 
+                    variant="h5" 
+                    component="h3" 
+                    textAlign="center" 
+                    gutterBottom
+                    sx={{ 
+                      fontWeight: 600, 
+                      mb: 1.5,
+                      fontSize: { xs: '1.1rem', md: '1.25rem' },
+                      color: '#1d1d1f'
+                    }}
+                  >
+                    Junior-Entreprise
+                  </Typography>
+                  <Typography 
+                    textAlign="center" 
+                    sx={{ 
+                      color: '#666', 
+                      lineHeight: 1.5,
+                      fontSize: { xs: '0.85rem', md: '0.9rem' }
+                    }}
+                  >
+                    Gérer votre structure, gagner du temps et assurer la conformité RGPD
+                  </Typography>
+                </Card>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Card
+                  elevation={0}
+                  onClick={() => handleProfileSelect('company')}
+                  sx={{
+                    p: { xs: 2.5, md: 3 },
+                    height: '100%',
+                    cursor: 'pointer',
+                    border: '1px solid rgba(0,0,0,0.08)',
+                    borderRadius: '24px',
+                    bgcolor: '#fff',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    animation: `${fadeIn} 1s ease-out 0.4s both`,
+                    '&:hover': {
+                      transform: 'translateY(-8px) scale(1.02)',
+                      boxShadow: '0 20px 40px rgba(0,0,0,0.12)',
+                      borderColor: 'rgba(0,0,0,0.15)',
+                      '& .profile-icon': {
+                        transform: 'scale(1.1) rotate(5deg)',
+                        color: '#000'
+                      }
+                    }
+                  }}
+                >
+                  <Box
+                    className="profile-icon"
+                    sx={{
+                      display: 'flex',
+                      justifyContent: 'center',
+                      mb: 2,
+                      transition: 'all 0.3s ease',
+                      color: '#666'
+                    }}
+                  >
+                    <Business sx={{ fontSize: { xs: 48, md: 56 } }} />
+                  </Box>
+                  <Typography 
+                    variant="h5" 
+                    component="h3" 
+                    textAlign="center" 
+                    gutterBottom
+                    sx={{ 
+                      fontWeight: 600, 
+                      mb: 1.5,
+                      fontSize: { xs: '1.1rem', md: '1.25rem' },
+                      color: '#1d1d1f'
+                    }}
+                  >
+                    Entreprise
+                  </Typography>
+                  <Typography 
+                    textAlign="center" 
+                    sx={{ 
+                      color: '#666', 
+                      lineHeight: 1.5,
+                      fontSize: { xs: '0.85rem', md: '0.9rem' }
+                    }}
+                  >
+                    Trouver des talents étudiants, simplicité administrative et qualité
+                  </Typography>
+                </Card>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Card
+                  elevation={0}
+                  onClick={() => handleProfileSelect('student')}
+                  sx={{
+                    p: { xs: 2.5, md: 3 },
+                    height: '100%',
+                    cursor: 'pointer',
+                    border: '1px solid rgba(0,0,0,0.08)',
+                    borderRadius: '24px',
+                    bgcolor: '#fff',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    animation: `${fadeIn} 1s ease-out 0.5s both`,
+                    '&:hover': {
+                      transform: 'translateY(-8px) scale(1.02)',
+                      boxShadow: '0 20px 40px rgba(0,0,0,0.12)',
+                      borderColor: 'rgba(0,0,0,0.15)',
+                      '& .profile-icon': {
+                        transform: 'scale(1.1) rotate(5deg)',
+                        color: '#000'
+                      }
+                    }
+                  }}
+                >
+                  <Box
+                    className="profile-icon"
+                    sx={{
+                      display: 'flex',
+                      justifyContent: 'center',
+                      mb: 2,
+                      transition: 'all 0.3s ease',
+                      color: '#666'
+                    }}
+                  >
+                    <School sx={{ fontSize: { xs: 48, md: 56 } }} />
+                  </Box>
+                  <Typography 
+                    variant="h5" 
+                    component="h3" 
+                    textAlign="center" 
+                    gutterBottom
+                    sx={{ 
+                      fontWeight: 600, 
+                      mb: 1.5,
+                      fontSize: { xs: '1.1rem', md: '1.25rem' },
+                      color: '#1d1d1f'
+                    }}
+                  >
+                    Étudiant
+                  </Typography>
+                  <Typography 
+                    textAlign="center" 
+                    sx={{ 
+                      color: '#666', 
+                      lineHeight: 1.5,
+                      fontSize: { xs: '0.85rem', md: '0.9rem' }
+                    }}
+                  >
+                    Gagner de l'argent, flexibilité et trouver des stages/missions
+                  </Typography>
+                </Card>
+              </Grid>
+            </Grid>
+          </Container>
+        </DialogContent>
+      </Dialog>
+
+      {/* Hero Section - Dynamic Content */}
+      {selectedProfile && currentContent && (
+        <Box 
+          sx={{ 
+            pt: { xs: 12, md: 16 },
+            pb: { xs: 8, md: 12 },
+            bgcolor: '#fff',
+            position: 'relative',
+            overflow: 'hidden',
+            '&::before': {
+              content: '""',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
+              animation: `${gradientFlow} 15s ease infinite`,
+              backgroundSize: '200% 200%',
+              zIndex: 0
+            }
+          }}
+        >
+          <Container maxWidth="lg" sx={{ position: 'relative', zIndex: 1 }}>
+            <Grid container spacing={4} alignItems="center">
+              <Grid item xs={12} md={6}>
+                <Box
+                  sx={{
+                    animation: `${fadeIn} 1s ease-out`,
+                  }}
+                >
+                  <Typography 
+                    variant="h1" 
+                    component="h1" 
+                    gutterBottom 
+                    sx={{ 
+                      fontWeight: 600,
+                      fontSize: { xs: '2.5rem', md: '3.5rem' },
+                      lineHeight: 1.2,
+                      letterSpacing: '-0.02em',
+                      background: 'linear-gradient(45deg, #000 30%, #333 90%)',
+                      backgroundClip: 'text',
+                      textFillColor: 'transparent',
+                      WebkitBackgroundClip: 'text',
+                      WebkitTextFillColor: 'transparent'
+                    }}
+                  >
+                    {currentContent.title}
                   </Typography>
                   <Typography 
                     variant="h5" 
-                    gutterBottom
-                    sx={{ fontWeight: 600, mb: 2 }}
+                    sx={{ 
+                      mb: 4, 
+                      color: '#666',
+                      fontWeight: 400,
+                      lineHeight: 1.5,
+                      animation: `${fadeIn} 1s ease-out 0.2s both`
+                    }}
                   >
-                    {step.title}
+                    {currentContent.subtitle}
                   </Typography>
-                  <Typography sx={{ color: '#666', lineHeight: 1.6 }}>
-                    {step.description}
-                  </Typography>
+                  <Button
+                    onClick={currentContent.ctaAction}
+                    variant="contained"
+                    size="large"
+                    sx={{
+                      bgcolor: '#000',
+                      color: '#fff',
+                      px: 4,
+                      py: 1.5,
+                      borderRadius: '20px',
+                      fontSize: '1.1rem',
+                      fontWeight: 500,
+                      transition: 'all 0.3s ease',
+                      animation: `${fadeIn} 1s ease-out 0.4s both`,
+                      '&:hover': {
+                        bgcolor: '#333',
+                        transform: 'translateY(-2px)',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
+                      }
+                    }}
+                  >
+                    {currentContent.cta}
+                  </Button>
                 </Box>
               </Grid>
-            ))}
-          </Grid>
-        </Container>
-      </Box>
+              <Grid item xs={12} md={6}>
+                <Box
+                  sx={{
+                    position: 'relative',
+                    display: { xs: 'none', md: 'block' },
+                    '&::before': {
+                      content: '""',
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      width: '100%',
+                      height: '100%',
+                      background: 'radial-gradient(circle at center, rgba(0,0,0,0.03) 0%, rgba(0,0,0,0) 70%)',
+                      borderRadius: '30px',
+                      zIndex: 0
+                    }
+                  }}
+                >
+                  <Box
+                    component="img"
+                    src="/images/hero-illustration.png"
+                    alt="Platform"
+                    sx={{
+                      width: '100%',
+                      maxWidth: 600,
+                      height: 'auto',
+                      borderRadius: '24px',
+                      boxShadow: '0 20px 40px rgba(0,0,0,0.08)',
+                      position: 'relative',
+                      zIndex: 1,
+                      transition: 'all 0.3s ease',
+                      '&:hover': {
+                        transform: 'translateY(-10px)',
+                        boxShadow: '0 30px 60px rgba(0,0,0,0.12)'
+                      }
+                    }}
+                  />
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      width: '100%',
+                      height: '100%',
+                      background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
+                      borderRadius: '30px',
+                      filter: 'blur(20px)',
+                      zIndex: 0,
+                      animation: `${gradientFlow} 15s ease infinite`
+                    }}
+                  />
+                </Box>
+              </Grid>
+            </Grid>
+          </Container>
+        </Box>
+      )}
+
+      {/* Features Section - Dynamic Content */}
+      {selectedProfile && currentContent && (
+        <Box sx={{ py: { xs: 8, md: 12 }, bgcolor: '#fafafa' }}>
+          <Container maxWidth="lg">
+            <Typography 
+              variant="h2" 
+              component="h2" 
+              textAlign="center" 
+              gutterBottom
+              sx={{
+                fontWeight: 600,
+                fontSize: { xs: '2rem', md: '2.5rem' },
+                mb: 8,
+                animation: `${fadeIn} 1s ease-out`
+              }}
+            >
+              Pourquoi Choisir JS Connect ?
+            </Typography>
+            <Grid container spacing={6}>
+              {currentContent.features.map((feature, index) => (
+                <Grid item xs={12} md={4} key={index}>
+                  <Card 
+                    elevation={0}
+                    sx={{ 
+                      height: '100%',
+                      bgcolor: 'transparent',
+                      transition: 'all 0.3s ease',
+                      animation: `${fadeIn} 1s ease-out ${index * 0.2}s both`,
+                      '&:hover': {
+                        transform: 'translateY(-8px)',
+                        '& .feature-icon': {
+                          transform: 'scale(1.1) rotate(5deg)'
+                        }
+                      }
+                    }}
+                  >
+                    <CardContent>
+                      <Box 
+                        className="feature-icon"
+                        sx={{ 
+                          display: 'flex', 
+                          justifyContent: 'center', 
+                          mb: 3,
+                          transition: 'all 0.3s ease'
+                        }}
+                      >
+                        {feature.icon}
+                      </Box>
+                      <Typography 
+                        variant="h5" 
+                        component="h3" 
+                        textAlign="center" 
+                        gutterBottom
+                        sx={{ fontWeight: 600, mb: 2 }}
+                      >
+                        {feature.title}
+                      </Typography>
+                      <Typography 
+                        textAlign="center" 
+                        sx={{ color: '#666', lineHeight: 1.6 }}
+                      >
+                        {feature.description}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
+          </Container>
+        </Box>
+      )}
+
+      {/* How it works Section - Dynamic Content */}
+      {selectedProfile && currentContent && (
+        <Box sx={{ py: { xs: 8, md: 12 } }}>
+          <Container maxWidth="lg">
+            <Typography 
+              variant="h2" 
+              component="h2" 
+              textAlign="center" 
+              gutterBottom
+              sx={{
+                fontWeight: 600,
+                fontSize: { xs: '2rem', md: '2.5rem' },
+                mb: 8,
+                animation: `${fadeIn} 1s ease-out`
+              }}
+            >
+              Comment ça marche
+            </Typography>
+            <Grid container spacing={4}>
+              {currentContent.steps.map((step, index) => (
+                <Grid item xs={12} md={4} key={index}>
+                  <Box 
+                    sx={{ 
+                      textAlign: 'center',
+                      transition: 'all 0.3s ease',
+                      animation: `${fadeIn} 1s ease-out ${index * 0.1}s both`,
+                      '&:hover': {
+                        transform: 'translateY(-8px)',
+                        '& .step-number': {
+                          transform: 'scale(1.1)',
+                          color: '#000'
+                        }
+                      }
+                    }}
+                  >
+                    <Typography 
+                      variant="h3" 
+                      className="step-number"
+                      sx={{ 
+                        color: '#666',
+                        fontWeight: 600,
+                        mb: 2,
+                        transition: 'all 0.3s ease'
+                      }}
+                    >
+                      {index + 1}
+                    </Typography>
+                    <Typography 
+                      variant="h5" 
+                      gutterBottom
+                      sx={{ fontWeight: 600, mb: 2 }}
+                    >
+                      {step.title}
+                    </Typography>
+                    <Typography sx={{ color: '#666', lineHeight: 1.6 }}>
+                      {step.description}
+                    </Typography>
+                  </Box>
+                </Grid>
+              ))}
+            </Grid>
+          </Container>
+        </Box>
+      )}
 
       {/* Contact Section */}
       <Box ref={contactRef} id="contact" sx={{ py: { xs: 8, md: 12 } }}>
@@ -652,7 +1178,10 @@ export default function Home(): JSX.Element {
               animation: `${fadeIn} 1s ease-out 0.2s both`
             }}
           >
-            Découvrez comment JS Connect peut transformer votre Job Service
+            {selectedProfile === 'junior' && "Découvrez comment JS Connect peut transformer votre Junior"}
+            {selectedProfile === 'company' && "Découvrez comment JS Connect peut répondre à vos besoins"}
+            {selectedProfile === 'student' && "Découvrez comment JS Connect peut booster votre carrière"}
+            {!selectedProfile && "Découvrez comment JS Connect peut vous accompagner"}
           </Typography>
           <form onSubmit={handleSubmit}>
             <Grid container spacing={4}>
