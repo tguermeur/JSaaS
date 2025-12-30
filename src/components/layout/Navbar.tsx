@@ -48,6 +48,7 @@ import { doc, getDoc, collection, query as firestoreQuery, where, getDocs, order
 import { db } from '../../firebase/config';
 import NotificationBadge from '../ui/NotificationBadge';
 import NotificationList from '../ui/NotificationList';
+import { useSnackbar } from 'notistack';
 
 const StyledAppBar = styled(AppBar)(({ theme }) => ({
   backgroundColor: '#ffffff',
@@ -103,6 +104,7 @@ const Navbar: React.FC<NavbarProps> = () => {
     markAsRead, 
     markAllAsRead 
   } = useNotifications();
+  const { enqueueSnackbar } = useSnackbar();
 
   // États pour le menu utilisateur
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
@@ -138,7 +140,6 @@ const Navbar: React.FC<NavbarProps> = () => {
 
   // États pour les données utilisateur
   const [userData, setUserData] = useState<any>(null);
-  const [structureLogo, setStructureLogo] = useState<string | null>(null);
 
   // Récupérer les données utilisateur
   useEffect(() => {
@@ -159,11 +160,16 @@ const Navbar: React.FC<NavbarProps> = () => {
   }, [currentUser]);
 
   const isEtudiant = userData?.status === "etudiant";
+  const isEntreprise = userData?.status === "entreprise";
   const isSuperAdmin = userData?.status === "superadmin";
   const isAdmin = userData?.status === "admin";
   const isMember = userData?.status === "membre";
-  const canSearch = isSuperAdmin || isAdmin || isMember;
-  const canSeeNotifications = isSuperAdmin || isAdmin || isMember;
+  const isAdminStructure = userData?.status === "admin_structure";
+  const isJuniorEntreprise = isAdminStructure || isAdmin || isMember || isSuperAdmin;
+  
+  // Permissions pour la recherche et notifications (uniquement pour JE)
+  const canSearch = isJuniorEntreprise;
+  const canSeeNotifications = isJuniorEntreprise;
 
   const handleClick = (event: React.MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget);
@@ -212,7 +218,28 @@ const Navbar: React.FC<NavbarProps> = () => {
   const handleSubmitReport = async (type: 'bug' | 'idea') => {
     if (!currentUser?.uid || !currentUser?.email) return;
     
+    console.log('📝 Soumission rapport:', { type, hasImage: !!errorImage, userId: currentUser.uid });
+    
     try {
+      let imageUrl = null;
+      
+      // Traiter l'image seulement si on en a une et que c'est un bug
+      if (type === 'bug' && errorImage) {
+        console.log('🖼️ Traitement de l\'image d\'erreur...');
+        try {
+          imageUrl = await uploadErrorImage(errorImage, currentUser.uid);
+          console.log('✅ Image uploadée avec succès:', imageUrl);
+        } catch (storageError) {
+          console.warn('⚠️ Firebase Storage non disponible, rapport envoyé sans image:', storageError);
+          
+          // Notification à l'utilisateur pour lui indiquer le problème
+          console.log('💡 Le rapport sera envoyé sans image car Firebase Storage n\'est pas configuré correctement');
+          console.log('💡 Pour résoudre : Vérifiez la configuration Firebase Storage dans la console Firebase');
+          
+          // On continue même si l'upload de l'image échoue
+        }
+      }
+      
       const reportData = {
         type,
         content: reportText,
@@ -220,10 +247,27 @@ const Navbar: React.FC<NavbarProps> = () => {
         userEmail: currentUser.email,
         createdAt: new Date(),
         status: 'pending',
-        imageUrl: type === 'bug' ? await uploadErrorImage(errorImage!, currentUser.uid) : null
+        imageUrl: imageUrl
       };
 
+      console.log('💾 Sauvegarde du rapport:', reportData);
       await addReport(reportData);
+      console.log('✅ Rapport sauvegardé avec succès');
+      
+      // Message de succès pour l'utilisateur avec notification élégante
+      const successMessage = type === 'bug' 
+        ? '🐛 Rapport de bug envoyé avec succès ! Notre équipe va l\'examiner sous peu.'
+        : '💡 Suggestion d\'amélioration envoyée avec succès ! Merci pour votre contribution.';
+      
+      // Afficher notification avec le système existant
+      enqueueSnackbar(successMessage, { 
+        variant: 'success', 
+        autoHideDuration: 4000,
+        anchorOrigin: {
+          vertical: 'top',
+          horizontal: 'right',
+        }
+      });
       
       // Réinitialiser
       setReportText('');
@@ -231,34 +275,9 @@ const Navbar: React.FC<NavbarProps> = () => {
       setErrorImagePreview(null);
       type === 'bug' ? setBugDialogOpen(false) : setIdeaDialogOpen(false);
     } catch (error) {
-      console.error('Erreur lors de l\'envoi du rapport:', error);
+      console.error('❌ Erreur lors de l\'envoi du rapport:', error);
     }
   };
-
-  useEffect(() => {
-    const fetchStructureLogo = async () => {
-      if (!currentUser) return;
-
-      try {
-        // Récupérer le structureId de l'utilisateur
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        const structureId = userDoc.data()?.structureId;
-
-        if (structureId) {
-          // Récupérer les données de la structure
-          const structureDoc = await getDoc(doc(db, 'structures', structureId));
-          const logo = structureDoc.data()?.logo;
-          if (logo) {
-            setStructureLogo(logo);
-          }
-        }
-      } catch (error) {
-        console.error('Erreur lors de la récupération du logo:', error);
-      }
-    };
-
-    fetchStructureLogo();
-  }, [currentUser]);
 
   // Fonction pour récupérer les missions favorites
   const fetchFavoriteMissions = async () => {
@@ -352,13 +371,31 @@ const Navbar: React.FC<NavbarProps> = () => {
         );
         
         const missionsSnapshot = await getDocs(missionsQuery);
-        const missions = missionsSnapshot.docs.map(doc => ({
-          id: doc.id,
-          type: 'mission' as const,
-          title: doc.data().numeroMission || '',
-          subtitle: `${doc.data().company || 'Sans entreprise'} - ${doc.data().location || 'Sans localisation'}`,
-          icon: <BusinessIcon fontSize="small" />
-        }));
+        const missions = missionsSnapshot.docs.map(doc => {
+          const data = doc.data();
+          const numeroMission = data.numeroMission || '';
+          
+          console.log('🔍 Mission trouvée dans la recherche:', {
+            docId: doc.id,
+            numeroMission: numeroMission,
+            company: data.company,
+            structureId: data.structureId,
+            numeroMissionType: typeof numeroMission,
+            numeroMissionLength: numeroMission?.length
+          });
+          
+          if (!numeroMission) {
+            console.warn('⚠️ Mission sans numeroMission trouvée:', doc.id);
+          }
+          
+          return {
+            id: numeroMission || doc.id, // Utiliser numeroMission pour la navigation
+            type: 'mission' as const,
+            title: numeroMission || doc.id,
+            subtitle: `${data.company || 'Sans entreprise'} - ${data.location || 'Sans localisation'}`,
+            icon: <BusinessIcon fontSize="small" />
+          };
+        });
 
         // Rechercher les utilisateurs de la structure
         const usersQuery = firestoreQuery(
@@ -421,8 +458,15 @@ const Navbar: React.FC<NavbarProps> = () => {
     setSearchOpen(false);
     setSearchQuery('');
     
+    console.log('🔍 Clic sur résultat de recherche:', {
+      type: result.type,
+      id: result.id,
+      title: result.title
+    });
+    
     switch (result.type) {
       case 'mission':
+        console.log('🚀 Navigation vers mission:', result.id);
         navigate(`/app/mission/${result.id}`);
         break;
       case 'user':
@@ -512,8 +556,8 @@ const Navbar: React.FC<NavbarProps> = () => {
             alt="Logo JSaaS"
             variant="rounded"
             sx={{
-              width: 40,
-              height: 40,
+              width: 56,
+              height: 56,
               backgroundColor: 'white',
               mr: 0.5,
               '& img': {
@@ -524,25 +568,6 @@ const Navbar: React.FC<NavbarProps> = () => {
               }
             }}
           />
-          {structureLogo && (
-            <Avatar
-              src={structureLogo}
-              alt="Logo structure"
-              variant="circular"
-              sx={{
-                width: 40,
-                height: 40,
-                backgroundColor: 'white',
-                mr: 1,
-                '& img': {
-                  objectFit: 'contain',
-                  p: 0.5,
-                  width: '90%',
-                  height: '90%'
-                }
-              }}
-            />
-          )}
           <Typography variant="h6" component="div" sx={{ fontWeight: 600 }}>
             JS Connect
           </Typography>
@@ -853,20 +878,23 @@ const Navbar: React.FC<NavbarProps> = () => {
             </Typography>
           </Box>
           <Divider />
-          <MenuItem onClick={() => { handleClose(); navigate('/app/available-missions'); }}>
-            <ListItemIcon>
-              <BusinessIcon fontSize="small" />
-            </ListItemIcon>
-            Missions disponibles
-          </MenuItem>
+          {/* Menu selon le rôle */}
+          {isEtudiant && (
+            <MenuItem onClick={() => { handleClose(); navigate('/app/available-missions'); }}>
+              <ListItemIcon>
+                <BusinessIcon fontSize="small" />
+              </ListItemIcon>
+              Missions disponibles
+            </MenuItem>
+          )}
           <MenuItem onClick={() => { handleClose(); navigate('/app/profile'); }}>
             <ListItemIcon>
               <Person fontSize="small" />
             </ListItemIcon>
             Profil
           </MenuItem>
-          {(isAdmin || isSuperAdmin) && (
-            <MenuItem onClick={() => { handleClose(); navigate('/app/settings'); }}>
+          {isJuniorEntreprise && (
+            <MenuItem onClick={() => { handleClose(); navigate('/app/settings/structure'); }}>
               <ListItemIcon>
                 <Settings fontSize="small" />
               </ListItemIcon>

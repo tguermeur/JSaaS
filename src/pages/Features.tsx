@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Box, 
   Container, 
@@ -14,6 +14,9 @@ import {
 } from '@mui/material';
 import { Link, useNavigate } from 'react-router-dom';
 import Footer from '../components/Footer';
+
+// Type pour le profil
+type ProfileType = 'junior' | 'company' | 'student' | null;
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import PeopleIcon from '@mui/icons-material/People';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
@@ -22,7 +25,6 @@ import DescriptionIcon from '@mui/icons-material/Description';
 import SecurityIcon from '@mui/icons-material/Security';
 import HistoryIcon from '@mui/icons-material/History';
 import EditIcon from '@mui/icons-material/Edit';
-import ReceiptIcon from '@mui/icons-material/Receipt';
 import BusinessIcon from '@mui/icons-material/Business';
 import GroupIcon from '@mui/icons-material/Group';
 import TimelineIcon from '@mui/icons-material/Timeline';
@@ -46,6 +48,13 @@ import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
 import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
 import LockIcon from '@mui/icons-material/Lock';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
+import StarIcon from '@mui/icons-material/Star';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import ShieldIcon from '@mui/icons-material/Shield';
+import SupportAgentIcon from '@mui/icons-material/SupportAgent';
+import DomainIcon from '@mui/icons-material/Domain';
+import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
+import ReceiptIcon from '@mui/icons-material/Receipt';
 
 // Animations inspirées de Home.tsx
 const fadeIn = keyframes`
@@ -75,6 +84,16 @@ const features = [
   {
     title: "Gestion des Missions",
     description: [
+      {
+        icon: <AttachMoneyIcon sx={{ color: '#34C759', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Dépôt de mission 100% gratuit",
+        detail: "Déposez votre mission sans frais. Aucun coût d'inscription, aucune commission sur le dépôt. Vous ne payez que la mission réalisée."
+      },
+      {
+        icon: <ReceiptIcon sx={{ color: '#34C759', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Devis gratuit par les Junior",
+        detail: "Recevez un devis personnalisé et gratuit de la part des Junior adaptées à votre besoin. Aucun engagement, aucune obligation."
+      },
       {
         icon: <AssignmentIcon sx={{ color: '#1976d2', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
         title: "Statut, dates, budget et candidatures visibles en un coup d'œil",
@@ -118,6 +137,43 @@ const features = [
     ],
     image: "/images/features/gestionmission.png",
     reverse: false
+  },
+  {
+    title: "Talents Étudiants d'Excellence",
+    description: [
+      {
+        icon: <SchoolIcon sx={{ color: '#1976d2', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Étudiants en master des meilleures écoles de France",
+        detail: "Accédez à un vivier d'étudiants en master provenant des meilleures écoles de France, sélectionnés pour leur excellence académique et leur expertise."
+      },
+      {
+        icon: <StarIcon sx={{ color: '#43a047', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Profils spécialisés dans votre domaine",
+        detail: "Bénéficiez de compétences pointues adaptées à vos besoins spécifiques, avec des étudiants formés dans les meilleures formations de leur secteur."
+      },
+      {
+        icon: <VisibilityIcon sx={{ color: '#8e24aa', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Visibilité dans les écoles partenaires",
+        detail: "Déposez une mission et gagnez en visibilité auprès des étudiants des meilleures écoles, renforcez votre image de marque employeur."
+      },
+      {
+        icon: <ShieldIcon sx={{ color: '#fbc02d', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Sécurité et conformité garanties",
+        detail: "Toutes les missions sont encadrées légalement avec une conformité totale aux réglementations, protection de vos données et de votre entreprise."
+      },
+      {
+        icon: <SupportAgentIcon sx={{ color: '#0288d1', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Accompagnement par une Junior de qualité",
+        detail: "Chaque mission est suivie par une Junior adaptée à vos besoins, garantissant un accompagnement professionnel et personnalisé de bout en bout."
+      },
+      {
+        icon: <DomainIcon sx={{ color: '#ff7043', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        title: "Partenariat durable avec les écoles",
+        detail: "Créez des relations durables avec les établissements d'enseignement supérieur et développez votre réseau dans l'écosystème académique."
+      }
+    ],
+    image: "/images/features/talents.png",
+    reverse: true
   },
   {
     title: "Suivi Commercial",
@@ -309,6 +365,50 @@ const features = [
 const Features: React.FC = () => {
   const navigate = useNavigate();
   const [selectedTab, setSelectedTab] = React.useState(0);
+  const [selectedProfile, setSelectedProfile] = useState<ProfileType>(null);
+
+  // Récupérer le profil depuis localStorage (comme dans Home.tsx)
+  useEffect(() => {
+    const savedProfile = localStorage.getItem('selectedProfile') as ProfileType;
+    if (savedProfile && ['junior', 'company', 'student'].includes(savedProfile)) {
+      setSelectedProfile(savedProfile);
+    }
+  }, []);
+
+  // Filtrer les fonctionnalités selon le profil
+  const getFilteredFeatures = () => {
+    if (!selectedProfile) {
+      return features; // Afficher toutes les fonctionnalités si aucun profil
+    }
+
+    switch (selectedProfile) {
+      case 'junior':
+        // Junior : toutes les fonctionnalités
+        return features;
+      case 'company':
+        // Entreprise : fonctionnalités pertinentes pour les clients
+        return features.filter(feature => 
+          feature.title === 'Gestion des Missions' || 
+          feature.title === "Talents Étudiants d'Excellence"
+        );
+      case 'student':
+        // Étudiant : fonctionnalités pertinentes pour les intervenants
+        return features.filter(feature => 
+          feature.title === 'Recrutement'
+        );
+      default:
+        return features;
+    }
+  };
+
+  const filteredFeatures = getFilteredFeatures();
+
+  // Réinitialiser l'onglet sélectionné si les fonctionnalités changent
+  useEffect(() => {
+    if (selectedTab >= filteredFeatures.length) {
+      setSelectedTab(0);
+    }
+  }, [filteredFeatures.length, selectedTab]);
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
     setSelectedTab(newValue);
@@ -332,6 +432,393 @@ const Features: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Adapter les liens de navigation selon le profil
+  const getNavLinks = () => {
+    if (!selectedProfile) {
+      return (
+        <>
+          <Button
+            onClick={() => handleNavigation('/')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Accueil
+          </Button>
+          <Button
+            onClick={() => handleNavigation('/features')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Fonctionnalités
+          </Button>
+          <Button
+            onClick={() => handleNavigation('/pricing')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Tarifs
+          </Button>
+          <Button
+            onClick={handleContactClick}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Contact
+          </Button>
+        </>
+      );
+    }
+
+    // Navigation selon le profil
+    if (selectedProfile === 'junior') {
+      return (
+        <>
+          <Button
+            onClick={() => handleNavigation('/')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Accueil
+          </Button>
+          <Button
+            onClick={() => handleNavigation('/features')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Fonctionnalités
+          </Button>
+          <Button
+            onClick={() => handleNavigation('/pricing')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Tarifs
+          </Button>
+          <Button
+            onClick={handleContactClick}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Contact
+          </Button>
+        </>
+      );
+    }
+
+    if (selectedProfile === 'company') {
+      return (
+        <>
+          <Button
+            onClick={() => handleNavigation('/')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Accueil
+          </Button>
+          <Button
+            onClick={() => handleNavigation('/features')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Nos Solutions
+          </Button>
+          <Button
+            onClick={handleContactClick}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Avantages
+          </Button>
+        </>
+      );
+    }
+
+    if (selectedProfile === 'student') {
+      return (
+        <>
+          <Button
+            onClick={() => handleNavigation('/')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Accueil
+          </Button>
+          <Button
+            onClick={() => handleNavigation('/features')}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Missions
+          </Button>
+          <Button
+            onClick={handleContactClick}
+            sx={{
+              color: '#1d1d1f',
+              fontWeight: 400,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+              px: 1.5,
+              transition: 'font-weight 0.2s',
+              '&:hover': {
+                color: '#1d1d1f',
+                fontWeight: 600,
+                opacity: 0.8
+              }
+            }}
+          >
+            Avantages
+          </Button>
+        </>
+      );
+    }
+
+    return null;
+  };
+
+  // Adapter le CTA selon le profil
+  const getCTAButton = () => {
+    if (!selectedProfile) {
+      return (
+        <Button
+          onClick={() => handleNavigation('/register')}
+          variant="contained"
+          sx={{
+            bgcolor: '#000',
+            color: '#fff',
+            fontWeight: 400,
+            fontSize: '0.85rem',
+            textTransform: 'none',
+            borderRadius: '20px',
+            px: 3,
+            '&:hover': {
+              bgcolor: '#000',
+              opacity: 0.9
+            }
+          }}
+        >
+          Inscription
+        </Button>
+      );
+    }
+
+    if (selectedProfile === 'junior') {
+      return (
+        <Button
+          onClick={() => handleNavigation('/register?type=structure')}
+          variant="contained"
+          sx={{
+            bgcolor: '#000',
+            color: '#fff',
+            fontWeight: 400,
+            fontSize: '0.85rem',
+            textTransform: 'none',
+            borderRadius: '20px',
+            px: 3,
+            '&:hover': {
+              bgcolor: '#000',
+              opacity: 0.9
+            }
+          }}
+        >
+          Essai Gratuit
+        </Button>
+      );
+    }
+
+    if (selectedProfile === 'company') {
+      return (
+        <Button
+          onClick={() => handleNavigation('/register?type=company')}
+          variant="contained"
+          sx={{
+            bgcolor: '#000',
+            color: '#fff',
+            fontWeight: 400,
+            fontSize: '0.85rem',
+            textTransform: 'none',
+            borderRadius: '20px',
+            px: 3,
+            '&:hover': {
+              bgcolor: '#000',
+              opacity: 0.9
+            }
+          }}
+        >
+          Déposer une mission
+        </Button>
+      );
+    }
+
+    if (selectedProfile === 'student') {
+      return (
+        <Button
+          onClick={() => handleNavigation('/register?type=student')}
+          variant="contained"
+          sx={{
+            bgcolor: '#000',
+            color: '#fff',
+            fontWeight: 400,
+            fontSize: '0.85rem',
+            textTransform: 'none',
+            borderRadius: '20px',
+            px: 3,
+            '&:hover': {
+              bgcolor: '#000',
+              opacity: 0.9
+            }
+          }}
+        >
+          S'inscrire
+        </Button>
+      );
+    }
+
+    return null;
+  };
+
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#fff', pt: { xs: 8, md: 12 }, pb: { xs: 8, md: 12 } }}>
       <AppBar 
@@ -353,7 +840,7 @@ const Features: React.FC = () => {
             src="/images/logo.png"
             alt="JS Connect Logo"
             sx={{
-              height: 24,
+              height: 40,
               mr: 4,
               transition: 'transform 0.3s ease',
               '&:hover': {
@@ -362,78 +849,7 @@ const Features: React.FC = () => {
             }}
           />
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, ml: 8 }}>
-            <Button
-              onClick={() => handleNavigation('/')}
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Accueil
-            </Button>
-            <Button
-              onClick={() => handleNavigation('/features')}
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Fonctionnalités
-            </Button>
-            <Button
-              onClick={() => handleNavigation('/pricing')}
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Tarifs
-            </Button>
-            <Button
-              onClick={handleContactClick}
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Contact
-            </Button>
+            {getNavLinks()}
           </Box>
           <Box sx={{ flexGrow: 1 }} />
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -457,25 +873,7 @@ const Features: React.FC = () => {
             >
               Connexion
             </Button>
-            <Button
-              onClick={() => handleNavigation('/register')}
-              variant="contained"
-              sx={{
-                bgcolor: '#000',
-                color: '#fff',
-                fontWeight: 400,
-                fontSize: '0.85rem',
-                textTransform: 'none',
-                borderRadius: '20px',
-                px: 3,
-                '&:hover': {
-                  bgcolor: '#000',
-                  opacity: 0.9
-                }
-              }}
-            >
-              Inscription
-            </Button>
+            {getCTAButton()}
           </Box>
         </Toolbar>
       </AppBar>
@@ -499,7 +897,9 @@ const Features: React.FC = () => {
             WebkitTextFillColor: 'transparent'
           }}
         >
-          Fonctionnalités
+          {selectedProfile === 'company' && 'Nos Solutions'}
+          {selectedProfile === 'student' && 'Missions'}
+          {(!selectedProfile || selectedProfile === 'junior') && 'Fonctionnalités'}
         </Typography>
       </Container>
       <Box sx={{ width: '100vw', position: 'relative', left: '50%', right: '50%', ml: '-50vw', mr: '-50vw', px: { xs: 2, md: 12 }, bgcolor: '#fff' }}>
@@ -528,7 +928,7 @@ const Features: React.FC = () => {
             }
           }}
         >
-          {features.map((feature, idx) => (
+          {filteredFeatures.map((feature, idx) => (
             <Tab key={feature.title} label={feature.title} />
           ))}
         </Tabs>
@@ -549,22 +949,9 @@ const Features: React.FC = () => {
               width: '100%'
             }}
           >
-            <Typography
-              variant="h2"
-              sx={{
-                fontSize: { xs: '1.5rem', md: '2.2rem' },
-                fontWeight: 600,
-                mb: 2,
-                color: '#1d1d1f',
-                letterSpacing: '-0.02em',
-                textAlign: 'center'
-              }}
-            >
-              {features[selectedTab].title}
-            </Typography>
-            {Array.isArray(features[selectedTab].description) ? (
+            {filteredFeatures.length > 0 && Array.isArray(filteredFeatures[selectedTab]?.description) ? (
               <Grid container spacing={3} sx={{ maxWidth: 1200, mx: 'auto', mt: 2, px: { xs: 0, md: 2 } }}>
-                {features[selectedTab].description.map((item, subIndex) => (
+                {filteredFeatures[selectedTab].description.map((item, subIndex) => (
                   <Grid item xs={12} md={6} key={subIndex}>
                     <Fade in={true} style={{ transitionDelay: `${subIndex * 100}ms` }}>
                       <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 2, transition: 'box-shadow 0.3s', '&:hover .feature-icon': { color: '#111' } }}>
@@ -588,7 +975,7 @@ const Features: React.FC = () => {
                   </Grid>
                 ))}
               </Grid>
-            ) : (
+            ) : filteredFeatures.length > 0 ? (
               <Typography
                 variant="body1"
                 sx={{
@@ -598,22 +985,22 @@ const Features: React.FC = () => {
                   mb: 3
                 }}
               >
-                {typeof features[selectedTab].description === 'string' ? features[selectedTab].description : ''}
+                {typeof filteredFeatures[selectedTab]?.description === 'string' ? filteredFeatures[selectedTab].description : ''}
+              </Typography>
+            ) : (
+              <Typography
+                variant="body1"
+                sx={{
+                  fontSize: { xs: '1.1rem', md: '1.2rem' },
+                  lineHeight: 1.6,
+                  color: '#86868b',
+                  mb: 3,
+                  textAlign: 'center'
+                }}
+              >
+                Aucune fonctionnalité disponible pour votre profil.
               </Typography>
             )}
-            <Box
-              component="img"
-              src={features[selectedTab].image}
-              alt={features[selectedTab].title}
-              sx={{
-                width: '100%',
-                height: 'auto',
-                maxWidth: 900,
-                mx: 'auto',
-                mb: 2,
-                mt: 6
-              }}
-            />
           </Box>
         </Fade>
       </Container>

@@ -13,6 +13,8 @@ import theme from './theme';
 import { MissionProvider } from './contexts/MissionContext';
 import { checkFirebaseConfig } from './firebase/auth';
 import TemplatesPDF from './pages/TemplatesPDF';
+import DocumentGenerator from './pages/DocumentGenerator';
+import TagLibrary from './pages/TagLibrary';
 import TemplateAssignment from './pages/settings/TemplateAssignment';
 import StructureSettings from './pages/settings/StructureSettings';
 import MissionDescriptions from './pages/settings/MissionDescriptions';
@@ -27,6 +29,7 @@ import AuditMissionDetails from './pages/AuditMissionDetails';
 import MentionsLegales from './pages/MentionsLegales';
 import PolitiqueConfidentialite from './pages/PolitiqueConfidentialite';
 import ProtectedRoute from './components/ProtectedRoute';
+import RequireRole from './components/guards/RequireRole';
 import Tresorerie from './pages/Tresorerie';
 import StripeCustomers from './pages/settings/StripeCustomers';
 import { SnackbarProvider } from 'notistack';
@@ -108,65 +111,162 @@ function App(): JSX.Element {
                         </ProtectedRoute>
                       } />
                       <Route path="profile" element={<Profile />} />
+                      {/* Routes accessibles selon le rôle */}
                       <Route path="organization" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'organization', accessType: 'read' }}>
-                          <Organization />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'organization', accessType: 'read' }}>
+                            <Organization />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
                       <Route path="mission" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'mission', accessType: 'read' }}>
-                          <Mission />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin', 'entreprise']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'mission', accessType: 'read' }}>
+                            <Mission />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
-                      <Route path="mission/:missionNumber" element={<MissionDetails />} />
-                      <Route path="mission/:missionNumber/quote" element={<QuoteBuilder />} />
+                      <Route path="mission/:missionNumber" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin', 'entreprise', 'etudiant']}>
+                          <MissionDetails />
+                        </RequireRole>
+                      } />
+                      <Route path="mission/:missionNumber/quote" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <QuoteBuilder />
+                        </RequireRole>
+                      } />
                       <Route path="etude" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'etude', accessType: 'read' }}>
-                          <Etude />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'etude', accessType: 'read' }}>
+                            <Etude />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
-                      <Route path="etude/:etudeNumber" element={<EtudeDetails />} />
-                      <Route path="etude/:etudeNumber/quote" element={<QuoteBuilder />} />
-                      <Route path="quote-builder/:missionNumber" element={<QuoteBuilder />} />
-                      <Route path="available-missions" element={<AvailableMissions />} />
+                      <Route path="etude/:etudeNumber" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <EtudeDetails />
+                        </RequireRole>
+                      } />
+                      <Route path="etude/:etudeNumber/quote" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <QuoteBuilder />
+                        </RequireRole>
+                      } />
+                      <Route path="quote-builder/:missionNumber" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <QuoteBuilder />
+                        </RequireRole>
+                      } />
+                      <Route path="available-missions" element={
+                        <RequireRole allowedRoles={['etudiant', 'admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <AvailableMissions />
+                        </RequireRole>
+                      } />
 
+                      {/* Routes réservées aux Junior-Entreprises (admin_structure, admin, membre, superadmin) */}
                       <Route path="human-resources" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'rh', accessType: 'read' }}>
-                          <HumanResources />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'rh', accessType: 'read' }}>
+                            <HumanResources />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
                       <Route path="entreprises" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'entreprises', accessType: 'read' }}>
-                          <Entreprises />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'entreprises', accessType: 'read' }}>
+                            <Entreprises />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
-                      <Route path="entreprises/:id" element={<EntrepriseDetail />} />
+                      <Route path="entreprises/:id" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <EntrepriseDetail />
+                        </RequireRole>
+                      } />
                       <Route path="commercial" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'commercial', accessType: 'read' }}>
-                          <Commercial />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'commercial', accessType: 'read' }}>
+                            <Commercial />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
                       <Route path="audit" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'audit', accessType: 'read' }}>
-                          <Audit />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'audit', accessType: 'read' }}>
+                            <Audit />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
-                      <Route path="audit/mission/:missionId" element={<AuditMissionDetails />} />
+                      <Route path="audit/mission/:missionId" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <AuditMissionDetails />
+                        </RequireRole>
+                      } />
                       <Route path="tresorerie" element={
-                        <ProtectedRoute requiredPermission={{ pageId: 'tresorerie', accessType: 'read' }}>
-                          <Tresorerie />
-                        </ProtectedRoute>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'tresorerie', accessType: 'read' }}>
+                            <Tresorerie />
+                          </ProtectedRoute>
+                        </RequireRole>
                       } />
                       <Route path="settings" element={<Settings />}>
-                        <Route path="templates" element={<TemplatesPDF />} />
-                        <Route path="template-assignment" element={<TemplateAssignment />} />
-                        <Route path="structure" element={<StructureSettings />} />
-                        <Route path="mission-descriptions" element={<MissionDescriptions />} />
-                        <Route path="storage" element={<Storage />} />
-                        <Route path="authorizations" element={<Authorizations />} />
-                        <Route path="billing" element={<Billing />} />
-                        <Route path="stripe-customers" element={<StripeCustomers />} />
-                        <Route path="notifications" element={<NotificationSettings />} />
+                        <Route path="templates" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <TemplatesPDF />
+                          </RequireRole>
+                        } />
+                        <Route path="document-generator" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <DocumentGenerator />
+                          </RequireRole>
+                        } />
+                        <Route path="tag-library" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <TagLibrary />
+                          </RequireRole>
+                        } />
+                        <Route path="template-assignment" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <TemplateAssignment />
+                          </RequireRole>
+                        } />
+                        <Route path="structure" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <StructureSettings />
+                          </RequireRole>
+                        } />
+                        <Route path="mission-descriptions" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <MissionDescriptions />
+                          </RequireRole>
+                        } />
+                        <Route path="storage" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <Storage />
+                          </RequireRole>
+                        } />
+                        <Route path="authorizations" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <Authorizations />
+                          </RequireRole>
+                        } />
+                        {/* Billing uniquement pour admin_structure, admin, superadmin */}
+                        <Route path="billing" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'superadmin']}>
+                            <Billing />
+                          </RequireRole>
+                        } />
+                        <Route path="stripe-customers" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'superadmin']}>
+                            <StripeCustomers />
+                          </RequireRole>
+                        } />
+                        <Route path="notifications" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <NotificationSettings />
+                          </RequireRole>
+                        } />
                       </Route>
                       <Route element={<SuperAdminRoute />}>
                         <Route path="superadmin" element={<SuperAdmin />} />

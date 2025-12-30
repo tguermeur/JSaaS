@@ -9,7 +9,14 @@ import {
   Divider,
   Grid,
   Card,
-  CardContent
+  CardContent,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+  Snackbar,
+  Alert
 } from '@mui/material';
 import { 
   Logout as LogoutIcon,
@@ -18,12 +25,13 @@ import {
   AttachMoney as AttachMoneyIcon,
   Assignment as AssignmentIcon,
   Work as WorkIcon,
-  Group as GroupIcon
+  Group as GroupIcon,
+  Add as AddIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { logoutUser } from '../firebase/auth';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
@@ -55,6 +63,18 @@ interface ConnectedUser {
   isOnline: boolean;
   role: string;
   photoURL?: string;
+}
+
+interface CalendarEvent {
+  id: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  description?: string;
+  structureId: string;
+  createdBy: string;
+  isCustomEvent: boolean;
+  isRelanceReminder?: boolean;
 }
 
 // Ajouter cette fonction utilitaire pour l'animation du compteur
@@ -96,6 +116,7 @@ export default function Dashboard(): JSX.Element {
   const { currentUser, userData } = useAuth();
   const navigate = useNavigate();
   const [missions, setMissions] = useState<Mission[]>([]);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
   const [statistics, setStatistics] = useState<Statistics>({
     totalRevenue: 0,
@@ -103,9 +124,28 @@ export default function Dashboard(): JSX.Element {
     activeMissions: 0,
     totalStudents: 0
   });
+  const [openEventDialog, setOpenEventDialog] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [eventForm, setEventForm] = useState({
+    title: '',
+    startDate: '',
+    endDate: '',
+    description: ''
+  });
+  const [snackbar, setSnackbar] = useState({
+    open: false,
+    message: '',
+    severity: 'success' as 'success' | 'error'
+  });
 
   // Utiliser l'animation du compteur
   const animatedRevenue = useCountAnimation(statistics.totalRevenue);
+
+  // Déterminer le rôle de l'utilisateur
+  const userStatus = userData?.status;
+  const isEntreprise = userStatus === 'entreprise';
+  const isEtudiant = userStatus === 'etudiant';
+  const isJuniorEntreprise = ['admin_structure', 'admin', 'membre', 'superadmin'].includes(userStatus || '');
 
   const handleLogout = async () => {
     try {
@@ -170,7 +210,7 @@ export default function Dashboard(): JSX.Element {
           return sum + (mission.totalTTC || 0);
         }, 0);
 
-        // Récupérer toutes les missions de la structure pour le comptage total
+        // Récupérer toutes les missions de la structure pour le comptage total et le calendrier
         const allMissionsQuery = query(
           missionsRef,
           where('structureId', '==', userStructureId)
@@ -183,6 +223,61 @@ export default function Dashboard(): JSX.Element {
           return endDate >= new Date();
         }).length;
 
+        // Transformer les missions pour le calendrier
+        const missionsList: Mission[] = allMissionsSnapshot.docs
+          .filter(doc => {
+            const mission = doc.data();
+            // Filtrer les missions qui ont au moins une date de début valide
+            return mission.startDate;
+          })
+          .map(doc => {
+            const data = doc.data();
+            // Convertir les dates en format ISO string pour FullCalendar
+            let startDate = '';
+            let endDate = '';
+            
+            if (data.startDate) {
+              // Si c'est un Timestamp Firestore, le convertir
+              if (data.startDate.toDate && typeof data.startDate.toDate === 'function') {
+                startDate = data.startDate.toDate().toISOString().split('T')[0];
+              } else if (typeof data.startDate === 'string') {
+                // Si c'est déjà une string, vérifier le format
+                startDate = data.startDate.includes('T') 
+                  ? data.startDate.split('T')[0] 
+                  : data.startDate;
+              } else {
+                startDate = new Date(data.startDate).toISOString().split('T')[0];
+              }
+            }
+            
+            if (data.endDate) {
+              // Si c'est un Timestamp Firestore, le convertir
+              if (data.endDate.toDate && typeof data.endDate.toDate === 'function') {
+                endDate = data.endDate.toDate().toISOString().split('T')[0];
+              } else if (typeof data.endDate === 'string') {
+                // Si c'est déjà une string, vérifier le format
+                endDate = data.endDate.includes('T') 
+                  ? data.endDate.split('T')[0] 
+                  : data.endDate;
+              } else {
+                endDate = new Date(data.endDate).toISOString().split('T')[0];
+              }
+            }
+
+            return {
+              id: doc.id,
+              numeroMission: data.numeroMission || '',
+              title: data.company || 'Mission sans titre',
+              startDate: startDate,
+              endDate: endDate,
+              company: data.company || '',
+              description: data.description || ''
+            };
+          });
+
+        // Stocker les missions pour le calendrier
+        setMissions(missionsList);
+
         setStatistics({
           totalRevenue,
           totalMissions: allMissionsSnapshot.docs.length,
@@ -194,7 +289,221 @@ export default function Dashboard(): JSX.Element {
       }
     };
 
-    fetchMissions();
+    const fetchData = async () => {
+      if (!currentUser) return;
+
+      try {
+        console.log('Email de l\'utilisateur connecté:', currentUser.email);
+        
+        // Récupérer les données de l'utilisateur pour obtenir son structureId
+        const userDoc = await getDocs(query(collection(db, 'users'), where('email', '==', currentUser.email)));
+        if (userDoc.empty) {
+          console.error('Aucun utilisateur trouvé avec cet email');
+          return;
+        }
+        
+        const userData = userDoc.docs[0].data();
+        const userStructureId = userData.structureId;
+
+        console.log('Structure ID de l\'utilisateur:', userStructureId);
+        console.log('Données complètes de l\'utilisateur:', userData);
+
+        // Vérifier d'abord si la collection users existe
+        const usersRef = collection(db, 'users');
+        const usersQuery = query(usersRef, where('structureId', '==', userStructureId));
+        const allUsersSnapshot = await getDocs(usersQuery);
+        
+        // Debug logs détaillés
+        console.log('Requête utilisateurs:', {
+          structureId: userStructureId,
+          nombreUtilisateurs: allUsersSnapshot.docs.length,
+          premierUtilisateur: allUsersSnapshot.docs[0]?.data(),
+          tousLesUtilisateurs: allUsersSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }))
+        });
+
+        // Pour un superadmin, on utilise directement le nombre total d'utilisateurs de la structure
+        const totalUsers = allUsersSnapshot.docs.length;
+
+        // Récupérer toutes les missions de la structure
+        const missionsRef = collection(db, 'missions');
+        const missionsQuery = query(
+          missionsRef, 
+          where('invoiceStatus', '==', 'paid'),
+          where('structureId', '==', userStructureId)
+        );
+        const missionsSnapshot = await getDocs(missionsQuery);
+        
+        // Calculer le CA à partir des missions payées
+        const totalRevenue = missionsSnapshot.docs.reduce((sum, doc) => {
+          const mission = doc.data();
+          return sum + (mission.totalTTC || 0);
+        }, 0);
+
+        // Récupérer toutes les missions de la structure pour le comptage total et le calendrier
+        const allMissionsQuery = query(
+          missionsRef,
+          where('structureId', '==', userStructureId)
+        );
+        const allMissionsSnapshot = await getDocs(allMissionsQuery);
+
+        const activeMissions = allMissionsSnapshot.docs.filter(doc => {
+          const mission = doc.data();
+          const endDate = new Date(mission.endDate);
+          return endDate >= new Date();
+        }).length;
+
+        // Transformer les missions pour le calendrier
+        const missionsList: Mission[] = allMissionsSnapshot.docs
+          .filter(doc => {
+            const mission = doc.data();
+            // Filtrer les missions qui ont au moins une date de début valide
+            return mission.startDate;
+          })
+          .map(doc => {
+            const data = doc.data();
+            // Convertir les dates en format ISO string pour FullCalendar
+            let startDate = '';
+            let endDate = '';
+            
+            if (data.startDate) {
+              // Si c'est un Timestamp Firestore, le convertir
+              if (data.startDate.toDate && typeof data.startDate.toDate === 'function') {
+                startDate = data.startDate.toDate().toISOString().split('T')[0];
+              } else if (typeof data.startDate === 'string') {
+                // Si c'est déjà une string, vérifier le format
+                startDate = data.startDate.includes('T') 
+                  ? data.startDate.split('T')[0] 
+                  : data.startDate;
+              } else {
+                startDate = new Date(data.startDate).toISOString().split('T')[0];
+              }
+            }
+            
+            if (data.endDate) {
+              // Si c'est un Timestamp Firestore, le convertir
+              if (data.endDate.toDate && typeof data.endDate.toDate === 'function') {
+                endDate = data.endDate.toDate().toISOString().split('T')[0];
+              } else if (typeof data.endDate === 'string') {
+                // Si c'est déjà une string, vérifier le format
+                endDate = data.endDate.includes('T') 
+                  ? data.endDate.split('T')[0] 
+                  : data.endDate;
+              } else {
+                endDate = new Date(data.endDate).toISOString().split('T')[0];
+              }
+            }
+
+            return {
+              id: doc.id,
+              numeroMission: data.numeroMission || '',
+              title: data.company || 'Mission sans titre',
+              startDate: startDate,
+              endDate: endDate,
+              company: data.company || '',
+              description: data.description || ''
+            };
+          });
+
+        // Stocker les missions pour le calendrier
+        setMissions(missionsList);
+
+        setStatistics({
+          totalRevenue,
+          totalMissions: allMissionsSnapshot.docs.length,
+          activeMissions,
+          totalStudents: totalUsers
+        });
+
+        // Récupérer les événements personnalisés
+        const eventsRef = collection(db, 'calendarEvents');
+        const eventsQuery = query(eventsRef, where('structureId', '==', userStructureId));
+        const eventsSnapshot = await getDocs(eventsQuery);
+
+        const eventsList: CalendarEvent[] = eventsSnapshot.docs
+          .map(doc => {
+            const data = doc.data();
+            let startDate = '';
+            let endDate = '';
+
+            if (data.startDate) {
+              if (data.startDate.toDate && typeof data.startDate.toDate === 'function') {
+                startDate = data.startDate.toDate().toISOString().split('T')[0];
+              } else if (typeof data.startDate === 'string') {
+                startDate = data.startDate.includes('T') 
+                  ? data.startDate.split('T')[0] 
+                  : data.startDate;
+              } else {
+                startDate = new Date(data.startDate).toISOString().split('T')[0];
+              }
+            }
+
+            if (data.endDate) {
+              if (data.endDate.toDate && typeof data.endDate.toDate === 'function') {
+                endDate = data.endDate.toDate().toISOString().split('T')[0];
+              } else if (typeof data.endDate === 'string') {
+                endDate = data.endDate.includes('T') 
+                  ? data.endDate.split('T')[0] 
+                  : data.endDate;
+              } else {
+                endDate = new Date(data.endDate).toISOString().split('T')[0];
+              }
+            } else {
+              endDate = startDate;
+            }
+
+            return {
+              id: doc.id,
+              title: data.title || '',
+              startDate: startDate,
+              endDate: endDate,
+              description: data.description || '',
+              structureId: data.structureId || '',
+              createdBy: data.createdBy || '',
+              isCustomEvent: true
+            };
+          });
+
+        // Récupérer les prospects avec dateRecontact pour afficher les relances dans le calendrier
+        const prospectsRef = collection(db, 'prospects');
+        const prospectsQuery = query(
+          prospectsRef,
+          where('structureId', '==', userStructureId),
+          where('statut', '==', 'a_recontacter')
+        );
+        const prospectsSnapshot = await getDocs(prospectsQuery);
+        
+        const relanceEvents: CalendarEvent[] = prospectsSnapshot.docs
+          .filter(doc => {
+            const data = doc.data();
+            return data.dateRecontact;
+          })
+          .map(doc => {
+            const data = doc.data();
+            const prospectName = data.nom || data.name || 'Contact';
+            return {
+              id: `relance-${doc.id}`,
+              title: `Relance: ${prospectName}`,
+              startDate: data.dateRecontact,
+              endDate: data.dateRecontact,
+              description: `Relance prévue pour ${prospectName}${data.entreprise || data.company ? ` - ${data.entreprise || data.company}` : ''}`,
+              structureId: userStructureId,
+              createdBy: data.ownerId || '',
+              isCustomEvent: false,
+              isRelanceReminder: true
+            };
+          });
+
+        // Ajouter les événements de relance aux événements du calendrier
+        setCalendarEvents([...eventsList, ...relanceEvents]);
+      } catch (error) {
+        console.error("Erreur lors du chargement des données:", error);
+      }
+    };
+
+    fetchData();
   }, [currentUser, userData.structureId]);
 
   useEffect(() => {
@@ -270,10 +579,116 @@ export default function Dashboard(): JSX.Element {
   };
 
   const handleEventClick = (info: any) => {
-    const missionId = info.event.id;
-    const mission = missions.find(m => m.id === missionId);
+    const eventId = info.event.id;
+    const extendedProps = info.event.extendedProps;
+    
+    // Si c'est un événement de relance, naviguer vers le prospect
+    if (extendedProps?.isRelanceReminder) {
+      const prospectId = eventId.replace('relance-', '');
+      navigate(`/prospect/${prospectId}`);
+      return;
+    }
+    
+    // Vérifier si c'est une mission ou un événement personnalisé
+    const mission = missions.find(m => m.id === eventId);
     if (mission) {
       navigate(`/app/mission/${mission.numeroMission}`);
+      return;
+    }
+    
+    // Si c'est un événement personnalisé, on peut ouvrir un dialogue d'édition ou simplement ne rien faire
+    // Pour l'instant, on ne fait rien avec les événements personnalisés au clic
+  };
+
+  const handleDateClick = (info: any) => {
+    const date = info.dateStr;
+    setSelectedDate(date);
+    setEventForm({
+      title: '',
+      startDate: date,
+      endDate: date,
+      description: ''
+    });
+    setOpenEventDialog(true);
+  };
+
+  const handleCloseEventDialog = () => {
+    setOpenEventDialog(false);
+    setEventForm({
+      title: '',
+      startDate: '',
+      endDate: '',
+      description: ''
+    });
+  };
+
+  const handleSaveEvent = async () => {
+    if (!currentUser || !eventForm.title || !eventForm.startDate) {
+      setSnackbar({
+        open: true,
+        message: 'Veuillez remplir au moins le titre et la date de début',
+        severity: 'error'
+      });
+      return;
+    }
+
+    try {
+      // Récupérer le structureId de l'utilisateur
+      const userDoc = await getDocs(query(collection(db, 'users'), where('email', '==', currentUser.email)));
+      if (userDoc.empty) {
+        setSnackbar({
+          open: true,
+          message: 'Erreur: utilisateur non trouvé',
+          severity: 'error'
+        });
+        return;
+      }
+
+      const userData = userDoc.docs[0].data();
+      const userStructureId = userData.structureId;
+
+      // Créer l'événement dans Firestore
+      const eventData = {
+        title: eventForm.title,
+        startDate: eventForm.startDate,
+        endDate: eventForm.endDate || eventForm.startDate,
+        description: eventForm.description || '',
+        structureId: userStructureId,
+        createdBy: currentUser.uid,
+        createdAt: Timestamp.now(),
+        isCustomEvent: true
+      };
+
+      const docRef = await addDoc(collection(db, 'calendarEvents'), eventData);
+
+      // Ajouter l'événement à l'état local avec l'ID Firestore
+      const newEvent: CalendarEvent = {
+        id: docRef.id,
+        title: eventForm.title,
+        startDate: eventForm.startDate,
+        endDate: eventForm.endDate || eventForm.startDate,
+        description: eventForm.description,
+        structureId: userStructureId,
+        createdBy: currentUser.uid,
+        isCustomEvent: true
+      };
+
+      setCalendarEvents([...calendarEvents, newEvent]);
+
+      setSnackbar({
+        open: true,
+        message: 'Événement créé avec succès',
+        severity: 'success'
+      });
+
+      handleCloseEventDialog();
+    } catch (error) {
+      console.error('Erreur lors de la création de l\'événement:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de la création de l\'événement',
+        severity: 'error'
+      });
     }
   };
 
@@ -294,6 +709,114 @@ export default function Dashboard(): JSX.Element {
     return colors[index];
   };
 
+  // Dashboard simplifié pour les Entreprises
+  if (isEntreprise) {
+    return (
+      <Container maxWidth="lg">
+        <Box sx={{ py: 4 }}>
+          <Typography variant="h4" sx={{ mb: 4, fontWeight: 600 }}>
+            Tableau de bord Entreprise
+          </Typography>
+          <Grid container spacing={3}>
+            <Grid item xs={12} md={6}>
+              <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
+                <CardContent>
+                  <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                    Mes Missions
+                  </Typography>
+                  <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                    {statistics.totalMissions} mission(s) au total
+                  </Typography>
+                  <Button 
+                    variant="contained" 
+                    startIcon={<AddIcon />}
+                    onClick={() => navigate('/app/mission?new=true')}
+                    sx={{ mt: 2 }}
+                  >
+                    Nouvelle Mission
+                  </Button>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
+                <CardContent>
+                  <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                    Facturation
+                  </Typography>
+                  <Typography variant="body1" color="text.secondary">
+                    Consultez vos factures et devis
+                  </Typography>
+                  <Button 
+                    variant="outlined"
+                    onClick={() => navigate('/app/profile?tab=billing')}
+                    sx={{ mt: 2 }}
+                  >
+                    Voir mes factures
+                  </Button>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+        </Box>
+      </Container>
+    );
+  }
+
+  // Dashboard simplifié pour les Étudiants
+  if (isEtudiant) {
+    return (
+      <Container maxWidth="lg">
+        <Box sx={{ py: 4 }}>
+          <Typography variant="h4" sx={{ mb: 4, fontWeight: 600 }}>
+            Espace Candidat
+          </Typography>
+          <Grid container spacing={3}>
+            <Grid item xs={12} md={6}>
+              <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
+                <CardContent>
+                  <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                    Missions disponibles
+                  </Typography>
+                  <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                    Découvrez les missions qui correspondent à votre profil
+                  </Typography>
+                  <Button 
+                    variant="contained" 
+                    onClick={() => navigate('/app/available-missions')}
+                    sx={{ mt: 2 }}
+                  >
+                    Voir les missions
+                  </Button>
+                </CardContent>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
+                <CardContent>
+                  <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                    Mon Profil & Documents
+                  </Typography>
+                  <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                    Gérez votre profil et vos documents (CV, RIB, Pièce d'identité)
+                  </Typography>
+                  <Button 
+                    variant="outlined"
+                    onClick={() => navigate('/app/profile')}
+                    sx={{ mt: 2 }}
+                  >
+                    Accéder à mon profil
+                  </Button>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+        </Box>
+      </Container>
+    );
+  }
+
+  // Dashboard complet pour les Junior-Entreprises (comportement par défaut)
   return (
     <Container maxWidth="lg">
       <Box sx={{ py: 4 }}>
@@ -448,14 +971,49 @@ export default function Dashboard(): JSX.Element {
               }}
             >
               <CardContent sx={{ p: '24px !important' }}>
-                <Typography variant="h6" sx={{ 
-                  mb: 3, 
-                  fontWeight: 600,
-                  color: '#1d1d1f',
-                  fontSize: '1.25rem'
+                <Box sx={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  mb: 3 
                 }}>
-                  Calendrier des missions
-                </Typography>
+                  <Typography variant="h6" sx={{ 
+                    fontWeight: 600,
+                    color: '#1d1d1f',
+                    fontSize: '1.25rem'
+                  }}>
+                    Calendrier des missions
+                  </Typography>
+                  <Button
+                    onClick={() => {
+                      const today = new Date().toISOString().split('T')[0];
+                      setEventForm({
+                        title: '',
+                        startDate: today,
+                        endDate: today,
+                        description: ''
+                      });
+                      setOpenEventDialog(true);
+                    }}
+                    sx={{
+                      minWidth: '40px',
+                      width: '40px',
+                      height: '40px',
+                      borderRadius: '50%',
+                      backgroundColor: '#007AFF',
+                      color: '#fff',
+                      padding: 0,
+                      '&:hover': {
+                        backgroundColor: '#0051D5',
+                      },
+                      '& .MuiSvgIcon-root': {
+                        fontSize: '1.5rem'
+                      }
+                    }}
+                  >
+                    <AddIcon />
+                  </Button>
+                </Box>
                 <Box sx={{ 
                   '.fc': { 
                     fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
@@ -592,22 +1150,58 @@ export default function Dashboard(): JSX.Element {
                     plugins={[dayGridPlugin, interactionPlugin]}
                     initialView="dayGridMonth"
                     locale={frLocale}
-                    events={missions.map(mission => {
-                      const color = getMissionColor(mission.numeroMission);
-                      return {
-                        id: mission.id,
-                        title: `${mission.numeroMission} - ${mission.company}`,
-                        start: mission.startDate,
-                        end: mission.endDate,
-                        backgroundColor: color.bg,
-                        textColor: color.text,
-                        borderColor: 'transparent',
-                        extendedProps: {
-                          description: mission.description
+                    events={[
+                      // Missions
+                      ...missions.map(mission => {
+                        const color = getMissionColor(mission.numeroMission);
+                        // FullCalendar utilise des dates exclusives pour la date de fin
+                        // Il faut ajouter 1 jour pour que la mission s'affiche jusqu'à la date de fin incluse
+                        let endDate = mission.endDate;
+                        if (mission.endDate && mission.endDate !== mission.startDate) {
+                          const end = new Date(mission.endDate);
+                          end.setDate(end.getDate() + 1);
+                          endDate = end.toISOString().split('T')[0];
                         }
-                      };
-                    })}
+                        return {
+                          id: mission.id,
+                          title: mission.numeroMission,
+                          start: mission.startDate,
+                          end: endDate || undefined,
+                          backgroundColor: color.bg,
+                          textColor: color.text,
+                          borderColor: 'transparent',
+                          extendedProps: {
+                            description: mission.description,
+                            isMission: true
+                          }
+                        };
+                      }),
+                      // Événements personnalisés
+                      ...calendarEvents.map(event => {
+                        let endDate = event.endDate;
+                        if (event.endDate && event.endDate !== event.startDate) {
+                          const end = new Date(event.endDate);
+                          end.setDate(end.getDate() + 1);
+                          endDate = end.toISOString().split('T')[0];
+                        }
+                        return {
+                          id: event.id,
+                          title: event.title,
+                          start: event.startDate,
+                          end: endDate || undefined,
+                          backgroundColor: event.isRelanceReminder ? '#ff9f0a30' : '#86868b30',
+                          textColor: event.isRelanceReminder ? '#ff9f0a' : '#86868b',
+                          borderColor: 'transparent',
+                          extendedProps: {
+                            description: event.description,
+                            isCustomEvent: true,
+                            isRelanceReminder: event.isRelanceReminder || false
+                          }
+                        };
+                      })
+                    ]}
                     eventClick={handleEventClick}
+                    dateClick={handleDateClick}
                     headerToolbar={{
                       left: 'prev,next',
                       center: 'title',
@@ -629,53 +1223,8 @@ export default function Dashboard(): JSX.Element {
             </Card>
           </Grid>
           
+          {/* Nouvelle carte pour les utilisateurs connectés */}
           <Grid item xs={12} md={4}>
-            <Card 
-              elevation={0}
-              sx={{
-                borderRadius: '12px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                mb: 3
-              }}
-            >
-              <CardContent>
-                <Typography variant="h6" sx={{ mb: 2, fontWeight: 500 }}>
-                  Actions rapides
-                </Typography>
-                
-                <Button
-                  variant="outlined"
-                  startIcon={<PersonIcon />}
-                  fullWidth
-                  sx={{ 
-                    mb: 2, 
-                    textTransform: 'none',
-                    borderRadius: '8px',
-                    py: 1
-                  }}
-                  onClick={() => navigate('/app/profile')}
-                >
-                  Modifier mon profil
-                </Button>
-                
-                <Button
-                  variant="outlined"
-                  color="error"
-                  startIcon={<LogoutIcon />}
-                  fullWidth
-                  sx={{ 
-                    textTransform: 'none',
-                    borderRadius: '8px',
-                    py: 1
-                  }}
-                  onClick={handleLogout}
-                >
-                  Se déconnecter
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* Nouvelle carte pour les utilisateurs connectés */}
             <Card 
               elevation={0}
               sx={{
@@ -779,6 +1328,87 @@ export default function Dashboard(): JSX.Element {
           </Grid>
         </Grid>
       </Box>
+
+      {/* Dialogue pour créer un événement */}
+      <Dialog 
+        open={openEventDialog} 
+        onClose={handleCloseEventDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          Ajouter un événement
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+            <TextField
+              label="Titre de l'événement"
+              fullWidth
+              required
+              value={eventForm.title}
+              onChange={(e) => setEventForm({ ...eventForm, title: e.target.value })}
+            />
+            <TextField
+              label="Date de début"
+              type="date"
+              fullWidth
+              required
+              value={eventForm.startDate}
+              onChange={(e) => setEventForm({ ...eventForm, startDate: e.target.value })}
+              InputLabelProps={{
+                shrink: true,
+              }}
+            />
+            <TextField
+              label="Date de fin"
+              type="date"
+              fullWidth
+              value={eventForm.endDate}
+              onChange={(e) => setEventForm({ ...eventForm, endDate: e.target.value })}
+              InputLabelProps={{
+                shrink: true,
+              }}
+              helperText="Laissez vide pour un événement d'un jour"
+            />
+            <TextField
+              label="Description"
+              fullWidth
+              multiline
+              rows={3}
+              value={eventForm.description}
+              onChange={(e) => setEventForm({ ...eventForm, description: e.target.value })}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseEventDialog}>
+            Annuler
+          </Button>
+          <Button 
+            onClick={handleSaveEvent} 
+            variant="contained"
+            startIcon={<AddIcon />}
+          >
+            Ajouter
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Snackbar pour les notifications */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert 
+          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+          severity={snackbar.severity}
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Container>
   );
 } 

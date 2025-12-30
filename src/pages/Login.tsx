@@ -18,6 +18,8 @@ import {
 } from '@mui/icons-material';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
 import { loginUser, resetPassword } from '../firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../firebase/config';
 
 export default function Login(): JSX.Element {
   const [email, setEmail] = useState<string>('');
@@ -29,14 +31,45 @@ export default function Login(): JSX.Element {
 
   const navigate = useNavigate();
 
+  const getRedirectPath = (userStatus: string): string => {
+    switch (userStatus) {
+      case 'entreprise':
+        return '/app/dashboard'; // Dashboard entreprise
+      case 'etudiant':
+        return '/app/dashboard'; // Dashboard étudiant
+      case 'admin_structure':
+      case 'admin':
+      case 'membre':
+      case 'superadmin':
+        return '/app/dashboard'; // Dashboard JE (complet)
+      default:
+        return '/app/dashboard';
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
     try {
-      await loginUser(email, password);
-      navigate('/app/dashboard');
+      const user = await loginUser(email, password);
+      
+      // Récupérer le statut de l'utilisateur pour rediriger correctement
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          const userStatus = userData.status;
+          const redirectPath = getRedirectPath(userStatus);
+          navigate(redirectPath);
+        } else {
+          navigate('/app/dashboard');
+        }
+      } catch (error) {
+        console.error('Erreur lors de la récupération du statut:', error);
+        navigate('/app/dashboard');
+      }
     } catch (error: any) {
       console.error('Erreur de connexion:', error);
       setError(error.message);

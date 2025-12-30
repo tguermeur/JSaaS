@@ -112,45 +112,45 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
     features: [
       {
         title: "Gestion des missions",
-        description: "Optimisez la gestion de vos missions étudiantes avec notre plateforme dédiée aux Juniors.",
-        icon: <Assignment sx={{ fontSize: 40, color: '#000' }} />
-      },
-      {
+    description: "Optimisez la gestion de vos missions étudiantes avec notre plateforme dédiée aux Juniors.",
+    icon: <Assignment sx={{ fontSize: 40, color: '#000' }} />
+  },
+  {
         title: "Recrutement simplifié",
-        description: "Trouvez et gérez vos étudiants en mission en quelques clics grâce à notre système de matching intelligent.",
-        icon: <People sx={{ fontSize: 40, color: '#000' }} />
-      },
-      {
-        title: "Conformité RGPD",
-        description: "Une solution 100% conforme aux normes françaises et européennes pour la gestion de vos données.",
-        icon: <Security sx={{ fontSize: 40, color: '#000' }} />
-      }
+    description: "Trouvez et gérez vos étudiants en mission en quelques clics grâce à notre système de matching intelligent.",
+    icon: <People sx={{ fontSize: 40, color: '#000' }} />
+  },
+  {
+    title: "Conformité RGPD",
+    description: "Une solution 100% conforme aux normes françaises et européennes pour la gestion de vos données.",
+    icon: <Security sx={{ fontSize: 40, color: '#000' }} />
+  }
     ],
     steps: [
-      {
-        title: "Créez votre espace",
-        description: "Inscription rapide et personnalisation de votre espace Junior en quelques minutes"
-      },
-      {
-        title: "Gérez vos missions",
-        description: "Publiez et suivez vos missions étudiantes en temps réel avec notre interface intuitive"
-      },
-      {
-        title: "Sécurité & Conformité",
-        description: "Bénéficiez d'une solution 100% RGPD et sécurisée pour la gestion de vos données sensibles"
-      },
-      {
-        title: "Extension LinkedIn",
-        description: "Développez votre réseau de clients grâce à notre extension LinkedIn dédiée aux Juniors"
-      },
-      {
-        title: "Suivi Commercial",
-        description: "Pilotez votre activité avec des tableaux de bord et des indicateurs de performance"
-      },
-      {
-        title: "Documents Personnalisés",
-        description: "Générez des documents 100% personnalisés avec votre charte graphique et vos informations"
-      }
+  {
+    title: "Créez votre espace",
+    description: "Inscription rapide et personnalisation de votre espace Junior en quelques minutes"
+  },
+  {
+    title: "Gérez vos missions",
+    description: "Publiez et suivez vos missions étudiantes en temps réel avec notre interface intuitive"
+  },
+  {
+    title: "Sécurité & Conformité",
+    description: "Bénéficiez d'une solution 100% RGPD et sécurisée pour la gestion de vos données sensibles"
+  },
+  {
+    title: "Extension LinkedIn",
+    description: "Développez votre réseau de clients grâce à notre extension LinkedIn dédiée aux Juniors"
+  },
+  {
+    title: "Suivi Commercial",
+    description: "Pilotez votre activité avec des tableaux de bord et des indicateurs de performance"
+  },
+  {
+    title: "Documents Personnalisés",
+    description: "Générez des documents 100% personnalisés avec votre charte graphique et vos informations"
+  }
     ]
   },
   company: {
@@ -294,7 +294,17 @@ export default function Home(): JSX.Element {
   const handleProfileSelect = (profile: NonNullable<ProfileType>) => {
     setSelectedProfile(profile);
     setProfileDialogOpen(false);
+    // Sauvegarder le profil dans localStorage pour les autres pages
+    localStorage.setItem('selectedProfile', profile);
   };
+
+  // Récupérer le profil depuis localStorage au chargement
+  useEffect(() => {
+    const savedProfile = localStorage.getItem('selectedProfile') as ProfileType;
+    if (savedProfile && ['junior', 'company', 'student'].includes(savedProfile)) {
+      setSelectedProfile(savedProfile);
+    }
+  }, []);
 
   // Empêcher le swipe down qui fermerait la modal
   useEffect(() => {
@@ -474,25 +484,25 @@ export default function Home(): JSX.Element {
             </Button>
             {/* Lien Tarifs : UNIQUEMENT visible pour Junior-Entreprise */}
             {selectedProfile === 'junior' && (
-              <Button
-                onClick={() => handleNavigation('/pricing')}
-                sx={{
-                  color: '#1d1d1f',
-                  fontWeight: 400,
-                  fontSize: '0.95rem',
-                  textTransform: 'none',
-                  px: 1.5,
+            <Button
+              onClick={() => handleNavigation('/pricing')}
+              sx={{
+                color: '#1d1d1f',
+                fontWeight: 400,
+                fontSize: '0.95rem',
+                textTransform: 'none',
+                px: 1.5,
                   transition: 'all 0.3s ease',
                   animation: selectedProfile === 'junior' ? `${fadeIn} 0.3s ease-out` : 'none',
-                  '&:hover': {
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    opacity: 0.8
-                  }
-                }}
-              >
-                Tarifs
-              </Button>
+                '&:hover': {
+                  color: '#1d1d1f',
+                  fontWeight: 600,
+                  opacity: 0.8
+                }
+              }}
+            >
+              Tarifs
+            </Button>
             )}
             <Button
               onClick={handleContactClick}
@@ -536,7 +546,7 @@ export default function Home(): JSX.Element {
               Connexion
             </Button>
             {selectedProfile ? (
-              <Button
+            <Button
                 onClick={() => {
                   if (selectedProfile === 'student') {
                     handleNavigation('/register?type=student');
@@ -546,27 +556,27 @@ export default function Home(): JSX.Element {
                     handleNavigation('/register?type=structure');
                   }
                 }}
-                variant="contained"
-                sx={{
-                  bgcolor: '#000',
-                  color: '#fff',
-                  fontWeight: 400,
-                  fontSize: '0.85rem',
-                  textTransform: 'none',
-                  borderRadius: '20px',
-                  px: 3,
+              variant="contained"
+              sx={{
+                bgcolor: '#000',
+                color: '#fff',
+                fontWeight: 400,
+                fontSize: '0.85rem',
+                textTransform: 'none',
+                borderRadius: '20px',
+                px: 3,
                   transition: 'all 0.3s ease',
                   animation: `${fadeIn} 0.3s ease-out`,
-                  '&:hover': {
-                    bgcolor: '#000',
-                    opacity: 0.9
-                  }
-                }}
-              >
+                '&:hover': {
+                  bgcolor: '#000',
+                  opacity: 0.9
+                }
+              }}
+            >
                 {selectedProfile === 'student' && "S'inscrire"}
                 {selectedProfile === 'company' && "Déposer une mission"}
                 {selectedProfile === 'junior' && "Essai Gratuit"}
-              </Button>
+            </Button>
             ) : (
               <Button
                 onClick={() => handleNavigation('/register?type=student')}
@@ -877,285 +887,285 @@ export default function Home(): JSX.Element {
 
       {/* Hero Section - Dynamic Content */}
       {selectedProfile && currentContent && (
-        <Box 
-          sx={{ 
-            pt: { xs: 12, md: 16 },
-            pb: { xs: 8, md: 12 },
-            bgcolor: '#fff',
-            position: 'relative',
-            overflow: 'hidden',
-            '&::before': {
-              content: '""',
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
-              animation: `${gradientFlow} 15s ease infinite`,
-              backgroundSize: '200% 200%',
-              zIndex: 0
-            }
-          }}
-        >
-          <Container maxWidth="lg" sx={{ position: 'relative', zIndex: 1 }}>
-            <Grid container spacing={4} alignItems="center">
-              <Grid item xs={12} md={6}>
-                <Box
-                  sx={{
-                    animation: `${fadeIn} 1s ease-out`,
+      <Box 
+        sx={{ 
+          pt: { xs: 12, md: 16 },
+          pb: { xs: 8, md: 12 },
+          bgcolor: '#fff',
+          position: 'relative',
+          overflow: 'hidden',
+          '&::before': {
+            content: '""',
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
+            animation: `${gradientFlow} 15s ease infinite`,
+            backgroundSize: '200% 200%',
+            zIndex: 0
+          }
+        }}
+      >
+        <Container maxWidth="lg" sx={{ position: 'relative', zIndex: 1 }}>
+          <Grid container spacing={4} alignItems="center">
+            <Grid item xs={12} md={6}>
+              <Box
+                sx={{
+                  animation: `${fadeIn} 1s ease-out`,
+                }}
+              >
+                <Typography 
+                  variant="h1" 
+                  component="h1" 
+                  gutterBottom 
+                  sx={{ 
+                    fontWeight: 600,
+                    fontSize: { xs: '2.5rem', md: '3.5rem' },
+                    lineHeight: 1.2,
+                    letterSpacing: '-0.02em',
+                    background: 'linear-gradient(45deg, #000 30%, #333 90%)',
+                    backgroundClip: 'text',
+                    textFillColor: 'transparent',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent'
                   }}
                 >
-                  <Typography 
-                    variant="h1" 
-                    component="h1" 
-                    gutterBottom 
-                    sx={{ 
-                      fontWeight: 600,
-                      fontSize: { xs: '2.5rem', md: '3.5rem' },
-                      lineHeight: 1.2,
-                      letterSpacing: '-0.02em',
-                      background: 'linear-gradient(45deg, #000 30%, #333 90%)',
-                      backgroundClip: 'text',
-                      textFillColor: 'transparent',
-                      WebkitBackgroundClip: 'text',
-                      WebkitTextFillColor: 'transparent'
-                    }}
-                  >
                     {currentContent.title}
-                  </Typography>
-                  <Typography 
-                    variant="h5" 
-                    sx={{ 
-                      mb: 4, 
-                      color: '#666',
-                      fontWeight: 400,
-                      lineHeight: 1.5,
-                      animation: `${fadeIn} 1s ease-out 0.2s both`
-                    }}
-                  >
+                </Typography>
+                <Typography 
+                  variant="h5" 
+                  sx={{ 
+                    mb: 4, 
+                    color: '#666',
+                    fontWeight: 400,
+                    lineHeight: 1.5,
+                    animation: `${fadeIn} 1s ease-out 0.2s both`
+                  }}
+                >
                     {currentContent.subtitle}
-                  </Typography>
-                  <Button
+                </Typography>
+                <Button
                     onClick={currentContent.ctaAction}
-                    variant="contained"
-                    size="large"
-                    sx={{
-                      bgcolor: '#000',
-                      color: '#fff',
-                      px: 4,
-                      py: 1.5,
-                      borderRadius: '20px',
-                      fontSize: '1.1rem',
-                      fontWeight: 500,
-                      transition: 'all 0.3s ease',
-                      animation: `${fadeIn} 1s ease-out 0.4s both`,
-                      '&:hover': {
-                        bgcolor: '#333',
-                        transform: 'translateY(-2px)',
-                        boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
-                      }
-                    }}
-                  >
-                    {currentContent.cta}
-                  </Button>
-                </Box>
-              </Grid>
-              <Grid item xs={12} md={6}>
-                <Box
+                  variant="contained"
+                  size="large"
                   sx={{
-                    position: 'relative',
-                    display: { xs: 'none', md: 'block' },
-                    '&::before': {
-                      content: '""',
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: 'translate(-50%, -50%)',
-                      width: '100%',
-                      height: '100%',
-                      background: 'radial-gradient(circle at center, rgba(0,0,0,0.03) 0%, rgba(0,0,0,0) 70%)',
-                      borderRadius: '30px',
-                      zIndex: 0
+                    bgcolor: '#000',
+                    color: '#fff',
+                    px: 4,
+                    py: 1.5,
+                    borderRadius: '20px',
+                    fontSize: '1.1rem',
+                    fontWeight: 500,
+                    transition: 'all 0.3s ease',
+                    animation: `${fadeIn} 1s ease-out 0.4s both`,
+                    '&:hover': {
+                      bgcolor: '#333',
+                      transform: 'translateY(-2px)',
+                      boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
                     }
                   }}
                 >
-                  <Box
-                    component="img"
-                    src="/images/hero-illustration.png"
-                    alt="Platform"
-                    sx={{
-                      width: '100%',
-                      maxWidth: 600,
-                      height: 'auto',
-                      borderRadius: '24px',
-                      boxShadow: '0 20px 40px rgba(0,0,0,0.08)',
-                      position: 'relative',
-                      zIndex: 1,
-                      transition: 'all 0.3s ease',
-                      '&:hover': {
-                        transform: 'translateY(-10px)',
-                        boxShadow: '0 30px 60px rgba(0,0,0,0.12)'
-                      }
-                    }}
-                  />
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: 'translate(-50%, -50%)',
-                      width: '100%',
-                      height: '100%',
-                      background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
-                      borderRadius: '30px',
-                      filter: 'blur(20px)',
-                      zIndex: 0,
-                      animation: `${gradientFlow} 15s ease infinite`
-                    }}
-                  />
-                </Box>
-              </Grid>
+                    {currentContent.cta}
+                </Button>
+              </Box>
             </Grid>
-          </Container>
-        </Box>
+            <Grid item xs={12} md={6}>
+              <Box
+                sx={{
+                  position: 'relative',
+                  display: { xs: 'none', md: 'block' },
+                  '&::before': {
+                    content: '""',
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    width: '100%',
+                    height: '100%',
+                    background: 'radial-gradient(circle at center, rgba(0,0,0,0.03) 0%, rgba(0,0,0,0) 70%)',
+                    borderRadius: '30px',
+                    zIndex: 0
+                  }
+                }}
+              >
+                <Box
+                  component="img"
+                  src="/images/hero-illustration.png"
+                    alt="Platform"
+                  sx={{
+                    width: '100%',
+                    maxWidth: 600,
+                    height: 'auto',
+                    borderRadius: '24px',
+                    boxShadow: '0 20px 40px rgba(0,0,0,0.08)',
+                    position: 'relative',
+                    zIndex: 1,
+                    transition: 'all 0.3s ease',
+                    '&:hover': {
+                      transform: 'translateY(-10px)',
+                      boxShadow: '0 30px 60px rgba(0,0,0,0.12)'
+                    }
+                  }}
+                />
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    width: '100%',
+                    height: '100%',
+                    background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
+                    borderRadius: '30px',
+                    filter: 'blur(20px)',
+                    zIndex: 0,
+                    animation: `${gradientFlow} 15s ease infinite`
+                  }}
+                />
+              </Box>
+            </Grid>
+          </Grid>
+        </Container>
+      </Box>
       )}
 
       {/* Features Section - Dynamic Content */}
       {selectedProfile && currentContent && (
-        <Box sx={{ py: { xs: 8, md: 12 }, bgcolor: '#fafafa' }}>
-          <Container maxWidth="lg">
-            <Typography 
-              variant="h2" 
-              component="h2" 
-              textAlign="center" 
-              gutterBottom
-              sx={{
-                fontWeight: 600,
-                fontSize: { xs: '2rem', md: '2.5rem' },
-                mb: 8,
-                animation: `${fadeIn} 1s ease-out`
-              }}
-            >
-              Pourquoi Choisir JS Connect ?
-            </Typography>
-            <Grid container spacing={6}>
+      <Box sx={{ py: { xs: 8, md: 12 }, bgcolor: '#fafafa' }}>
+        <Container maxWidth="lg">
+          <Typography 
+            variant="h2" 
+            component="h2" 
+            textAlign="center" 
+            gutterBottom
+            sx={{
+              fontWeight: 600,
+              fontSize: { xs: '2rem', md: '2.5rem' },
+              mb: 8,
+              animation: `${fadeIn} 1s ease-out`
+            }}
+          >
+            Pourquoi Choisir JS Connect ?
+          </Typography>
+          <Grid container spacing={6}>
               {currentContent.features.map((feature, index) => (
-                <Grid item xs={12} md={4} key={index}>
-                  <Card 
-                    elevation={0}
-                    sx={{ 
-                      height: '100%',
-                      bgcolor: 'transparent',
-                      transition: 'all 0.3s ease',
-                      animation: `${fadeIn} 1s ease-out ${index * 0.2}s both`,
-                      '&:hover': {
-                        transform: 'translateY(-8px)',
-                        '& .feature-icon': {
-                          transform: 'scale(1.1) rotate(5deg)'
-                        }
+              <Grid item xs={12} md={4} key={index}>
+                <Card 
+                  elevation={0}
+                  sx={{ 
+                    height: '100%',
+                    bgcolor: 'transparent',
+                    transition: 'all 0.3s ease',
+                    animation: `${fadeIn} 1s ease-out ${index * 0.2}s both`,
+                    '&:hover': {
+                      transform: 'translateY(-8px)',
+                      '& .feature-icon': {
+                        transform: 'scale(1.1) rotate(5deg)'
                       }
-                    }}
-                  >
-                    <CardContent>
-                      <Box 
-                        className="feature-icon"
-                        sx={{ 
-                          display: 'flex', 
-                          justifyContent: 'center', 
-                          mb: 3,
-                          transition: 'all 0.3s ease'
-                        }}
-                      >
-                        {feature.icon}
-                      </Box>
-                      <Typography 
-                        variant="h5" 
-                        component="h3" 
-                        textAlign="center" 
-                        gutterBottom
-                        sx={{ fontWeight: 600, mb: 2 }}
-                      >
-                        {feature.title}
-                      </Typography>
-                      <Typography 
-                        textAlign="center" 
-                        sx={{ color: '#666', lineHeight: 1.6 }}
-                      >
-                        {feature.description}
-                      </Typography>
-                    </CardContent>
-                  </Card>
-                </Grid>
-              ))}
-            </Grid>
-          </Container>
-        </Box>
+                    }
+                  }}
+                >
+                  <CardContent>
+                    <Box 
+                      className="feature-icon"
+                      sx={{ 
+                        display: 'flex', 
+                        justifyContent: 'center', 
+                        mb: 3,
+                        transition: 'all 0.3s ease'
+                      }}
+                    >
+                      {feature.icon}
+                    </Box>
+                    <Typography 
+                      variant="h5" 
+                      component="h3" 
+                      textAlign="center" 
+                      gutterBottom
+                      sx={{ fontWeight: 600, mb: 2 }}
+                    >
+                      {feature.title}
+                    </Typography>
+                    <Typography 
+                      textAlign="center" 
+                      sx={{ color: '#666', lineHeight: 1.6 }}
+                    >
+                      {feature.description}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            ))}
+          </Grid>
+        </Container>
+      </Box>
       )}
 
       {/* How it works Section - Dynamic Content */}
       {selectedProfile && currentContent && (
-        <Box sx={{ py: { xs: 8, md: 12 } }}>
-          <Container maxWidth="lg">
-            <Typography 
-              variant="h2" 
-              component="h2" 
-              textAlign="center" 
-              gutterBottom
-              sx={{
-                fontWeight: 600,
-                fontSize: { xs: '2rem', md: '2.5rem' },
-                mb: 8,
-                animation: `${fadeIn} 1s ease-out`
-              }}
-            >
-              Comment ça marche
-            </Typography>
-            <Grid container spacing={4}>
+      <Box sx={{ py: { xs: 8, md: 12 } }}>
+        <Container maxWidth="lg">
+          <Typography 
+            variant="h2" 
+            component="h2" 
+            textAlign="center" 
+            gutterBottom
+            sx={{
+              fontWeight: 600,
+              fontSize: { xs: '2rem', md: '2.5rem' },
+              mb: 8,
+              animation: `${fadeIn} 1s ease-out`
+            }}
+          >
+            Comment ça marche
+          </Typography>
+          <Grid container spacing={4}>
               {currentContent.steps.map((step, index) => (
-                <Grid item xs={12} md={4} key={index}>
-                  <Box 
-                    sx={{ 
-                      textAlign: 'center',
-                      transition: 'all 0.3s ease',
-                      animation: `${fadeIn} 1s ease-out ${index * 0.1}s both`,
-                      '&:hover': {
-                        transform: 'translateY(-8px)',
-                        '& .step-number': {
-                          transform: 'scale(1.1)',
-                          color: '#000'
-                        }
+              <Grid item xs={12} md={4} key={index}>
+                <Box 
+                  sx={{ 
+                    textAlign: 'center',
+                    transition: 'all 0.3s ease',
+                    animation: `${fadeIn} 1s ease-out ${index * 0.1}s both`,
+                    '&:hover': {
+                      transform: 'translateY(-8px)',
+                      '& .step-number': {
+                        transform: 'scale(1.1)',
+                        color: '#000'
                       }
+                    }
+                  }}
+                >
+                  <Typography 
+                    variant="h3" 
+                    className="step-number"
+                    sx={{ 
+                      color: '#666',
+                      fontWeight: 600,
+                      mb: 2,
+                      transition: 'all 0.3s ease'
                     }}
                   >
-                    <Typography 
-                      variant="h3" 
-                      className="step-number"
-                      sx={{ 
-                        color: '#666',
-                        fontWeight: 600,
-                        mb: 2,
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      {index + 1}
-                    </Typography>
-                    <Typography 
-                      variant="h5" 
-                      gutterBottom
-                      sx={{ fontWeight: 600, mb: 2 }}
-                    >
-                      {step.title}
-                    </Typography>
-                    <Typography sx={{ color: '#666', lineHeight: 1.6 }}>
-                      {step.description}
-                    </Typography>
-                  </Box>
-                </Grid>
-              ))}
-            </Grid>
-          </Container>
-        </Box>
+                    {index + 1}
+                  </Typography>
+                  <Typography 
+                    variant="h5" 
+                    gutterBottom
+                    sx={{ fontWeight: 600, mb: 2 }}
+                  >
+                    {step.title}
+                  </Typography>
+                  <Typography sx={{ color: '#666', lineHeight: 1.6 }}>
+                    {step.description}
+                  </Typography>
+                </Box>
+              </Grid>
+            ))}
+          </Grid>
+        </Container>
+      </Box>
       )}
 
       {/* Contact Section */}
