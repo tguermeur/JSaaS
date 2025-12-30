@@ -5,15 +5,15 @@ export interface UserData {
   email: string;
   firstName: string;
   lastName: string;
-  birthDate: string;
-  graduationYear: string;
+  birthDate?: string; // Optionnel pour entreprises et structures
+  graduationYear?: string; // Optionnel pour entreprises et structures
   createdAt: Date;
-  status: 'etudiant' | 'membre' | 'admin' | 'superadmin';
-  structureId: string;
-  ecole: string;
+  status: 'etudiant' | 'membre' | 'admin' | 'superadmin' | 'entreprise' | 'admin_structure';
+  structureId?: string; // Optionnel pour entreprises
+  ecole?: string; // Optionnel pour entreprises
   cvUrl?: string; // URL du CV (optionnel)
   photoURL?: string;
-  program: string;
+  program?: string; // Optionnel pour entreprises et structures
   birthPlace?: string;
   postalCode?: string;
   gender?: 'M' | 'F' | 'Autre';
@@ -32,6 +32,21 @@ export interface UserData {
   subscriptionPaidAt?: Date;
   subscriptionExpiresAt?: Date;
   lastSubscriptionUpdate?: Date;
+  // Opt-in pour recevoir les documents par voie électronique
+  acceptsElectronicDocuments?: boolean;
+  acceptsElectronicDocumentsDate?: Date; // Date à laquelle l'étudiant a accepté
+  // Champs spécifiques aux entreprises
+  companyName?: string;
+  missionType?: string;
+  missionDescription?: string;
+  missionDeadline?: string;
+  leadQualified?: boolean;
+  leadQualifiedAt?: Date;
+  // Champs spécifiques aux structures
+  structureName?: string;
+  trialStartDate?: Date;
+  trialEndDate?: Date;
+  hasActiveTrial?: boolean;
 }
 
 export interface ExtendedUser extends User {

@@ -212,7 +212,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
     subtitle: "Accédez à des missions rémunérées compatibles avec votre emploi du temps.",
     cta: "S'inscrire maintenant",
     ctaAction: () => {
-      window.location.href = '/register';
+      window.location.href = '/register?type=student';
     },
     features: [
       {
@@ -472,24 +472,28 @@ export default function Home(): JSX.Element {
             >
               Fonctionnalités
             </Button>
-            <Button
-              onClick={() => handleNavigation('/pricing')}
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
+            {/* Lien Tarifs : UNIQUEMENT visible pour Junior-Entreprise */}
+            {selectedProfile === 'junior' && (
+              <Button
+                onClick={() => handleNavigation('/pricing')}
+                sx={{
                   color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Tarifs
-            </Button>
+                  fontWeight: 400,
+                  fontSize: '0.95rem',
+                  textTransform: 'none',
+                  px: 1.5,
+                  transition: 'all 0.3s ease',
+                  animation: selectedProfile === 'junior' ? `${fadeIn} 0.3s ease-out` : 'none',
+                  '&:hover': {
+                    color: '#1d1d1f',
+                    fontWeight: 600,
+                    opacity: 0.8
+                  }
+                }}
+              >
+                Tarifs
+              </Button>
+            )}
             <Button
               onClick={handleContactClick}
               sx={{
@@ -535,9 +539,11 @@ export default function Home(): JSX.Element {
               <Button
                 onClick={() => {
                   if (selectedProfile === 'student') {
-                    handleNavigation('/register');
-                  } else if (selectedProfile === 'company' || selectedProfile === 'junior') {
-                    handleContactClick();
+                    handleNavigation('/register?type=student');
+                  } else if (selectedProfile === 'company') {
+                    handleNavigation('/register?type=company');
+                  } else if (selectedProfile === 'junior') {
+                    handleNavigation('/register?type=structure');
                   }
                 }}
                 variant="contained"
@@ -549,7 +555,8 @@ export default function Home(): JSX.Element {
                   textTransform: 'none',
                   borderRadius: '20px',
                   px: 3,
-                  animation: `${fadeIn} 0.5s ease-out`,
+                  transition: 'all 0.3s ease',
+                  animation: `${fadeIn} 0.3s ease-out`,
                   '&:hover': {
                     bgcolor: '#000',
                     opacity: 0.9
@@ -558,11 +565,11 @@ export default function Home(): JSX.Element {
               >
                 {selectedProfile === 'student' && "S'inscrire"}
                 {selectedProfile === 'company' && "Déposer une mission"}
-                {selectedProfile === 'junior' && "Mois gratuit"}
+                {selectedProfile === 'junior' && "Essai Gratuit"}
               </Button>
             ) : (
               <Button
-                onClick={() => handleNavigation('/register')}
+                onClick={() => handleNavigation('/register?type=student')}
                 variant="contained"
                 sx={{
                   bgcolor: '#000',
@@ -578,7 +585,7 @@ export default function Home(): JSX.Element {
                   }
                 }}
               >
-                Inscription
+                S'inscrire
               </Button>
             )}
           </Box>
