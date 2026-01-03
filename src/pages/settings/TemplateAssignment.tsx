@@ -22,7 +22,6 @@ import { collection, query, where, getDocs, doc, setDoc, updateDoc, getDoc, dele
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { DocumentType, DOCUMENT_TYPES, TemplateAssignment } from '../../types/templates';
-import BackButton from '../../components/ui/BackButton';
 
 interface Template {
   id: string;
@@ -46,6 +45,7 @@ const TemplateAssignmentComponent: React.FC = () => {
   const { currentUser, userData } = useAuth();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [assignments, setAssignments] = useState<{ [key in DocumentType]?: string }>({});
+  const [generationTypes, setGenerationTypes] = useState<{ [key in DocumentType]?: 'template' | 'editor' }>({});
   const [defaultTemplates, setDefaultTemplates] = useState<DefaultTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -60,6 +60,8 @@ const TemplateAssignmentComponent: React.FC = () => {
   });
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const isSuperAdmin = userData?.status === 'superadmin';
+  const isAdmin = userData?.status === 'admin';
+  const canSave = isSuperAdmin || isAdmin;
   console.log('Statut superadmin:', isSuperAdmin, 'userData:', userData);
   const theme = useTheme();
 
@@ -134,10 +136,12 @@ const TemplateAssignmentComponent: React.FC = () => {
         ));
         
         const currentAssignments: { [key in DocumentType]?: string } = {};
+        const currentGenerationTypes: { [key in DocumentType]?: 'template' | 'editor' } = {};
         assignmentsSnapshot.docs.forEach(doc => {
           const data = doc.data() as TemplateAssignment;
           if (allTemplates.some(template => template.id === data.templateId)) {
             currentAssignments[data.documentType] = data.templateId;
+            currentGenerationTypes[data.documentType] = data.generationType || 'template';
           }
         });
 
@@ -154,6 +158,7 @@ const TemplateAssignmentComponent: React.FC = () => {
         });
 
         setAssignments(currentAssignments);
+        setGenerationTypes(currentGenerationTypes);
 
         // Récupérer les templates par défaut existants
         const defaultTemplatesSnapshot = await getDocs(collection(db, 'defaultTemplateAssignments'));
@@ -191,6 +196,13 @@ const TemplateAssignmentComponent: React.FC = () => {
     setAssignments(prev => ({
       ...prev,
       [documentType]: templateId
+    }));
+  };
+
+  const handleGenerationTypeChange = (documentType: DocumentType, generationType: 'template' | 'editor') => {
+    setGenerationTypes(prev => ({
+      ...prev,
+      [documentType]: generationType
     }));
   };
 
@@ -242,6 +254,16 @@ const TemplateAssignmentComponent: React.FC = () => {
   const handleSave = async () => {
     if (!userStructureId) return;
 
+    // Vérifier les permissions
+    if (!canSave) {
+      setSnackbar({
+        open: true,
+        message: 'Vous n\'avez pas les permissions nécessaires pour sauvegarder les assignations',
+        severity: 'error'
+      });
+      return;
+    }
+
     setSaving(true);
     try {
       const assignmentsSnapshot = await getDocs(query(
@@ -255,11 +277,15 @@ const TemplateAssignmentComponent: React.FC = () => {
         existingAssignments.set(data.documentType, doc.id);
       });
 
+      let savedCount = 0;
+      let deletedCount = 0;
+
       for (const [documentType, templateId] of Object.entries(assignments)) {
         if (!templateId) {
           if (existingAssignments.has(documentType)) {
             const assignmentId = existingAssignments.get(documentType);
             await deleteDoc(doc(db, 'templateAssignments', assignmentId!));
+            deletedCount++;
           }
           continue;
         }
@@ -269,7 +295,8 @@ const TemplateAssignmentComponent: React.FC = () => {
         const isUniversal = templateData?.isUniversal || false;
         const universalDocumentType = templateData?.universalDocumentType || null;
 
-        if (existingAssignments.has(documentType)) {
+        const wasExisting = existingAssignments.has(documentType);
+        if (wasExisting) {
           const assignmentId = existingAssignments.get(documentType);
           await deleteDoc(doc(db, 'templateAssignments', assignmentId!));
         }
@@ -280,20 +307,36 @@ const TemplateAssignmentComponent: React.FC = () => {
           templateId,
           isUniversal,
           universalDocumentType,
+          generationType: generationTypes[documentType as DocumentType] || 'template',
           updatedAt: new Date()
         });
+        
+        savedCount++;
       }
+
+      // Message de confirmation détaillé
+      const messageParts = [];
+      if (savedCount > 0) {
+        messageParts.push(`${savedCount} assignation${savedCount > 1 ? 's' : ''} sauvegardée${savedCount > 1 ? 's' : ''}`);
+      }
+      if (deletedCount > 0) {
+        messageParts.push(`${deletedCount} assignation${deletedCount > 1 ? 's' : ''} supprimée${deletedCount > 1 ? 's' : ''}`);
+      }
+      
+      const message = messageParts.length > 0 
+        ? `✅ ${messageParts.join(' et ')} avec succès !`
+        : '✅ Assignations sauvegardées avec succès !';
 
       setSnackbar({
         open: true,
-        message: 'Assignations sauvegardées avec succès',
+        message,
         severity: 'success'
       });
     } catch (error) {
       console.error('Erreur lors de la sauvegarde:', error);
       setSnackbar({
         open: true,
-        message: 'Erreur lors de la sauvegarde',
+        message: '❌ Erreur lors de la sauvegarde des assignations',
         severity: 'error'
       });
     } finally {
@@ -343,7 +386,6 @@ const TemplateAssignmentComponent: React.FC = () => {
 
   return (
     <Box sx={{ p: 3 }}>
-      <BackButton />
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Typography 
           variant="h4" 
@@ -414,6 +456,44 @@ const TemplateAssignmentComponent: React.FC = () => {
                     )}
                   </Box>
                   
+                  {type === 'proposition_commerciale' && (
+                    <Box sx={{ mb: 2 }}>
+                      <FormControl fullWidth>
+                        <InputLabel 
+                          sx={{ 
+                            color: theme.palette.text.secondary,
+                            '&.Mui-focused': {
+                              color: theme.palette.primary.main
+                            }
+                          }}
+                        >
+                          Type de génération
+                        </InputLabel>
+                        <Select
+                          value={generationTypes[type as DocumentType] || 'template'}
+                          onChange={(e) => handleGenerationTypeChange(type as DocumentType, e.target.value as 'template' | 'editor')}
+                          label="Type de génération"
+                          sx={{
+                            borderRadius: '12px',
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: alpha(theme.palette.divider, 0.2)
+                            },
+                            '&:hover .MuiOutlinedInput-notchedOutline': {
+                              borderColor: alpha(theme.palette.primary.main, 0.5)
+                            },
+                            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                              borderColor: theme.palette.primary.main,
+                              borderWidth: '1px'
+                            }
+                          }}
+                        >
+                          <MenuItem value="template">Template PDF</MenuItem>
+                          <MenuItem value="editor">Éditeur</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Box>
+                  )}
+
                   <FormControl fullWidth>
                     <InputLabel 
                       sx={{ 
@@ -429,6 +509,7 @@ const TemplateAssignmentComponent: React.FC = () => {
                       value={assignments[type as DocumentType] || ''}
                       onChange={(e) => handleAssignmentChange(type as DocumentType, e.target.value)}
                       label="Template"
+                      disabled={type === 'proposition_commerciale' && generationTypes[type as DocumentType] === 'editor'}
                       sx={{
                         borderRadius: '12px',
                         '& .MuiOutlinedInput-notchedOutline': {
@@ -545,6 +626,21 @@ const TemplateAssignmentComponent: React.FC = () => {
         </Grid>
       )}
 
+      {!canSave && (
+        <Alert 
+          severity="info" 
+          sx={{ 
+            mb: 3,
+            borderRadius: '12px',
+            '& .MuiAlert-icon': {
+              alignItems: 'center'
+            }
+          }}
+        >
+          Seuls les administrateurs et super-administrateurs peuvent sauvegarder les assignations de templates.
+        </Alert>
+      )}
+
       <Box sx={{ 
         mt: 4, 
         display: 'flex', 
@@ -558,7 +654,7 @@ const TemplateAssignmentComponent: React.FC = () => {
           variant="contained"
           color="primary"
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || !canSave}
           startIcon={saving ? <CircularProgress size={20} /> : <SaveIcon />}
           sx={{
             borderRadius: '12px',
@@ -568,11 +664,14 @@ const TemplateAssignmentComponent: React.FC = () => {
             py: 1.5,
             boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
             '&:hover': {
-              boxShadow: '0 6px 16px rgba(0,0,0,0.15)'
+              boxShadow: canSave ? '0 6px 16px rgba(0,0,0,0.15)' : 'none'
+            },
+            '&:disabled': {
+              opacity: 0.6
             }
           }}
         >
-          {saving ? 'Sauvegarde...' : 'Sauvegarder'}
+          {saving ? 'Sauvegarde...' : 'Sauvegarder les assignations'}
         </Button>
       </Box>
 
@@ -580,14 +679,24 @@ const TemplateAssignmentComponent: React.FC = () => {
         open={snackbar.open}
         autoHideDuration={6000}
         onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        sx={{
+          zIndex: 9999,
+          '& .MuiSnackbar-root': {
+            zIndex: 9999
+          }
+        }}
       >
         <Alert 
           severity={snackbar.severity} 
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+          variant="filled"
           sx={{
+            width: '100%',
             borderRadius: '12px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+            minWidth: '300px',
+            zIndex: 9999,
             '& .MuiAlert-icon': {
               alignItems: 'center'
             }

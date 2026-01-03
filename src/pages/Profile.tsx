@@ -60,6 +60,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { storage } from '../firebase/config';
 import { useNotifications } from '../contexts/NotificationContext';
+import DocumentDisclaimer from '../components/DocumentDisclaimer';
 
 const VisuallyHiddenInput = styled('input')({
   clip: 'rect(0 0 0 0)',
@@ -110,6 +111,10 @@ interface ExtendedUserData extends UserData {
   linkedinUrl?: string;
   profileCompletion?: number;
   updatedAt?: Date;
+  // Champs spécifiques aux entreprises
+  position?: string;
+  siret?: string;
+  tvaIntra?: string;
 }
 
 // Ajouter ces styles personnalisés pour les TextField
@@ -370,13 +375,17 @@ export default function Profile(): JSX.Element {
   });
   const { sendNotification } = useNotifications();
 
+  // Déterminer si l'utilisateur est une entreprise
+  const isCompany = profileData?.status === 'entreprise' || userData?.status === 'entreprise';
+
   console.log('Profile - État actuel:', {
     user: currentUser ? 'Présent' : 'Absent',
     authLoading,
     isAuthenticated,
     userData: userData ? 'Présent' : 'Absent',
     localLoading,
-    isLoading
+    isLoading,
+    isCompany
   });
 
   // Effet pour vérifier l'authentification
@@ -790,8 +799,8 @@ export default function Profile(): JSX.Element {
     let hasErrors = false;
     const newValidationErrors: Record<string, boolean> = {};
 
-    // Validation du numéro de sécurité sociale (15 chiffres)
-    if (profileData.socialSecurityNumber && !/^\d{15}$/.test(profileData.socialSecurityNumber)) {
+    // Validation du numéro de sécurité sociale (15 chiffres) - uniquement pour les étudiants
+    if (!isCompany && profileData.socialSecurityNumber && !/^\d{15}$/.test(profileData.socialSecurityNumber)) {
       newValidationErrors.socialSecurityNumber = true;
       hasErrors = true;
     }
@@ -845,12 +854,20 @@ export default function Profile(): JSX.Element {
         }
       }
 
-      const updatedData = {
-        ...profileData,
-        cvUrl,
-        photoURL,
-        updatedAt: new Date()
+      // Construire updatedData en excluant les valeurs undefined
+      const updatedData: any = {
+        ...profileData
       };
+      
+      // Ne mettre à jour cvUrl et photoURL que s'ils ont une valeur
+      if (cvUrl !== undefined) {
+        updatedData.cvUrl = cvUrl;
+      }
+      if (photoURL !== undefined) {
+        updatedData.photoURL = photoURL;
+      }
+      
+      updatedData.updatedAt = new Date();
 
       console.log('Tentative de mise à jour du profil avec les données:', updatedData);
       await updateUserDocument(currentUser.uid, updatedData);
@@ -1480,15 +1497,29 @@ export default function Profile(): JSX.Element {
       {profileData && calculateCompletion(profileData) === 100 ? (
         <Alert 
           severity="success" 
-          sx={{ mb: 2 }}
+          sx={{ 
+            mb: 2,
+            position: 'relative',
+            zIndex: '0 !important',
+            '&': {
+              zIndex: '0 !important'
+            }
+          }}
         >
-          Profil complété, vous pouvez postuler aux missions
+          {isCompany ? 'Profil complété' : 'Profil complété, vous pouvez postuler aux missions'}
         </Alert>
       ) : (
-        showCompletion && profileData?.profileCompletion !== 100 && (
+        !isCompany && showCompletion && profileData?.profileCompletion !== 100 && (
           <Alert 
             severity="info" 
-            sx={{ mb: 2 }}
+            sx={{ 
+              mb: 2,
+              position: 'relative',
+              zIndex: '0 !important',
+              '&': {
+                zIndex: '0 !important'
+              }
+            }}
             onClose={() => setShowCompletion(false)}
           >
             Votre profil est complété à {calculateCompletion(profileData)}%. Complétez vos informations pour pouvoir postuler aux missions.
@@ -1503,7 +1534,9 @@ export default function Profile(): JSX.Element {
         flexDirection: 'column',
         overflow: 'hidden',
         boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
-        border: '1px solid rgba(0,0,0,0.05)'
+        border: '1px solid rgba(0,0,0,0.05)',
+        position: 'relative',
+        zIndex: 0
       }}>
         <Box sx={{ 
           borderBottom: 1, 
@@ -1515,9 +1548,9 @@ export default function Profile(): JSX.Element {
             sx={{ px: 2 }}
           >
             <Tab label="Mes informations" />
-            <Tab label="Mes missions" />
-            <Tab label="Mes documents" />
-            {hasReports && <Tab label="Mes rapports" />}
+            {!isCompany && <Tab label="Mes missions" />}
+            {!isCompany && <Tab label="Mes documents" />}
+            {!isCompany && hasReports && <Tab label="Mes rapports" />}
           </Tabs>
         </Box>
 
@@ -1548,15 +1581,20 @@ export default function Profile(): JSX.Element {
                     mb: 4,
                     borderRadius: 1,
                     maxWidth: '400px',
-                    width: '100%'
+                    width: '100%',
+                    position: 'relative',
+                    zIndex: '0 !important',
+                    '&': {
+                      zIndex: '0 !important'
+                    }
                   }}
                 >
                   Cotisation active
                 </Alert>
               )}
 
-              {/* Indicateur de cotisation expirée ou inexistante */}
-              {!profileData?.hasActiveSubscription && (
+              {/* Indicateur de cotisation expirée ou inexistante - MASQUÉ TEMPORAIREMENT */}
+              {false && !profileData?.hasActiveSubscription && (
                 <Alert 
                   severity="warning" 
                   sx={{ 
@@ -1700,7 +1738,7 @@ export default function Profile(): JSX.Element {
                       mb: 3
                     }}
                   >
-                    Informations personnelles
+                    {isCompany ? 'Informations de contact' : 'Informations personnelles'}
                   </Typography>
                   <Stack spacing={3}>
                     <TextField
@@ -1769,15 +1807,17 @@ export default function Profile(): JSX.Element {
                         sx: { display: isEditing ? 'block' : 'none' }
                       }}
                     />
-                    <TextField
-                      fullWidth
-                      label="Date de naissance"
-                      type="date"
-                      value={profileData?.birthDate || ''}
-                      onChange={handleInputChange('birthDate')}
-                      disabled={!isEditing}
-                      size="small"
-                      required
+                    {!isCompany && (
+                      <>
+                        <TextField
+                          fullWidth
+                          label="Date de naissance"
+                          type="date"
+                          value={profileData?.birthDate || ''}
+                          onChange={handleInputChange('birthDate')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
                       sx={{
                         ...textFieldStyles,
                         '& input[type="date"]::-webkit-calendar-picker-indicator': {
@@ -1947,7 +1987,152 @@ export default function Profile(): JSX.Element {
                         shrink: isEditing,
                         sx: { display: isEditing ? 'block' : 'none' }
                       }}
-                    />
+                        />
+                        <TextField
+                          fullWidth
+                          label="Lieu de naissance"
+                          value={profileData?.birthPlace || ''}
+                          onChange={handleInputChange('birthPlace')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Lieu de naissance
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                        <TextField
+                          fullWidth
+                          label="Code postal de naissance"
+                          value={profileData?.postalCode || ''}
+                          onChange={handleInputChange('postalCode')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Code postal de naissance
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                        <TextField
+                          select
+                          fullWidth
+                          label="Sexe"
+                          value={profileData?.gender || ''}
+                          onChange={handleInputChange('gender')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Sexe
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                          SelectProps={{
+                            MenuProps: {
+                              PaperProps: {
+                                sx: {
+                                  boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+                                  borderRadius: '8px',
+                                }
+                              }
+                            }
+                          }}
+                        >
+                          <MenuItem value="M">Homme</MenuItem>
+                          <MenuItem value="F">Femme</MenuItem>
+                          <MenuItem value="Autre">Autre</MenuItem>
+                        </TextField>
+                        <TextField
+                          fullWidth
+                          label="Nationalité"
+                          value={profileData?.nationality || ''}
+                          onChange={handleInputChange('nationality')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Nationalité
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                      </>
+                    )}
                   </Stack>
                 </Box>
 
@@ -1964,12 +2149,12 @@ export default function Profile(): JSX.Element {
                       mb: 3
                     }}
                   >
-                    Informations académiques et contact
+                    {isCompany ? 'Informations entreprise' : 'Informations académiques et contact'}
                   </Typography>
                   <Stack spacing={3}>
                     <TextField
                       fullWidth
-                      label="Email académique"
+                      label={isCompany ? "Email" : "Email académique"}
                       value={profileData?.email || ''}
                       onChange={handleInputChange('email')}
                       disabled
@@ -1990,7 +2175,7 @@ export default function Profile(): JSX.Element {
                         readOnly: true,
                         startAdornment: isEditing ? null : (
                           <Box sx={inputLabelStyle}>
-                            Email académique
+                            {isCompany ? 'Email' : 'Email académique'}
                           </Box>
                         ),
                       }}
@@ -1999,103 +2184,175 @@ export default function Profile(): JSX.Element {
                         sx: { display: isEditing ? 'block' : 'none' }
                       }}
                     />
-                    <TextField
-                      fullWidth
-                      label="N° étudiant"
-                      value={profileData?.studentId || ''}
-                      onChange={handleInputChange('studentId')}
-                      disabled={!isEditing}
-                      size="small"
-                      required
-                      sx={{
-                        ...textFieldStyles,
-                        '& .MuiInputBase-root': {
-                          display: 'flex',
-                          alignItems: 'center',
-                        },
-                        '& .MuiInputBase-input': {
-                          fontSize: '0.875rem',
-                          padding: '10px 14px',
-                          flex: 1
-                        }
-                      }}
-                      InputProps={{
-                        readOnly: !isEditing,
-                        startAdornment: isEditing ? null : (
-                          <Box sx={inputLabelStyle}>
-                            N° étudiant
-                          </Box>
-                        ),
-                      }}
-                      InputLabelProps={{
-                        shrink: isEditing,
-                        sx: { display: isEditing ? 'block' : 'none' }
-                      }}
-                    />
-                    <FormControl fullWidth required disabled={!isEditing} sx={{ ...textFieldStyles }}>
-                      <InputLabel id="program-label">Programme</InputLabel>
-                      <Select
-                        labelId="program-label"
-                        id="program"
-                        value={profileData?.program || ''}
-                        label="Programme"
-                        onChange={e => handleInputChange('program')(e as any)}
-                        MenuProps={{
-                          PaperProps: {
-                            sx: {
-                              boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
-                              borderRadius: '8px',
+                    {isCompany ? (
+                      <>
+                        <TextField
+                          fullWidth
+                          label="Nom de l'entreprise"
+                          value={profileData?.companyName || ''}
+                          onChange={handleInputChange('companyName')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
                             }
-                          }
-                        }}
-                      >
-                        {programs.length > 0 ? (
-                          programs.map((program) => (
-                            <MenuItem key={program} value={program}>{program}</MenuItem>
-                          ))
-                        ) : (
-                          <MenuItem disabled value="">
-                            {profileData?.structureId ? 'Aucun programme' : 'Aucune structure'}
-                          </MenuItem>
-                        )}
-                      </Select>
-                      {!profileData?.structureId && (
-                        <FormHelperText>Veuillez d'abord renseigner votre structure</FormHelperText>
-                      )}
-                    </FormControl>
-                    <TextField
-                      fullWidth
-                      label="Année d'étude"
-                      value={profileData?.graduationYear || ''}
-                      onChange={handleInputChange('graduationYear')}
-                      disabled={!isEditing}
-                      size="small"
-                      required
-                      sx={{
-                        ...textFieldStyles,
-                        '& .MuiInputBase-root': {
-                          display: 'flex',
-                          alignItems: 'center',
-                        },
-                        '& .MuiInputBase-input': {
-                          fontSize: '0.875rem',
-                          padding: '10px 14px',
-                          flex: 1
-                        }
-                      }}
-                      InputProps={{
-                        readOnly: !isEditing,
-                        startAdornment: isEditing ? null : (
-                          <Box sx={inputLabelStyle}>
-                            Année d'étude
-                          </Box>
-                        ),
-                      }}
-                      InputLabelProps={{
-                        shrink: isEditing,
-                        sx: { display: isEditing ? 'block' : 'none' }
-                      }}
-                    />
+                          }}
+                          InputProps={{
+                            readOnly: !isEditing,
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Nom de l'entreprise
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                        <TextField
+                          fullWidth
+                          label="Poste occupé"
+                          value={profileData?.position || ''}
+                          onChange={handleInputChange('position')}
+                          disabled={!isEditing}
+                          size="small"
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            readOnly: !isEditing,
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Poste occupé
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <TextField
+                          fullWidth
+                          label="N° étudiant"
+                          value={profileData?.studentId || ''}
+                          onChange={handleInputChange('studentId')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            readOnly: !isEditing,
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                N° étudiant
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                        <FormControl fullWidth required disabled={!isEditing} sx={{ ...textFieldStyles }}>
+                          <InputLabel id="program-label">Programme</InputLabel>
+                          <Select
+                            labelId="program-label"
+                            id="program"
+                            value={profileData?.program || ''}
+                            label="Programme"
+                            onChange={e => handleInputChange('program')(e as any)}
+                            MenuProps={{
+                              PaperProps: {
+                                sx: {
+                                  boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+                                  borderRadius: '8px',
+                                }
+                              }
+                            }}
+                          >
+                            {programs.length > 0 ? (
+                              programs.map((program) => (
+                                <MenuItem key={program} value={program}>{program}</MenuItem>
+                              ))
+                            ) : (
+                              <MenuItem disabled value="">
+                                {profileData?.structureId ? 'Aucun programme' : 'Aucune structure'}
+                              </MenuItem>
+                            )}
+                          </Select>
+                          {!profileData?.structureId && (
+                            <FormHelperText>Veuillez d'abord renseigner votre structure</FormHelperText>
+                          )}
+                        </FormControl>
+                        <TextField
+                          fullWidth
+                          label="Année d'étude"
+                          value={profileData?.graduationYear || ''}
+                          onChange={handleInputChange('graduationYear')}
+                          disabled={!isEditing}
+                          size="small"
+                          required
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            readOnly: !isEditing,
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Année d'étude
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                      </>
+                    )}
                     <TextField
                       fullWidth
                       label="Adresse"
@@ -2129,45 +2386,114 @@ export default function Profile(): JSX.Element {
                         sx: { display: isEditing ? 'block' : 'none' }
                       }}
                     />
-                    <TextField
-                      fullWidth
-                      label="N° de sécurité sociale"
-                      value={profileData?.socialSecurityNumber || ''}
-                      onChange={handleInputChange('socialSecurityNumber')}
-                      disabled={!isEditing}
-                      size="small"
-                      required
-                      error={validationErrors.socialSecurityNumber}
-                      helperText={validationErrors.socialSecurityNumber ? 
-                        "15 chiffres requis" : ""}
-                      inputProps={{
-                        maxLength: 15
-                      }}
-                      sx={{
-                        ...textFieldStyles,
-                        '& .MuiInputBase-root': {
-                          display: 'flex',
-                          alignItems: 'center',
-                        },
-                        '& .MuiInputBase-input': {
-                          fontSize: '0.875rem',
-                          padding: '10px 14px',
-                          flex: 1
-                        }
-                      }}
-                      InputProps={{
-                        readOnly: !isEditing,
-                        startAdornment: isEditing ? null : (
-                          <Box sx={inputLabelStyle}>
-                            N° de sécurité sociale
-                          </Box>
-                        ),
-                      }}
-                      InputLabelProps={{
-                        shrink: isEditing,
-                        sx: { display: isEditing ? 'block' : 'none' }
-                      }}
-                    />
+                    {isCompany ? (
+                      <>
+                        <TextField
+                          fullWidth
+                          label="Numéro SIRET"
+                          value={profileData?.siret || ''}
+                          onChange={handleInputChange('siret')}
+                          disabled={!isEditing}
+                          size="small"
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            readOnly: !isEditing,
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Numéro SIRET
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                        <TextField
+                          fullWidth
+                          label="Numéro de TVA Intracommunautaire"
+                          value={profileData?.tvaIntra || ''}
+                          onChange={handleInputChange('tvaIntra')}
+                          disabled={!isEditing}
+                          size="small"
+                          sx={{
+                            ...textFieldStyles,
+                            '& .MuiInputBase-root': {
+                              display: 'flex',
+                              alignItems: 'center',
+                            },
+                            '& .MuiInputBase-input': {
+                              fontSize: '0.875rem',
+                              padding: '10px 14px',
+                              flex: 1
+                            }
+                          }}
+                          InputProps={{
+                            readOnly: !isEditing,
+                            startAdornment: isEditing ? null : (
+                              <Box sx={inputLabelStyle}>
+                                Numéro de TVA Intracommunautaire
+                              </Box>
+                            ),
+                          }}
+                          InputLabelProps={{
+                            shrink: isEditing,
+                            sx: { display: isEditing ? 'block' : 'none' }
+                          }}
+                        />
+                      </>
+                    ) : (
+                      <TextField
+                        fullWidth
+                        label="N° de sécurité sociale"
+                        value={profileData?.socialSecurityNumber || ''}
+                        onChange={handleInputChange('socialSecurityNumber')}
+                        disabled={!isEditing}
+                        size="small"
+                        required
+                        error={validationErrors.socialSecurityNumber}
+                        helperText={validationErrors.socialSecurityNumber ? 
+                          "15 chiffres requis" : ""}
+                        inputProps={{
+                          maxLength: 15
+                        }}
+                        sx={{
+                          ...textFieldStyles,
+                          '& .MuiInputBase-root': {
+                            display: 'flex',
+                            alignItems: 'center',
+                          },
+                          '& .MuiInputBase-input': {
+                            fontSize: '0.875rem',
+                            padding: '10px 14px',
+                            flex: 1
+                          }
+                        }}
+                        InputProps={{
+                          readOnly: !isEditing,
+                          startAdornment: isEditing ? null : (
+                            <Box sx={inputLabelStyle}>
+                              N° de sécurité sociale
+                            </Box>
+                          ),
+                        }}
+                        InputLabelProps={{
+                          shrink: isEditing,
+                          sx: { display: isEditing ? 'block' : 'none' }
+                        }}
+                      />
+                    )}
                     <TextField
                       fullWidth
                       label="N° de téléphone"
@@ -2243,7 +2569,7 @@ export default function Profile(): JSX.Element {
             </>
           )}
 
-          {currentTab === 1 && (
+          {currentTab === 1 && !isCompany && (
             <Box sx={{ p: 0 }}>
               <Typography variant="h6" gutterBottom sx={{ mb: 3 }}>
                 Mes missions en cours
@@ -2708,8 +3034,9 @@ export default function Profile(): JSX.Element {
             </Box>
           )}
 
-          {currentTab === 2 && (
+          {currentTab === 2 && !isCompany && (
             <Box sx={{ p: 4 }}>
+              <DocumentDisclaimer retentionYears={5} />
               <Stack spacing={3}>
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary" gutterBottom>
@@ -2810,7 +3137,7 @@ export default function Profile(): JSX.Element {
             </Box>
           )}
 
-          {currentTab === 3 && hasReports && (
+          {currentTab === 3 && !isCompany && hasReports && (
             <Box>
               <Typography variant="h6" gutterBottom>
                 Mes rapports et suggestions

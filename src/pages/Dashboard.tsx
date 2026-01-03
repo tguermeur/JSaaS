@@ -16,7 +16,10 @@ import {
   DialogActions,
   TextField,
   Snackbar,
-  Alert
+  Alert,
+  Tabs,
+  Tab,
+  Chip
 } from '@mui/material';
 import { 
   Logout as LogoutIcon,
@@ -28,10 +31,11 @@ import {
   Group as GroupIcon,
   Add as AddIcon
 } from '@mui/icons-material';
+import EnterpriseMissionForm from '../components/missions/EnterpriseMissionForm';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { logoutUser } from '../firebase/auth';
-import { collection, query, where, getDocs, addDoc, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, Timestamp, getDoc, doc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
@@ -46,6 +50,9 @@ interface Mission {
   endDate: string;
   company: string;
   description: string;
+  status?: string;
+  createdAt?: any;
+  companyId?: string;
 }
 
 interface Statistics {
@@ -137,6 +144,8 @@ export default function Dashboard(): JSX.Element {
     message: '',
     severity: 'success' as 'success' | 'error'
   });
+  const [enterpriseMissionDialogOpen, setEnterpriseMissionDialogOpen] = useState(false);
+  const [enterpriseMissionTab, setEnterpriseMissionTab] = useState(0);
 
   // Utiliser l'animation du compteur
   const animatedRevenue = useCountAnimation(statistics.totalRevenue);
@@ -158,23 +167,180 @@ export default function Dashboard(): JSX.Element {
 
   useEffect(() => {
     const fetchMissions = async () => {
-      if (!currentUser) return;
+      if (!currentUser) {
+        console.log('❌ Pas d\'utilisateur connecté, arrêt du chargement des missions');
+        return;
+      }
 
       try {
-        console.log('Email de l\'utilisateur connecté:', currentUser.email);
+        console.log('📧 Email de l\'utilisateur connecté:', currentUser.email);
+        console.log('🆔 UID de l\'utilisateur:', currentUser.uid);
         
-        // Récupérer les données de l'utilisateur pour obtenir son structureId
-        const userDoc = await getDocs(query(collection(db, 'users'), where('email', '==', currentUser.email)));
-        if (userDoc.empty) {
-          console.error('Aucun utilisateur trouvé avec cet email');
+        // Récupérer les données de l'utilisateur directement par son UID (plus fiable)
+        console.log('🔍 Récupération des données utilisateur par UID:', currentUser.uid);
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDocSnapshot = await getDoc(userDocRef);
+        
+        if (!userDocSnapshot.exists()) {
+          console.error('❌ Aucun utilisateur trouvé avec cet UID');
           return;
         }
         
-        const userData = userDoc.docs[0].data();
+        const userData = userDocSnapshot.data();
+        if (!userData) {
+          console.error('❌ Données utilisateur vides');
+          return;
+        }
+        
         const userStructureId = userData.structureId;
+        const userStatus = userData.status;
 
-        console.log('Structure ID de l\'utilisateur:', userStructureId);
-        console.log('Données complètes de l\'utilisateur:', userData);
+        console.log('📊 Structure ID de l\'utilisateur:', userStructureId);
+        console.log('👤 Statut utilisateur:', userStatus);
+        console.log('👤 Type de statut:', typeof userStatus);
+        console.log('👤 Statut === "entreprise":', userStatus === 'entreprise');
+        console.log('👤 Statut trim() === "entreprise":', String(userStatus).trim() === 'entreprise');
+        console.log('📋 Données complètes de l\'utilisateur:', userData);
+
+        // Pour les entreprises, utiliser une logique différente
+        if (userStatus === 'entreprise') {
+          console.log('✅ BLOC ENTREPRISE ATTEINT - Chargement des missions...');
+          console.log('✅ Utilisateur détecté comme entreprise, chargement des missions...');
+          console.log('🔍 Recherche des missions avec companyId:', currentUser.uid);
+          try {
+            const missionsRef = collection(db, 'missions');
+            const missionsQuery = query(
+              missionsRef,
+              where('companyId', '==', currentUser.uid)
+            );
+            console.log('📤 Exécution de la requête Firestore...');
+            const missionsSnapshot = await getDocs(missionsQuery);
+            
+            if (missionsSnapshot.docs.length === 0) {
+              console.warn('⚠️ Aucune mission trouvée avec ce companyId:', currentUser.uid);
+            }
+            
+            console.log('Missions trouvées pour entreprise:', missionsSnapshot.docs.length);
+            console.log('UID de recherche:', currentUser.uid);
+            
+            missionsSnapshot.docs.forEach(doc => {
+              const data = doc.data();
+              console.log('Mission trouvée:', {
+                id: doc.id,
+                title: data.title,
+                companyId: data.companyId,
+                currentUserUid: currentUser.uid,
+                match: data.companyId === currentUser.uid,
+                startDate: data.startDate,
+                status: data.status
+              });
+            });
+            
+            const missionsList: Mission[] = missionsSnapshot.docs
+            .map(doc => {
+              const data = doc.data();
+              let startDate = '';
+              let endDate = '';
+              
+              if (data.startDate) {
+                if (data.startDate.toDate && typeof data.startDate.toDate === 'function') {
+                  startDate = data.startDate.toDate().toISOString().split('T')[0];
+                } else if (typeof data.startDate === 'string') {
+                  startDate = data.startDate.includes('T') 
+                    ? data.startDate.split('T')[0] 
+                    : data.startDate;
+                } else {
+                  startDate = new Date(data.startDate).toISOString().split('T')[0];
+                }
+              }
+              
+              if (data.endDate) {
+                if (data.endDate.toDate && typeof data.endDate.toDate === 'function') {
+                  endDate = data.endDate.toDate().toISOString().split('T')[0];
+                } else if (typeof data.endDate === 'string') {
+                  endDate = data.endDate.includes('T') 
+                    ? data.endDate.split('T')[0] 
+                    : data.endDate;
+                } else {
+                  endDate = new Date(data.endDate).toISOString().split('T')[0];
+                }
+              }
+
+              return {
+                id: doc.id,
+                numeroMission: data.numeroMission || '',
+                title: data.title || data.company || '',
+                startDate: startDate,
+                endDate: endDate,
+                company: data.company || '',
+                description: data.description || '',
+                status: data.status || 'En attente de validation',
+                createdAt: data.createdAt,
+                companyId: data.companyId || ''
+              };
+            })
+            .filter(mission => {
+              // Garder toutes les missions, même sans date de début
+              // Mais loguer si une mission n'a pas de startDate pour debug
+              if (!mission.startDate) {
+                console.log('Mission sans startDate:', mission);
+              }
+              return true; // Garder toutes les missions
+            });
+
+            console.log('Missions mappées et filtrées:', missionsList.length);
+            console.log('✅ Missions chargées avec succès pour entreprise:', missionsList.length);
+            if (missionsList.length > 0) {
+              console.log('📋 Détails des missions chargées:', missionsList.map(m => ({
+                id: m.id,
+                numeroMission: m.numeroMission,
+                title: m.title,
+                companyId: m.companyId,
+                status: m.status
+              })));
+            }
+            setMissions(missionsList);
+            setStatistics({
+              totalRevenue: 0,
+              totalMissions: missionsList.length,
+              activeMissions: missionsList.filter(m => {
+                const end = new Date(m.endDate);
+                return end >= new Date();
+              }).length,
+              totalStudents: 0
+            });
+            return;
+          } catch (error: any) {
+            console.error('❌ Erreur lors du chargement des missions entreprise:', error);
+            if (error?.code === 'permission-denied') {
+              console.error('❌ Permissions insuffisantes pour lire les missions');
+              console.error('Détails de l\'erreur:', {
+                code: error.code,
+                message: error.message,
+                uid: currentUser.uid
+              });
+            }
+            setMissions([]);
+            setStatistics({
+              totalRevenue: 0,
+              totalMissions: 0,
+              activeMissions: 0,
+              totalStudents: 0
+            });
+            return;
+          }
+        }
+
+        // Pour les non-entreprises, continuer avec le code normal
+        console.log('⚠️ Code non-entreprise exécuté');
+        console.log('⚠️ userStatus:', userStatus, 'type:', typeof userStatus);
+        console.log('⚠️ userStatus === "entreprise":', userStatus === 'entreprise');
+        console.log('⚠️ userStructureId:', userStructureId);
+        if (!userStructureId) {
+          console.error('❌ Aucun structureId trouvé pour cet utilisateur');
+          console.error('❌ Données utilisateur complètes:', userData);
+          return;
+        }
 
         // Vérifier d'abord si la collection users existe
         const usersRef = collection(db, 'users');
@@ -289,8 +455,18 @@ export default function Dashboard(): JSX.Element {
       }
     };
 
+    // Appeler fetchMissions au chargement
+    fetchMissions();
+  }, [currentUser]);
+
+  useEffect(() => {
     const fetchData = async () => {
       if (!currentUser) return;
+      
+      // Vérifier le statut AVANT toute requête
+      if (isEntreprise) {
+        return;
+      }
 
       try {
         console.log('Email de l\'utilisateur connecté:', currentUser.email);
@@ -302,11 +478,24 @@ export default function Dashboard(): JSX.Element {
           return;
         }
         
-        const userData = userDoc.docs[0].data();
-        const userStructureId = userData.structureId;
+        const userDocData = userDoc.docs[0].data();
+        const userStatus = userDocData.status;
+        
+        // Double vérification pour les entreprises
+        if (userStatus === 'entreprise') {
+          return;
+        }
+        
+        const userStructureId = userDocData.structureId;
+        
+        // Vérifier que structureId existe avant de continuer
+        if (!userStructureId) {
+          console.error('Aucun structureId trouvé pour cet utilisateur');
+          return;
+        }
 
         console.log('Structure ID de l\'utilisateur:', userStructureId);
-        console.log('Données complètes de l\'utilisateur:', userData);
+        console.log('Données complètes de l\'utilisateur:', userDocData);
 
         // Vérifier d'abord si la collection users existe
         const usersRef = collection(db, 'users');
@@ -503,19 +692,41 @@ export default function Dashboard(): JSX.Element {
       }
     };
 
+    // Ne pas appeler fetchData pour les entreprises
+    if (!userData || isEntreprise) {
+      return;
+    }
+    
     fetchData();
-  }, [currentUser, userData.structureId]);
+  }, [currentUser, userData, isEntreprise]);
 
   useEffect(() => {
     const fetchConnectedUsers = async () => {
       if (!currentUser) return;
+      
+      // Vérifier le statut AVANT toute requête
+      if (isEntreprise) {
+        return;
+      }
 
       try {
         const userDoc = await getDocs(query(collection(db, 'users'), where('email', '==', currentUser.email)));
         if (userDoc.empty) return;
 
-        const userData = userDoc.docs[0].data();
-        const userStructureId = userData.structureId;
+        const userDocData = userDoc.docs[0].data();
+        const userStatus = userDocData.status;
+        
+        // Double vérification pour les entreprises
+        if (userStatus === 'entreprise') {
+          return;
+        }
+        
+        const userStructureId = userDocData.structureId;
+        
+        // Vérifier que structureId existe avant de continuer
+        if (!userStructureId) {
+          return;
+        }
 
         // Récupérer tous les utilisateurs de la structure
         const usersRef = collection(db, 'users');
@@ -549,12 +760,17 @@ export default function Dashboard(): JSX.Element {
       }
     };
 
+    // Ne pas appeler fetchConnectedUsers pour les entreprises
+    if (!userData || isEntreprise) {
+      return;
+    }
+    
     fetchConnectedUsers();
     // Rafraîchir toutes les 30 secondes
     const interval = setInterval(fetchConnectedUsers, 30000);
 
     return () => clearInterval(interval);
-  }, [currentUser]);
+  }, [currentUser, userData, isEntreprise]);
 
   // Fonction pour obtenir les initiales si pas de photo
   const getInitials = () => {
@@ -711,53 +927,367 @@ export default function Dashboard(): JSX.Element {
 
   // Dashboard simplifié pour les Entreprises
   if (isEntreprise) {
+    // Filtrer toutes les missions de l'entreprise
+    console.log('Toutes les missions chargées:', missions.length);
+    console.log('UID utilisateur actuel:', currentUser?.uid);
+    
+    const allEnterpriseMissions = missions.filter(mission => {
+      if (!currentUser) return false;
+      const matches = mission.companyId === currentUser.uid;
+      if (!matches) {
+        console.log('Mission filtrée (companyId ne correspond pas):', {
+          missionId: mission.id,
+          missionCompanyId: mission.companyId,
+          currentUserId: currentUser.uid
+        });
+      }
+      return matches;
+    });
+
+    console.log('Missions filtrées pour entreprise:', allEnterpriseMissions.length);
+    allEnterpriseMissions.forEach(m => {
+      console.log('Mission entreprise:', {
+        id: m.id,
+        title: m.title,
+        status: m.status,
+        companyId: m.companyId,
+        createdAt: m.createdAt
+      });
+    });
+
+    // Trier par date de création (plus récentes en premier)
+    const sortedMissions = [...allEnterpriseMissions].sort((a, b) => {
+      let dateA: Date;
+      let dateB: Date;
+      
+      if (a.createdAt) {
+        if (a.createdAt.toDate && typeof a.createdAt.toDate === 'function') {
+          dateA = a.createdAt.toDate();
+        } else if (a.createdAt instanceof Date) {
+          dateA = a.createdAt;
+        } else if (typeof a.createdAt === 'string' || typeof a.createdAt === 'number') {
+          dateA = new Date(a.createdAt);
+        } else {
+          // Timestamp Firestore avec seconds/nanoseconds
+          const ts = a.createdAt as any;
+          if (ts.seconds) {
+            dateA = new Date(ts.seconds * 1000);
+          } else {
+            dateA = new Date(0);
+          }
+        }
+      } else {
+        dateA = new Date(0);
+      }
+      
+      if (b.createdAt) {
+        if (b.createdAt.toDate && typeof b.createdAt.toDate === 'function') {
+          dateB = b.createdAt.toDate();
+        } else if (b.createdAt instanceof Date) {
+          dateB = b.createdAt;
+        } else if (typeof b.createdAt === 'string' || typeof b.createdAt === 'number') {
+          dateB = new Date(b.createdAt);
+        } else {
+          // Timestamp Firestore avec seconds/nanoseconds
+          const ts = b.createdAt as any;
+          if (ts.seconds) {
+            dateB = new Date(ts.seconds * 1000);
+          } else {
+            dateB = new Date(0);
+          }
+        }
+      } else {
+        dateB = new Date(0);
+      }
+      
+      return dateB.getTime() - dateA.getTime();
+    });
+
+    // Filtrer selon l'onglet sélectionné
+    const filteredMissions = enterpriseMissionTab === 0 
+      ? sortedMissions // Toutes
+      : enterpriseMissionTab === 1 
+      ? sortedMissions.filter(m => m.status === 'En attente de validation' || m.status === 'Draft') // En attente
+      : enterpriseMissionTab === 2
+      ? sortedMissions.filter(m => {
+          const endDate = new Date(m.endDate);
+          const now = new Date();
+          return endDate >= now && m.status !== 'En attente de validation' && m.status !== 'Draft' && m.status !== 'Terminée';
+        }) // En cours
+      : sortedMissions.filter(m => {
+          const endDate = new Date(m.endDate);
+          const now = new Date();
+          return endDate < now || m.status === 'Terminée';
+        }); // Terminées
+
+    // Fonction pour obtenir la couleur du statut
+    const getStatusColor = (status: string) => {
+      if (!status) return 'default';
+      if (status.includes('attente') || status === 'Draft') return 'warning';
+      if (status.includes('cours') || status.includes('Négociation') || status.includes('Recrutement')) return 'info';
+      if (status === 'Terminée') return 'success';
+      return 'default';
+    };
+
+    // Fonction pour formater le statut
+    const formatStatus = (status: string) => {
+      if (!status) return 'En attente';
+      if (status === 'En attente de validation') return 'En attente';
+      return status;
+    };
+
+    const handleEnterpriseMissionSuccess = () => {
+      setSnackbar({
+        open: true,
+        message: 'Votre demande a été envoyée avec succès. Notre équipe vous contactera sous 48h.',
+        severity: 'success'
+      });
+      // Rafraîchir les missions en rechargeant simplement depuis Firestore
+      // On réutilise la même logique que dans le useEffect initial
+      if (!currentUser) return;
+      
+      const refreshMissions = async () => {
+        try {
+          const missionsRef = collection(db, 'missions');
+          const missionsQuery = query(
+            missionsRef,
+            where('companyId', '==', currentUser.uid)
+          );
+          const missionsSnapshot = await getDocs(missionsQuery);
+          
+          console.log('Rafraîchissement - Missions trouvées:', missionsSnapshot.docs.length);
+          
+          const missionsList: Mission[] = missionsSnapshot.docs
+            .map(doc => {
+              const data = doc.data();
+              let startDate = '';
+              let endDate = '';
+              
+              if (data.startDate) {
+                if (data.startDate.toDate && typeof data.startDate.toDate === 'function') {
+                  startDate = data.startDate.toDate().toISOString().split('T')[0];
+                } else if (typeof data.startDate === 'string') {
+                  startDate = data.startDate.includes('T') 
+                    ? data.startDate.split('T')[0] 
+                    : data.startDate;
+                } else {
+                  startDate = new Date(data.startDate).toISOString().split('T')[0];
+                }
+              }
+              
+              if (data.endDate) {
+                if (data.endDate.toDate && typeof data.endDate.toDate === 'function') {
+                  endDate = data.endDate.toDate().toISOString().split('T')[0];
+                } else if (typeof data.endDate === 'string') {
+                  endDate = data.endDate.includes('T') 
+                    ? data.endDate.split('T')[0] 
+                    : data.endDate;
+                } else {
+                  endDate = new Date(data.endDate).toISOString().split('T')[0];
+                }
+              }
+              
+              return {
+                id: doc.id,
+                numeroMission: data.numeroMission || '',
+                title: data.title || data.company || '',
+                startDate: startDate,
+                endDate: endDate || startDate,
+                company: data.company || '',
+                description: data.description || '',
+                status: data.status || 'En attente de validation',
+                createdAt: data.createdAt,
+                companyId: data.companyId || ''
+              };
+            });
+            
+          console.log('✅ Rafraîchissement - Missions chargées:', missionsList.length);
+          setMissions(missionsList);
+          setStatistics({
+            totalRevenue: 0,
+            totalMissions: missionsList.length,
+            activeMissions: missionsList.filter(m => {
+              const end = new Date(m.endDate);
+              return end >= new Date();
+            }).length,
+            totalStudents: 0
+          });
+        } catch (error: any) {
+          console.error('❌ Erreur lors du rafraîchissement des missions:', error);
+          if (error?.code === 'permission-denied') {
+            console.error('❌ Permissions insuffisantes lors du rafraîchissement');
+            console.error('Détails de l\'erreur:', {
+              code: error.code,
+              message: error.message,
+              uid: currentUser.uid
+            });
+            setSnackbar({
+              open: true,
+              message: 'Erreur de permissions lors du rafraîchissement.',
+              severity: 'error'
+            });
+          }
+        }
+      };
+      
+      refreshMissions();
+    };
+
     return (
       <Container maxWidth="lg">
         <Box sx={{ py: 4 }}>
           <Typography variant="h4" sx={{ mb: 4, fontWeight: 600 }}>
-            Tableau de bord Entreprise
+            Tableau de bord
           </Typography>
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={6}>
-              <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
-                <CardContent>
-                  <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-                    Mes Missions
-                  </Typography>
-                  <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
-                    {statistics.totalMissions} mission(s) au total
-                  </Typography>
-                  <Button 
-                    variant="contained" 
-                    startIcon={<AddIcon />}
-                    onClick={() => navigate('/app/mission?new=true')}
-                    sx={{ mt: 2 }}
-                  >
-                    Nouvelle Mission
-                  </Button>
-                </CardContent>
-              </Card>
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
-                <CardContent>
-                  <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-                    Facturation
-                  </Typography>
-                  <Typography variant="body1" color="text.secondary">
-                    Consultez vos factures et devis
-                  </Typography>
-                  <Button 
-                    variant="outlined"
-                    onClick={() => navigate('/app/profile?tab=billing')}
-                    sx={{ mt: 2 }}
-                  >
-                    Voir mes factures
-                  </Button>
-                </CardContent>
-              </Card>
-            </Grid>
-          </Grid>
+          
+          {/* Bouton CTA principal */}
+          <Box sx={{ mb: 4 }}>
+            <Button 
+              variant="contained" 
+              size="large"
+              startIcon={<AddIcon />}
+              onClick={() => setEnterpriseMissionDialogOpen(true)}
+              sx={{ 
+                py: 2,
+                px: 4,
+                fontSize: '1.1rem',
+                fontWeight: 600,
+                borderRadius: '12px',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                '&:hover': {
+                  boxShadow: '0 6px 16px rgba(0, 0, 0, 0.2)',
+                }
+              }}
+            >
+              Déposer une nouvelle mission
+            </Button>
+          </Box>
+
+          {/* Modal de création de mission entreprise */}
+          <EnterpriseMissionForm
+            open={enterpriseMissionDialogOpen}
+            onClose={() => setEnterpriseMissionDialogOpen(false)}
+            onSuccess={handleEnterpriseMissionSuccess}
+          />
+
+          {/* Liste des demandes de mission */}
+          <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
+            <CardContent>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+                <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                  Mes demandes de mission
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {allEnterpriseMissions.length} demande{allEnterpriseMissions.length > 1 ? 's' : ''} au total
+                </Typography>
+              </Box>
+
+              {/* Onglets de filtrage */}
+              <Tabs 
+                value={enterpriseMissionTab} 
+                onChange={(e, newValue) => setEnterpriseMissionTab(newValue)}
+                sx={{ mb: 3, borderBottom: 1, borderColor: 'divider' }}
+              >
+                <Tab label="Toutes" />
+                <Tab label="En attente" />
+                <Tab label="En cours" />
+                <Tab label="Terminées" />
+              </Tabs>
+              
+              {filteredMissions.length === 0 ? (
+                <Typography variant="body1" color="text.secondary" sx={{ py: 4, textAlign: 'center' }}>
+                  {enterpriseMissionTab === 0 
+                    ? 'Aucune demande envoyée pour le moment'
+                    : enterpriseMissionTab === 1
+                    ? 'Aucune demande en attente'
+                    : enterpriseMissionTab === 2
+                    ? 'Aucune mission en cours'
+                    : 'Aucune mission terminée'}
+                </Typography>
+              ) : (
+                <Box>
+                  {filteredMissions.map((mission) => {
+                    const createdDate = mission.createdAt?.toDate 
+                      ? mission.createdAt.toDate() 
+                      : (mission.createdAt ? new Date(mission.createdAt) : null);
+                    
+                    return (
+                      <Box 
+                        key={mission.id}
+                        sx={{ 
+                          p: 2, 
+                          mb: 2, 
+                          border: '1px solid #e5e5ea', 
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          '&:hover': {
+                            bgcolor: '#f5f5f7',
+                            borderColor: '#d1d1d6'
+                          }
+                        }}
+                        onClick={() => {
+                          if (mission.numeroMission && mission.numeroMission !== '') {
+                            navigate(`/app/mission/${mission.numeroMission}`);
+                          }
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
+                          <Box sx={{ flex: 1 }}>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                              {mission.title || mission.company || 'Sans titre'}
+                            </Typography>
+                            {mission.numeroMission && mission.numeroMission !== '' && (
+                              <Typography variant="caption" color="text.secondary">
+                                Mission #{mission.numeroMission}
+                              </Typography>
+                            )}
+                          </Box>
+                          <Chip 
+                            label={formatStatus(mission.status || 'En attente')} 
+                            color={getStatusColor(mission.status || '') as any}
+                            size="small"
+                            sx={{ ml: 2 }}
+                          />
+                        </Box>
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, mt: 1.5 }}>
+                          {mission.startDate && (
+                            <Typography variant="body2" color="text.secondary">
+                              <strong>Période:</strong> {new Date(mission.startDate).toLocaleDateString('fr-FR')} 
+                              {mission.endDate && ` - ${new Date(mission.endDate).toLocaleDateString('fr-FR')}`}
+                            </Typography>
+                          )}
+                          {createdDate && (
+                            <Typography variant="body2" color="text.secondary">
+                              <strong>Envoyée le:</strong> {createdDate.toLocaleDateString('fr-FR', { 
+                                day: 'numeric', 
+                                month: 'long', 
+                                year: 'numeric' 
+                              })}
+                            </Typography>
+                          )}
+                        </Box>
+                        {mission.description && (
+                          <Typography 
+                            variant="body2" 
+                            color="text.secondary" 
+                            sx={{ mt: 1, 
+                              overflow: 'hidden', 
+                              textOverflow: 'ellipsis', 
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical'
+                            }}
+                          >
+                            {mission.description}
+                          </Typography>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
+              )}
+            </CardContent>
+          </Card>
         </Box>
       </Container>
     );
@@ -791,6 +1321,7 @@ export default function Dashboard(): JSX.Element {
                 </CardContent>
               </Card>
             </Grid>
+            {/* Le reste du dashboard étudiant reste inchangé */}
             <Grid item xs={12} md={6}>
               <Card elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
                 <CardContent>
@@ -816,7 +1347,7 @@ export default function Dashboard(): JSX.Element {
     );
   }
 
-  // Dashboard complet pour les Junior-Entreprises (comportement par défaut)
+  // Dashboard complet pour les Juniors (comportement par défaut)
   return (
     <Container maxWidth="lg">
       <Box sx={{ py: 4 }}>

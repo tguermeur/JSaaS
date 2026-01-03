@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Paper, Typography, LinearProgress, Grid } from '@mui/material';
+import { Box, LinearProgress, Grid, Typography } from '@mui/material';
 import { ref, listAll, getMetadata } from 'firebase/storage';
 import { useAuth } from '../../contexts/AuthContext';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { storage } from '../../firebase/config';
-import BackButton from '../../components/ui/BackButton';
+import SettingsPageHeader from '../../components/settings/SettingsPageHeader';
+import SettingsCard from '../../components/settings/SettingsCard';
+import { Storage as StorageIcon } from '@mui/icons-material';
 
 const Storage: React.FC = () => {
   const [storageInfo, setStorageInfo] = useState({
@@ -61,8 +63,6 @@ const Storage: React.FC = () => {
           fileCount: result.items.length
         });
 
-        console.log('Taille totale en MB:', usedSpace);
-        console.log('Nombre de fichiers:', result.items.length);
       } catch (error) {
         console.error('Erreur lors de la récupération des informations de stockage:', error);
       }
@@ -72,19 +72,19 @@ const Storage: React.FC = () => {
   }, [currentUser]);
 
   return (
-    <Box>
-      <BackButton />
-      <Typography variant="h5" sx={{ mb: 3 }}>
-        Gestion du stockage
-      </Typography>
+    <Box sx={{ 
+      p: 3, 
+      minHeight: '100vh'
+    }}>
+      <SettingsPageHeader 
+        title="Gestion du stockage"
+        subtitle="Surveillez l'utilisation de votre espace de stockage"
+        icon={<StorageIcon />}
+      />
 
-      <Paper sx={{ p: 3 }}>
-        <Grid container spacing={3}>
-          <Grid item xs={12}>
-            <Typography variant="h6" sx={{ mb: 2 }}>
-              Utilisation du stockage Firestore
-            </Typography>
-            
+      <Grid container spacing={3}>
+        <Grid item xs={12}>
+          <SettingsCard title="Utilisation du stockage Firestore">
             <Box sx={{ width: '100%', mb: 2 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                 <Typography variant="body1">
@@ -117,11 +117,11 @@ const Storage: React.FC = () => {
               Cette section affiche l'utilisation de votre espace de stockage Firestore. 
               Une alerte visuelle apparaîtra lorsque l'utilisation dépassera 80%.
             </Typography>
-          </Grid>
+          </SettingsCard>
         </Grid>
-      </Paper>
+      </Grid>
     </Box>
   );
 };
 
-export default Storage; 
+export default Storage;

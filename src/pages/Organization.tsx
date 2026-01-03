@@ -56,6 +56,7 @@ import {
   Group as GroupIcon,
   ExpandMore as ExpandMoreIcon,
   ChevronRight as ChevronRightIcon,
+  ChevronLeft as ChevronLeftIcon,
   Info as InfoIcon,
   AccountTree as AccountTreeIcon,
   PersonAdd as PersonAddIcon,
@@ -73,6 +74,7 @@ import { styled } from '@mui/material';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage } from '../firebase/config';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { getStripeCustomers } from '../services/stripeApiService';
 import { useNavigate } from 'react-router-dom';
 
 // Animations
@@ -174,10 +176,15 @@ const StyledTabs = styled(Tabs)(({ theme }) => ({
   },
 }));
 
-const StyledTableRow = styled(TableRow)(({ theme }) => ({
+const StyledTableRow = styled(TableRow, {
+  shouldForwardProp: (prop) => prop !== 'selected'
+})<{ selected?: boolean }>(({ theme, selected }) => ({
   transition: 'all 0.3s ease-in-out',
+  backgroundColor: selected ? alpha(theme.palette.primary.main, 0.08) : 'transparent',
   '&:hover': {
-    backgroundColor: alpha(theme.palette.primary.main, 0.04),
+    backgroundColor: selected 
+      ? alpha(theme.palette.primary.main, 0.12)
+      : alpha(theme.palette.primary.main, 0.04),
     transform: 'translateX(4px)',
   },
 }));
@@ -212,6 +219,7 @@ interface User {
   bureauRole?: BureauRole;
   status?: 'admin' | 'member';
   structureId?: string;
+  mandat?: string; // Format: "2022-2023", "2023-2024", etc.
 }
 
 interface OrganizationInfo {
@@ -276,6 +284,22 @@ const BUREAU_ROLES = [
 
 type BureauRole = typeof BUREAU_ROLES[number]['id'];
 
+// Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
+const generateMandats = (): string[] => {
+  const currentYear = new Date().getFullYear();
+  const startYear = 2022;
+  const mandats: string[] = [];
+  
+  for (let year = startYear; year <= currentYear; year++) {
+    const nextYear = year + 1;
+    mandats.push(`${year}-${nextYear}`);
+  }
+  
+  return mandats;
+};
+
+const AVAILABLE_MANDATS = generateMandats();
+
 // Styles pour les cartes de l'organigramme
 const StyledMemberCard = styled(Paper)(({ theme }) => ({
   padding: theme.spacing(2),
@@ -326,9 +350,17 @@ const Organization = () => {
   const [openAddMemberDialog, setOpenAddMemberDialog] = useState(false);
   const [newMemberData, setNewMemberData] = useState<{
     bureauRole?: BureauRole;
+    mandat?: string;
   }>({});
   const [availableUsers, setAvailableUsers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('');
+  const [selectedMandat, setSelectedMandat] = useState<string>('');
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [dialogError, setDialogError] = useState<string>('');
+  const [editPolesDialogError, setEditPolesDialogError] = useState<string>('');
+  const [openBulkMandatDialog, setOpenBulkMandatDialog] = useState(false);
+  const [bulkMandat, setBulkMandat] = useState<string>('');
+  const [currentMandatIndex, setCurrentMandatIndex] = useState<number>(0);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string>('');
   // Nouveaux états pour la gestion des pôles
@@ -433,6 +465,7 @@ const Organization = () => {
     setSelectedPoles([]);
     setIsResponsable({});
     setNewMemberData({});
+    setSelectedMandat('');
   };
 
   // Fonction pour fermer le dialogue
@@ -890,11 +923,39 @@ const Organization = () => {
         throw new Error("Aucune structure associée à votre compte");
       }
 
+      const selectedMandatValue = selectedMandat || newMemberData.mandat || null;
+      const selectedBureauRole = newMemberData.bureauRole;
+      
+      // Vérifier si le membre a le pôle "pre" (Président) dans les pôles sélectionnés
+      const hasPresidentPole = selectedPoles['pre'] || false;
+
+      // Validation : vérifier qu'il ne peut y avoir qu'un seul président par mandat
+      // Un président peut être défini soit via bureauRole === 'president', soit via le pôle "pre"
+      if ((selectedBureauRole === 'president' || hasPresidentPole) && selectedMandatValue) {
+        // Vérifier s'il existe déjà un président pour ce mandat (via bureauRole OU via le pôle "pre")
+        const existingPresident = members.find(
+          member => {
+            if (member.id === selectedUserId) return false; // Exclure le membre actuel si on le modifie
+            
+            const hasPresidentRole = member.bureauRole === 'president' || 
+              member.poles?.some(p => p.poleId === 'pre');
+            
+            return member.mandat === selectedMandatValue && hasPresidentRole;
+          }
+        );
+
+        if (existingPresident) {
+          setDialogError(`Il existe déjà un président pour le mandat ${selectedMandatValue}. Il ne peut y avoir qu'un seul président par mandat.`);
+          return;
+        }
+      }
+
       const selectedPolesList = Object.entries(selectedPoles)
         .filter(([_, isSelected]) => isSelected)
         .map(([poleId]) => ({
           poleId,
-          isResponsable: isResponsable[poleId] || false
+          // Ne pas permettre isResponsable pour les pôles pre, sec, vice
+          isResponsable: ['pre', 'sec', 'vice'].includes(poleId) ? false : (isResponsable[poleId] || false)
         }));
 
       // Mettre à jour l'utilisateur avec les pôles sélectionnés et l'ajouter à la structure
@@ -902,7 +963,8 @@ const Organization = () => {
         poles: selectedPolesList,
         structureId: structureId,
         status: 'member',
-        bureauRole: newMemberData.bureauRole || null
+        bureauRole: selectedBureauRole || null,
+        mandat: selectedMandatValue
       });
 
       setSnackbar({
@@ -919,6 +981,8 @@ const Organization = () => {
       setSelectedUserId('');
       setSelectedPoles([]);
       setIsResponsable({});
+      setSelectedMandat('');
+      setNewMemberData({});
 
       // Recharger les données des membres existants
       if (currentUser) {
@@ -957,7 +1021,7 @@ const Organization = () => {
 
   // Modifiez le bouton d'ajout de membre pour utiliser setOpenAddMemberDialog
   const AddMemberButton = () => (
-    <Button
+    <StyledButton
       variant="contained"
       startIcon={<PersonAddIcon />}
       onClick={() => {
@@ -968,10 +1032,9 @@ const Organization = () => {
           console.log("État openAddMemberDialog:", openAddMemberDialog);
         });
       }}
-      sx={{ mb: 2 }}
     >
       Ajouter un membre
-    </Button>
+    </StyledButton>
   );
 
   // Bouton pour gérer les pôles
@@ -1043,6 +1106,36 @@ const Organization = () => {
             {selectedUserId && (
               <>
                 <FormControl fullWidth>
+                  <InputLabel>Mandat</InputLabel>
+                  <Select
+                    value={selectedMandat || newMemberData.mandat || ''}
+                    label="Mandat"
+                    onChange={(e) => {
+                      setSelectedMandat(e.target.value);
+                      setNewMemberData(prev => ({
+                        ...prev,
+                        mandat: e.target.value
+                      }));
+                    }}
+                    sx={{
+                      borderRadius: '12px',
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                      },
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: theme => theme.palette.primary.main,
+                      },
+                    }}
+                  >
+                    {AVAILABLE_MANDATS.map(mandat => (
+                      <MenuItem key={mandat} value={mandat}>
+                        {mandat}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                <FormControl fullWidth>
                   <InputLabel>Rôle au bureau</InputLabel>
                   <Select
                     value={newMemberData.bureauRole || ''}
@@ -1099,10 +1192,29 @@ const Organization = () => {
                           control={
                             <Checkbox
                               checked={selectedPoles[pole.id] || false}
-                              onChange={(e) => setSelectedPoles(prev => ({
-                                ...prev,
-                                [pole.id]: e.target.checked
-                              }))}
+                              onChange={(e) => {
+                                // Validation : empêcher la sélection du pôle "pre" si un président existe déjà pour le mandat
+                                if (pole.id === 'pre' && e.target.checked) {
+                                  const selectedMandatValue = selectedMandat || newMemberData.mandat || null;
+                                  if (selectedMandatValue) {
+                                    const existingPresident = members.find(member => {
+                                      if (member.id === selectedUserId) return false;
+                                      const hasPresidentRole = member.bureauRole === 'president' || 
+                                        member.poles?.some(p => p.poleId === 'pre');
+                                      return member.mandat === selectedMandatValue && hasPresidentRole;
+                                    });
+                                    
+                                    if (existingPresident) {
+                                      setDialogError(`Il existe déjà un président pour le mandat ${selectedMandatValue}. Il ne peut y avoir qu'un seul président par mandat.`);
+                                      return;
+                                    }
+                                  }
+                                }
+                                setSelectedPoles(prev => ({
+                                  ...prev,
+                                  [pole.id]: e.target.checked
+                                }));
+                              }}
                               sx={{
                                 '& .MuiSvgIcon-root': {
                                   fontSize: 20,
@@ -1116,7 +1228,7 @@ const Organization = () => {
                             </Typography>
                           }
                         />
-                        {selectedPoles[pole.id] && (
+                        {selectedPoles[pole.id] && !['pre', 'sec', 'vice'].includes(pole.id) && (
                           <FormControlLabel
                             control={
                               <Checkbox
@@ -1380,12 +1492,21 @@ const Organization = () => {
     const fetchStripeCustomers = async () => {
       try {
         setLoadingSubscription(true);
-        const functions = getFunctions();
-        const getStripeCustomers = httpsCallable(functions, 'getStripeCustomers');
-        const result = await getStripeCustomers();
-        setStripeCustomers(result.data as StripeCustomer[]);
+        
+        // Utiliser le même service que la page Billing.tsx
+        const customers = await getStripeCustomers();
+        setStripeCustomers(customers);
       } catch (err) {
         console.error('Erreur lors de la récupération des clients Stripe:', err);
+        // Fallback vers l'ancienne méthode en cas d'erreur
+        try {
+          const functions = getFunctions();
+          const getStripeCustomersCallable = httpsCallable(functions, 'getStripeCustomers');
+          const result = await getStripeCustomersCallable();
+          setStripeCustomers(result.data as StripeCustomer[]);
+        } catch (fallbackErr) {
+          console.error('Erreur lors du fallback:', fallbackErr);
+        }
       } finally {
         setLoadingSubscription(false);
       }
@@ -1395,9 +1516,15 @@ const Organization = () => {
   }, []);
 
   useEffect(() => {
-    if (organization.email && stripeCustomers.length > 0) {
+    // Vérifier que l'email de l'organisation est valide (pas "Non renseigné" ou vide)
+    const isValidEmail = organization.email && 
+                        organization.email !== 'Non renseigné' && 
+                        organization.email.trim() !== '' &&
+                        organization.email.includes('@');
+    
+    if (isValidEmail && stripeCustomers.length > 0) {
       const customer = stripeCustomers.find(c => 
-        c.email.toLowerCase() === organization.email.toLowerCase()
+        c.email && c.email.toLowerCase() === organization.email.toLowerCase()
       );
 
       if (customer) {
@@ -1494,20 +1621,52 @@ const Organization = () => {
   const handleStartEditPoles = (user: User) => {
     setEditingUserPoles(user);
     setSelectedPoles(user.poles?.map(pole => pole.poleId) || []);
+    setSelectedMandat(user.mandat || '');
   };
 
   const handleSaveUserPoles = async () => {
     if (!editingUserPoles) return;
 
     try {
+      // Validation : vérifier qu'il ne peut y avoir qu'un seul président par mandat
+      const hasPresidentPole = selectedPoles.includes('pre');
+      const hasPresidentBureauRole = editingUserPoles.bureauRole === 'president';
+      const selectedMandatValue = selectedMandat || null;
+
+      if ((hasPresidentPole || hasPresidentBureauRole) && selectedMandatValue) {
+        // Vérifier s'il existe déjà un président pour ce mandat (via bureauRole OU via le pôle "pre")
+        const existingPresident = members.find(
+          member => {
+            if (member.id === editingUserPoles.id) return false; // Exclure le membre actuel
+            
+            const hasPresidentRole = member.bureauRole === 'president' || 
+              member.poles?.some(p => p.poleId === 'pre');
+            
+            return member.mandat === selectedMandatValue && hasPresidentRole;
+          }
+        );
+
+        if (existingPresident) {
+          setEditPolesDialogError(`Il existe déjà un président pour le mandat ${selectedMandatValue}. Il ne peut y avoir qu'un seul président par mandat.`);
+          return;
+        }
+      }
+
+      // Réinitialiser l'erreur si la validation passe
+      setEditPolesDialogError('');
+
       const userRef = doc(db, 'users', editingUserPoles.id);
       const updatedPoles = selectedPoles.map(poleId => ({
         poleId,
-        isResponsable: editingUserPoles.poles?.find(p => p.poleId === poleId)?.isResponsable || false
+        // Ne pas permettre isResponsable pour les pôles pre, sec, vice
+        isResponsable: ['pre', 'sec', 'vice'].includes(poleId) 
+          ? false 
+          : (editingUserPoles.poles?.find(p => p.poleId === poleId)?.isResponsable || false)
       }));
 
       await updateDoc(userRef, {
-        poles: updatedPoles
+        poles: updatedPoles,
+        mandat: selectedMandat || null
       });
 
       setSnackbar({
@@ -1519,13 +1678,14 @@ const Organization = () => {
       // Mettre à jour la liste des membres
       setMembers(members.map(member => 
         member.id === editingUserPoles.id 
-          ? { ...member, poles: updatedPoles }
+          ? { ...member, poles: updatedPoles, mandat: selectedMandat || undefined }
           : member
       ));
 
       // Fermer le dialogue
       setEditingUserPoles(null);
       setSelectedPoles([]);
+      setSelectedMandat('');
     } catch (error) {
       console.error('Erreur lors de la mise à jour des pôles:', error);
       setSnackbar({
@@ -1539,7 +1699,128 @@ const Organization = () => {
   const handleCancelEditPoles = () => {
     setEditingUserPoles(null);
     setSelectedPoles([]);
+    setSelectedMandat('');
+    setEditPolesDialogError('');
   };
+
+  // Gestion de la sélection multiple
+  const handleSelectAllMembers = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.checked) {
+      setSelectedMembers(members.map(member => member.id));
+    } else {
+      setSelectedMembers([]);
+    }
+  };
+
+  const handleSelectMember = (memberId: string) => {
+    setSelectedMembers(prev => 
+      prev.includes(memberId)
+        ? prev.filter(id => id !== memberId)
+        : [...prev, memberId]
+    );
+  };
+
+  const isMemberSelected = (memberId: string) => selectedMembers.includes(memberId);
+  const isAllMembersSelected = members.length > 0 && selectedMembers.length === members.length;
+  const isSomeMembersSelected = selectedMembers.length > 0 && selectedMembers.length < members.length;
+
+  // Grouper les membres par mandat
+  const groupMembersByMandat = () => {
+    const grouped: { [mandat: string]: User[] } = {};
+    
+    members.forEach(member => {
+      const mandat = member.mandat || 'Sans mandat';
+      if (!grouped[mandat]) {
+        grouped[mandat] = [];
+      }
+      grouped[mandat].push(member);
+    });
+
+    // Trier les mandats par ordre croissant (plus ancien en premier, plus récent en dernier)
+    const sortedMandats = Object.keys(grouped).sort((a, b) => {
+      if (a === 'Sans mandat') return 1;
+      if (b === 'Sans mandat') return -1;
+      return a.localeCompare(b); // Ordre croissant (ancien -> récent)
+    });
+
+    return { grouped, sortedMandats };
+  };
+
+  // Navigation entre les mandats
+  const { grouped: mandatsGrouped, sortedMandats } = groupMembersByMandat();
+  
+  // Réinitialiser l'index du mandat quand les membres changent pour afficher le plus récent
+  useEffect(() => {
+    const { sortedMandats } = groupMembersByMandat();
+    if (sortedMandats.length > 0) {
+      // Exclure "Sans mandat" pour trouver le mandat le plus récent
+      const mandatsWithDates = sortedMandats.filter(m => m !== 'Sans mandat');
+      if (mandatsWithDates.length > 0) {
+        // Afficher le mandat le plus récent par défaut (dernier index des mandats avec dates)
+        const mostRecentIndex = sortedMandats.indexOf(mandatsWithDates[mandatsWithDates.length - 1]);
+        setCurrentMandatIndex(mostRecentIndex);
+      } else {
+        // Si seulement "Sans mandat" existe, l'afficher
+        const sansMandatIndex = sortedMandats.indexOf('Sans mandat');
+        setCurrentMandatIndex(sansMandatIndex >= 0 ? sansMandatIndex : 0);
+      }
+    } else {
+      setCurrentMandatIndex(0);
+    }
+  }, [members]);
+
+  const currentMandat = sortedMandats[currentMandatIndex] || sortedMandats[sortedMandats.length - 1] || '';
+  const mandatMembers = mandatsGrouped[currentMandat] || [];
+
+  const handlePreviousMandat = () => {
+    setCurrentMandatIndex(prev => Math.max(0, prev - 1));
+  };
+
+  const handleNextMandat = () => {
+    setCurrentMandatIndex(prev => Math.min(sortedMandats.length - 1, prev + 1));
+  };
+
+  // Fonction pour affecter un mandat à plusieurs membres
+  const handleBulkAssignMandat = async () => {
+    if (selectedMembers.length === 0 || !bulkMandat) return;
+
+    try {
+      // Mettre à jour tous les membres sélectionnés
+      const updatePromises = selectedMembers.map(memberId =>
+        updateDoc(doc(db, 'users', memberId), {
+          mandat: bulkMandat
+        })
+      );
+
+      await Promise.all(updatePromises);
+
+      // Mettre à jour l'état local
+      setMembers(members.map(member =>
+        selectedMembers.includes(member.id)
+          ? { ...member, mandat: bulkMandat }
+          : member
+      ));
+
+      setSnackbar({
+        open: true,
+        message: `Mandat ${bulkMandat} affecté à ${selectedMembers.length} membre(s) avec succès`,
+        severity: 'success'
+      });
+
+      // Réinitialiser
+      setSelectedMembers([]);
+      setBulkMandat('');
+      setOpenBulkMandatDialog(false);
+    } catch (error) {
+      console.error('Erreur lors de l\'affectation du mandat:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de l\'affectation du mandat',
+        severity: 'error'
+      });
+    }
+  };
+
 
   return (
     <Box sx={{ 
@@ -1886,20 +2167,20 @@ const Organization = () => {
                           </Box>
                         ) : (
                           <StyledChip
-                            label={
-                              subscriptionStatus.details === 'active' ? 'Actif' :
-                              subscriptionStatus.details === 'trialing' ? 'Période d\'essai' :
-                              subscriptionStatus.details === 'canceled' ? 'Annulé' :
-                              subscriptionStatus.details === 'incomplete' ? 'Incomplet' :
-                              'Aucun abonnement'
-                            }
-                            color={
-                              subscriptionStatus.details === 'active' || subscriptionStatus.details === 'trialing' ? 'success' :
-                              subscriptionStatus.details === 'canceled' ? 'error' :
-                              subscriptionStatus.details === 'incomplete' ? 'warning' :
-                              'error'
-                            }
-                          />
+                              label={
+                                subscriptionStatus.details === 'active' ? 'Actif' :
+                                subscriptionStatus.details === 'trialing' ? 'Période d\'essai' :
+                                subscriptionStatus.details === 'canceled' ? 'Annulé' :
+                                subscriptionStatus.details === 'incomplete' ? 'Incomplet' :
+                                'Aucun abonnement'
+                              }
+                              color={
+                                subscriptionStatus.details === 'active' || subscriptionStatus.details === 'trialing' ? 'success' :
+                                subscriptionStatus.details === 'canceled' ? 'error' :
+                                subscriptionStatus.details === 'incomplete' ? 'warning' :
+                                'error'
+                              }
+                            />
                         )}
                         {subscriptionStatus.isActive && !subscriptionStatus.cancelAtPeriodEnd && isAdmin && !loadingSubscription && (
                           <>
@@ -1967,21 +2248,27 @@ const Organization = () => {
                               <Typography variant="body2" color="error">
                                 {subscriptionStatus.details === 'canceled' ? 
                                   'Votre abonnement a été annulé. Veuillez le renouveler pour continuer à utiliser tous les services.' :
+                                  organization.email === 'Non renseigné' || !organization.email || !organization.email.includes('@') ?
+                                  'Veuillez d\'abord configurer l\'email de votre structure dans les informations de l\'organisation.' :
                                   'Veuillez mettre à jour votre abonnement pour continuer à utiliser tous les services.'}
                               </Typography>
-                              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                Important : Utilisez l'adresse email de votre structure ({organization.email}) lors de l'abonnement.
-                              </Typography>
-                              <Button
-                                variant="contained"
-                                color="primary"
-                                href="https://buy.stripe.com/cNi6oH5PN2NK6xfgj5gfu00"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                sx={{ mt: 2 }}
-                              >
-                                S'abonner maintenant
-                              </Button>
+                              {organization.email !== 'Non renseigné' && organization.email && organization.email.includes('@') && (
+                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                  Important : Utilisez l'adresse email de votre structure ({organization.email}) lors de l'abonnement.
+                                </Typography>
+                              )}
+                              {organization.email !== 'Non renseigné' && organization.email && organization.email.includes('@') && (
+                                <Button
+                                  variant="contained"
+                                  color="primary"
+                                  href="https://buy.stripe.com/cNi6oH5PN2NK6xfgj5gfu00"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  sx={{ mt: 2 }}
+                                >
+                                  S'abonner maintenant
+                                </Button>
+                              )}
                             </>
                           )}
 
@@ -2016,328 +2303,421 @@ const Organization = () => {
                     p: 3,
                     minHeight: '60vh',
                     display: 'flex',
-                    justifyContent: 'center',
+                    flexDirection: 'column',
                     alignItems: 'center',
                     backgroundImage: 'radial-gradient(#e0e0e0 1px, transparent 1px)',
-                    backgroundSize: '20px 20px'
+                    backgroundSize: '20px 20px',
+                    gap: 4,
+                    position: 'relative'
                   }}>
-                    <Box sx={{ 
-                      display: 'flex', 
-                      flexDirection: 'column', 
-                      alignItems: 'center', 
-                      gap: 6,
-                      maxWidth: '1200px',
-                      width: '100%'
-                    }}>
-                      {/* Première ligne : Rôles de bureau */}
-                      <Paper 
-                        elevation={2}
-                        sx={{
-                          p: 3,
-                          borderRadius: 2,
-                          bgcolor: 'background.paper',
-                          width: 'fit-content',
-                          mx: 'auto'
-                        }}
-                      >
-                        <Typography 
-                          variant="h6" 
-                          sx={{ 
-                            textAlign: 'center', 
-                            mb: 2,
-                            fontWeight: 'bold',
-                            color: 'primary.main'
+                    {/* Contrôles de navigation des mandats en haut à droite */}
+                    {sortedMandats.length > 0 && (
+                      <Box sx={{ 
+                        position: 'absolute',
+                        top: 16,
+                        right: 16,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        bgcolor: 'background.paper',
+                        borderRadius: 2,
+                        p: 0.5,
+                        boxShadow: 1,
+                        zIndex: 1
+                      }}>
+                        <IconButton
+                          onClick={handlePreviousMandat}
+                          disabled={currentMandatIndex === 0}
+                          size="small"
+                          sx={{
+                            '&:disabled': {
+                              opacity: 0.3
+                            }
                           }}
                         >
-                          BUREAU
+                          <ChevronLeftIcon />
+                        </IconButton>
+                        <Typography 
+                          variant="body2" 
+                          sx={{ 
+                            px: 2,
+                            color: 'text.secondary',
+                            fontSize: '0.875rem',
+                            minWidth: '80px',
+                            textAlign: 'center'
+                          }}
+                        >
+                          {currentMandat}
                         </Typography>
-                        <Grid container spacing={4} justifyContent="center">
-                          {/* Président */}
-                          <Grid item>
-                            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                              <Paper
-                                sx={{
-                                  bgcolor: 'primary.main',
-                                  color: 'primary.contrastText',
-                                  p: 1.5,
-                                  px: 3,
-                                  borderRadius: 2,
-                                  textAlign: 'center',
-                                  position: 'relative',
-                                  '&::after': {
-                                    content: '""',
-                                    position: 'absolute',
-                                    bottom: -20,
-                                    left: '50%',
-                                    width: 2,
-                                    height: 20,
-                                    bgcolor: 'divider'
-                                  }
+                        <IconButton
+                          onClick={handleNextMandat}
+                          disabled={currentMandatIndex === sortedMandats.length - 1}
+                          size="small"
+                          sx={{
+                            '&:disabled': {
+                              opacity: 0.3
+                            }
+                          }}
+                        >
+                          <ChevronRightIcon />
+                        </IconButton>
+                      </Box>
+                    )}
+
+                    {/* Affichage du mandat actuel */}
+                    {sortedMandats.length > 0 && (
+                      <Box 
+                        sx={{ 
+                          display: 'flex', 
+                          flexDirection: 'column', 
+                          alignItems: 'center', 
+                          gap: 6,
+                          maxWidth: '1200px',
+                          width: '100%'
+                        }}
+                      >
+
+                            {/* Première ligne : Rôles de bureau */}
+                            <Paper 
+                              elevation={2}
+                              sx={{
+                                p: 3,
+                                borderRadius: 2,
+                                bgcolor: 'background.paper',
+                                width: 'fit-content',
+                                mx: 'auto'
+                              }}
+                            >
+                              <Typography 
+                                variant="h6" 
+                                sx={{ 
+                                  textAlign: 'center', 
+                                  mb: 2,
+                                  fontWeight: 'bold',
+                                  color: 'primary.main'
                                 }}
                               >
-                                <Typography variant="subtitle1">Président</Typography>
-                              </Paper>
-
-                              <Box sx={{ 
-                                display: 'flex', 
-                                flexDirection: 'column', 
-                                gap: 1,
-                                minHeight: 'auto'
-                              }}>
-                                {members
-                                  .filter(member => member.bureauRole === 'president')
-                                  .map((member) => (
-                                    <Box
-                                      key={member.id}
+                                BUREAU
+                              </Typography>
+                              <Grid container spacing={4} justifyContent="center">
+                                {/* Président */}
+                                <Grid item>
+                                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                    <Paper
                                       sx={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: 2,
-                                        p: 1,
-                                        '&:hover': {
-                                          bgcolor: 'action.hover',
-                                          borderRadius: 1,
-                                        },
+                                        bgcolor: 'primary.main',
+                                        color: 'primary.contrastText',
+                                        p: 1.5,
+                                        px: 3,
+                                        borderRadius: 2,
+                                        textAlign: 'center',
+                                        position: 'relative',
+                                        '&::after': {
+                                          content: '""',
+                                          position: 'absolute',
+                                          bottom: -20,
+                                          left: '50%',
+                                          width: 2,
+                                          height: 20,
+                                          bgcolor: 'divider'
+                                        }
                                       }}
                                     >
-                                      <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                        {member.displayName?.[0]}
-                                      </Avatar>
-                                      <Box sx={{ flexGrow: 1 }}>
-                                        <Typography variant="body2">
-                                          {member.displayName}
-                                        </Typography>
-                                      </Box>
-                                    </Box>
-                                  ))}
-                              </Box>
-                            </Box>
-                          </Grid>
+                                      <Typography variant="subtitle1">Président</Typography>
+                                    </Paper>
 
-                          {/* Vice-président */}
-                          <Grid item>
-                            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                              <Paper
-                                sx={{
-                                  bgcolor: 'primary.main',
-                                  color: 'primary.contrastText',
-                                  p: 1.5,
-                                  px: 3,
-                                  borderRadius: 2,
-                                  textAlign: 'center',
-                                  position: 'relative',
-                                  '&::after': {
-                                    content: '""',
-                                    position: 'absolute',
-                                    bottom: -20,
-                                    left: '50%',
-                                    width: 2,
-                                    height: 20,
-                                    bgcolor: 'divider'
-                                  }
-                                }}
-                              >
-                                <Typography variant="subtitle1">Vice-président</Typography>
-                              </Paper>
-
-                              <Box sx={{ 
-                                display: 'flex', 
-                                flexDirection: 'column', 
-                                gap: 1,
-                                minHeight: 'auto'
-                              }}>
-                                {members
-                                  .filter(member => member.bureauRole === 'vice-president')
-                                  .map((member) => (
-                                    <Box
-                                      key={member.id}
-                                      sx={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: 2,
-                                        p: 1,
-                                        '&:hover': {
-                                          bgcolor: 'action.hover',
-                                          borderRadius: 1,
-                                        },
-                                      }}
-                                    >
-                                      <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                        {member.displayName?.[0]}
-                                      </Avatar>
-                                      <Box sx={{ flexGrow: 1 }}>
-                                        <Typography variant="body2">
-                                          {member.displayName}
-                                        </Typography>
-                                      </Box>
-                                    </Box>
-                                  ))}
-                              </Box>
-                            </Box>
-                          </Grid>
-
-                          {/* Secrétaire général */}
-                          <Grid item>
-                            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                              <Paper
-                                sx={{
-                                  bgcolor: 'primary.main',
-                                  color: 'primary.contrastText',
-                                  p: 1.5,
-                                  px: 3,
-                                  borderRadius: 2,
-                                  textAlign: 'center',
-                                  position: 'relative',
-                                  '&::after': {
-                                    content: '""',
-                                    position: 'absolute',
-                                    bottom: -20,
-                                    left: '50%',
-                                    width: 2,
-                                    height: 20,
-                                    bgcolor: 'divider'
-                                  }
-                                }}
-                              >
-                                <Typography variant="subtitle1">Secrétaire général</Typography>
-                              </Paper>
-
-                              <Box sx={{ 
-                                display: 'flex', 
-                                flexDirection: 'column', 
-                                gap: 1,
-                                minHeight: 'auto'
-                              }}>
-                                {members
-                                  .filter(member => member.bureauRole === 'secretaire')
-                                  .map((member) => (
-                                    <Box
-                                      key={member.id}
-                                      sx={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: 2,
-                                        p: 1,
-                                        '&:hover': {
-                                          bgcolor: 'action.hover',
-                                          borderRadius: 1,
-                                        },
-                                      }}
-                                    >
-                                      <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                        {member.displayName?.[0]}
-                                      </Avatar>
-                                      <Box sx={{ flexGrow: 1 }}>
-                                        <Typography variant="body2">
-                                          {member.displayName}
-                                        </Typography>
-                                      </Box>
-                                    </Box>
-                                  ))}
-                              </Box>
-                            </Box>
-                          </Grid>
-                        </Grid>
-                      </Paper>
-
-                      {/* Deuxième ligne : Autres pôles */}
-                      <Grid container spacing={4} justifyContent="center">
-                        {POLES.filter(pole => 
-                          !['pre', 'vice', 'sec'].includes(pole.id)
-                        ).map((pole) => (
-                          <Grid item key={pole.id}>
-                            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                              <Paper
-                                sx={{
-                                  bgcolor: 'primary.main',
-                                  color: 'primary.contrastText',
-                                  p: 1.5,
-                                  px: 3,
-                                  borderRadius: 2,
-                                  textAlign: 'center',
-                                  position: 'relative',
-                                  '&::after': {
-                                    content: '""',
-                                    position: 'absolute',
-                                    bottom: -20,
-                                    left: '50%',
-                                    width: 2,
-                                    height: 20,
-                                    bgcolor: 'divider'
-                                  }
-                                }}
-                              >
-                                <Typography variant="subtitle1">{pole.name}</Typography>
-                              </Paper>
-
-                              <Box sx={{ 
-                                display: 'flex', 
-                                flexDirection: 'column', 
-                                gap: 1,
-                                minHeight: 'auto'
-                              }}>
-                                {members
-                                  .filter(member => 
-                                    member.poles?.some(p => p.poleId === pole.id) && 
-                                    !(member.bureauRole === 'president' || 
-                                      member.bureauRole === 'vice-president' || 
-                                      member.bureauRole === 'secretaire')
-                                  )
-                                  .sort((a, b) => {
-                                    const aIsResponsable = a.poles?.find(p => p.poleId === pole.id)?.isResponsable;
-                                    const bIsResponsable = b.poles?.find(p => p.poleId === pole.id)?.isResponsable;
-                                    return bIsResponsable ? 1 : aIsResponsable ? -1 : 0;
-                                  })
-                                  .map((member, index) => {
-                                    const isResponsable = member.poles?.find(p => p.poleId === pole.id)?.isResponsable;
-                                    return (
-                                      <Box
-                                        key={member.id}
-                                        sx={{
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          gap: 2,
-                                          p: 1,
-                                          '&:hover': {
-                                            bgcolor: 'action.hover',
-                                            borderRadius: 1,
-                                          },
-                                          ...(isResponsable && {
-                                            borderBottom: '1px solid',
-                                            borderColor: 'divider',
-                                            mb: 1,
-                                            pb: 1
-                                          })
-                                        }}
-                                      >
-                                        <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                          {member.displayName?.[0]}
-                                        </Avatar>
-                                        <Box sx={{ flexGrow: 1 }}>
-                                          <Typography 
-                                            variant="body2" 
-                                            sx={{ 
-                                              fontWeight: isResponsable ? 'bold' : 'normal',
-                                              color: isResponsable ? 'primary.main' : 'inherit'
+                                    <Box sx={{ 
+                                      display: 'flex', 
+                                      flexDirection: 'column', 
+                                      gap: 1,
+                                      minHeight: 'auto'
+                                    }}>
+                                      {(() => {
+                                        const presidents = mandatMembers.filter(member => 
+                                          member.bureauRole === 'president' || 
+                                          member.poles?.some(p => p.poleId === 'pre')
+                                        );
+                                        if (presidents.length === 0) {
+                                          return (
+                                            <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', p: 1 }}>
+                                              Aucun président
+                                            </Typography>
+                                          );
+                                        }
+                                        return presidents.map((member) => (
+                                          <Box
+                                            key={member.id}
+                                            sx={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: 2,
+                                              p: 1,
+                                              '&:hover': {
+                                                bgcolor: 'action.hover',
+                                                borderRadius: 1,
+                                              },
                                             }}
                                           >
-                                            {member.displayName}
-                                          </Typography>
-                                          {isResponsable && (
-                                            <Typography variant="caption" color="primary" sx={{ fontWeight: 'bold' }}>
-                                              Responsable
+                                            <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
+                                              {member.displayName?.[0]}
+                                            </Avatar>
+                                            <Box sx={{ flexGrow: 1 }}>
+                                              <Typography variant="body2">
+                                                {member.displayName || member.email}
+                                              </Typography>
+                                            </Box>
+                                          </Box>
+                                        ));
+                                      })()}
+                                    </Box>
+                                  </Box>
+                                </Grid>
+
+                                {/* Vice-président */}
+                                <Grid item>
+                                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                    <Paper
+                                      sx={{
+                                        bgcolor: 'primary.main',
+                                        color: 'primary.contrastText',
+                                        p: 1.5,
+                                        px: 3,
+                                        borderRadius: 2,
+                                        textAlign: 'center',
+                                        position: 'relative',
+                                        '&::after': {
+                                          content: '""',
+                                          position: 'absolute',
+                                          bottom: -20,
+                                          left: '50%',
+                                          width: 2,
+                                          height: 20,
+                                          bgcolor: 'divider'
+                                        }
+                                      }}
+                                    >
+                                      <Typography variant="subtitle1">Vice-président</Typography>
+                                    </Paper>
+
+                                    <Box sx={{ 
+                                      display: 'flex', 
+                                      flexDirection: 'column', 
+                                      gap: 1,
+                                      minHeight: 'auto'
+                                    }}>
+                                      {(() => {
+                                        const vicePresidents = mandatMembers.filter(member => 
+                                          member.bureauRole === 'vice-president' || 
+                                          member.poles?.some(p => p.poleId === 'vice')
+                                        );
+                                        if (vicePresidents.length === 0) {
+                                          return (
+                                            <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', p: 1 }}>
+                                              Aucun vice-président
                                             </Typography>
-                                          )}
-                                        </Box>
-                                      </Box>
-                                    );
-                                  })}
-                              </Box>
-                            </Box>
-                          </Grid>
-                        ))}
-                      </Grid>
-                    </Box>
+                                          );
+                                        }
+                                        return vicePresidents.map((member) => (
+                                          <Box
+                                            key={member.id}
+                                            sx={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: 2,
+                                              p: 1,
+                                              '&:hover': {
+                                                bgcolor: 'action.hover',
+                                                borderRadius: 1,
+                                              },
+                                            }}
+                                          >
+                                            <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
+                                              {member.displayName?.[0]}
+                                            </Avatar>
+                                            <Box sx={{ flexGrow: 1 }}>
+                                              <Typography variant="body2">
+                                                {member.displayName || member.email}
+                                              </Typography>
+                                            </Box>
+                                          </Box>
+                                        ));
+                                      })()}
+                                    </Box>
+                                  </Box>
+                                </Grid>
+
+                                {/* Secrétaire général */}
+                                <Grid item>
+                                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                    <Paper
+                                      sx={{
+                                        bgcolor: 'primary.main',
+                                        color: 'primary.contrastText',
+                                        p: 1.5,
+                                        px: 3,
+                                        borderRadius: 2,
+                                        textAlign: 'center',
+                                        position: 'relative',
+                                        '&::after': {
+                                          content: '""',
+                                          position: 'absolute',
+                                          bottom: -20,
+                                          left: '50%',
+                                          width: 2,
+                                          height: 20,
+                                          bgcolor: 'divider'
+                                        }
+                                      }}
+                                    >
+                                      <Typography variant="subtitle1">Secrétaire général</Typography>
+                                    </Paper>
+
+                                    <Box sx={{ 
+                                      display: 'flex', 
+                                      flexDirection: 'column', 
+                                      gap: 1,
+                                      minHeight: 'auto'
+                                    }}>
+                                      {(() => {
+                                        const secretaires = mandatMembers.filter(member => 
+                                          member.bureauRole === 'secretaire' || 
+                                          member.poles?.some(p => p.poleId === 'sec')
+                                        );
+                                        if (secretaires.length === 0) {
+                                          return (
+                                            <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', p: 1 }}>
+                                              Aucun secrétaire général
+                                            </Typography>
+                                          );
+                                        }
+                                        return secretaires.map((member) => (
+                                          <Box
+                                            key={member.id}
+                                            sx={{
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: 2,
+                                              p: 1,
+                                              '&:hover': {
+                                                bgcolor: 'action.hover',
+                                                borderRadius: 1,
+                                              },
+                                            }}
+                                          >
+                                            <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
+                                              {member.displayName?.[0]}
+                                            </Avatar>
+                                            <Box sx={{ flexGrow: 1 }}>
+                                              <Typography variant="body2">
+                                                {member.displayName || member.email}
+                                              </Typography>
+                                            </Box>
+                                          </Box>
+                                        ));
+                                      })()}
+                                    </Box>
+                                  </Box>
+                                </Grid>
+                              </Grid>
+                            </Paper>
+
+                            {/* Deuxième ligne : Autres pôles */}
+                            <Grid container spacing={4} justifyContent="center">
+                              {POLES.filter(pole => 
+                                !['pre', 'vice', 'sec'].includes(pole.id)
+                              ).map((pole) => (
+                                <Grid item key={pole.id}>
+                                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                    <Paper
+                                      sx={{
+                                        bgcolor: 'primary.main',
+                                        color: 'primary.contrastText',
+                                        p: 1.5,
+                                        px: 3,
+                                        borderRadius: 2,
+                                        textAlign: 'center',
+                                        position: 'relative',
+                                        '&::after': {
+                                          content: '""',
+                                          position: 'absolute',
+                                          bottom: -20,
+                                          left: '50%',
+                                          width: 2,
+                                          height: 20,
+                                          bgcolor: 'divider'
+                                        }
+                                      }}
+                                    >
+                                      <Typography variant="subtitle1">{pole.name}</Typography>
+                                    </Paper>
+
+                                    <Box sx={{ 
+                                      display: 'flex', 
+                                      flexDirection: 'column', 
+                                      gap: 1,
+                                      minHeight: 'auto'
+                                    }}>
+                                      {mandatMembers
+                                        .filter(member => {
+                                          // Vérifier si le membre appartient à ce pôle
+                                          return member.poles?.some(p => p.poleId === pole.id) || false;
+                                        })
+                                        .sort((a, b) => {
+                                          const aIsResponsable = a.poles?.find(p => p.poleId === pole.id)?.isResponsable;
+                                          const bIsResponsable = b.poles?.find(p => p.poleId === pole.id)?.isResponsable;
+                                          return bIsResponsable ? 1 : aIsResponsable ? -1 : 0;
+                                        })
+                                        .map((member, index) => {
+                                          const isResponsable = member.poles?.find(p => p.poleId === pole.id)?.isResponsable;
+                                          return (
+                                            <Box
+                                              key={member.id}
+                                              sx={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 2,
+                                                p: 1,
+                                                '&:hover': {
+                                                  bgcolor: 'action.hover',
+                                                  borderRadius: 1,
+                                                },
+                                                ...(isResponsable && {
+                                                  borderBottom: '1px solid',
+                                                  borderColor: 'divider',
+                                                  mb: 1,
+                                                  pb: 1
+                                                })
+                                              }}
+                                            >
+                                              <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
+                                                {member.displayName?.[0]}
+                                              </Avatar>
+                                              <Box sx={{ flexGrow: 1 }}>
+                                                <Typography 
+                                                  variant="body2" 
+                                                  sx={{ 
+                                                    fontWeight: isResponsable ? 'bold' : 'normal',
+                                                    color: isResponsable ? 'primary.main' : 'inherit'
+                                                  }}
+                                                >
+                                                  {member.displayName}
+                                                </Typography>
+                                                {isResponsable && (
+                                                  <Typography variant="caption" color="primary" sx={{ fontWeight: 'bold' }}>
+                                                    Responsable
+                                                  </Typography>
+                                                )}
+                                              </Box>
+                                            </Box>
+                                          );
+                                        })}
+                                    </Box>
+                                  </Box>
+                                </Grid>
+                              ))}
+                            </Grid>
+                      </Box>
+                    )}
                   </Box>
                 </CardContent>
               </Card>
@@ -2357,6 +2737,16 @@ const Organization = () => {
                   action={
                     (isAdmin || isSuperAdmin) && (
                       <Box sx={{ display: 'flex', gap: 2 }}>
+                        {selectedMembers.length > 0 && (
+                          <StyledButton
+                            variant="contained"
+                            color="secondary"
+                            startIcon={<BadgeIcon />}
+                            onClick={() => setOpenBulkMandatDialog(true)}
+                          >
+                            Affecter un mandat ({selectedMembers.length})
+                          </StyledButton>
+                        )}
                         <StyledButton
                           variant="contained"
                           startIcon={<PersonAddIcon />}
@@ -2394,15 +2784,31 @@ const Organization = () => {
                     <Table>
                       <TableHead>
                         <TableRow>
+                          <TableCell padding="checkbox" sx={{ width: 48 }}>
+                            <Checkbox
+                              indeterminate={isSomeMembersSelected}
+                              checked={isAllMembersSelected}
+                              onChange={handleSelectAllMembers}
+                              color="primary"
+                            />
+                          </TableCell>
                           <TableCell sx={{ fontWeight: 600 }}>Membre</TableCell>
                           <TableCell sx={{ fontWeight: 600 }}>Rôle</TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>Mandat</TableCell>
                           <TableCell sx={{ fontWeight: 600 }}>Pôles</TableCell>
                           <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
                         {members.map((member) => (
-                          <StyledTableRow key={member.id}>
+                          <StyledTableRow key={member.id} selected={isMemberSelected(member.id)}>
+                            <TableCell padding="checkbox">
+                              <Checkbox
+                                checked={isMemberSelected(member.id)}
+                                onChange={() => handleSelectMember(member.id)}
+                                color="primary"
+                              />
+                            </TableCell>
                             <TableCell>
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                 <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
@@ -2418,6 +2824,23 @@ const Organization = () => {
                             </TableCell>
                             <TableCell>
                               {getRoleChip(member.role, member.status)}
+                            </TableCell>
+                            <TableCell>
+                              {member.mandat ? (
+                                <Chip 
+                                  label={member.mandat} 
+                                  size="small"
+                                  sx={{
+                                    backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.1),
+                                    color: (theme) => theme.palette.primary.main,
+                                    fontWeight: 500
+                                  }}
+                                />
+                              ) : (
+                                <Typography variant="body2" color="text.secondary">
+                                  Non défini
+                                </Typography>
+                              )}
                             </TableCell>
                             <TableCell>
                               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
@@ -2495,6 +2918,11 @@ const Organization = () => {
                 </DialogTitle>
                 <DialogContent dividers>
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, pt: 1 }}>
+                    {dialogError && (
+                      <Alert severity="error" onClose={() => setDialogError('')} sx={{ mb: 1 }}>
+                        {dialogError}
+                      </Alert>
+                    )}
                     <FormControl fullWidth>
                       <InputLabel>Sélectionner un membre</InputLabel>
                       <Select
@@ -2530,6 +2958,36 @@ const Organization = () => {
                     {selectedUserId && (
                       <>
                         <FormControl fullWidth>
+                          <InputLabel>Mandat</InputLabel>
+                          <Select
+                            value={selectedMandat || newMemberData.mandat || ''}
+                            label="Mandat"
+                            onChange={(e) => {
+                              setSelectedMandat(e.target.value);
+                              setNewMemberData(prev => ({
+                                ...prev,
+                                mandat: e.target.value
+                              }));
+                            }}
+                            sx={{
+                              borderRadius: '12px',
+                              '& .MuiOutlinedInput-notchedOutline': {
+                                borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                              },
+                              '&:hover .MuiOutlinedInput-notchedOutline': {
+                                borderColor: theme => theme.palette.primary.main,
+                              },
+                            }}
+                          >
+                            {AVAILABLE_MANDATS.map(mandat => (
+                              <MenuItem key={mandat} value={mandat}>
+                                {mandat}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+
+                        <FormControl fullWidth>
                           <InputLabel>Rôle au bureau</InputLabel>
                           <Select
                             value={newMemberData.bureauRole || ''}
@@ -2549,12 +3007,49 @@ const Organization = () => {
                             }}
                           >
                             <MenuItem value="">Aucun rôle au bureau</MenuItem>
-                            {BUREAU_ROLES.map(role => (
-                              <MenuItem key={role.id} value={role.id}>
-                                {role.name}
-                              </MenuItem>
-                            ))}
+                            {BUREAU_ROLES.map(role => {
+                              // Vérifier si un président existe déjà pour le mandat sélectionné
+                              const selectedMandatValue = selectedMandat || newMemberData.mandat || null;
+                              const hasExistingPresident = role.id === 'president' && selectedMandatValue && 
+                                members.some(member => {
+                                  if (member.id === selectedUserId) return false;
+                                  const hasPresidentRole = member.bureauRole === 'president' || 
+                                    member.poles?.some(p => p.poleId === 'pre');
+                                  return member.mandat === selectedMandatValue && hasPresidentRole;
+                                });
+                              
+                              return (
+                                <MenuItem 
+                                  key={role.id} 
+                                  value={role.id}
+                                  disabled={hasExistingPresident}
+                                >
+                                  {role.name}
+                                  {hasExistingPresident && ' (déjà assigné pour ce mandat)'}
+                                </MenuItem>
+                              );
+                            })}
                           </Select>
+                          {(selectedMandat || newMemberData.mandat) && members.some(member => {
+                            if (member.id === selectedUserId) return false;
+                            const hasPresidentRole = member.bureauRole === 'president' || 
+                              member.poles?.some(p => p.poleId === 'pre');
+                            return member.mandat === (selectedMandat || newMemberData.mandat) && hasPresidentRole;
+                          }) && (
+                            <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
+                              Un président existe déjà pour ce mandat
+                            </Typography>
+                          )}
+                          {selectedPoles['pre'] && (selectedMandat || newMemberData.mandat) && members.some(member => {
+                            if (member.id === selectedUserId) return false;
+                            const hasPresidentRole = member.bureauRole === 'president' || 
+                              member.poles?.some(p => p.poleId === 'pre');
+                            return member.mandat === (selectedMandat || newMemberData.mandat) && hasPresidentRole;
+                          }) && (
+                            <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
+                              Un président existe déjà pour ce mandat (vous ne pouvez pas sélectionner le pôle Président)
+                            </Typography>
+                          )}
                         </FormControl>
 
                         <Typography 
@@ -2586,10 +3081,29 @@ const Organization = () => {
                                   control={
                                     <Checkbox
                                       checked={selectedPoles[pole.id] || false}
-                                      onChange={(e) => setSelectedPoles(prev => ({
-                                        ...prev,
-                                        [pole.id]: e.target.checked
-                                      }))}
+                                      onChange={(e) => {
+                                        // Validation : empêcher la sélection du pôle "pre" si un président existe déjà pour le mandat
+                                        if (pole.id === 'pre' && e.target.checked) {
+                                          const selectedMandatValue = selectedMandat || newMemberData.mandat || null;
+                                          if (selectedMandatValue) {
+                                            const existingPresident = members.find(member => {
+                                              if (member.id === selectedUserId) return false;
+                                              const hasPresidentRole = member.bureauRole === 'president' || 
+                                                member.poles?.some(p => p.poleId === 'pre');
+                                              return member.mandat === selectedMandatValue && hasPresidentRole;
+                                            });
+                                            
+                                            if (existingPresident) {
+                                              setDialogError(`Il existe déjà un président pour le mandat ${selectedMandatValue}. Il ne peut y avoir qu'un seul président par mandat.`);
+                                              return;
+                                            }
+                                          }
+                                        }
+                                        setSelectedPoles(prev => ({
+                                          ...prev,
+                                          [pole.id]: e.target.checked
+                                        }));
+                                      }}
                                       sx={{
                                         '& .MuiSvgIcon-root': {
                                           fontSize: 20,
@@ -2603,7 +3117,7 @@ const Organization = () => {
                                     </Typography>
                                   }
                                 />
-                                {selectedPoles[pole.id] && (
+                                {selectedPoles[pole.id] && !['pre', 'sec', 'vice'].includes(pole.id) && (
                                   <FormControlLabel
                                     control={
                                       <Checkbox
@@ -2706,6 +3220,7 @@ const Organization = () => {
         autoHideDuration={6000} 
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        sx={{ zIndex: 1400 }} // z-index plus élevé que les Dialogues (1300)
       >
         <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} sx={{ width: '100%' }}>
           {snackbar.message}
@@ -2744,10 +3259,29 @@ const Organization = () => {
                       <Checkbox
                         size="small"
                         checked={selectedPoles[pole.id] || false}
-                        onChange={(e) => setSelectedPoles(prev => ({
-                          ...prev,
-                          [pole.id]: e.target.checked
-                        }))}
+                        onChange={(e) => {
+                          // Validation : empêcher la sélection du pôle "pre" si un président existe déjà pour le mandat
+                          if (pole.id === 'pre' && e.target.checked) {
+                            const selectedMandatValue = selectedMandat || newMemberData.mandat || null;
+                            if (selectedMandatValue) {
+                              const existingPresident = members.find(member => {
+                                if (member.id === selectedUserId) return false;
+                                const hasPresidentRole = member.bureauRole === 'president' || 
+                                  member.poles?.some(p => p.poleId === 'pre');
+                                return member.mandat === selectedMandatValue && hasPresidentRole;
+                              });
+                              
+                              if (existingPresident) {
+                                setDialogError(`Il existe déjà un président pour le mandat ${selectedMandatValue}. Il ne peut y avoir qu'un seul président par mandat.`);
+                                return;
+                              }
+                            }
+                          }
+                          setSelectedPoles(prev => ({
+                            ...prev,
+                            [pole.id]: e.target.checked
+                          }));
+                        }}
                       />
                     }
                     label={
@@ -2756,7 +3290,7 @@ const Organization = () => {
                       </Typography>
                     }
                   />
-                  {selectedPoles[pole.id] && (
+                  {selectedPoles[pole.id] && !['pre', 'sec', 'vice'].includes(pole.id) && (
                     <FormControlLabel
                       control={
                         <Checkbox
@@ -2974,7 +3508,41 @@ const Organization = () => {
           </Typography>
         </DialogTitle>
         <DialogContent sx={{ pt: 2 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <FormControl fullWidth>
+              <InputLabel>Mandat</InputLabel>
+              <Select
+                value={selectedMandat || ''}
+                label="Mandat"
+                onChange={(e) => setSelectedMandat(e.target.value)}
+                sx={{
+                  borderRadius: '12px',
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                  },
+                  '&:hover .MuiOutlinedInput-notchedOutline': {
+                    borderColor: theme => theme.palette.primary.main,
+                  },
+                }}
+              >
+                {AVAILABLE_MANDATS.map(mandat => (
+                  <MenuItem key={mandat} value={mandat}>
+                    {mandat}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <Typography 
+              variant="subtitle1" 
+              sx={{ 
+                fontWeight: 600,
+                color: theme => theme.palette.text.primary
+              }}
+            >
+              Sélection des pôles
+            </Typography>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
             {POLES.map((pole) => (
               <Paper 
                 key={pole.id} 
@@ -2995,6 +3563,29 @@ const Organization = () => {
                       <Checkbox
                         checked={selectedPoles.includes(pole.id)}
                         onChange={(e) => {
+                          // Validation : empêcher la sélection du pôle "pre" si un président existe déjà pour le mandat
+                          if (pole.id === 'pre' && e.target.checked) {
+                            const selectedMandatValue = selectedMandat || null;
+                            if (selectedMandatValue) {
+                              const existingPresident = members.find(member => {
+                                if (member.id === editingUserPoles?.id) return false;
+                                const hasPresidentRole = member.bureauRole === 'president' || 
+                                  member.poles?.some(p => p.poleId === 'pre');
+                                return member.mandat === selectedMandatValue && hasPresidentRole;
+                              });
+                              
+                              if (existingPresident) {
+                                setEditPolesDialogError(`Il existe déjà un président pour le mandat ${selectedMandatValue}. Il ne peut y avoir qu'un seul président par mandat.`);
+                                return;
+                              }
+                            }
+                          }
+                          
+                          // Réinitialiser l'erreur si la validation passe
+                          if (pole.id === 'pre' && e.target.checked) {
+                            setEditPolesDialogError('');
+                          }
+                          
                           if (e.target.checked) {
                             setSelectedPoles([...selectedPoles, pole.id]);
                           } else {
@@ -3014,7 +3605,7 @@ const Organization = () => {
                       </Typography>
                     }
                   />
-                  {selectedPoles.includes(pole.id) && (
+                  {selectedPoles.includes(pole.id) && !['pre', 'sec', 'vice'].includes(pole.id) && (
                     <FormControlLabel
                       control={
                         <Checkbox
@@ -3048,6 +3639,7 @@ const Organization = () => {
                 </Box>
               </Paper>
             ))}
+            </Box>
           </Box>
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
@@ -3068,6 +3660,76 @@ const Organization = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Dialogue pour affecter un mandat à plusieurs membres */}
+      <Dialog 
+        open={openBulkMandatDialog} 
+        onClose={() => {
+          setOpenBulkMandatDialog(false);
+          setBulkMandat('');
+        }} 
+        maxWidth="sm" 
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <BadgeIcon color="primary" />
+            <Typography variant="h6">
+              Affecter un mandat
+            </Typography>
+          </Box>
+          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+            {selectedMembers.length} membre(s) sélectionné(s)
+          </Typography>
+        </DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          <FormControl fullWidth>
+            <InputLabel>Mandat</InputLabel>
+            <Select
+              value={bulkMandat}
+              label="Mandat"
+              onChange={(e) => setBulkMandat(e.target.value)}
+              sx={{
+                borderRadius: '12px',
+                '& .MuiOutlinedInput-notchedOutline': {
+                  borderColor: (theme) => alpha(theme.palette.primary.main, 0.2),
+                },
+                '&:hover .MuiOutlinedInput-notchedOutline': {
+                  borderColor: (theme) => theme.palette.primary.main,
+                },
+              }}
+            >
+              {AVAILABLE_MANDATS.map(mandat => (
+                <MenuItem key={mandat} value={mandat}>
+                  {mandat}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 2 }}>
+          <Button 
+            onClick={() => {
+              setOpenBulkMandatDialog(false);
+              setBulkMandat('');
+            }}
+            variant="outlined"
+            size="small"
+          >
+            Annuler
+          </Button>
+          <Button 
+            onClick={handleBulkAssignMandat}
+            variant="contained"
+            size="small"
+            startIcon={<SaveIcon />}
+            disabled={!bulkMandat}
+          >
+            Affecter
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Box>
   );
 };

@@ -120,7 +120,7 @@ const Contact: React.FC = () => {
                   mb: 4
                 }}
               >
-                Découvrez comment JS Connect peut transformer votre Job Service. Notre équipe est là pour vous accompagner dans votre projet.
+                Découvrez comment JS Connect peut transformer votre Junior. Notre équipe est là pour vous accompagner dans votre projet.
               </Typography>
 
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>

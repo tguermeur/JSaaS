@@ -265,7 +265,7 @@ export default function Pricing(): JSX.Element {
           Tarifs
         </Typography>
         <Typography variant="h5" sx={{ color: '#888', fontWeight: 400, mb: 4, fontSize: { xs: '1.15rem', md: '1.35rem' }, animation: `${fadeIn} 1s 0.2s both` }}>
-          Changez de plan ou annulez à tout moment.
+          30 jours offerts, sans engagement.
         </Typography>
       </Container>
       {/* Cartes de prix */}
@@ -305,7 +305,15 @@ export default function Pricing(): JSX.Element {
                   <Button
                     variant="contained"
                     fullWidth
-                    onClick={() => window.location.href = 'https://buy.stripe.com/6oU14n0vtgEA5tb1obgfu01'}
+                    onClick={() => {
+                      if (plan.title === 'Customisable') {
+                        handleContactClick();
+                      } else {
+                        // Rediriger vers l'inscription avec le plan
+                        const planId = plan.title.toLowerCase() === 'basique' ? 'basic' : plan.title.toLowerCase() === 'premium' ? 'premium' : 'custom';
+                        navigate(`/register?type=structure&plan=${planId}`);
+                      }
+                    }}
                     sx={{
                       mt: 3,
                       bgcolor: '#111',

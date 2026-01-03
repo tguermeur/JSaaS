@@ -5,8 +5,7 @@ import Sidebar from './Sidebar';
 import { Outlet } from 'react-router-dom';
 import Footer from '../Footer';
 
-const CLOSED_WIDTH = '64px';
-const OPEN_WIDTH = '240px';
+const ICON_SIDEBAR_WIDTH = '64px'; // Seule la sidebar gauche est toujours visible
 
 const LayoutRoot = styled(Box)({
   display: 'flex',
@@ -19,23 +18,16 @@ const LayoutRoot = styled(Box)({
 const LayoutContent = styled(Box)(({ theme }) => ({
   flexGrow: 1,
   paddingTop: '64px',
-  marginLeft: theme.spacing(1),
+  marginLeft: ICON_SIDEBAR_WIDTH,
   marginRight: theme.spacing(1),
   marginTop: theme.spacing(1),
   marginBottom: theme.spacing(1),
-  width: `calc(100vw - ${CLOSED_WIDTH} - ${theme.spacing(2)})`,
-  transition: theme.transitions.create(['margin', 'width'], {
-    easing: theme.transitions.easing.sharp,
-    duration: theme.transitions.duration.shorter,
-  }),
-  '&.hovered': {
-    marginLeft: OPEN_WIDTH,
-    width: `calc(100vw - ${OPEN_WIDTH} - ${theme.spacing(2)})`,
-    backgroundColor: 'rgba(0, 0, 0, 0.04)',
-  },
+  width: `calc(100vw - ${ICON_SIDEBAR_WIDTH} - ${theme.spacing(2)})`,
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
+  position: 'relative',
+  zIndex: 0,
 }));
 
 const MainContent = styled(Box)(({ theme }) => ({
@@ -63,7 +55,6 @@ const ContentWrapper = styled(Box)(({ theme }) => ({
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [isHovered, setIsHovered] = useState(false);
 
   const handleSidebarToggle = () => {
     setSidebarOpen(!sidebarOpen);
@@ -75,9 +66,8 @@ const Layout = () => {
       <Sidebar 
         open={sidebarOpen} 
         onClose={() => setSidebarOpen(false)}
-        onHoverChange={setIsHovered}
       />
-      <LayoutContent className={isHovered ? 'hovered' : ''}>
+      <LayoutContent>
         <MainContent>
           <ContentWrapper>
             <Outlet />

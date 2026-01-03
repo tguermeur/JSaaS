@@ -13,7 +13,6 @@ import {
 } from '@mui/material';
 import PersonIcon from '@mui/icons-material/Person';
 import { styled } from '@mui/material';
-import BackButton from '../../components/ui/BackButton';
 
 interface StripeCustomer {
   id: string;
@@ -104,7 +103,6 @@ export default function StripeCustomers() {
 
   return (
     <Container maxWidth="lg">
-      <BackButton />
       <Box mb={4} display="flex" alignItems="center" justifyContent="space-between">
         <Box display="flex" alignItems="center" gap={1}>
           <PersonIcon sx={{ fontSize: 32 }} />

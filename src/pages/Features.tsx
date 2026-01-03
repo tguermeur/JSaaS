@@ -227,8 +227,8 @@ const features = [
     description: [
       {
         icon: <LinkedInIcon sx={{ color: '#1976d2', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
-        title: "Importation automatique de prospects depuis LinkedIn",
-        detail: "Ajoutez en un clic les profils LinkedIn visités à votre base de prospects."
+        title: "Extension Chrome de prospection LinkedIn pilotée par l'IA",
+        detail: "L'extension Chrome de prospection LinkedIn est pilotée par l'IA pour détecter les meilleurs prospects. Ajoutez en un clic les profils LinkedIn visités à votre base de prospects."
       },
       {
         icon: <PersonAddIcon sx={{ color: '#43a047', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
@@ -765,7 +765,7 @@ const Features: React.FC = () => {
             }
           }}
         >
-          Essai Gratuit
+          Essai gratuit
         </Button>
       );
     }

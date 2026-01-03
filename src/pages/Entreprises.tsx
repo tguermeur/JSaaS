@@ -157,7 +157,7 @@ export interface ContactNote {
 export interface Company {
   id: string;
   name: string;
-  siret?: string;
+  nSiret?: string;
   description?: string;
   address?: string;
   city?: string;
@@ -206,7 +206,7 @@ const Entreprises: React.FC = () => {
     email: '',
     website: '',
     logo: '',
-    siret: ''
+    nSiret: ''
   });
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
@@ -301,7 +301,7 @@ const Entreprises: React.FC = () => {
         const userStructureId = userData?.structureId;
         console.log("StructureId de l'utilisateur:", userStructureId);
 
-        // Mettre à jour le champ siren en siret dans la base de données
+        // Récupérer les entreprises de la structure
         const companiesRef = collection(db, 'companies');
         const companiesQuery = query(companiesRef, where('structureId', '==', userStructureId));
         const companiesSnapshot = await getDocs(companiesQuery);
@@ -344,7 +344,7 @@ const Entreprises: React.FC = () => {
             email: data.email,
             website: data.website,
             logo: data.logo,
-            siret: data.siret,
+            nSiret: data.nSiret,
             contacts: data.contacts || [],
             missionsCount: companyMissions.length,
             totalRevenue,
@@ -391,7 +391,7 @@ const Entreprises: React.FC = () => {
       email: '',
       website: '',
       logo: '',
-      siret: ''
+      nSiret: ''
     });
     setContacts([]);
     setShowContactForm(false);
@@ -941,13 +941,13 @@ const Entreprises: React.FC = () => {
               <Grid item xs={6}>
                 <Box sx={{ display: 'flex', flexDirection: 'column' }}>
                   <Typography variant="caption" sx={{ color: 'text.secondary', mb: 1, display: 'block' }}>
-                    SIRET
+                    nSiret
                   </Typography>
                   <StyledTextField
-                    value={newCompany.siret}
-                    onChange={(e) => setNewCompany({ ...newCompany, siret: e.target.value })}
+                    value={newCompany.nSiret}
+                    onChange={(e) => setNewCompany({ ...newCompany, nSiret: e.target.value })}
                     fullWidth
-                    placeholder="Numéro SIRET"
+                    placeholder="Numéro nSiret"
                   />
                 </Box>
               </Grid>

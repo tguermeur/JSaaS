@@ -100,14 +100,11 @@ interface ProfileContent {
 
 const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
   junior: {
-    title: "Pilotez votre Junior-Entreprise de A à Z",
-    subtitle: "La solution tout-en-un pour la gestion, le recrutement et la conformité de votre structure.",
+    title: "Pilotez votre Junior de A à Z",
+    subtitle: "Une gestion boostée à l'IA. La solution tout-en-un pour la gestion, le recrutement et la conformité de votre structure.",
     cta: "Essai gratuit",
     ctaAction: () => {
-      const contactSection = document.getElementById('contact');
-      if (contactSection) {
-        contactSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+      window.location.href = '/pricing';
     },
     features: [
       {
@@ -140,8 +137,8 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
     description: "Bénéficiez d'une solution 100% RGPD et sécurisée pour la gestion de vos données sensibles"
   },
   {
-    title: "Extension LinkedIn",
-    description: "Développez votre réseau de clients grâce à notre extension LinkedIn dédiée aux Juniors"
+    title: "Extension LinkedIn pilotée par l'IA",
+    description: "L'extension Chrome de prospection LinkedIn est pilotée par l'IA pour détecter les meilleurs prospects. Développez votre réseau de clients grâce à notre extension LinkedIn dédiée aux juniors"
   },
   {
     title: "Suivi Commercial",
@@ -155,7 +152,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
   },
   company: {
     title: "Accédez aux meilleurs talents étudiants",
-    subtitle: "Confiez vos missions ponctuelles à des étudiants qualifiés via les Junior-Entreprises. Simple, rapide, légal.",
+    subtitle: "Confiez vos missions ponctuelles à des étudiants qualifiés via les juniors. Simple, rapide, légal.",
     cta: "Déposer une mission",
     ctaAction: () => {
       const contactSection = document.getElementById('contact');
@@ -171,7 +168,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
       },
       {
         title: "Profils sélectifs",
-        description: "Accédez à des étudiants triés sur le volet, formés et encadrés par les Junior-Entreprises.",
+        description: "Accédez à des étudiants triés sur le volet, formés et encadrés par les juniors.",
         icon: <VerifiedUser sx={{ fontSize: 40, color: '#000' }} />
       },
       {
@@ -187,7 +184,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
       },
       {
         title: "Recevez des propositions",
-        description: "Les Junior-Entreprises vous proposent des étudiants qualifiés pour votre projet"
+        description: "Les juniors vous proposent des étudiants qualifiés pour votre projet"
       },
       {
         title: "Validez et lancez",
@@ -203,7 +200,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
       },
       {
         title: "Bénéficiez de la qualité",
-        description: "Profitez de l'expertise et du professionnalisme des Junior-Entreprises"
+        description: "Profitez de l'expertise et du professionnalisme des juniors"
       }
     ]
   },
@@ -246,7 +243,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
       },
       {
         title: "Travaillez en équipe",
-        description: "Rejoignez une Junior-Entreprise et collaborez avec d'autres étudiants"
+        description: "Rejoignez une junior et collaborez avec d'autres étudiants"
       },
       {
         title: "Développez vos compétences",
@@ -482,7 +479,7 @@ export default function Home(): JSX.Element {
             >
               Fonctionnalités
             </Button>
-            {/* Lien Tarifs : UNIQUEMENT visible pour Junior-Entreprise */}
+            {/* Lien Tarifs : UNIQUEMENT visible pour Junior */}
             {selectedProfile === 'junior' && (
             <Button
               onClick={() => handleNavigation('/pricing')}
@@ -575,7 +572,7 @@ export default function Home(): JSX.Element {
             >
                 {selectedProfile === 'student' && "S'inscrire"}
                 {selectedProfile === 'company' && "Déposer une mission"}
-                {selectedProfile === 'junior' && "Essai Gratuit"}
+                {selectedProfile === 'junior' && "Essai gratuit"}
             </Button>
             ) : (
               <Button
@@ -742,7 +739,7 @@ export default function Home(): JSX.Element {
                       color: '#1d1d1f'
                     }}
                   >
-                    Junior-Entreprise
+                    Junior
                   </Typography>
                   <Typography 
                     textAlign="center" 
@@ -1195,7 +1192,7 @@ export default function Home(): JSX.Element {
               animation: `${fadeIn} 1s ease-out 0.2s both`
             }}
           >
-            {selectedProfile === 'junior' && "Découvrez comment JS Connect peut transformer votre Junior"}
+            {selectedProfile === 'junior' && "Découvrez comment JS Connect peut transformer votre junior"}
             {selectedProfile === 'company' && "Découvrez comment JS Connect peut répondre à vos besoins"}
             {selectedProfile === 'student' && "Découvrez comment JS Connect peut booster votre carrière"}
             {!selectedProfile && "Découvrez comment JS Connect peut vous accompagner"}

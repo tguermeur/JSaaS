@@ -54,6 +54,22 @@ import { useNavigate } from 'react-router-dom';
 import MissionForm, { MissionFormData } from '../components/missions/MissionForm';
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
 
+// Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
+const generateMandats = (): string[] => {
+  const currentYear = new Date().getFullYear();
+  const startYear = 2022;
+  const mandats: string[] = [];
+  
+  for (let year = startYear; year <= currentYear; year++) {
+    const nextYear = year + 1;
+    mandats.push(`${year}-${nextYear}`);
+  }
+  
+  return mandats;
+};
+
+const AVAILABLE_MANDATS = generateMandats();
+
 // Animations
 const fadeIn = keyframes`
   from {
@@ -86,18 +102,20 @@ interface MissionData {
   startDate?: string;
   endDate?: string;
   company?: string;
+  companyId?: string;
   location?: string;
   studentCount?: number;
   hours?: number;
   createdAt?: any;
   createdBy?: string;
   isPublic: boolean;
-  etape: 'Négociation' | 'Recrutement' | 'Facturation' | 'Audit';
+  etape: 'Négociation' | 'Recrutement' | 'Date de mission' | 'Facturation' | 'Audit' | 'Archivé';
   permissions?: {
     viewers: string[];
     editors: string[];
   };
   isArchived?: boolean;
+  mandat?: string; // Format: "2022-2023", "2023-2024", etc.
 }
 
 interface FirestoreMissionData {
@@ -116,7 +134,7 @@ interface FirestoreMissionData {
   prixHT: number;
   createdAt: any;
   isPublic: boolean;
-  etape: 'Négociation' | 'Recrutement' | 'Facturation' | 'Audit';
+  etape: 'Négociation' | 'Recrutement' | 'Date de mission' | 'Facturation' | 'Audit' | 'Archivé';
   permissions?: {
     viewers: string[];
     editors: string[];
@@ -164,7 +182,10 @@ const Mission: React.FC = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [archiveFilter, setArchiveFilter] = useState<'all' | 'active' | 'archived'>('active');
+  const [mandatFilter, setMandatFilter] = useState<string>('all');
   const [availableCharges, setAvailableCharges] = useState<ChargeData[]>([]);
+  const [generatedMissionNumber, setGeneratedMissionNumber] = useState<string>('');
+  const [isGeneratingMissionNumber, setIsGeneratingMissionNumber] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -303,6 +324,25 @@ const Mission: React.FC = () => {
     loadFavorites();
   }, [currentUser]);
 
+  // Générer le numéro de mission si le dialogue est ouvert et que userStructureId est disponible
+  useEffect(() => {
+    const generateMissionNumber = async () => {
+      if (createDialogOpen && userStructureId && !generatedMissionNumber && !isGeneratingMissionNumber) {
+        setIsGeneratingMissionNumber(true);
+        try {
+          const missionNumber = await generateNextMissionNumber(userStructureId);
+          setGeneratedMissionNumber(missionNumber);
+        } catch (error) {
+          console.error('Erreur lors de la génération du numéro de mission:', error);
+        } finally {
+          setIsGeneratingMissionNumber(false);
+        }
+      }
+    };
+
+    generateMissionNumber();
+  }, [createDialogOpen, userStructureId]);
+
   useEffect(() => {
     let result = [...missions];
     console.log("Début du filtrage des missions. Total initial:", result.length);
@@ -332,6 +372,11 @@ const Mission: React.FC = () => {
         archiveFilter === 'archived' ? mission.isArchived : !mission.isArchived
       );
       console.log("Après filtrage par archivage. Total:", result.length);
+    }
+
+    if (mandatFilter !== 'all') {
+      result = result.filter(mission => mission.mandat === mandatFilter);
+      console.log("Après filtrage par mandat. Total:", result.length);
     }
     
     result.sort((a, b) => {
@@ -366,7 +411,7 @@ const Mission: React.FC = () => {
     console.log("Première mission:", result[0]);
     
     setFilteredMissions(result);
-  }, [missions, searchTerm, statusFilter, sortBy, sortOrder, showFavoritesOnly, favoriteMissions, archiveFilter]);
+  }, [missions, searchTerm, statusFilter, sortBy, sortOrder, showFavoritesOnly, favoriteMissions, archiveFilter, mandatFilter]);
 
   const handleToggleFavorite = async (missionId: string, event: React.MouseEvent) => {
     event.stopPropagation();
@@ -561,6 +606,8 @@ const Mission: React.FC = () => {
           const userData = userDoc.data();
           updatedData.chargeName = userData.displayName || '';
           updatedData.chargePhotoURL = userData.photoURL || null;
+          // Récupérer le mandat du chargé de mission
+          updatedData.mandat = userData.mandat || undefined;
         }
       }
 
@@ -626,12 +673,76 @@ const Mission: React.FC = () => {
     return !missionSnapshot.empty;
   };
 
+  const generateNextMissionNumber = async (structureId: string): Promise<string> => {
+    try {
+      // Obtenir la date actuelle
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1; // getMonth() retourne 0-11, donc on ajoute 1
+      
+      // Format: YY (2 derniers chiffres de l'année)
+      const yearStr = year.toString().slice(-2);
+      // Format: MM (mois avec 2 chiffres)
+      const monthStr = month.toString().padStart(2, '0');
+      
+      // Récupérer toutes les missions de la structure
+      const missionsRef = collection(db, 'missions');
+      const missionsQuery = query(
+        missionsRef,
+        where('structureId', '==', structureId)
+      );
+      const missionsSnapshot = await getDocs(missionsQuery);
+      
+      // Filtrer les missions du mois en cours qui suivent le format YYMMNN
+      const currentMonthPrefix = `${yearStr}${monthStr}`;
+      const currentMonthMissions = missionsSnapshot.docs
+        .map(doc => doc.data().numeroMission as string)
+        .filter(numero => {
+          // Vérifier si le numéro commence par le préfixe du mois en cours
+          return numero && numero.length === 6 && numero.startsWith(currentMonthPrefix);
+        });
+      
+      // Extraire les numéros séquentiels (les 2 derniers chiffres)
+      const missionNumbers = currentMonthMissions
+        .map(numero => {
+          const sequenceNumber = parseInt(numero.slice(-2), 10);
+          return isNaN(sequenceNumber) ? 0 : sequenceNumber;
+        })
+        .filter(num => num > 0)
+        .sort((a, b) => b - a); // Trier par ordre décroissant
+      
+      // Le prochain numéro séquentiel est le maximum + 1, ou 1 si aucune mission
+      const nextSequenceNumber = missionNumbers.length > 0 
+        ? missionNumbers[0] + 1 
+        : 1;
+      
+      // Formater le numéro séquentiel avec 2 chiffres
+      const sequenceStr = nextSequenceNumber.toString().padStart(2, '0');
+      
+      // Générer le numéro final: YYMMNN
+      const nextMissionNumber = `${yearStr}${monthStr}${sequenceStr}`;
+      
+      console.log(`Numéro de mission généré: ${nextMissionNumber} (${currentMonthMissions.length} missions ce mois)`);
+      
+      return nextMissionNumber;
+    } catch (error) {
+      console.error('Erreur lors de la génération du numéro de mission:', error);
+      // En cas d'erreur, retourner un numéro par défaut basé sur la date
+      const now = new Date();
+      const yearStr = now.getFullYear().toString().slice(-2);
+      const monthStr = (now.getMonth() + 1).toString().padStart(2, '0');
+      return `${yearStr}${monthStr}01`;
+    }
+  };
+
   const handleCreateMission = async (formData: MissionFormData) => {
     try {
       if (!currentUser) return;
 
       console.log("Début de la création de la mission avec les données:", formData);
       console.log("Structure ID de l'utilisateur:", userStructureId);
+      console.log("CompanyId reçu:", formData.companyId);
+      console.log("CompanyName reçu:", formData.companyName);
 
       if (!userStructureId) {
         console.error("Pas de structure ID disponible");
@@ -654,6 +765,20 @@ const Mission: React.FC = () => {
         return;
       }
 
+      // Récupérer le mandat du chargé de mission
+      let missionMandat: string | undefined;
+      if (formData.chargeId) {
+        try {
+          const chargeDoc = await getDoc(doc(db, 'users', formData.chargeId));
+          if (chargeDoc.exists()) {
+            const chargeData = chargeDoc.data();
+            missionMandat = chargeData.mandat || undefined;
+          }
+        } catch (error) {
+          console.error('Erreur lors de la récupération du mandat du chargé de mission:', error);
+        }
+      }
+
       const existingMission = await checkMissionNumberExists(formData.number);
       if (existingMission) {
         console.log("Le numéro de mission existe déjà:", formData.number);
@@ -668,6 +793,7 @@ const Mission: React.FC = () => {
       const newMission: MissionData = {
         numeroMission: formData.number,
         company: formData.companyName,
+        companyId: formData.companyId,
         location: formData.location,
         startDate: new Date().toISOString().split('T')[0],
         endDate: '',
@@ -684,7 +810,8 @@ const Mission: React.FC = () => {
         createdBy: currentUser.uid,
         isPublic: true,
         etape: 'Négociation',
-        isArchived: false
+        isArchived: false,
+        mandat: missionMandat
       };
 
       console.log("Nouvelle mission à créer:", newMission);
@@ -725,6 +852,27 @@ const Mission: React.FC = () => {
     navigate(`/app/mission/${mission.numeroMission}`);
   };
 
+  const handleOpenCreateDialog = async () => {
+    setCreateDialogOpen(true);
+    if (userStructureId) {
+      setIsGeneratingMissionNumber(true);
+      try {
+        const missionNumber = await generateNextMissionNumber(userStructureId);
+        setGeneratedMissionNumber(missionNumber);
+      } catch (error) {
+        console.error('Erreur lors de la génération du numéro de mission:', error);
+        setGeneratedMissionNumber('');
+      } finally {
+        setIsGeneratingMissionNumber(false);
+      }
+    }
+  };
+
+  const handleCloseCreateDialog = () => {
+    setCreateDialogOpen(false);
+    setGeneratedMissionNumber('');
+  };
+
   return (
     <Box sx={{ p: 3, bgcolor: '#f5f5f7', minHeight: '100vh' }}>
       <Box 
@@ -752,7 +900,7 @@ const Mission: React.FC = () => {
         <Button
           variant="contained"
           startIcon={<AddIcon />}
-          onClick={() => setCreateDialogOpen(true)}
+          onClick={handleOpenCreateDialog}
           sx={{
             bgcolor: '#0066cc',
             borderRadius: '0.8rem',
@@ -831,6 +979,33 @@ const Mission: React.FC = () => {
         >
           Toutes les missions
         </Button>
+        <FormControl 
+          size="small" 
+          sx={{ 
+            minWidth: 150,
+            ml: 2
+          }}
+        >
+          <InputLabel>Mandat</InputLabel>
+          <Select
+            value={mandatFilter}
+            label="Mandat"
+            onChange={(e) => setMandatFilter(e.target.value)}
+            sx={{
+              borderRadius: '20px',
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: '#d2d2d7',
+              },
+            }}
+          >
+            <MenuItem value="all">Tous les mandats</MenuItem>
+            {AVAILABLE_MANDATS.map(mandat => (
+              <MenuItem key={mandat} value={mandat}>
+                {mandat}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
       </Box>
 
       {loading ? (
@@ -858,7 +1033,7 @@ const Mission: React.FC = () => {
           <Button
             variant="contained"
             startIcon={<AddIcon />}
-            onClick={() => setCreateDialogOpen(true)}
+            onClick={handleOpenCreateDialog}
             sx={{
               bgcolor: '#0066cc',
               borderRadius: '0.8rem',
@@ -928,7 +1103,12 @@ const Mission: React.FC = () => {
                   fontWeight: 500,
                   color: '#1d1d1f',
                   borderBottom: '1px solid #d2d2d7'
-                }}>Statut</TableCell>
+                }}>Étape</TableCell>
+                <TableCell sx={{ 
+                  fontWeight: 500,
+                  color: '#1d1d1f',
+                  borderBottom: '1px solid #d2d2d7'
+                }}>Mandat</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -990,20 +1170,46 @@ const Mission: React.FC = () => {
                   <TableCell>{mission.hours || 0}</TableCell>
                   <TableCell>
                     <Chip
-                      label={mission.status}
+                      label={mission.isArchived ? 'Archivé' : (mission.etape || 'Négociation')}
                       sx={{
                         backgroundColor: 
-                          mission.status === 'En cours' ? 'rgba(0,113,227,0.1)' :
-                          mission.status === 'Terminée' ? 'rgba(52,199,89,0.1)' :
-                          'rgba(255,149,0,0.1)',
+                          mission.isArchived ? 'rgba(142,142,147,0.1)' :
+                          mission.etape === 'Négociation' ? 'rgba(255,149,0,0.1)' :
+                          mission.etape === 'Recrutement' ? 'rgba(0,113,227,0.1)' :
+                          mission.etape === 'Date de mission' ? 'rgba(88,86,214,0.1)' :
+                          mission.etape === 'Facturation' ? 'rgba(255,204,0,0.1)' :
+                          mission.etape === 'Audit' ? 'rgba(52,199,89,0.1)' :
+                          'rgba(142,142,147,0.1)',
                         color:
-                          mission.status === 'En cours' ? '#0071e3' :
-                          mission.status === 'Terminée' ? '#34C759' :
-                          '#FF9500',
+                          mission.isArchived ? '#8E8E93' :
+                          mission.etape === 'Négociation' ? '#FF9500' :
+                          mission.etape === 'Recrutement' ? '#0071e3' :
+                          mission.etape === 'Date de mission' ? '#5856D6' :
+                          mission.etape === 'Facturation' ? '#FFCC00' :
+                          mission.etape === 'Audit' ? '#34C759' :
+                          '#8E8E93',
                         fontWeight: 500,
                         borderRadius: '6px'
                       }}
                     />
+                  </TableCell>
+                  <TableCell>
+                    {mission.mandat ? (
+                      <Chip
+                        label={mission.mandat}
+                        size="small"
+                        sx={{
+                          backgroundColor: 'rgba(0, 102, 204, 0.1)',
+                          color: '#0066cc',
+                          fontWeight: 500,
+                          borderRadius: '6px'
+                        }}
+                      />
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        Non défini
+                      </Typography>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -1263,7 +1469,7 @@ const Mission: React.FC = () => {
 
       <Dialog
         open={createDialogOpen}
-        onClose={() => setCreateDialogOpen(false)}
+        onClose={handleCloseCreateDialog}
         maxWidth="md"
         fullWidth
       >
@@ -1271,8 +1477,11 @@ const Mission: React.FC = () => {
         <DialogContent>
           <MissionForm 
             onSubmit={handleCreateMission}
-            onCancel={() => setCreateDialogOpen(false)}
+            onCancel={handleCloseCreateDialog}
             availableCharges={availableCharges}
+            initialData={{
+              number: generatedMissionNumber
+            }}
           />
         </DialogContent>
       </Dialog>

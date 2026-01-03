@@ -222,12 +222,51 @@ const AvailableMissions: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
+
+  // Rediriger les entreprises vers le dashboard
+  useEffect(() => {
+    const checkUserRole = async () => {
+      if (!currentUser) return;
+      
+      try {
+        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        const userStatus = userDoc.data()?.status;
+        
+        if (userStatus === 'entreprise') {
+          navigate('/app/dashboard', { replace: true });
+        }
+      } catch (error) {
+        console.error('Erreur lors de la vérification du rôle:', error);
+      }
+    };
+    
+    checkUserRole();
+  }, [currentUser, navigate]);
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [selectedMission, setSelectedMission] = useState<Mission | null>(null);
   const [selectedRecruitmentTask, setSelectedRecruitmentTask] = useState<RecruitmentTask | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
   const [currentMissionIndex, setCurrentMissionIndex] = useState<number>(0);
+  
+  // Créer un tableau combiné pour la navigation
+  const allItems = [...missions, ...recruitmentTasks.map(task => ({
+    id: task.id,
+    title: task.title,
+    numeroMission: task.numeroEtude || `RT-${task.id.slice(-6)}`,
+    location: task.location || 'À définir',
+    publishedAt: task.publishedAt || new Date(),
+    announcement: task.description,
+    description: task.description,
+    hoursPerStudent: task.duration,
+    hours: task.duration,
+    studentCount: task.studentsToRecruit || 1,
+    salary: task.remuneration,
+    priceHT: task.remuneration,
+    startDate: task.startDate,
+    requiresCV: task.requiresCV || false,
+    requiresMotivation: task.requiresMotivation || false
+  } as Mission))];
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [showCopySuccess, setShowCopySuccess] = useState(false);
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
@@ -254,6 +293,9 @@ const AvailableMissions: React.FC = () => {
 
   useEffect(() => {
     const fetchMissionsAndEtudes = async () => {
+      let missionsLoaded = false;
+      let recruitmentTasksLoaded = false;
+      
       try {
         setLoading(true);
         setError(null);
@@ -264,6 +306,12 @@ const AvailableMissions: React.FC = () => {
         const userStatus = userData?.status;
         const userStructureId = userData?.structureId;
 
+        // Rediriger les entreprises
+        if (userStatus === 'entreprise') {
+          navigate('/app/dashboard', { replace: true });
+          return;
+        }
+
         if (!userStructureId) {
           setError("Vous n'êtes pas associé à une structure");
           setLoading(false);
@@ -271,113 +319,134 @@ const AvailableMissions: React.FC = () => {
         }
 
         // 2. Récupérer les missions
-        const missionsRef = collection(db, 'missions');
-        let missionsQuery;
+        try {
+          const missionsRef = collection(db, 'missions');
+          let missionsQuery;
 
-        if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
-          // Admin, Superadmin et membres voient les missions de leur structure
-          missionsQuery = query(
-            missionsRef,
-            where('structureId', '==', userStructureId)
-          );
-        } else {
-          // Les étudiants ne voient que les missions publiées de leur structure
-          missionsQuery = query(
-            missionsRef,
-            where('structureId', '==', userStructureId),
-            where('isPublished', '==', true)
-          );
-        }
-
-        const missionsSnapshot = await getDocs(missionsQuery);
-        const missionsList = missionsSnapshot.docs.map(doc => {
-          const data = doc.data();
-          return {
-            id: doc.id,
-            ...data,
-            publishedAt: data.publishedAt && typeof data.publishedAt.toDate === 'function'
-              ? data.publishedAt.toDate()
-              : data.publishedAt
-          };
-        });
-
-        setMissions(missionsList);
-
-
-
-        // 3. Récupérer les tâches de recrutement publiées de la structure de l'utilisateur
-        const recruitmentTasksRef = collection(db, 'recruitmentTasks');
-        let recruitmentTasksQuery;
-
-        if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
-          // Admin, Superadmin et membres voient les tâches de recrutement de leur structure
-          recruitmentTasksQuery = query(
-            recruitmentTasksRef,
-            where('isPublished', '==', true),
-            where('isPublic', '==', true)
-          );
-        } else {
-          // Les étudiants ne voient que les tâches de recrutement de leur structure
-          recruitmentTasksQuery = query(
-            recruitmentTasksRef,
-            where('isPublished', '==', true),
-            where('isPublic', '==', true)
-          );
-        }
-
-        const recruitmentTasksSnapshot = await getDocs(recruitmentTasksQuery);
-        const recruitmentTasksList = await Promise.all(recruitmentTasksSnapshot.docs.map(async (doc) => {
-          const data = doc.data();
-          
-          // Récupérer le numéro d'étude si etudeId existe
-          let numeroEtude = null;
-          if (data.etudeId) {
-            try {
-              const etudeDoc = await getDoc(doc(db, 'etudes', data.etudeId));
-              if (etudeDoc.exists()) {
-                const etudeData = etudeDoc.data();
-                numeroEtude = etudeData.numeroEtude;
-              }
-            } catch (error) {
-              console.error('Erreur lors de la récupération de l\'étude:', error);
-            }
+          if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
+            // Admin, Superadmin et membres voient les missions de leur structure
+            missionsQuery = query(
+              missionsRef,
+              where('structureId', '==', userStructureId)
+            );
+          } else {
+            // Les étudiants ne voient que les missions publiées de leur structure
+            missionsQuery = query(
+              missionsRef,
+              where('structureId', '==', userStructureId),
+              where('isPublished', '==', true)
+            );
           }
 
-          return {
-            id: doc.id,
-            title: data.title || '',
-            description: data.description || '',
-            remuneration: data.remuneration || 0,
-            duration: data.duration || 0,
-            status: data.status || '',
-            applications: data.applications || 0,
-            deadline: data.deadline || '',
-            startDate: data.startDate || '',
-            endDate: data.endDate || '',
-            location: data.location || '',
-            isPublished: data.isPublished || false,
-            publishedAt: data.publishedAt && typeof data.publishedAt.toDate === 'function'
-              ? data.publishedAt.toDate()
-              : data.publishedAt || new Date(),
-            isPublic: data.isPublic || false,
-            budgetItemIds: data.budgetItemIds || [],
-            studentsToRecruit: data.studentsToRecruit || 1,
-            recruitedStudents: data.recruitedStudents || 0,
-            linkedRecruitment: data.linkedRecruitment || false,
-            etudeId: data.etudeId || '',
-            numeroEtude: numeroEtude,
-            createdAt: data.createdAt || new Date(),
-            createdBy: data.createdBy || '',
-            requiresCV: data.requiresCV || false,
-            requiresMotivation: data.requiresMotivation || false
-          };
-        }));
+          const missionsSnapshot = await getDocs(missionsQuery);
+          const missionsList = missionsSnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              ...data,
+              publishedAt: data.publishedAt && typeof data.publishedAt.toDate === 'function'
+                ? data.publishedAt.toDate()
+                : data.publishedAt
+            };
+          });
 
-        setRecruitmentTasks(recruitmentTasksList);
+          setMissions(missionsList);
+          missionsLoaded = true;
+        } catch (missionsError) {
+          console.error("Erreur lors du chargement des missions:", missionsError);
+          // Ne pas bloquer l'affichage si les missions échouent, on continue avec les tâches de recrutement
+          setMissions([]);
+        }
+
+        // 3. Récupérer les tâches de recrutement publiées de la structure de l'utilisateur
+        try {
+          const recruitmentTasksRef = collection(db, 'recruitmentTasks');
+          let recruitmentTasksQuery;
+
+          if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
+            // Admin, Superadmin et membres voient les tâches de recrutement de leur structure
+            recruitmentTasksQuery = query(
+              recruitmentTasksRef,
+              where('isPublished', '==', true),
+              where('isPublic', '==', true)
+            );
+          } else {
+            // Les étudiants ne voient que les tâches de recrutement de leur structure
+            recruitmentTasksQuery = query(
+              recruitmentTasksRef,
+              where('isPublished', '==', true),
+              where('isPublic', '==', true)
+            );
+          }
+
+          const recruitmentTasksSnapshot = await getDocs(recruitmentTasksQuery);
+          const recruitmentTasksList = await Promise.all(recruitmentTasksSnapshot.docs.map(async (doc) => {
+            const data = doc.data();
+            
+            // Récupérer le numéro d'étude si etudeId existe
+            let numeroEtude = null;
+            if (data.etudeId) {
+              try {
+                const etudeDoc = await getDoc(doc(db, 'etudes', data.etudeId));
+                if (etudeDoc.exists()) {
+                  const etudeData = etudeDoc.data();
+                  numeroEtude = etudeData.numeroEtude;
+                }
+              } catch (error) {
+                console.error('Erreur lors de la récupération de l\'étude:', error);
+                // Continuer même si la récupération de l'étude échoue
+              }
+            }
+
+            return {
+              id: doc.id,
+              title: data.title || '',
+              description: data.description || '',
+              remuneration: data.remuneration || 0,
+              duration: data.duration || 0,
+              status: data.status || '',
+              applications: data.applications || 0,
+              deadline: data.deadline || '',
+              startDate: data.startDate || '',
+              endDate: data.endDate || '',
+              location: data.location || '',
+              isPublished: data.isPublished || false,
+              publishedAt: data.publishedAt && typeof data.publishedAt.toDate === 'function'
+                ? data.publishedAt.toDate()
+                : data.publishedAt || new Date(),
+              isPublic: data.isPublic || false,
+              budgetItemIds: data.budgetItemIds || [],
+              studentsToRecruit: data.studentsToRecruit || 1,
+              recruitedStudents: data.recruitedStudents || 0,
+              linkedRecruitment: data.linkedRecruitment || false,
+              etudeId: data.etudeId || '',
+              numeroEtude: numeroEtude,
+              createdAt: data.createdAt || new Date(),
+              createdBy: data.createdBy || '',
+              requiresCV: data.requiresCV || false,
+              requiresMotivation: data.requiresMotivation || false
+            };
+          }));
+
+          setRecruitmentTasks(recruitmentTasksList);
+          recruitmentTasksLoaded = true;
+        } catch (recruitmentError) {
+          console.error("Erreur lors du chargement des tâches de recrutement:", recruitmentError);
+          // Ne pas bloquer l'affichage si les tâches de recrutement échouent
+          setRecruitmentTasks([]);
+        }
+
+        // Ne définir l'erreur que si vraiment rien n'a pu être chargé
+        if (!missionsLoaded && !recruitmentTasksLoaded) {
+          setError("Erreur lors du chargement des missions et tâches de recrutement disponibles");
+        }
 
       } catch (err) {
-        console.error("Erreur lors du chargement des missions et tâches de recrutement:", err);
-        setError("Erreur lors du chargement des missions et tâches de recrutement disponibles");
+        console.error("Erreur générale lors du chargement:", err);
+        // Ne définir l'erreur que si vraiment rien n'a pu être chargé
+        if (!missionsLoaded && !recruitmentTasksLoaded) {
+          setError("Erreur lors du chargement des missions et tâches de recrutement disponibles");
+        }
       } finally {
         setLoading(false);
       }
@@ -1003,8 +1072,8 @@ const AvailableMissions: React.FC = () => {
   };
 
   const handleOpenMission = (mission: Mission) => {
-    const index = missions.findIndex(m => m.id === mission.id);
-    setCurrentMissionIndex(index);
+    const index = allItems.findIndex(m => m.id === mission.id);
+    setCurrentMissionIndex(index >= 0 ? index : 0);
     setSelectedMission(mission);
   };
 
@@ -1055,9 +1124,9 @@ const AvailableMissions: React.FC = () => {
 
   const handleNavigateMission = (direction: 'prev' | 'next') => {
     const newIndex = direction === 'prev' ? currentMissionIndex - 1 : currentMissionIndex + 1;
-    if (newIndex >= 0 && newIndex < missions.length) {
+    if (newIndex >= 0 && newIndex < allItems.length) {
       setCurrentMissionIndex(newIndex);
-      setSelectedMission(missions[newIndex]);
+      setSelectedMission(allItems[newIndex]);
     }
   };
 
@@ -1669,7 +1738,7 @@ const AvailableMissions: React.FC = () => {
                 zIndex: 1,
               }}>
                 <Typography variant="body2" sx={{ color: '#666666' }}>
-                  {currentMissionIndex + 1}/{missions.length}
+                  {currentMissionIndex + 1}/{allItems.length}
                 </Typography>
                 <IconButton 
                   disabled={currentMissionIndex === 0}
@@ -1690,7 +1759,7 @@ const AvailableMissions: React.FC = () => {
                   <NavigateBeforeIcon />
                 </IconButton>
                 <IconButton 
-                  disabled={currentMissionIndex === missions.length - 1}
+                  disabled={currentMissionIndex === allItems.length - 1}
                   onClick={() => handleNavigateMission('next')}
                   sx={{
                     bgcolor: 'white',
@@ -2238,6 +2307,14 @@ const AvailableMissions: React.FC = () => {
                 </Box>
 
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
+                  {task.location && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <LocationOnIcon sx={{ color: '#2E3B7C', fontSize: '1.2rem' }} />
+                      <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
+                        {task.location}
+                      </Typography>
+                    </Box>
+                  )}
                   {task.startDate && (
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <TimerIcon sx={{ color: '#2E3B7C', fontSize: '1.2rem' }} />

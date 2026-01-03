@@ -46,6 +46,7 @@ import {
   TextSnippet as TextSnippetIcon,
   Security as SecurityIcon,
   Notifications as NotificationsIcon,
+  Add as AddIcon,
 } from '@mui/icons-material';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -182,13 +183,18 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   const isEntreprise = userData?.status === "entreprise";
   const isAdminStructure = userData?.status === "admin_structure";
   
-  // Déterminer si l'utilisateur est une Junior-Entreprise (accès complet)
+  // Déterminer si l'utilisateur est une Junior (accès complet)
   const isJuniorEntreprise = isAdminStructure || isAdmin || isMember || isSuperAdmin;
 
   // Charger le type de structure et le logo
   useEffect(() => {
     const loadStructureData = async () => {
       if (!currentUser) return;
+      
+      // Ne pas charger les données de structure pour les entreprises
+      if (isEntreprise) {
+        return;
+      }
 
       try {
         // Récupérer le structureId de l'utilisateur
@@ -206,14 +212,14 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
               setStructureLogo(logo);
             }
           }
-          }
-        } catch (error) {
+        }
+      } catch (error) {
         console.error('Erreur lors du chargement des données de la structure:', error);
       }
     };
 
     loadStructureData();
-  }, [currentUser]);
+  }, [currentUser, isEntreprise]);
 
   // Déterminer la section active basée sur le pathname
   useEffect(() => {
@@ -226,10 +232,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       setSelectedSection('settings');
     } else if (path.startsWith('/app/profile') || path.startsWith('/app/available-missions')) {
       setSelectedSection('personal');
-    } else if (path.startsWith('/app/commercial') || path.startsWith('/app/audit') || path.startsWith('/prospect/')) {
-      setSelectedSection('analytics');
-    } else if (path.startsWith('/app/tresorerie') || path.startsWith('/app/human-resources')) {
-      setSelectedSection('operations');
+    } else if (path.startsWith('/app/commercial') || path.startsWith('/app/audit') || path.startsWith('/prospect/') || path.startsWith('/app/tresorerie') || path.startsWith('/app/human-resources')) {
+      setSelectedSection('poles');
     } else if (
       path.startsWith('/app/dashboard') || 
       path.startsWith('/app/organization') || 
@@ -307,28 +311,28 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       icon: <SearchIcon />,
       iconSidebarIcon: <BarChartIcon />,
       path: '/app/commercial',
-      section: 'analytics',
+      section: 'poles',
     },
     {
       text: 'Audit',
       icon: <AssessmentIcon />,
       iconSidebarIcon: <BarChartIcon />,
       path: '/app/audit',
-      section: 'analytics',
+      section: 'poles',
     },
     {
       text: 'Trésorerie',
       icon: <AttachMoneyIcon />,
-      iconSidebarIcon: <ShoppingCartIcon />,
+      iconSidebarIcon: <BarChartIcon />,
       path: '/app/tresorerie',
-      section: 'operations',
+      section: 'poles',
     },
     {
       text: 'Ressources Humaines',
       icon: <GroupIcon />,
-      iconSidebarIcon: <PeopleIcon />,
+      iconSidebarIcon: <BarChartIcon />,
       path: '/app/human-resources',
-      section: 'operations',
+      section: 'poles',
     },
     // Items de paramètres
     {
@@ -417,24 +421,10 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       section: 'crm',
     },
     {
-      text: 'Nouvelle Mission',
-      icon: <AddIcon />,
-      iconSidebarIcon: <DashboardIcon />,
-      path: '/app/mission?new=true',
-      section: 'crm',
-    },
-    {
-      text: 'Mes Missions',
-      icon: <WorkIcon />,
-      iconSidebarIcon: <DashboardIcon />,
-      path: '/app/mission',
-      section: 'crm',
-    },
-    {
       text: 'Facturation',
       icon: <AttachMoneyIcon />,
       iconSidebarIcon: <DashboardIcon />,
-      path: '/app/profile?tab=billing',
+      path: '/app/billing-page',
       section: 'crm',
     },
   ];
@@ -551,8 +541,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   const getSectionTitle = (section: string) => {
     const titles: { [key: string]: string } = {
       'crm': 'CRM',
-      'analytics': 'Analytics',
-      'operations': 'Opérations',
+      'poles': 'Pôles',
       'settings': 'Paramètres',
       'personal': 'Espace Personnel',
       'superadmin': 'SuperAdmin',
@@ -692,12 +681,14 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
             </Typography>
           </Box>
           <Divider />
-          <MenuItem onClick={() => { setUserMenuAnchorEl(null); navigate('/app/available-missions'); }}>
-            <ListItemIcon>
-              <BusinessIcon fontSize="small" />
-            </ListItemIcon>
-            Missions disponibles
-          </MenuItem>
+          {!isEntreprise && (
+            <MenuItem onClick={() => { setUserMenuAnchorEl(null); navigate('/app/available-missions'); }}>
+              <ListItemIcon>
+                <BusinessIcon fontSize="small" />
+              </ListItemIcon>
+              Missions disponibles
+            </MenuItem>
+          )}
           <MenuItem onClick={() => { setUserMenuAnchorEl(null); navigate('/app/profile'); }}>
             <ListItemIcon>
               <PersonIcon fontSize="small" />

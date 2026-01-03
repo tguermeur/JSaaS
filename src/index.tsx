@@ -37,11 +37,16 @@ root.render(
   </React.StrictMode>
 );
 
-// Log de démarrage
-const port = 3005;
-const host = 'localhost';
+// Log de démarrage dynamique basé sur l'URL actuelle
+if (typeof window !== 'undefined') {
+  const { protocol, hostname, port } = window.location;
+  const resolvedPort = port || (protocol === 'https:' ? '443' : '80');
 
-console.log('\x1b[36m%s\x1b[0m', `
+  console.log(
+    '\x1b[36m%s\x1b[0m',
+    `
 🚀 Application démarrée !
-📱 Local: http://${host}:${port}
-`); 
+📱 Local: ${protocol}//${hostname}:${resolvedPort}
+`
+  );
+}

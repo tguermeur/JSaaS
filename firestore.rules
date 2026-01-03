@@ -8,7 +8,9 @@ service cloud.firestore {
     }
     
     function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) ?
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data :
+             null;
     }
     
     function isAdmin() {
@@ -32,33 +34,159 @@ service cloud.firestore {
       return request.auth.uid == userId;
     }
 
+    // Fonction pour vérifier si l'utilisateur est une entreprise
+    function isEntreprise() {
+      let userData = getUserData();
+      return userData != null && userData.status == 'entreprise';
+    }
+    
+    // Fonction pour vérifier si l'entreprise crée sa propre mission
+    function isEnterpriseCreatingOwnMission() {
+      let userData = getUserData();
+      return userData != null &&
+             userData.status == 'entreprise' && 
+             request.resource.data.companyId == request.auth.uid &&
+             request.resource.data.createdByEnterprise == true;
+    }
+    
+    // Fonction pour vérifier si l'entreprise accède à sa propre mission
+    function isEnterpriseAccessingOwnMission() {
+      let userData = getUserData();
+      // Vérifier d'abord si c'est une entreprise accédant à sa propre mission
+      // On vérifie companyId en premier car c'est plus direct
+      return resource.data.companyId == request.auth.uid &&
+             userData != null &&
+             userData.status == 'entreprise';
+    }
+
     // Règles pour la collection missions
     match /missions/{missionId} {
+      // Fonction pour vérifier l'accès à une mission
+      function canAccessMission() {
+        let userData = getUserData();
+        // Superadmin peut tout voir, ou entreprise accédant à sa propre mission, ou admin/member de la même structure
+        // On permet l'accès si companyId correspond, sans vérifier le statut
+        // car getUserData() peut échouer ou retourner null
+        return isSuperAdmin() ||
+               resource.data.companyId == request.auth.uid ||
+               (
+                 // Admin/member de la même structure
+                 userData != null &&
+                 userData.status in ['admin', 'member'] &&
+                 userData.structureId != null &&
+                 userData.structureId != '' &&
+                 resource.data.structureId != null &&
+                 resource.data.structureId != '' &&
+                 resource.data.structureId == userData.structureId
+               );
+      }
+      
+      // Fonction simplifiée pour vérifier l'accès via structureId
+      function canAccessViaStructure() {
+        return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['admin', 'member'] &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != null &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != '' &&
+               resource.data.structureId != null &&
+               resource.data.structureId != '' &&
+               resource.data.structureId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId;
+      }
+      
+      // Lecture : superadmin, membres de la structure, ou entreprise pour ses propres missions
+      // Simplifié : permettre l'accès si companyId correspond (priorité) OU si structureId correspond
       allow read: if isAuthenticated() && (
-        isSuperAdmin() || 
-        getUserData().status in ['admin', 'member'] ||
-        resource.data.structureId == getUserData().structureId
+        isSuperAdmin() ||
+        resource.data.companyId == request.auth.uid ||
+        (
+          // Vérifier l'accès via structureId seulement si companyId ne correspond pas
+          resource.data.companyId != request.auth.uid &&
+          canAccessViaStructure()
+        )
       );
       
-      allow list: if isAuthenticated() && (
-        isSuperAdmin() || 
-        getUserData().status in ['admin', 'member']
-      );
+      // Règle spécifique pour les requêtes de liste
+      // Permettre toutes les requêtes de liste pour les utilisateurs authentifiés
+      // allow read filtrera les résultats
+      allow list: if isAuthenticated();
       
-      allow write: if isAuthenticated() && (
+      // Création : superadmin, membres de la structure, ou entreprise pour ses propres missions
+      allow create: if isAuthenticated() && (
         isSuperAdmin() || 
         (
           getUserData().status in ['admin', 'member'] && 
           request.resource.data.structureId == getUserData().structureId
+        ) ||
+        isEnterpriseCreatingOwnMission()
+      );
+      
+      // Mise à jour : superadmin, membres de la structure, ou entreprise pour ses propres missions
+      // Note: Les entreprises ne peuvent modifier que leurs missions en attente, la structure gère le reste
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          getUserData().status in ['admin', 'member'] && 
+          resource.data.structureId == getUserData().structureId
+        ) ||
+        (
+          isEntreprise() && 
+          resource.data.companyId == request.auth.uid &&
+          resource.data.createdByEnterprise == true &&
+          // Vérifier que les champs critiques n'ont pas changé
+          request.resource.data.structureId == resource.data.structureId &&
+          request.resource.data.numeroMission == resource.data.numeroMission &&
+          request.resource.data.companyId == resource.data.companyId
+        )
+      );
+      
+      // Suppression : seulement superadmin ou membres de la structure
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          getUserData().status in ['admin', 'member'] && 
+          resource.data.structureId == getUserData().structureId
         )
       );
 
       // Règles pour la sous-collection generatedDocuments
       match /generatedDocuments/{documentId} {
-        allow read: if isAuthenticated();
-        allow create: if isAuthenticated();
-        allow update: if isAuthenticated();
-        allow delete: if isAuthenticated();
+        // Fonction pour vérifier si l'utilisateur est l'étudiant concerné par le document
+        function isDocumentStudent() {
+          let docData = resource.data;
+          // Si le document a un applicationId, vérifier que l'utilisateur est l'étudiant concerné
+          return docData.applicationId != null && 
+                 exists(/databases/$(database)/documents/applications/$(docData.applicationId)) &&
+                 get(/databases/$(database)/documents/applications/$(docData.applicationId)).data.userId == request.auth.uid;
+        }
+        
+        // Fonction pour vérifier si l'utilisateur est autorisé via la structure
+        function canAccessViaStructure() {
+          let userData = getUserData();
+          let docData = resource.data;
+          return userData != null && 
+                 userData.status in ['admin', 'member'] &&
+                 docData.structureId == userData.structureId;
+        }
+        
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() ||
+          isDocumentStudent() ||
+          canAccessViaStructure()
+        );
+        
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() ||
+          canAccessViaStructure()
+        );
+        
+        allow update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          canAccessViaStructure()
+        );
+        
+        allow delete: if isAuthenticated() && (
+          isSuperAdmin() ||
+          canAccessViaStructure()
+        );
       }
     }
 
@@ -109,9 +237,28 @@ service cloud.firestore {
 
     // Règles pour la collection applications
     match /applications/{applicationId} {
+      // Fonction pour vérifier l'accès via la mission
+      function canAccessViaMission() {
+        let userData = getUserData();
+        let applicationData = resource.data;
+        // L'étudiant peut toujours voir sa propre candidature
+        return applicationData.userId == request.auth.uid ||
+               (
+                 exists(/databases/$(database)/documents/missions/$(applicationData.missionId)) &&
+                 (
+                   isSuperAdmin() ||
+                   (
+                     userData != null && 
+                     userData.status in ['admin', 'member'] &&
+                     get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.structureId == userData.structureId
+                   )
+                 )
+               );
+      }
+
       allow read: if isAuthenticated() && (
-        resource.data.userId == request.auth.uid ||
-        getUserData().status in ['admin', 'superadmin']
+        isSuperAdmin() ||
+        canAccessViaMission()
       );
 
       allow create: if isAuthenticated() && (
@@ -121,7 +268,12 @@ service cloud.firestore {
       );
 
       allow update: if isAuthenticated() && (
-        getUserData().status in ['admin', 'superadmin']
+        isSuperAdmin() ||
+        (
+          getUserData().status in ['admin', 'member'] &&
+          exists(/databases/$(database)/documents/missions/$(resource.data.missionId)) &&
+          get(/databases/$(database)/documents/missions/$(resource.data.missionId)).data.structureId == getUserData().structureId
+        )
       );
 
       allow delete: if false;
@@ -131,8 +283,17 @@ service cloud.firestore {
     match /users/{userId} {
       // Autoriser la création même si l'utilisateur n'est pas encore authentifié (inscription)
       allow create: if request.auth == null || request.auth.uid == userId;
-      // Lecture et update seulement pour l'utilisateur connecté sur son propre doc
-      allow read, update: if request.auth != null && request.auth.uid == userId;
+      
+      // Update seulement pour l'utilisateur connecté sur son propre doc
+      allow update: if request.auth != null && request.auth.uid == userId;
+      
+      // Lecture pour soi-même, les superadmins, ou les membres de la même structure
+      allow read: if request.auth != null && (
+        request.auth.uid == userId || 
+        isSuperAdmin() ||
+        (resource.data.structureId == getUserData().structureId)
+      );
+      
       allow delete: if false;
     }
 
@@ -169,6 +330,28 @@ service cloud.firestore {
       );
       allow create: if isAuthenticated();
       allow update, delete: if isSuperAdmin();
+    }
+
+    // Règles pour la collection calendarEvents
+    match /calendarEvents/{eventId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        resource.data.structureId == getUserData().structureId
+      );
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+      allow update, delete: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
     }
 
     // Règles pour la collection templates
@@ -311,11 +494,7 @@ service cloud.firestore {
     }
     */
 
-    // Règles pour la collection missions
-    match /missions/{missionId} {
-      allow read: if canAccessMission(missionId);
-      allow write: if canEditMission(missionId);
-    }
+    // Cette règle est un doublon et a été supprimée - voir les règles missions ci-dessus
 
     // Règles pour la collection subscriptions
     match /subscriptions/{subscriptionId} {
@@ -351,80 +530,286 @@ service cloud.firestore {
       );
     }
 
-    // Règles pour la collection companies
-    match /companies/{companyId} {
-      allow read: if canAccessCompany(companyId);
-      allow write: if canEditCompany(companyId);
-    }
 
-    // Règles pour la collection applications
-    match /applications/{applicationId} {
-      allow read: if canAccessApplication(applicationId);
-      allow write: if canEditApplication(applicationId);
+    // Règles pour la collection notes
+    match /notes/{noteId} {
+      // Fonction pour vérifier l'accès via la mission
+      function canAccessViaMission() {
+        let userData = getUserData();
+        let noteData = resource.data;
+        // Vérifier si l'utilisateur a accès à la mission associée
+        return exists(/databases/$(database)/documents/missions/$(noteData.missionId)) &&
+               (
+                 isSuperAdmin() ||
+                 (
+                   userData != null && 
+                   userData.status in ['admin', 'member'] &&
+                   get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.structureId == userData.structureId
+                 ) ||
+                 (
+                   isEntreprise() &&
+                   get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.companyId == request.auth.uid
+                 )
+               );
+      }
+
+      // Fonction pour vérifier l'accès à une mission
+      function canAccessMission(missionId) {
+        let userData = getUserData();
+        return isSuperAdmin() ||
+               (
+                 exists(/databases/$(database)/documents/missions/$(missionId)) &&
+                 (
+                   (userData != null && 
+                    userData.status in ['admin', 'member'] &&
+                    get(/databases/$(database)/documents/missions/$(missionId)).data.structureId == userData.structureId) ||
+                   (isEntreprise() &&
+                    get(/databases/$(database)/documents/missions/$(missionId)).data.companyId == request.auth.uid)
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission() ||
+        resource.data.createdBy == request.auth.uid
+      );
+
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission()
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission() ||
+        resource.data.createdBy == request.auth.uid
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission() ||
+        resource.data.createdBy == request.auth.uid
+      );
     }
 
     // Règles pour la collection expenseNotes
     match /expenseNotes/{expenseNoteId} {
-      allow read: if canAccessExpenseNote(expenseNoteId);
-      allow write: if canEditExpenseNote(expenseNoteId);
+      // Fonction pour vérifier l'accès via la mission
+      function canAccessViaMission() {
+        let userData = getUserData();
+        let expenseNoteData = resource.data;
+        // Vérifier si l'utilisateur a accès à la mission associée
+        return exists(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)) &&
+               (
+                 isSuperAdmin() ||
+                 (
+                   userData != null && 
+                   userData.status in ['admin', 'member'] &&
+                   get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.structureId == userData.structureId
+                 ) ||
+                 (
+                   isEntreprise() &&
+                   get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.companyId == request.auth.uid
+                 )
+               );
+      }
+
+      // Fonction pour vérifier l'accès à une mission
+      function canAccessMission(missionId) {
+        let userData = getUserData();
+        return isSuperAdmin() ||
+               (
+                 exists(/databases/$(database)/documents/missions/$(missionId)) &&
+                 (
+                   (userData != null && 
+                    userData.status in ['admin', 'member'] &&
+                    get(/databases/$(database)/documents/missions/$(missionId)).data.structureId == userData.structureId) ||
+                   (isEntreprise() &&
+                    get(/databases/$(database)/documents/missions/$(missionId)).data.companyId == request.auth.uid)
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission() ||
+        resource.data.createdBy == request.auth.uid
+      );
+
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission()
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission() ||
+        resource.data.createdBy == request.auth.uid
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission()
+      );
     }
 
     // Règles pour la collection workingHours
     match /workingHours/{workingHourId} {
-      allow read: if canAccessWorkingHour(workingHourId);
-      allow write: if canEditWorkingHour(workingHourId);
+      // Fonction pour vérifier l'accès via l'application
+      function canAccessViaApplication() {
+        let userData = getUserData();
+        let workingHourData = resource.data;
+        // Vérifier si l'utilisateur a accès à l'application associée
+        return exists(/databases/$(database)/documents/applications/$(workingHourData.applicationId)) &&
+               (
+                 // L'étudiant peut voir ses propres heures
+                 get(/databases/$(database)/documents/applications/$(workingHourData.applicationId)).data.userId == request.auth.uid ||
+                 (
+                   exists(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(workingHourData.applicationId)).data.missionId)) &&
+                   (
+                     isSuperAdmin() ||
+                     (
+                       userData != null && 
+                       userData.status in ['admin', 'member'] &&
+                       get(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(workingHourData.applicationId)).data.missionId)).data.structureId == userData.structureId
+                     )
+                   )
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaApplication()
+      );
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaApplication()
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaApplication()
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaApplication()
+      );
     }
 
     // Règles pour la collection amendments
     match /amendments/{amendmentId} {
-      allow read: if canAccessAmendment(amendmentId);
-      allow write: if canEditAmendment(amendmentId);
+      // Fonction pour vérifier l'accès via la mission
+      function canAccessViaMission() {
+        let userData = getUserData();
+        let amendmentData = resource.data;
+        // Vérifier si l'utilisateur a accès à la mission associée
+        return exists(/databases/$(database)/documents/missions/$(amendmentData.missionId)) &&
+               (
+                 isSuperAdmin() ||
+                 (
+                   userData != null && 
+                   userData.status in ['admin', 'member'] &&
+                   get(/databases/$(database)/documents/missions/$(amendmentData.missionId)).data.structureId == userData.structureId
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission()
+      );
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission()
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission()
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaMission()
+      );
     }
 
-    // Règles pour la collection notes
-    match /notes/{noteId} {
-      allow read: if canAccessNote(noteId);
-      allow write: if canEditNote(noteId);
-    }
-
-    // Règles pour la collection generatedDocuments
+    // Règles pour la collection generatedDocuments (collection principale)
     match /generatedDocuments/{documentId} {
-      allow read: if canAccessGeneratedDocument(documentId);
-      allow write: if canEditGeneratedDocument(documentId);
+      // Fonction pour vérifier si l'utilisateur est l'étudiant concerné par le document
+      function isDocumentStudent() {
+        let docData = resource.data;
+        // Si le document a un applicationId, vérifier que l'utilisateur est l'étudiant concerné
+        return docData.applicationId != null && 
+               exists(/databases/$(database)/documents/applications/$(docData.applicationId)) &&
+               get(/databases/$(database)/documents/applications/$(docData.applicationId)).data.userId == request.auth.uid;
+      }
+      
+      // Fonction pour vérifier si l'utilisateur est autorisé via la structure
+      function canAccessViaStructure() {
+        let userData = getUserData();
+        let docData = resource.data;
+        return userData != null && 
+               userData.status in ['admin', 'member'] &&
+               docData.structureId == userData.structureId;
+      }
+
+      
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        isDocumentStudent() ||
+        canAccessViaStructure()
+      );
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaStructure()
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaStructure()
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        canAccessViaStructure()
+      );
     }
 
     // Règles pour la collection templates
     match /templates/{templateId} {
-      allow read: if canAccessTemplate(templateId);
-      allow write: if canEditTemplate(templateId);
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated();
     }
 
     // Règles pour la collection templateVariables
     match /templateVariables/{variableId} {
-      allow read: if canAccessVariable(variableId);
-      allow write: if canEditVariable(variableId);
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated();
     }
 
     // Règles pour la collection documentTags
     match /documentTags/{tagId} {
-      allow read: if canAccessTag(tagId);
-      allow write: if canEditTag(tagId);
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow delete: if isAuthenticated();
     }
 
     // Règles pour la collection missionTypes
-    match /missionTypes/{typeId} {
-      allow read: if canAccessMissionType(typeId);
-      allow write: if canEditMissionType(typeId);
-    }
-
-    // Règles pour la collection structures
-    match /structures/{structureId} {
-      allow read: if canAccessStructureData(structureId);
-      allow write: if canEditStructureData(structureId);
-    }
-
-    // Règles pour la collection contacts
-    match /contacts/{contactId} {
+    match /missionTypes/{missionTypeId} {
       allow read: if isAuthenticated() && (
         isSuperAdmin() || 
         resource.data.structureId == getUserData().structureId
@@ -433,6 +818,61 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+    }
+
+
+    // Règles pour la collection contacts
+    match /contacts/{contactId} {
+      // Fonction pour vérifier l'accès via companyId ou structureId
+      function canAccessContact() {
+        let userData = getUserData();
+        let contactData = resource.data;
+        return isSuperAdmin() ||
+               (
+                 userData != null && 
+                 userData.status in ['admin', 'member'] &&
+                 contactData.structureId == userData.structureId
+               ) ||
+               (
+                 // Vérifier si l'utilisateur a accès à l'entreprise associée
+                 contactData.companyId != null &&
+                 exists(/databases/$(database)/documents/companies/$(contactData.companyId)) &&
+                 (
+                   isSuperAdmin() ||
+                   (
+                     userData != null && 
+                     userData.status in ['admin', 'member'] &&
+                     get(/databases/$(database)/documents/companies/$(contactData.companyId)).data.structureId == userData.structureId
+                   )
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessContact();
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          resource.data.structureId == getUserData().structureId &&
           getUserData().status in ['membre', 'admin']
         )
       );

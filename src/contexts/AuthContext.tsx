@@ -116,9 +116,18 @@ export function AuthProvider({ children }) {
               setCurrentUser(user);
             }
             setLoading(false);
-          }, (error) => {
-            console.error("Erreur lors de l'écoute des changements:", error);
-            setLoading(false);
+          }, (error: any) => {
+            // Gérer les erreurs de permissions de manière silencieuse lors de la création de compte
+            if (error?.code === 'permission-denied') {
+              console.warn("Permissions insuffisantes pour lire le document utilisateur. Le document sera créé lors de l'inscription.");
+              // Ne pas bloquer l'application si c'est juste une erreur de permissions
+              // Le document sera créé lors de l'inscription
+              setCurrentUser(user);
+              setLoading(false);
+            } else {
+              console.error("Erreur lors de l'écoute des changements:", error);
+              setLoading(false);
+            }
           });
         } else {
           setCurrentUser(null);

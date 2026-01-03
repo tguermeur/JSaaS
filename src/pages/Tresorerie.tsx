@@ -44,6 +44,23 @@ import { collection, query, where, getDocs, getDoc, doc, updateDoc, addDoc } fro
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { useSnackbar } from 'notistack';
+import { FormControl, InputLabel, Select, MenuItem } from '@mui/material';
+
+// Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
+const generateMandats = (): string[] => {
+  const currentYear = new Date().getFullYear();
+  const startYear = 2022;
+  const mandats: string[] = [];
+  
+  for (let year = startYear; year <= currentYear; year++) {
+    const nextYear = year + 1;
+    mandats.push(`${year}-${nextYear}`);
+  }
+  
+  return mandats;
+};
+
+const AVAILABLE_MANDATS = generateMandats();
 
 // Animations
 const fadeIn = keyframes`
@@ -69,6 +86,9 @@ interface Mission {
   totalHT?: number;
   tva?: number;
   invoiceStatus?: 'to_send' | 'sent' | 'paid';
+  etape?: 'Négociation' | 'Recrutement' | 'Date de mission' | 'Facturation' | 'Audit' | 'Archivé';
+  chargeId?: string;
+  mandat?: string; // Format: "2022-2023", "2023-2024", etc.
 }
 
 interface ExtendedUserData {
@@ -142,6 +162,7 @@ interface Contract {
   paymentProcessedAt?: Date;
   paymentProcessedBy?: string;
   createdByName?: string;
+  cdmMandat?: string; // Mandat du chargé de mission
 }
 
 interface ContractStatus {
@@ -179,19 +200,25 @@ const StyledTooltip = styled(Tooltip)(({ theme }) => ({
   '& .MuiTooltip-tooltip': {
     backgroundColor: '#FFFFFF',
     color: '#1d1d1f',
-    maxWidth: 380,
+    maxWidth: 650,
     fontSize: '0.875rem',
-    border: '1px solid rgba(0, 0, 0, 0.05)',
-    borderRadius: '16px',
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.08)',
-    padding: '24px',
-    margin: '8px'
+    border: 'none',
+    borderRadius: '20px',
+    boxShadow: '0 12px 48px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.08)',
+    padding: 0,
+    margin: '8px',
+    overflow: 'visible',
+    '& *': {
+      border: 'none !important',
+      outline: 'none !important'
+    }
   },
   '& .MuiTooltip-arrow': {
     color: '#FFFFFF',
     '&::before': {
-      border: '1px solid rgba(0, 0, 0, 0.05)',
-      backgroundColor: '#FFFFFF'
+      border: 'none !important',
+      backgroundColor: '#FFFFFF',
+      boxShadow: 'none'
     }
   }
 }));
@@ -219,14 +246,14 @@ const InfoRow: React.FC<{
   return (
     <Box sx={{ 
       display: 'flex', 
-      alignItems: 'center', 
+      alignItems: 'flex-start', 
       justifyContent: 'space-between',
-      py: 1.5,
+      py: 1,
+      px: 2,
       backgroundColor: '#FFFFFF',
-      '&:not(:last-child)': {
-        borderBottom: '1px solid rgba(0, 0, 0, 0.05)'
-      },
+      transition: 'background-color 0.2s ease',
       '&:hover': {
+        backgroundColor: '#f8f9fa',
         '& .copy-button': {
           opacity: 1,
           transform: 'translateX(0)'
@@ -235,28 +262,34 @@ const InfoRow: React.FC<{
     }}>
       <Box sx={{ 
         flex: 1,
-        backgroundColor: '#FFFFFF'
+        backgroundColor: 'transparent',
+        minWidth: 0,
+        overflow: 'visible'
       }}>
         <Typography sx={{ 
-          fontSize: '0.8125rem',
+          fontSize: '0.7rem',
           color: '#86868b',
-          mb: 0.5,
-          letterSpacing: '-0.01em',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
+          mb: 0.25,
+          letterSpacing: '0.02em',
+          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+          fontWeight: 600,
+          textTransform: 'uppercase'
         }}>
           {label}
         </Typography>
         <Typography sx={{ 
-          fontSize: '0.9375rem',
+          fontSize: '0.875rem',
           color: '#1d1d1f',
-          fontWeight: 400,
+          fontWeight: 500,
           letterSpacing: '-0.01em',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
+          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+          lineHeight: 1.3,
+          wordBreak: 'break-word'
         }}>
-          {value || 'Non renseigné'}
+          {value || <Box component="span" sx={{ color: '#86868b', fontStyle: 'italic' }}>Non renseigné</Box>}
         </Typography>
       </Box>
-      {value && (
+      {value && value !== 'Non renseigné' && (
         <Tooltip 
           title={copied ? "Copié !" : "Copier"} 
           placement="top"
@@ -272,9 +305,12 @@ const InfoRow: React.FC<{
               transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
               color: copied ? '#34C759' : '#007AFF',
               p: 1,
-              backgroundColor: '#FFFFFF',
+              ml: 1,
+              backgroundColor: 'transparent',
+              borderRadius: '8px',
               '&:hover': {
-                backgroundColor: copied ? 'rgba(52, 199, 89, 0.08)' : 'rgba(0, 122, 255, 0.08)'
+                backgroundColor: copied ? 'rgba(52, 199, 89, 0.1)' : 'rgba(0, 122, 255, 0.1)',
+                transform: 'scale(1.1)'
               }
             }}
           >
@@ -289,24 +325,35 @@ const InfoRow: React.FC<{
 const UserInfoTooltip: React.FC<{ userData: ExtendedUserData }> = ({ userData }) => (
   <Box sx={{ 
     backgroundColor: '#FFFFFF',
-    width: '100%'
+    width: '100%',
+    overflow: 'hidden',
+    '& *': {
+      border: 'none !important',
+      outline: 'none !important'
+    }
   }}>
-    <Typography sx={{ 
-      fontSize: '1.125rem',
-      fontWeight: 600,
-      color: '#1d1d1f',
-      mb: 3,
-      letterSpacing: '-0.02em',
-      fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-      backgroundColor: '#FFFFFF'
+    {/* Header simplifié */}
+    <Box sx={{
+      padding: '10px 16px 8px 16px',
+      border: 'none'
     }}>
-      Informations de l'étudiant
-    </Typography>
+      <Typography sx={{ 
+        fontSize: '0.875rem',
+        fontWeight: 600,
+        color: '#1d1d1f',
+        letterSpacing: '-0.01em',
+        fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
+      }}>
+        Informations de l'étudiant
+      </Typography>
+    </Box>
     
+    {/* Contenu */}
     <Box sx={{ 
       display: 'flex',
       flexDirection: 'column',
-      backgroundColor: '#FFFFFF'
+      backgroundColor: '#FFFFFF',
+      border: 'none'
     }}>
       <InfoRow 
         label="Nom complet"
@@ -320,7 +367,7 @@ const UserInfoTooltip: React.FC<{ userData: ExtendedUserData }> = ({ userData })
       
       <InfoRow 
         label="Lieu de naissance"
-        value={userData.birthPlace ? `${userData.birthPlace} ${userData.birthPostalCode ? `(${userData.birthPostalCode})` : ''}` : ''}
+        value={userData.birthPlace ? `${userData.birthPlace}${userData.birthPostalCode ? ` (${userData.birthPostalCode})` : ''}` : ''}
         copyValue={`${userData.birthPlace || ''} ${userData.birthPostalCode || ''}`}
       />
       
@@ -711,6 +758,7 @@ const Tresorerie: React.FC = () => {
   const { enqueueSnackbar } = useSnackbar();
   const [contractFilter, setContractFilter] = useState<ContractFilter>('all');
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
+  const [mandatFilter, setMandatFilter] = useState<string>('all');
   const [filters, setFilters] = useState<TableFilters>({
     numeroMission: '',
     student: '',
@@ -1227,6 +1275,24 @@ const Tresorerie: React.FC = () => {
 
         // 2. Pour chaque mission, récupérer les applications et les contrats associés
         for (const mission of missions) {
+          // Récupérer le mandat du chargé de mission si la mission a un chargeId
+          let cdmMandat: string | undefined;
+          if (mission.chargeId) {
+            try {
+              const chargeDoc = await getDoc(doc(db, 'users', mission.chargeId));
+              if (chargeDoc.exists()) {
+                const chargeData = chargeDoc.data();
+                cdmMandat = chargeData.mandat || undefined;
+              }
+            } catch (error) {
+              console.error('Erreur lors de la récupération du mandat du chargé de mission:', error);
+            }
+          }
+          
+          // Si la mission a déjà un mandat, l'utiliser, sinon utiliser celui du CDM
+          if (!mission.mandat && cdmMandat) {
+            mission.mandat = cdmMandat;
+          }
           const applicationsRef = collection(db, 'applications');
           const applicationsQuery = query(
             applicationsRef,
@@ -1370,7 +1436,8 @@ const Tresorerie: React.FC = () => {
               expenseNotes,
               isPaymentProcessed: contractSnapshot.empty ? false : contractSnapshot.docs[0].data().isPaymentProcessed || false,
               paymentProcessedAt: contractSnapshot.empty ? null : contractSnapshot.docs[0].data().paymentProcessedAt || null,
-              paymentProcessedBy: contractSnapshot.empty ? null : contractSnapshot.docs[0].data().paymentProcessedBy || null
+              paymentProcessedBy: contractSnapshot.empty ? null : contractSnapshot.docs[0].data().paymentProcessedBy || null,
+              cdmMandat: cdmMandat || mission.mandat
             });
           }
         }
@@ -1482,88 +1549,136 @@ const Tresorerie: React.FC = () => {
               </Typography>
             </Paper>
           ) : (
-            <Box sx={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              alignItems: 'center',
-              mb: 2,
-              pl: 2
-            }}>
-              <Box sx={{ display: 'flex', gap: 1 }}>
-                <Chip
-                  label="Tous les contrats"
-                  onClick={() => setContractFilter('all')}
-                  color={contractFilter === 'all' ? 'primary' : 'default'}
-                  variant={contractFilter === 'all' ? 'filled' : 'outlined'}
-                  sx={{
-                    borderRadius: '8px',
-                    '&.MuiChip-filled': {
-                      backgroundColor: '#007AFF',
-                    },
-                    '&.MuiChip-outlined': {
-                      borderColor: '#d2d2d7',
-                      color: '#1d1d1f',
-                      '&:hover': {
-                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+            <Paper 
+              elevation={0}
+              sx={{ 
+                p: 2, 
+                mb: 2, 
+                mx: 2,
+                borderRadius: '12px',
+                backgroundColor: '#f8f9fa',
+                border: '1px solid #e5e5e7'
+              }}
+            >
+              <Box sx={{ 
+                display: 'flex', 
+                flexWrap: 'wrap',
+                gap: 2,
+                alignItems: 'center'
+              }}>
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
+                  <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
+                    Statut :
+                  </Typography>
+                  <Chip
+                    label="Tous les contrats"
+                    onClick={() => setContractFilter('all')}
+                    color={contractFilter === 'all' ? 'primary' : 'default'}
+                    variant={contractFilter === 'all' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
                       }
-                    }
-                  }}
-                />
-                <Chip
-                  label="À générer"
-                  onClick={() => setContractFilter('pending')}
-                  color={contractFilter === 'pending' ? 'primary' : 'default'}
-                  variant={contractFilter === 'pending' ? 'filled' : 'outlined'}
-                  sx={{
-                    borderRadius: '8px',
-                    '&.MuiChip-filled': {
-                      backgroundColor: '#007AFF',
-                    },
-                    '&.MuiChip-outlined': {
-                      borderColor: '#d2d2d7',
-                      color: '#1d1d1f',
-                      '&:hover': {
-                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }}
+                  />
+                  <Chip
+                    label="À générer"
+                    onClick={() => setContractFilter('pending')}
+                    color={contractFilter === 'pending' ? 'primary' : 'default'}
+                    variant={contractFilter === 'pending' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
                       }
-                    }
-                  }}
-                />
-                <Chip
-                  label="Déjà générés"
-                  onClick={() => setContractFilter('generated')}
-                  color={contractFilter === 'generated' ? 'primary' : 'default'}
-                  variant={contractFilter === 'generated' ? 'filled' : 'outlined'}
-                  sx={{
-                    borderRadius: '8px',
-                    '&.MuiChip-filled': {
-                      backgroundColor: '#007AFF',
-                    },
-                    '&.MuiChip-outlined': {
-                      borderColor: '#d2d2d7',
-                      color: '#1d1d1f',
-                      '&:hover': {
-                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }}
+                  />
+                  <Chip
+                    label="Déjà générés"
+                    onClick={() => setContractFilter('generated')}
+                    color={contractFilter === 'generated' ? 'primary' : 'default'}
+                    variant={contractFilter === 'generated' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
                       }
-                    }
-                  }}
-                />
+                    }}
+                  />
+                </Box>
+                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                  <FormControl 
+                    size="small" 
+                    sx={{ 
+                      minWidth: 150
+                    }}
+                  >
+                    <InputLabel>Mandat</InputLabel>
+                    <Select
+                      value={mandatFilter}
+                      label="Mandat"
+                      onChange={(e) => setMandatFilter(e.target.value)}
+                      sx={{
+                        borderRadius: '8px',
+                        backgroundColor: 'white',
+                        '& .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#d2d2d7',
+                        },
+                      }}
+                    >
+                      <MenuItem value="all">Tous les mandats</MenuItem>
+                      {AVAILABLE_MANDATS.map(mandat => (
+                        <MenuItem key={mandat} value={mandat}>
+                          {mandat}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  {Object.values(filters).some(filter => filter !== '') && (
+                    <Button
+                      startIcon={<ClearIcon />}
+                      onClick={handleResetFilters}
+                      size="small"
+                      variant="outlined"
+                      sx={{
+                        color: '#FF3B30',
+                        borderColor: '#FF3B30',
+                        borderRadius: '8px',
+                        textTransform: 'none',
+                        '&:hover': {
+                          backgroundColor: 'rgba(255, 59, 48, 0.08)',
+                          borderColor: '#FF3B30'
+                        }
+                      }}
+                    >
+                      Réinitialiser
+                    </Button>
+                  )}
+                </Box>
               </Box>
-              {Object.values(filters).some(filter => filter !== '') && (
-                <Button
-                  startIcon={<ClearIcon />}
-                  onClick={handleResetFilters}
-                  size="small"
-                  sx={{
-                    color: '#FF3B30',
-                    '&:hover': {
-                      backgroundColor: 'rgba(255, 59, 48, 0.08)'
-                    }
-                  }}
-                >
-                  Réinitialiser les filtres
-                </Button>
-              )}
-            </Box>
+            </Paper>
           )}
           <TableContainer>
             <Table>
@@ -1591,7 +1706,14 @@ const Tresorerie: React.FC = () => {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {getSortedContracts(getFilteredContracts(contracts))
+                {getSortedContracts(getFilteredContracts(contracts.filter(contract => {
+                  // Filtre par mandat
+                  if (mandatFilter !== 'all') {
+                    const contractMandat = contract.cdmMandat || contract.mission.mandat;
+                    if (contractMandat !== mandatFilter) return false;
+                  }
+                  return true;
+                })))
                   .map((contract) => {
                     const rowId = `${contract.mission.id}-${contract.application.id}`;
                     const isOpen = openRows[rowId] || false;
@@ -1937,88 +2059,136 @@ const Tresorerie: React.FC = () => {
               </Typography>
             </Paper>
           ) : (
-            <Box sx={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              alignItems: 'center',
-              mb: 2,
-              pl: 2
-            }}>
-              <Box sx={{ display: 'flex', gap: 1 }}>
-                <Chip
-                  label="Tous les paiements"
-                  onClick={() => setPaymentFilter('all')}
-                  color={paymentFilter === 'all' ? 'primary' : 'default'}
-                  variant={paymentFilter === 'all' ? 'filled' : 'outlined'}
-                  sx={{
-                    borderRadius: '8px',
-                    '&.MuiChip-filled': {
-                      backgroundColor: '#007AFF',
-                    },
-                    '&.MuiChip-outlined': {
-                      borderColor: '#d2d2d7',
-                      color: '#1d1d1f',
-                      '&:hover': {
-                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+            <Paper 
+              elevation={0}
+              sx={{ 
+                p: 2, 
+                mb: 2, 
+                mx: 2,
+                borderRadius: '12px',
+                backgroundColor: '#f8f9fa',
+                border: '1px solid #e5e5e7'
+              }}
+            >
+              <Box sx={{ 
+                display: 'flex', 
+                flexWrap: 'wrap',
+                gap: 2,
+                alignItems: 'center'
+              }}>
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
+                  <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
+                    Statut :
+                  </Typography>
+                  <Chip
+                    label="Tous les paiements"
+                    onClick={() => setPaymentFilter('all')}
+                    color={paymentFilter === 'all' ? 'primary' : 'default'}
+                    variant={paymentFilter === 'all' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
                       }
-                    }
-                  }}
-                />
-                <Chip
-                  label="À effectuer"
-                  onClick={() => setPaymentFilter('pending')}
-                  color={paymentFilter === 'pending' ? 'primary' : 'default'}
-                  variant={paymentFilter === 'pending' ? 'filled' : 'outlined'}
-                  sx={{
-                    borderRadius: '8px',
-                    '&.MuiChip-filled': {
-                      backgroundColor: '#007AFF',
-                    },
-                    '&.MuiChip-outlined': {
-                      borderColor: '#d2d2d7',
-                      color: '#1d1d1f',
-                      '&:hover': {
-                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }}
+                  />
+                  <Chip
+                    label="À effectuer"
+                    onClick={() => setPaymentFilter('pending')}
+                    color={paymentFilter === 'pending' ? 'primary' : 'default'}
+                    variant={paymentFilter === 'pending' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
                       }
-                    }
-                  }}
-                />
-                <Chip
-                  label="Effectués"
-                  onClick={() => setPaymentFilter('processed')}
-                  color={paymentFilter === 'processed' ? 'primary' : 'default'}
-                  variant={paymentFilter === 'processed' ? 'filled' : 'outlined'}
-                  sx={{
-                    borderRadius: '8px',
-                    '&.MuiChip-filled': {
-                      backgroundColor: '#007AFF',
-                    },
-                    '&.MuiChip-outlined': {
-                      borderColor: '#d2d2d7',
-                      color: '#1d1d1f',
-                      '&:hover': {
-                        backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }}
+                  />
+                  <Chip
+                    label="Effectués"
+                    onClick={() => setPaymentFilter('processed')}
+                    color={paymentFilter === 'processed' ? 'primary' : 'default'}
+                    variant={paymentFilter === 'processed' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
                       }
-                    }
-                  }}
-                />
+                    }}
+                  />
+                </Box>
+                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                  <FormControl 
+                    size="small" 
+                    sx={{ 
+                      minWidth: 150
+                    }}
+                  >
+                    <InputLabel>Mandat</InputLabel>
+                    <Select
+                      value={mandatFilter}
+                      label="Mandat"
+                      onChange={(e) => setMandatFilter(e.target.value)}
+                      sx={{
+                        borderRadius: '8px',
+                        backgroundColor: 'white',
+                        '& .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#d2d2d7',
+                        },
+                      }}
+                    >
+                      <MenuItem value="all">Tous les mandats</MenuItem>
+                      {AVAILABLE_MANDATS.map(mandat => (
+                        <MenuItem key={mandat} value={mandat}>
+                          {mandat}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  {Object.values(filters).some(filter => filter !== '') && (
+                    <Button
+                      startIcon={<ClearIcon />}
+                      onClick={handleResetFilters}
+                      size="small"
+                      variant="outlined"
+                      sx={{
+                        color: '#FF3B30',
+                        borderColor: '#FF3B30',
+                        borderRadius: '8px',
+                        textTransform: 'none',
+                        '&:hover': {
+                          backgroundColor: 'rgba(255, 59, 48, 0.08)',
+                          borderColor: '#FF3B30'
+                        }
+                      }}
+                    >
+                      Réinitialiser
+                    </Button>
+                  )}
+                </Box>
               </Box>
-              {Object.values(filters).some(filter => filter !== '') && (
-                <Button
-                  startIcon={<ClearIcon />}
-                  onClick={handleResetFilters}
-                  size="small"
-                  sx={{
-                    color: '#FF3B30',
-                    '&:hover': {
-                      backgroundColor: 'rgba(255, 59, 48, 0.08)'
-                    }
-                  }}
-                >
-                  Réinitialiser les filtres
-                </Button>
-              )}
-            </Box>
+            </Paper>
           )}
           <TableContainer>
             <Table>
@@ -2038,9 +2208,16 @@ const Tresorerie: React.FC = () => {
               <TableBody>
                 {contracts
                   .filter(contract => {
-                    if (paymentFilter === 'all') return true;
-                    if (paymentFilter === 'pending') return !contract.isPaymentProcessed;
-                    if (paymentFilter === 'processed') return contract.isPaymentProcessed;
+                    // Filtre par statut de paiement
+                    if (paymentFilter === 'pending' && contract.isPaymentProcessed) return false;
+                    if (paymentFilter === 'processed' && !contract.isPaymentProcessed) return false;
+                    
+                    // Filtre par mandat
+                    if (mandatFilter !== 'all') {
+                      const contractMandat = contract.cdmMandat || contract.mission.mandat;
+                      if (contractMandat !== mandatFilter) return false;
+                    }
+                    
                     return true;
                   })
                   .map((contract) => (
@@ -2078,23 +2255,78 @@ const Tresorerie: React.FC = () => {
               </Typography>
             </Paper>
           ) : (
-            <TableContainer>
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Numéro de mission</TableCell>
-                    <TableCell>Date de fin de la mission</TableCell>
-                    <TableCell>Prix horaire HT</TableCell>
-                    <TableCell>Total HT</TableCell>
-                    <TableCell>TVA (20%)</TableCell>
-                    <TableCell>Notes de frais validées</TableCell>
-                    <TableCell>Total TTC</TableCell>
-                    <TableCell>Prix final</TableCell>
-                    <TableCell>Statut facture</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {contracts.map((contract) => {
+            <>
+              <Paper 
+                elevation={0}
+                sx={{ 
+                  p: 2, 
+                  mb: 2, 
+                  mx: 2,
+                  borderRadius: '12px',
+                  backgroundColor: '#f8f9fa',
+                  border: '1px solid #e5e5e7'
+                }}
+              >
+                <Box sx={{ 
+                  display: 'flex', 
+                  justifyContent: 'flex-end', 
+                  alignItems: 'center'
+                }}>
+                  <FormControl 
+                    size="small" 
+                    sx={{ 
+                      minWidth: 150
+                    }}
+                  >
+                    <InputLabel>Mandat</InputLabel>
+                    <Select
+                      value={mandatFilter}
+                      label="Mandat"
+                      onChange={(e) => setMandatFilter(e.target.value)}
+                      sx={{
+                        borderRadius: '8px',
+                        backgroundColor: 'white',
+                        '& .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#d2d2d7',
+                        },
+                      }}
+                    >
+                      <MenuItem value="all">Tous les mandats</MenuItem>
+                      {AVAILABLE_MANDATS.map(mandat => (
+                        <MenuItem key={mandat} value={mandat}>
+                          {mandat}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+              </Paper>
+              <TableContainer>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Numéro de mission</TableCell>
+                      <TableCell>Date de fin de la mission</TableCell>
+                      <TableCell>Prix horaire HT</TableCell>
+                      <TableCell>Total HT</TableCell>
+                      <TableCell>TVA (20%)</TableCell>
+                      <TableCell>Notes de frais validées</TableCell>
+                      <TableCell>Total TTC</TableCell>
+                      <TableCell>Prix final</TableCell>
+                      <TableCell>Statut facture</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {contracts
+                      .filter(contract => {
+                        // Filtre par mandat
+                        if (mandatFilter !== 'all') {
+                          const contractMandat = contract.cdmMandat || contract.mission.mandat;
+                          if (contractMandat !== mandatFilter) return false;
+                        }
+                        return true;
+                      })
+                      .map((contract) => {
                     const priceHT = contract.mission.priceHT ?? parseFloat(contract.mission.salary || '0');
                     const totalHT = contract.mission.totalHT ?? (priceHT * contract.totalHoursAssigned);
                     const tvaMontant = totalHT * 0.2;
@@ -2112,13 +2344,39 @@ const Tresorerie: React.FC = () => {
                       if (invoiceStatus === 'to_send') nextStatus = 'sent';
                       else if (invoiceStatus === 'sent') nextStatus = 'paid';
                       else nextStatus = 'to_send';
+                      
                       const missionRef = doc(db, 'missions', contract.mission.id);
-                      await updateDoc(missionRef, { invoiceStatus: nextStatus });
+                      const updateData: any = { invoiceStatus: nextStatus };
+                      
+                      // Mettre à jour l'étape de la mission selon le statut de la facture
+                      if (nextStatus === 'sent') {
+                        // Quand la facture est envoyée, passer à l'étape "Facturation"
+                        updateData.etape = 'Facturation';
+                      } else if (nextStatus === 'paid') {
+                        // Quand la facture est payée, passer à l'étape "Audit"
+                        updateData.etape = 'Audit';
+                      }
+                      
+                      await updateDoc(missionRef, updateData);
                       setContracts(prev => prev.map(c =>
                         c.mission.id === contract.mission.id
-                          ? { ...c, mission: { ...c.mission, invoiceStatus: nextStatus } }
+                          ? { 
+                              ...c, 
+                              mission: { 
+                                ...c.mission, 
+                                invoiceStatus: nextStatus,
+                                ...(nextStatus === 'sent' && { etape: 'Facturation' as const }),
+                                ...(nextStatus === 'paid' && { etape: 'Audit' as const })
+                              } 
+                            }
                           : c
                       ));
+                      
+                      if (nextStatus === 'sent') {
+                        enqueueSnackbar('Facture envoyée - Mission passée à l\'étape Facturation', { variant: 'success' });
+                      } else if (nextStatus === 'paid') {
+                        enqueueSnackbar('Facture payée - Mission passée à l\'étape Audit', { variant: 'success' });
+                      }
                     };
                     return (
                       <TableRow key={contract.mission.id}>
@@ -2144,10 +2402,11 @@ const Tresorerie: React.FC = () => {
                 </TableBody>
               </Table>
             </TableContainer>
-          )}
-        </TabPanel>
-      </Paper>
-    </Box>
+          </>
+        )}
+      </TabPanel>
+    </Paper>
+  </Box>
   );
 };
 

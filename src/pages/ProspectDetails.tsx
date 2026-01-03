@@ -34,7 +34,8 @@ import {
   FormGroup,
   FormControlLabel,
   Stack,
-  Chip as MuiChip
+  Chip as MuiChip,
+  Autocomplete
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
@@ -61,7 +62,9 @@ import {
   AccessTime as AccessTimeIcon,
   History as HistoryIcon,
   Upload as UploadIcon,
-  Link as LinkIcon
+  Link as LinkIcon,
+  CheckCircle as CheckCircleIcon,
+  Close as CloseIcon
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { doc, getDoc, updateDoc, deleteDoc, serverTimestamp, collection, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
@@ -79,7 +82,8 @@ import { auth } from '../firebase/config';
 interface Prospect {
   id: string;
   nom: string;
-  company: string;
+  company?: string;
+  entreprise?: string;
   email?: string;
   telephone?: string;
   adresse?: string;
@@ -100,6 +104,15 @@ interface Prospect {
   structureId: string;
   userId: string;
   updatedAt: any;
+  dateRecontact?: string;
+}
+
+interface StructureMember {
+  id: string;
+  displayName: string;
+  role: 'admin' | 'superadmin' | 'member';
+  poles?: { poleId: string }[];
+  mandat?: string;
 }
 
 interface Activity {
@@ -225,7 +238,34 @@ const ProspectDetails: React.FC = () => {
   const [reminderDate, setReminderDate] = useState<Date | null>(null);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [mailFile, setMailFile] = useState<File | null>(null);
+  const [structureMembers, setStructureMembers] = useState<StructureMember[]>([]);
   const creationActivityAdded = useRef(false);
+  
+  // Charger les membres de l'équipe
+  useEffect(() => {
+    const fetchStructureMembers = async () => {
+      if (!userData?.structureId) return;
+      try {
+        const q = query(collection(db, 'users'), where('structureId', '==', userData.structureId));
+        const snapshot = await getDocs(q);
+        const members = snapshot.docs.map(doc => ({
+          id: doc.id,
+          displayName: doc.data().displayName || doc.data().name || 'Utilisateur',
+          role: doc.data().role || 'member',
+          poles: doc.data().poles || [],
+          mandat: doc.data().mandat
+        }));
+        setStructureMembers(members as StructureMember[]);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+    fetchStructureMembers();
+  }, [userData?.structureId]);
+
+  // CRM Intelligent
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
+  const [suggestedNextStep, setSuggestedNextStep] = useState<string | null>(null);
 
   useEffect(() => {
     const currentUser = auth.currentUser;
@@ -247,9 +287,38 @@ const ProspectDetails: React.FC = () => {
           const prospectData = { id: prospectDoc.id, ...prospectDoc.data() } as Prospect;
           console.log('Données du prospect:', prospectData);
           console.log('Nom du prospect:', prospectData.nom);
-          console.log('Entreprise du prospect:', prospectData.company);
+          console.log('Entreprise du prospect:', prospectData.entreprise || prospectData.company);
           setProspect(prospectData);
           setEditedProspect(prospectData);
+
+          // CRM: Vérifier les doublons ou entreprises similaires
+          if (prospectData.entreprise || prospectData.company) {
+            const companyName = (prospectData.entreprise || prospectData.company || '').toLowerCase();
+            const q = query(
+              collection(db, 'prospects'), 
+              where('structureId', '==', userData?.structureId)
+            );
+            const snaps = await getDocs(q);
+            const duplicates = snaps.docs.filter(d => {
+              const data = d.data();
+              const name = (data.entreprise || data.company || '').toLowerCase();
+              return d.id !== id && name.includes(companyName) && (data.statut === 'abandon' || data.statut === 'deja_client');
+            });
+
+            if (duplicates.length > 0) {
+              const status = duplicates[0].data().statut;
+              setDuplicateWarning(status === 'abandon' 
+                ? "Attention : Cette entreprise a déjà été marquée comme 'Abandon' dans le passé." 
+                : "Info : Cette entreprise est déjà cliente sur un autre contact.");
+            }
+          }
+
+          // CRM: Suggestion d'action
+          if (prospectData.statut === 'contacte') {
+             setSuggestedNextStep("Relance suggérée (J+3)");
+          } else if (prospectData.statut === 'nouveau') {
+             setSuggestedNextStep("Premier contact à établir");
+          }
 
           // Vérifier si c'est une nouvelle création (et ne le faire qu'une fois)
           if (!creationActivityAdded.current) {
@@ -351,6 +420,13 @@ const ProspectDetails: React.FC = () => {
         }
       });
 
+      // Synchroniser entreprise et company
+      if (changes.entreprise !== undefined) {
+        changes.company = changes.entreprise;
+      } else if (changes.company !== undefined) {
+        changes.entreprise = changes.company;
+      }
+
       if (Object.keys(changes).length > 0) {
         await updateDoc(prospectRef, {
           ...changes,
@@ -379,13 +455,31 @@ const ProspectDetails: React.FC = () => {
     if (!id || !editedProspect) return;
 
     try {
+      const oldStatus = prospect?.statut;
+      const newStatus = editedProspect.statut;
+      
       const prospectRef = doc(db, 'prospects', id);
       await updateDoc(prospectRef, {
-        statut: editedProspect.statut,
+        statut: newStatus,
         updatedAt: serverTimestamp()
       });
       
-      setProspect(prev => prev ? { ...prev, statut: editedProspect.statut } : null);
+      // Enregistrer dans l'activité
+      if (oldStatus !== newStatus) {
+        await saveActivity({
+          type: 'modification',
+          userId: userData?.uid || '',
+          userName: userData?.displayName || 'Utilisateur inconnu',
+          details: {
+            field: 'Statut',
+            oldValue: oldStatus || 'Non défini',
+            newValue: newStatus || 'Non défini'
+          },
+          timestamp: serverTimestamp()
+        });
+      }
+      
+      setProspect(prev => prev ? { ...prev, statut: newStatus } : null);
       setIsEditingStatus(false);
     } catch (err) {
       console.error('Erreur lors de la mise à jour du statut:', err);
@@ -681,20 +775,29 @@ const ProspectDetails: React.FC = () => {
   // Layout principal
   return (
     <Box sx={{ width: '100vw', minHeight: '100vh', bgcolor: '#f7f8fa' }}>
-      <Navbar />
-      <Box sx={{ display: 'flex', pt: { xs: 7, md: 8 } }}>
-        <Sidebar open={true} onClose={() => {}} onHoverChange={() => {}} />
-        <Box sx={{ flex: 1, p: 0, minHeight: '100vh', overflowX: 'auto' }}>
-          {loading ? (
-            <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
-              <CircularProgress />
-            </Box>
-          ) : error || !prospect ? (
-            <Box p={3}>
-              <Alert severity="error">{error || 'Prospect non trouvé'}</Alert>
-            </Box>
-          ) : (
-            <Box sx={{ p: { xs: 1, md: 4 } }}>
+      <>
+        <Navbar />
+        <Sidebar open={true} onClose={() => {}} />
+      </>
+      <Box 
+        sx={{ 
+          marginLeft: '64px', // Largeur de la sidebar gauche
+          paddingTop: '64px', // Hauteur de la navbar
+          minHeight: 'calc(100vh - 64px)',
+          width: 'calc(100vw - 64px)',
+          overflowX: 'auto'
+        }}
+      >
+        {loading ? (
+          <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+            <CircularProgress />
+          </Box>
+        ) : error || !prospect ? (
+          <Box p={3}>
+            <Alert severity="error">{error || 'Prospect non trouvé'}</Alert>
+          </Box>
+        ) : (
+          <Box sx={{ p: { xs: 1, md: 4 } }}>
               {/* Breadcrumbs */}
               <Box sx={{ mb: 2 }}>
                 <Typography variant="body2" color="textSecondary">
@@ -702,19 +805,32 @@ const ProspectDetails: React.FC = () => {
                 </Typography>
               </Box>
 
+              {/* CRM Alerts */}
+              {duplicateWarning && (
+                <Alert severity="warning" sx={{ mb: 3, borderRadius: 2 }}>
+                  {duplicateWarning}
+                </Alert>
+              )}
+              
+              {suggestedNextStep && (
+                <Alert severity="info" icon={<NotificationsIcon />} sx={{ mb: 3, borderRadius: 2, bgcolor: '#e3f2fd' }}>
+                  Action recommandée : <strong>{suggestedNextStep}</strong>
+                </Alert>
+              )}
+
               {/* Header */}
               <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
                 <Avatar
                   src={prospect.photoUrl}
-                  alt={prospect.nom || prospect.company}
+                  alt={prospect.nom || prospect.entreprise || prospect.company}
                   sx={{ width: 64, height: 64, bgcolor: '#f5f5f7', fontSize: 32, mr: 2 }}
                 >
-                  {(prospect.nom || prospect.company || '?').charAt(0)}
+                  {(prospect.nom || prospect.entreprise || prospect.company || '?').charAt(0)}
                 </Avatar>
                 <Box>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <Typography variant="h4" sx={{ fontWeight: 700, fontSize: '2rem', color: '#000' }}>
-                      {prospect?.nom || prospect?.company || 'Nom non spécifié'}
+                      {prospect?.nom || prospect?.entreprise || prospect?.company || 'Nom non spécifié'}
                     </Typography>
                     {isEditing ? (
                       <Select
@@ -832,15 +948,69 @@ const ProspectDetails: React.FC = () => {
                       </IconButton>
                     </Tooltip>
                   </Box>
-                  <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-                    Propriétaire du contact: {prospect?.userId ? 'Téo Guermeur' : 'Non spécifié'}
-                  </Typography>
+                  <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Typography variant="body2" color="textSecondary">
+                      Propriétaire :
+                    </Typography>
+                    {isEditing ? (
+                      <Autocomplete
+                        options={structureMembers
+                          .filter(m => m.poles?.some(p => p.poleId === 'dev'))
+                          .sort((a, b) => {
+                            const mandatA = a.mandat || '';
+                            const mandatB = b.mandat || '';
+                            if (mandatA !== mandatB) return mandatB.localeCompare(mandatA);
+                            return a.displayName.localeCompare(b.displayName);
+                          })
+                        }
+                        groupBy={(option) => option.mandat ? `Mandat ${option.mandat}` : 'Autres'}
+                        getOptionLabel={(option) => option.displayName}
+                        value={structureMembers.find(m => m.id === editedProspect.ownerId) || null}
+                        onChange={(_, newValue) => {
+                          setEditedProspect(prev => ({ ...prev, ownerId: newValue?.id }));
+                        }}
+                        renderInput={(params) => (
+                          <TextField 
+                            {...params} 
+                            size="small" 
+                            variant="standard" 
+                            placeholder="Assigner à..." 
+                            sx={{ minWidth: 150 }}
+                          />
+                        )}
+                        size="small"
+                        sx={{ width: 200 }}
+                      />
+                    ) : (
+                      <Chip 
+                        avatar={<Avatar sx={{ width: 24, height: 24, fontSize: '0.7rem' }}>{(structureMembers.find(m => m.id === prospect?.ownerId)?.displayName || '?').charAt(0)}</Avatar>}
+                        label={structureMembers.find(m => m.id === prospect?.ownerId)?.displayName || 'Non assigné'} 
+                        size="small" 
+                        variant="outlined"
+                        onClick={handleEdit}
+                      />
+                    )}
+                  </Box>
                 </Box>
-                <Box sx={{ ml: 'auto' }}>
+                <Box sx={{ ml: 'auto', display: 'flex', gap: 1 }}>
+                  {isEditing && (
+                    <Button
+                      variant="contained"
+                      startIcon={<SaveIcon />}
+                      onClick={handleSave}
+                      sx={{ 
+                        bgcolor: '#0071e3',
+                        color: 'white',
+                        '&:hover': { bgcolor: '#0077ed' }
+                      }}
+                    >
+                      Enregistrer
+                    </Button>
+                  )}
                   <Button
                     startIcon={<ArrowBackIcon />}
                     onClick={() => navigate('/app/commercial')}
-                    sx={{ mr: 1 }}
+                    sx={{ color: 'text.secondary' }}
                   >
                     Retour
                   </Button>
@@ -922,8 +1092,14 @@ const ProspectDetails: React.FC = () => {
                                 <TextField
                                   fullWidth
                                   variant="standard"
-                                  value={editedProspect.company || ''}
-                                  onChange={handleChange('company')}
+                                  value={editedProspect.entreprise || editedProspect.company || ''}
+                                  onChange={(e) => {
+                                    setEditedProspect(prev => ({
+                                      ...prev,
+                                      entreprise: e.target.value,
+                                      company: e.target.value
+                                    }));
+                                  }}
                                   size="small"
                                   sx={{ mt: 1 }}
                                   InputProps={{
@@ -991,7 +1167,7 @@ const ProspectDetails: React.FC = () => {
                         <>
                           {renderIf('Nom', prospect.nom)}
                           {renderIf('Poste', prospect.title)}
-                          {renderIf('Entreprise', capitalizeWords(prospect.company || ''))}
+                          {renderIf('Entreprise', capitalizeWords(prospect.entreprise || prospect.company || ''))}
                           {prospect.linkedinUrl && (
                             <ListItem>
                               <ListItemText 
@@ -1114,6 +1290,97 @@ const ProspectDetails: React.FC = () => {
                       {renderIf('Valeur potentielle', prospect.valeurPotentielle ? `${prospect.valeurPotentielle} €` : undefined)}
                       {renderIf('Date d\'ajout', formatDate(prospect.dateCreation))}
                       {renderIf('Dernière interaction', formatDate(prospect.derniereInteraction))}
+                      {prospect.dateRecontact ? (
+                        <ListItem>
+                          {isEditing ? (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                              <TextField
+                                type="date"
+                                value={editedProspect.dateRecontact || prospect.dateRecontact}
+                                onChange={(e) => setEditedProspect(prev => ({ ...prev, dateRecontact: e.target.value }))}
+                                size="small"
+                                sx={{ flex: 1 }}
+                              />
+                              <IconButton 
+                                size="small"
+                                onClick={async () => {
+                                  const oldDate = prospect.dateRecontact;
+                                  const newDate = editedProspect.dateRecontact;
+                                  if (newDate && newDate !== oldDate) {
+                                    try {
+                                      await updateDoc(doc(db, 'prospects', id!), {
+                                        dateRecontact: newDate,
+                                        updatedAt: serverTimestamp()
+                                      });
+                                      
+                                      // Enregistrer dans l'activité
+                                      await saveActivity({
+                                        type: 'modification',
+                                        userId: userData?.uid || '',
+                                        userName: userData?.displayName || 'Utilisateur inconnu',
+                                        details: {
+                                          field: 'Date de relance',
+                                          oldValue: oldDate ? formatDate(oldDate) : 'Aucune',
+                                          newValue: formatDate(newDate)
+                                        },
+                                        timestamp: serverTimestamp()
+                                      });
+                                      
+                                      setProspect(prev => prev ? { ...prev, dateRecontact: newDate } : null);
+                                      setEditedProspect(prev => ({ ...prev, dateRecontact: undefined }));
+                                    } catch (err) {
+                                      console.error('Erreur lors de la mise à jour de la date de relance:', err);
+                                    }
+                                  }
+                                }}
+                                sx={{ color: '#0071e3' }}
+                              >
+                                <CheckCircleIcon />
+                              </IconButton>
+                              <IconButton 
+                                size="small"
+                                onClick={() => {
+                                  setEditedProspect(prev => ({ ...prev, dateRecontact: undefined }));
+                                }}
+                              >
+                                <CloseIcon />
+                              </IconButton>
+                            </Box>
+                          ) : (
+                            <>
+                              <ListItemText 
+                                primary="Date de relance" 
+                                secondary={formatDate(prospect.dateRecontact)} 
+                              />
+                              <IconButton 
+                                size="small"
+                                onClick={() => {
+                                  setEditedProspect(prev => ({ ...prev, dateRecontact: prospect.dateRecontact }));
+                                }}
+                                sx={{ opacity: 0, transition: 'opacity 0.2s', '&:hover': { opacity: 1 } }}
+                              >
+                                <EditIcon fontSize="small" />
+                              </IconButton>
+                            </>
+                          )}
+                        </ListItem>
+                      ) : (
+                        isEditing && (
+                          <ListItem>
+                            <ListItemText 
+                              primary="Date de relance" 
+                              secondary="Non définie" 
+                            />
+                            <TextField
+                              type="date"
+                              value={editedProspect.dateRecontact || ''}
+                              onChange={(e) => setEditedProspect(prev => ({ ...prev, dateRecontact: e.target.value }))}
+                              size="small"
+                              sx={{ minWidth: 150 }}
+                            />
+                          </ListItem>
+                        )
+                      )}
                       {renderIf('Adresse', prospect.adresse)}
                       {renderIf('Secteur', prospect.secteur)}
                       {renderIf('Source', prospect.source)}
@@ -1152,7 +1419,10 @@ const ProspectDetails: React.FC = () => {
                             case 'modification':
                               icon = <EditIcon sx={{ color: '#fff' }} />;
                               iconBg = '#6366f1';
-                              title = 'Contact modifié';
+                              // Le titre sera ajusté plus tard si c'est un changement de statut ou de date de relance
+                              title = activity.details?.field === 'Statut' ? 'Changement de status' :
+                                      activity.details?.field === 'Date de relance' ? 'Date de relance modifiée' :
+                                      'Contact modifié';
                               break;
                             case 'email':
                               icon = <EmailIcon sx={{ color: '#fff' }} />;
@@ -1215,6 +1485,36 @@ const ProspectDetails: React.FC = () => {
                           if (activity.type === 'email') details = activity.details?.emailContent || '';
                           if (activity.type === 'call') details = activity.details?.callDuration ? `Durée : ${activity.details.callDuration} min` : '';
                           if (activity.type === 'reminder') details = activity.details?.reminderTitle ? `Titre : ${activity.details.reminderTitle}` : '';
+                          if (activity.type === 'modification' && activity.details?.field) {
+                            const fieldName = activity.details.field;
+                            const oldValue = activity.details.oldValue || 'Non défini';
+                            const newValue = activity.details.newValue || 'Non défini';
+                            
+                            // Traduire les valeurs de statut
+                            const translateStatus = (status: string) => {
+                              const statusMap: Record<string, string> = {
+                                'non_qualifie': 'Non qualifié',
+                                'contacte': 'Contacté',
+                                'a_recontacter': 'À recontacter',
+                                'negociation': 'Négociation',
+                                'abandon': 'Abandon',
+                                'deja_client': 'Déjà client'
+                              };
+                              return statusMap[status] || status;
+                            };
+                            
+                            if (fieldName === 'Statut') {
+                              details = `${translateStatus(oldValue)} -> ${translateStatus(newValue)}`;
+                              // Mettre à jour le titre pour les changements de statut
+                              title = 'Changement de status';
+                            } else if (fieldName === 'Date de relance') {
+                              details = `Date de relance changée : ${oldValue} -> ${newValue}`;
+                              // Mettre à jour le titre pour les changements de date de relance
+                              title = 'Date de relance modifiée';
+                            } else {
+                              details = `${fieldName} : ${oldValue} -> ${newValue}`;
+                            }
+                          }
                           if (activity.type === 'mail_upload') {
                             if (activity.details?.mailFile && (activity.details.mailFile.endsWith('.png') || activity.details.mailFile.endsWith('.jpg') || activity.details.mailFile.endsWith('.jpeg') || activity.details.mailFile.endsWith('.gif') || activity.details.mailFile.endsWith('.webp'))) {
                               details = `<img src='${activity.details.mailFile}' alt='Pièce jointe' style='max-width:100px;max-height:100px;border-radius:8px;margin-top:4px;' />`;
@@ -1662,7 +1962,6 @@ const ProspectDetails: React.FC = () => {
           )}
         </Box>
       </Box>
-    </Box>
   );
 };
 

@@ -8,6 +8,11 @@
     "start": "react-scripts start",
     "build": "node --max-old-space-size=8192 ./node_modules/.bin/vite build",
     "build:extension": "npm run generate-icon && node scripts/download-firebase.js && vite build --config vite.config.extension.js && node scripts/build-extension.js",
+    "build:extension-zip": "node scripts/build-extension-zip.js",
+    "build:extension-folder": "node scripts/build-extension-folder.js",
+    "build:extension-all": "npm run build:extension-zip && npm run build:extension-folder",
+    "fix:extension": "node scripts/fix-extension.js",
+    "watch:extension": "node scripts/watch-extension.js",
     "generate-icon": "node scripts/generate-icon.js",
     "preview": "vite preview",
     "clean": "rm -rf node_modules/.vite node_modules/.cache && npm install",
@@ -28,6 +33,7 @@
     "capacitor:open-ios": "npx @capacitor/cli open ios"
   },
   "dependencies": {
+    "@adobe/pdfservices-node-sdk": "^4.1.0",
     "@emailjs/browser": "^4.4.1",
     "@emotion/react": "11.11.1",
     "@emotion/styled": "11.11.0",
@@ -52,6 +58,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "2.30.0",
+    "docx-preview": "^0.3.6",
+    "docxtemplater": "^3.66.3",
     "esbuild": "^0.25.1",
     "firebase": "^11.5.0",
     "html2canvas": "^1.4.1",
@@ -59,12 +67,15 @@
     "jspdf": "^3.0.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.503.0",
+    "mammoth": "^1.10.0",
     "notistack": "^3.0.2",
     "nth-check": "^2.1.1",
     "papaparse": "^5.5.2",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.8.69",
+    "pizzip": "^3.2.0",
     "postcss": "^8.5.3",
+    "pptxtemplater": "^1.0.5",
     "react": "18.2.0",
     "react-beautiful-dnd": "^13.1.1",
     "react-dom": "18.2.0",
@@ -89,9 +100,16 @@
     "@typescript-eslint/eslint-plugin": "5.61.0",
     "@typescript-eslint/parser": "5.61.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "chokidar": "^4.0.3",
     "fs-extra": "^11.3.0",
     "sharp": "^0.33.5",
     "terser": "^5.43.1",
     "typescript": "^4.9.5"
+  },
+  "overrides": {
+    "@firebase/app": "^0.14.1"
+  },
+  "resolutions": {
+    "@firebase/app": "^0.14.1"
   }
 }

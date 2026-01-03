@@ -17,7 +17,6 @@ import { useSnackbar } from 'notistack';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useSearchParams } from 'react-router-dom';
-import BackButton from '../../components/ui/BackButton';
 import { getStripeCustomers, fetchPaymentHistory } from '../../services/stripeApiService';
 
 declare global {
@@ -275,7 +274,6 @@ const Billing: React.FC = () => {
 
   return (
     <Container maxWidth="md" sx={{ py: 2 }}>
-      <BackButton />
       <Box sx={{ 
         textAlign: 'center', 
         mb: 3,

@@ -63,7 +63,6 @@ import {
 import { collection, query, where, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
-import BackButton from '../../components/ui/BackButton';
 
 // Définition des pôles depuis Organization.tsx
 const POLES = [
@@ -836,7 +835,6 @@ const Authorizations: React.FC = () => {
 
   return (
     <Box sx={{ width: '100%', px: { xs: 2, sm: 3, md: 4 } }}>
-      <BackButton />
       <Box sx={{ mb: 4 }}>
         <Typography variant="h5" sx={{ 
           fontWeight: 600,

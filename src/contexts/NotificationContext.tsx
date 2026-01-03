@@ -88,7 +88,7 @@ const NotificationContext = createContext<NotificationContextState | undefined>(
 
 // Provider
 export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
   const { enqueueSnackbar } = useSnackbar();
   
   // États
@@ -146,6 +146,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
 
     setIsLoading(true);
+    
+    const isEntreprise = userData?.status === 'entreprise';
 
     // Requête pour les notifications de l'utilisateur
     const userNotificationsQuery = query(
@@ -164,60 +166,89 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     );
 
     // Écouter les notifications utilisateur
-    const unsubscribeUser = onSnapshot(userNotificationsQuery, (snapshot) => {
-      const notifications = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate() || new Date(),
-        priority: doc.data().priority || 'medium'
-      })) as PersistentNotification[];
+    const unsubscribeUser = onSnapshot(
+      userNotificationsQuery,
+      (snapshot) => {
+        const notifications = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate() || new Date(),
+          priority: doc.data().priority || 'medium'
+        })) as PersistentNotification[];
 
-      // Filtrer les notifications selon les préférences utilisateur
-      const filteredNotifications = notifications.filter(notification => {
-        // Les notifications critiques (urgent) sont toujours affichées
-        if (notification.priority === 'urgent') return true;
-        
-        // Vérifier si le type de notification est activé dans les préférences
-        return preferences.types[notification.type] !== false;
-      });
+        // Filtrer les notifications selon les préférences utilisateur
+        const filteredNotifications = notifications.filter(notification => {
+          // Les notifications critiques (urgent) sont toujours affichées
+          if (notification.priority === 'urgent') return true;
+          
+          // Vérifier si le type de notification est activé dans les préférences
+          return preferences.types[notification.type] !== false;
+        });
 
-      setPersistentNotifications(prev => {
-        // Fusionner avec les notifications globales existantes
-        const globalNotifications = prev.filter(n => n.type === 'admin_notification');
-        return [...filteredNotifications, ...globalNotifications];
-      });
+        setPersistentNotifications(prev => {
+          // Fusionner avec les notifications globales existantes
+          const globalNotifications = prev.filter(n => n.type === 'admin_notification');
+          return [...filteredNotifications, ...globalNotifications];
+        });
 
-      const unread = filteredNotifications.filter(n => !n.read).length;
-      setUnreadCount(unread);
-      setIsLoading(false);
-    });
+        const unread = filteredNotifications.filter(n => !n.read).length;
+        setUnreadCount(unread);
+        setIsLoading(false);
+      },
+      (error) => {
+        // Gérer les erreurs de permissions de manière silencieuse
+        if (error?.code === 'permission-denied') {
+          console.warn('Permissions insuffisantes pour lire les notifications utilisateur');
+          setIsLoading(false);
+        } else {
+          console.error('Erreur lors de l\'écoute des notifications utilisateur:', error);
+          setIsLoading(false);
+        }
+      }
+    );
 
-    // Écouter les notifications globales
-    const unsubscribeGlobal = onSnapshot(globalNotificationsQuery, (snapshot) => {
-      const globalNotifications = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate() || new Date(),
-        priority: doc.data().priority || 'medium'
-      })) as PersistentNotification[];
+      // Écouter les notifications globales (seulement si l'utilisateur n'est pas une entreprise)
+      let unsubscribeGlobal: (() => void) | null = null;
+      if (!isEntreprise) {
+        unsubscribeGlobal = onSnapshot(
+          globalNotificationsQuery,
+          (snapshot) => {
+            const globalNotifications = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data(),
+              createdAt: doc.data().createdAt?.toDate() || new Date(),
+              priority: doc.data().priority || 'medium'
+            })) as PersistentNotification[];
 
-      // Filtrer les notifications globales selon les préférences
-      const filteredGlobalNotifications = globalNotifications.filter(notification => {
-        if (notification.priority === 'urgent') return true;
-        return preferences.types[notification.type] !== false;
-      });
+            // Filtrer les notifications globales selon les préférences
+            const filteredGlobalNotifications = globalNotifications.filter(notification => {
+              if (notification.priority === 'urgent') return true;
+              return preferences.types[notification.type] !== false;
+            });
 
-      setPersistentNotifications(prev => {
-        const userNotifications = prev.filter(n => n.type !== 'admin_notification');
-        return [...userNotifications, ...filteredGlobalNotifications];
-      });
-    });
+            setPersistentNotifications(prev => {
+              const userNotifications = prev.filter(n => n.type !== 'admin_notification');
+              return [...userNotifications, ...filteredGlobalNotifications];
+            });
+          },
+          (error) => {
+            // Gérer les erreurs de permissions de manière silencieuse
+            if (error?.code === 'permission-denied') {
+              console.warn('Permissions insuffisantes pour lire les notifications globales');
+            } else {
+              console.error('Erreur lors de l\'écoute des notifications globales:', error);
+            }
+          }
+        );
+      }
 
     return () => {
       unsubscribeUser();
-      unsubscribeGlobal();
+      if (unsubscribeGlobal) {
+        unsubscribeGlobal();
+      }
     };
-  }, [currentUser?.uid, preferences.types]);
+  }, [currentUser?.uid, userData?.status, preferences.types]);
 
   // Marquer une notification comme lue
   const markAsRead = useCallback(async (notificationId: string) => {

@@ -97,3 +97,9 @@ firebase.config.js
 
 # Backup files
 *.backup
+
+# Google Cloud tokens (sensitive)
+.google-cloud-token
+*.google-cloud-token
+service-account-key.json
+*.json.key

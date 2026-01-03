@@ -22,6 +22,7 @@ Le système détecte automatiquement les colonnes et propose un mapping. Vous po
 - **Entreprise** : entreprise, company, société, organisation
 - **Email** : email, mail, courriel
 - **Téléphone** : telephone, phone, tel, mobile
+- **Poste** : poste, title, position, job
 - **Adresse** : adresse, address, rue, street
 - **Secteur** : secteur, sector, industrie, domaine
 - **Source** : source, origine, provenance
@@ -54,7 +55,7 @@ Les statuts suivants sont acceptés (avec variations) :
 
 Le fichier modèle contient les colonnes suivantes :
 ```csv
-nom,entreprise,email,telephone,adresse,secteur,source,notes,linkedinUrl,statut
+nom,entreprise,email,telephone,poste,adresse,secteur,source,notes,linkedinUrl,statut
 ```
 
 ## Conseils d'utilisation

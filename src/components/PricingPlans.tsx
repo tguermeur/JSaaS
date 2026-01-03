@@ -137,7 +137,7 @@ export default function PricingPlans() {
             src="/images/logo.png"
             alt="JS Connect Logo"
             sx={{
-              height: 24,
+              height: 40,
               mr: 4,
               transition: 'transform 0.3s ease',
               '&:hover': {

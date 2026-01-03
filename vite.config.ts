@@ -8,7 +8,7 @@ export default defineConfig({
     global: 'globalThis',
   },
   server: {
-    port: 3006,
+    port: 3011,
     hmr: {
       protocol: 'ws',
       host: 'localhost',
@@ -17,18 +17,27 @@ export default defineConfig({
       '/pdf-proxy': {
         target: 'https://firebasestorage.googleapis.com',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/pdf-proxy/, ''),
-        headers: {
-          'Origin': 'http://localhost:3006'
+        rewrite: (path) => {
+          // Remplacer /pdf-proxy par le chemin vide pour que le chemin complet soit conservé
+          // Le chemin contient déjà le chemin complet avec les paramètres de requête
+          return path.replace(/^\/pdf-proxy/, '');
+        },
+        secure: true,
+        configure: (proxy, _options) => {
+          proxy.on('error', (err, _req, _res) => {
+            console.log('Proxy error:', err);
+          });
+          proxy.on('proxyReq', (proxyReq, req, _res) => {
+            console.log('Proxying request:', req.url);
+            // S'assurer que tous les headers sont transmis
+            proxyReq.setHeader('Accept', 'application/pdf');
+          });
         }
       },
       '/pdf-worker': {
         target: 'https://cdnjs.cloudflare.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/pdf-worker/, '/ajax/libs/pdf.js'),
-        headers: {
-          'Origin': 'http://localhost:3006'
-        }
       }
     },
     headers: {
@@ -69,6 +78,24 @@ export default defineConfig({
     chunkSizeWarningLimit: 1000, // Augmenter la limite d'avertissement
   },
   optimizeDeps: {
-    include: ['pdfjs-dist/build/pdf', 'pdfjs-dist/build/pdf.worker.min', 'buffer']
+    include: [
+      'pdfjs-dist/build/pdf', 
+      'pdfjs-dist/build/pdf.worker.min', 
+      'buffer',
+      'firebase/app',
+      'firebase/auth',
+      'firebase/firestore',
+      'firebase/storage',
+      'firebase/functions',
+      '@firebase/storage',
+      '@firebase/app'
+    ],
+    // Forcer l'inclusion de tous les sous-modules Firebase Storage
+    esbuildOptions: {
+      // S'assurer que les side-effects sont préservés
+      preserveSymlinks: false
+    },
+    // Forcer la re-optimisation si nécessaire
+    force: false
   }
 }); 

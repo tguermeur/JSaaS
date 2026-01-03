@@ -20,6 +20,7 @@ import StructureSettings from './pages/settings/StructureSettings';
 import MissionDescriptions from './pages/settings/MissionDescriptions';
 import Storage from './pages/settings/Storage';
 import Billing from './pages/settings/Billing';
+import BillingPage from './pages/BillingPage';
 import HumanResources from './pages/HumanResources';
 import Entreprises from './pages/Entreprises';
 import EntrepriseDetail from './pages/EntrepriseDetail';
@@ -111,6 +112,12 @@ function App(): JSX.Element {
                         </ProtectedRoute>
                       } />
                       <Route path="profile" element={<Profile />} />
+                      {/* BillingPage pour les entreprises */}
+                      <Route path="billing-page" element={
+                        <RequireRole allowedRoles={['entreprise']}>
+                          <BillingPage />
+                        </RequireRole>
+                      } />
                       {/* Routes accessibles selon le rôle */}
                       <Route path="organization" element={
                         <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
@@ -120,7 +127,7 @@ function App(): JSX.Element {
                         </RequireRole>
                       } />
                       <Route path="mission" element={
-                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin', 'entreprise']}>
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
                           <ProtectedRoute requiredPermission={{ pageId: 'mission', accessType: 'read' }}>
                             <Mission />
                           </ProtectedRoute>
@@ -251,7 +258,7 @@ function App(): JSX.Element {
                             <Authorizations />
                           </RequireRole>
                         } />
-                        {/* Billing uniquement pour admin_structure, admin, superadmin */}
+                        {/* Billing pour admin_structure, admin, superadmin */}
                         <Route path="billing" element={
                           <RequireRole allowedRoles={['admin_structure', 'admin', 'superadmin']}>
                             <Billing />

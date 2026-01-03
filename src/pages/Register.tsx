@@ -90,8 +90,6 @@ const Register: React.FC = () => {
   const graduationYears = [2024, 2025, 2026, 2027, 2028, 2029, 2030];
   
   // ========== ÉTATS FLUX ENTREPRISE ==========
-  const [companyActiveStep, setCompanyActiveStep] = useState(0);
-  const companySteps = ['Création de compte & Contact', 'Qualification du besoin'];
   const [companyName, setCompanyName] = useState('');
   const [companyContactFirstName, setCompanyContactFirstName] = useState('');
   const [companyContactLastName, setCompanyContactLastName] = useState('');
@@ -99,9 +97,6 @@ const Register: React.FC = () => {
   const [companyPhone, setCompanyPhone] = useState('');
   const [companyPassword, setCompanyPassword] = useState('');
   const [companyConfirmPassword, setCompanyConfirmPassword] = useState('');
-  const [missionType, setMissionType] = useState('');
-  const [missionDescription, setMissionDescription] = useState('');
-  const [missionDeadline, setMissionDeadline] = useState('');
   
   // ========== ÉTATS FLUX STRUCTURE ==========
   const [structureName, setStructureName] = useState('');
@@ -339,60 +334,41 @@ const Register: React.FC = () => {
   };
   
   // ========== FONCTIONS FLUX ENTREPRISE ==========
-  const handleCompanyNext = async () => {
-    if (companyActiveStep === 0) {
-      if (!companyName || !companyContactFirstName || !companyContactLastName || !companyEmail || !companyPhone || !companyPassword || !companyConfirmPassword) {
-        setError('Veuillez remplir tous les champs obligatoires');
-        return;
-      }
-      
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(companyEmail)) {
-        setError('Veuillez entrer une adresse email valide');
-        return;
-      }
-      
-      const phoneRegex = /^[0-9+\s()-]+$/;
-      if (!phoneRegex.test(companyPhone)) {
-        setError('Veuillez entrer un numéro de téléphone valide');
-        return;
-      }
-      
-      if (companyPassword !== companyConfirmPassword) {
-        setError('Les mots de passe ne correspondent pas');
-        return;
-      }
-      
-      if (companyPassword.length < 8) {
-        setError('Le mot de passe doit contenir au moins 8 caractères');
-        return;
-      }
-      
-      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-      if (!passwordRegex.test(companyPassword)) {
-        setError('Le mot de passe doit contenir au moins une lettre majuscule, une lettre minuscule et un chiffre');
-        return;
-      }
-    } else if (companyActiveStep === 1) {
-      if (!missionType) {
-        setError('Veuillez sélectionner un type de mission');
-        return;
-      }
-      
-      handleCompanySubmit();
+  const handleCompanySubmit = async () => {
+    // Validation des champs
+    if (!companyName || !companyContactFirstName || !companyContactLastName || !companyEmail || !companyPhone || !companyPassword || !companyConfirmPassword) {
+      setError('Veuillez remplir tous les champs obligatoires');
       return;
     }
     
-    setCompanyActiveStep((prevActiveStep) => prevActiveStep + 1);
-    setError(null);
-  };
-  
-  const handleCompanyBack = () => {
-    setCompanyActiveStep((prevActiveStep) => prevActiveStep - 1);
-    setError(null);
-  };
-  
-  const handleCompanySubmit = async () => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(companyEmail)) {
+      setError('Veuillez entrer une adresse email valide');
+      return;
+    }
+    
+    const phoneRegex = /^[0-9+\s()-]+$/;
+    if (!phoneRegex.test(companyPhone)) {
+      setError('Veuillez entrer un numéro de téléphone valide');
+      return;
+    }
+    
+    if (companyPassword !== companyConfirmPassword) {
+      setError('Les mots de passe ne correspondent pas');
+      return;
+    }
+    
+    if (companyPassword.length < 8) {
+      setError('Le mot de passe doit contenir au moins 8 caractères');
+      return;
+    }
+    
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+    if (!passwordRegex.test(companyPassword)) {
+      setError('Le mot de passe doit contenir au moins une lettre majuscule, une lettre minuscule et un chiffre');
+      return;
+    }
+
     if (!acceptTerms) {
       setError("Vous devez accepter les conditions d'utilisation et la politique de confidentialité");
       return;
@@ -413,37 +389,13 @@ const Register: React.FC = () => {
           phone: companyPhone,
           companyName: companyName,
           createdAt: new Date(),
-          status: 'entreprise' as any,
-          // Données de qualification du besoin
-          missionType: missionType,
-          missionDescription: missionDescription,
-          missionDeadline: missionDeadline,
-          leadQualified: true,
-          leadQualifiedAt: new Date()
+          status: 'entreprise' as any
         };
         
         await createUserDocument(user.uid, userData);
         
-        // Enregistrer aussi dans une collection leads pour le suivi commercial
-        try {
-          await addDoc(collection(db, 'leads'), {
-            userId: user.uid,
-            companyName: companyName,
-            contactName: `${companyContactFirstName} ${companyContactLastName}`.trim(),
-            email: companyEmail,
-            phone: companyPhone,
-            missionType: missionType,
-            missionDescription: missionDescription,
-            missionDeadline: missionDeadline,
-            createdAt: new Date(),
-            status: 'new'
-          });
-        } catch (leadError) {
-          console.error("Erreur lors de la création du lead:", leadError);
-          // Ne pas bloquer l'inscription si l'enregistrement du lead échoue
-        }
-        
-        navigate('/app/profile');
+        // Rediriger vers le formulaire de mission après l'inscription
+        navigate('/app/mission?new=true');
       } catch (error) {
         console.error("Erreur lors de la création du document utilisateur:", error);
         setError("Erreur lors de la création du profil. Veuillez réessayer.");
@@ -550,7 +502,7 @@ const Register: React.FC = () => {
       case 'company':
         return "Créer un compte Entreprise";
       case 'structure':
-        return "Créer un compte Junior-Entreprise";
+        return "Créer un compte Junior";
       default:
         return "Créer un compte JS Connect";
     }
@@ -560,7 +512,7 @@ const Register: React.FC = () => {
     const types = {
       student: 'Étudiant',
       company: 'Entreprise',
-      structure: 'Junior-Entreprise'
+      structure: 'Junior'
     };
     
     return (
@@ -955,20 +907,6 @@ const Register: React.FC = () => {
   
   const renderCompanyForm = () => (
     <>
-      <Stepper 
-        activeStep={companyActiveStep} 
-        alternativeLabel
-        sx={{ mb: 4 }}
-      >
-        {companySteps.map((label) => (
-          <Step key={label}>
-            <StepLabel>{label}</StepLabel>
-          </Step>
-        ))}
-      </Stepper>
-      
-      {companyActiveStep === 0 && (
-        <>
           <TextField
             margin="normal"
             required
@@ -1134,82 +1072,6 @@ const Register: React.FC = () => {
               )
             }}
           />
-        </>
-      )}
-      
-      {companyActiveStep === 1 && (
-        <>
-          <FormControl 
-            fullWidth 
-            required
-            sx={{ 
-              mb: 3,
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
-              }
-            }}
-          >
-            <InputLabel id="mission-type-label">Type de mission recherchée</InputLabel>
-            <Select
-              labelId="mission-type-label"
-              id="missionType"
-              value={missionType}
-              label="Type de mission recherchée"
-              onChange={(e) => setMissionType(e.target.value)}
-              disabled={loading}
-            >
-              <MenuItem value="tech">Tech</MenuItem>
-              <MenuItem value="marketing">Marketing</MenuItem>
-              <MenuItem value="traduction">Traduction</MenuItem>
-              <MenuItem value="audit">Audit</MenuItem>
-              <MenuItem value="autre">Autre</MenuItem>
-            </Select>
-          </FormControl>
-          
-          <TextField
-            margin="normal"
-            fullWidth
-            id="missionDescription"
-            label="Description brève du besoin"
-            name="missionDescription"
-            multiline
-            rows={4}
-            value={missionDescription}
-            onChange={(e) => setMissionDescription(e.target.value)}
-            disabled={loading}
-            variant="outlined"
-            placeholder="Nous cherchons un étudiant pour..."
-            sx={{ 
-              mb: 2,
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
-              }
-            }}
-          />
-          
-          <FormControl 
-            fullWidth 
-            sx={{ 
-              mb: 3,
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
-              }
-            }}
-          >
-            <InputLabel id="mission-deadline-label">Délai souhaité</InputLabel>
-            <Select
-              labelId="mission-deadline-label"
-              id="missionDeadline"
-              value={missionDeadline}
-              label="Délai souhaité"
-              onChange={(e) => setMissionDeadline(e.target.value)}
-              disabled={loading}
-            >
-              <MenuItem value="urgent">Urgent</MenuItem>
-              <MenuItem value="1month">&lt; 1 mois</MenuItem>
-              <MenuItem value="indefini">Indéfini</MenuItem>
-            </Select>
-          </FormControl>
           
           <FormControlLabel
             control={
@@ -1238,52 +1100,31 @@ const Register: React.FC = () => {
             }
             sx={{ mt: 2, mb: 2 }}
           />
-        </>
-      )}
       
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
-        {companyActiveStep > 0 ? (
-          <Button
-            onClick={handleCompanyBack}
-            disabled={loading}
-            startIcon={<ArrowBack />}
-            sx={{ 
-              textTransform: 'none',
-              fontWeight: 500
-            }}
-          >
-            Retour
-          </Button>
+      <Button
+        variant="contained"
+        fullWidth
+        onClick={handleCompanySubmit}
+        disabled={loading}
+        sx={{ 
+          borderRadius: '20px',
+          px: 3,
+          py: 1.5,
+          mt: 3,
+          textTransform: 'none',
+          fontWeight: 500,
+          bgcolor: '#0071e3',
+          '&:hover': {
+            bgcolor: '#0062c3'
+          }
+        }}
+      >
+        {loading ? (
+          <CircularProgress size={24} color="inherit" />
         ) : (
-          <Box />
+          'Créer le compte'
         )}
-        
-        <Button
-          variant="contained"
-          onClick={handleCompanyNext}
-          disabled={loading}
-          endIcon={companyActiveStep < companySteps.length - 1 ? <ArrowForward /> : undefined}
-          sx={{ 
-            borderRadius: '20px',
-            px: 3,
-            py: 1,
-            textTransform: 'none',
-            fontWeight: 500,
-            bgcolor: '#0071e3',
-            '&:hover': {
-              bgcolor: '#0062c3'
-            }
-          }}
-        >
-          {loading ? (
-            <CircularProgress size={24} color="inherit" />
-          ) : companyActiveStep === companySteps.length - 1 ? (
-            'Créer le compte'
-          ) : (
-            'Continuer'
-          )}
-        </Button>
-      </Box>
+      </Button>
     </>
   );
   
@@ -1311,7 +1152,7 @@ const Register: React.FC = () => {
         required
         fullWidth
         id="structureName"
-        label="Nom de la Junior-Entreprise"
+        label="Nom de la junior"
         name="structureName"
         autoFocus
         value={structureName}

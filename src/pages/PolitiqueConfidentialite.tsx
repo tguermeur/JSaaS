@@ -26,7 +26,7 @@ const PolitiqueConfidentialite: React.FC = () => {
             src="/images/logo.png"
             alt="JS Connect Logo"
             sx={{
-              height: 24,
+              height: 40,
               mr: 4,
               transition: 'transform 0.3s ease',
               '&:hover': {
@@ -303,7 +303,7 @@ const PolitiqueConfidentialite: React.FC = () => {
             >
               • Gestion des inscriptions et des profils utilisateurs
               <br />
-              • Mise en relation avec des missions étudiantes proposées par des Junior-Entreprises ou Job Services
+              • Mise en relation avec des missions étudiantes proposées par des Junior-Entreprises ou Juniors
               <br />
               • Suivi administratif et contractuel des missions (contrats, facturation, déclarations)
               <br />
@@ -370,7 +370,7 @@ const PolitiqueConfidentialite: React.FC = () => {
               <br />
               • JS Connect et ses représentants autorisés
               <br />
-              • Les Junior-Entreprises ou Job Services partenaires dans le cadre des missions
+              • Les Junior-Entreprises ou Juniors partenaires dans le cadre des missions
               <br />
               • Les prestataires techniques assurant l'hébergement et la maintenance du site (ex. : Firebase – Google Cloud Platform)
               <br />

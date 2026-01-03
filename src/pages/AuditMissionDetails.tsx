@@ -68,7 +68,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { auditService, Mission } from '../services/auditService';
 import { DocumentType, DOCUMENT_TYPES } from '../types/templates';
 import { collection, query, where, orderBy, getDocs, doc, deleteDoc, getDoc, updateDoc, addDoc } from 'firebase/firestore';
-import { db, storage } from '../firebase/config';
+import { db, storage, getStorageInstance } from '../firebase/config';
+import app, { isStorageAvailable } from '../firebase/config';
 import { FileText, Download, Trash2, Upload } from 'lucide-react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useSnackbar } from 'notistack';
@@ -415,9 +416,35 @@ const AuditMissionDetails: React.FC = () => {
       setUploadingDoc(document.id);
       const file = event.target.files[0];
       
+      // Vérifier que Firebase Storage est disponible et valide
+      // Note: storage est importé directement depuis config.ts comme dans Profile.tsx
+      // Essayer d'obtenir une instance Storage (asynchrone si nécessaire)
+      let storageInstance = storage;
+      if (!storageInstance && app) {
+        console.log('⏳ Storage null, tentative d\'initialisation asynchrone...');
+        try {
+          storageInstance = await getStorageInstance();
+        } catch (error) {
+          console.error('❌ Erreur lors de l\'initialisation asynchrone:', error);
+        }
+      }
+      
+      if (!storageInstance || !app) {
+        console.error('Firebase Storage non disponible - storage:', !!storageInstance, 'app:', !!app, 'isAvailable:', isStorageAvailable());
+        setError('Erreur: Firebase Storage n\'est pas activé dans votre projet Firebase. Veuillez activer Storage dans la console Firebase (console.firebase.google.com) puis recharger la page.');
+        return;
+      }
+      
       // Créer le chemin de stockage
       const storagePath = `missions/${document.missionId}/documents/signed_${document.fileName}`;
-      const storageRef = ref(storage, storagePath);
+      let storageRef;
+      try {
+        storageRef = ref(storageInstance, storagePath);
+      } catch (refError: any) {
+        console.error('Erreur lors de la création de la référence Storage:', refError);
+        setError('Erreur: Impossible de créer la référence de stockage. Firebase Storage n\'est pas correctement initialisé.');
+        return;
+      }
 
       // Téléverser le fichier
       await uploadBytes(storageRef, file);
@@ -764,13 +791,113 @@ const AuditMissionDetails: React.FC = () => {
     if (!documentFile || !selectedDocumentType || !mission) return;
 
     try {
-      // Créer le chemin de stockage
-      const storagePath = `missions/${mission.id}/documents/${documentFile.name}`;
-      const storageRef = ref(storage, storagePath);
+      // Vérifier que Firebase Storage est disponible et valide
+      // Essayer d'obtenir une instance Storage (asynchrone si nécessaire)
+      let storageInstance = storage;
+      if (!storageInstance && app) {
+        console.log('⏳ Storage null, tentative d\'initialisation asynchrone...');
+        try {
+          storageInstance = await getStorageInstance();
+        } catch (error) {
+          console.error('❌ Erreur lors de l\'initialisation asynchrone:', error);
+        }
+      }
+      
+      if (!storageInstance || !app) {
+        console.error('Firebase Storage non disponible - storage:', !!storageInstance, 'app:', !!app, 'isAvailable:', isStorageAvailable());
+        enqueueSnackbar(
+          'Erreur: Firebase Storage n\'est pas activé dans votre projet Firebase. Veuillez activer Storage dans la console Firebase (console.firebase.google.com) puis recharger la page.',
+          { variant: 'error', autoHideDuration: 10000 }
+        );
+        return;
+      }
 
-      // Téléverser le fichier
-      await uploadBytes(storageRef, documentFile);
-      const fileUrl = await getDownloadURL(storageRef);
+      // Fonction helper pour déterminer le contentType basé sur l'extension
+      const getContentTypeFromFileName = (fileName: string): string => {
+        const extension = fileName.split('.').pop()?.toLowerCase();
+        const contentTypeMap: Record<string, string> = {
+          'pdf': 'application/pdf',
+          'doc': 'application/msword',
+          'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'ppt': 'application/vnd.ms-powerpoint',
+          'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          'xls': 'application/vnd.ms-excel',
+          'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'jpg': 'image/jpeg',
+          'jpeg': 'image/jpeg',
+          'png': 'image/png',
+          'gif': 'image/gif',
+          'txt': 'text/plain',
+          'csv': 'text/csv'
+        };
+        return contentTypeMap[extension || ''] || 'application/octet-stream';
+      };
+
+      // Déterminer le contentType
+      let contentType = documentFile.type || getContentTypeFromFileName(documentFile.name);
+      
+      // Logger les informations du fichier pour le débogage
+      console.log('📤 Informations du fichier à uploader:', {
+        name: documentFile.name,
+        size: documentFile.size,
+        type: documentFile.type,
+        contentType: contentType,
+        lastModified: documentFile.lastModified
+      });
+
+      // Vérifier que le contentType est autorisé par les règles Storage
+      const allowedContentTypes = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel'
+      ];
+      const isImage = contentType.startsWith('image/');
+      const isText = contentType.startsWith('text/');
+      
+      if (!allowedContentTypes.includes(contentType) && !isImage && !isText) {
+        console.warn('⚠️ ContentType non autorisé:', contentType);
+        enqueueSnackbar(`Type de fichier non autorisé: ${contentType}. Types acceptés: PDF, Word, PowerPoint, Excel, images, texte.`, { variant: 'error' });
+        return;
+      }
+
+      // Créer un nouveau File avec le contentType correct si nécessaire
+      let fileToUpload = documentFile;
+      if (!documentFile.type || documentFile.type === 'application/octet-stream') {
+        // Créer un nouveau File avec le contentType correct
+        fileToUpload = new File([documentFile], documentFile.name, { type: contentType });
+        console.log('📝 ContentType corrigé:', contentType);
+      }
+
+      // Créer le chemin de stockage
+      const storagePath = `missions/${mission.id}/documents/${fileToUpload.name}`;
+      
+      let storageRef;
+      try {
+        storageRef = ref(storageInstance, storagePath);
+        console.log('✅ Référence Storage créée:', storagePath);
+      } catch (refError: any) {
+        console.error('❌ Erreur lors de la création de la référence Storage:', refError);
+        enqueueSnackbar('Erreur: Impossible de créer la référence de stockage. Firebase Storage n\'est pas correctement initialisé.', { variant: 'error' });
+        return;
+      }
+
+      // Téléverser le fichier avec gestion d'erreur améliorée
+      try {
+        console.log('⏳ Début de l\'upload vers Firebase Storage...');
+        console.log('📋 Fichier final:', {
+          name: fileToUpload.name,
+          size: fileToUpload.size,
+          type: fileToUpload.type
+        });
+        await uploadBytes(storageRef, fileToUpload);
+        console.log('✅ Upload réussi vers Firebase Storage');
+        
+        const fileUrl = await getDownloadURL(storageRef);
+        console.log('✅ URL de téléchargement obtenue:', fileUrl);
 
       // Créer le document dans Firestore
       const documentData: Omit<GeneratedDocument, 'id'> = {
@@ -796,18 +923,40 @@ const AuditMissionDetails: React.FC = () => {
         signedBy: null
       };
 
-      const docRef = await addDoc(collection(db, 'generatedDocuments'), documentData);
-      const newDocument = { id: docRef.id, ...documentData };
-      
-      // Mettre à jour l'état local
-      setGeneratedDocuments(prev => [newDocument, ...prev]);
-      
-      // Fermer la boîte de dialogue et réinitialiser les champs
-      handleCloseAddDocument();
-      
-      enqueueSnackbar('Document ajouté avec succès', { variant: 'success' });
-    } catch (error) {
-      console.error('Erreur lors de l\'ajout du document:', error);
+        const docRef = await addDoc(collection(db, 'generatedDocuments'), documentData);
+        const newDocument = { id: docRef.id, ...documentData };
+        
+        // Mettre à jour l'état local
+        setGeneratedDocuments(prev => [newDocument, ...prev]);
+        
+        // Fermer la boîte de dialogue et réinitialiser les champs
+        handleCloseAddDocument();
+        
+        enqueueSnackbar('Document ajouté avec succès', { variant: 'success' });
+      } catch (uploadError: any) {
+        console.error('❌ Erreur lors de l\'upload:', uploadError);
+        console.error('Détails de l\'erreur:', {
+          code: uploadError.code,
+          message: uploadError.message,
+          serverResponse: uploadError.serverResponse
+        });
+        
+        // Messages d'erreur plus spécifiques
+        let errorMessage = 'Erreur lors de l\'ajout du document';
+        if (uploadError.code === 'storage/unauthorized') {
+          errorMessage = 'Erreur: Vous n\'avez pas la permission d\'uploader ce fichier. Vérifiez les règles de sécurité Storage.';
+        } else if (uploadError.code === 'storage/invalid-format') {
+          errorMessage = 'Erreur: Format de fichier non autorisé. Types acceptés: PDF, Word, PowerPoint, Excel, images, texte.';
+        } else if (uploadError.code === 'storage/quota-exceeded') {
+          errorMessage = 'Erreur: Quota de stockage dépassé.';
+        } else if (uploadError.message) {
+          errorMessage = `Erreur: ${uploadError.message}`;
+        }
+        
+        enqueueSnackbar(errorMessage, { variant: 'error', autoHideDuration: 8000 });
+      }
+    } catch (error: any) {
+      console.error('❌ Erreur générale lors de l\'ajout du document:', error);
       enqueueSnackbar('Erreur lors de l\'ajout du document', { variant: 'error' });
     }
   };

@@ -24,11 +24,33 @@ export interface UserDocument {
   profilePictureUrl?: string;
 }
 
-export const createUserDocument = async (userData: UserDocument): Promise<void> => {
+export const createUserDocument = async (uid: string, userData: Partial<UserDocument>): Promise<void> => {
   try {
-    const userRef = doc(db, 'users', userData.uid);
+    if (!uid) {
+      throw new Error('UID est requis pour créer un document utilisateur');
+    }
+    
+    if (!db) {
+      throw new Error('Firestore n\'est pas initialisé');
+    }
+    
+    const userRef = doc(db, 'users', uid);
+    
+    // Filtrer les valeurs undefined pour éviter les erreurs Firestore
+    const cleanedData: Record<string, any> = {
+      uid,
+      ...userData
+    };
+    
+    // Supprimer les valeurs undefined
+    Object.keys(cleanedData).forEach(key => {
+      if (cleanedData[key] === undefined) {
+        delete cleanedData[key];
+      }
+    });
+    
     await setDoc(userRef, {
-      ...userData,
+      ...cleanedData,
       createdAt: new Date(),
       updatedAt: new Date()
     });
@@ -40,9 +62,24 @@ export const createUserDocument = async (userData: UserDocument): Promise<void> 
 
 export const updateUserDocument = async (uid: string, userData: Partial<UserDocument>): Promise<void> => {
   try {
+    if (!db) {
+      throw new Error('Firestore n\'est pas initialisé');
+    }
+    
     const userRef = doc(db, 'users', uid);
+    
+    // Filtrer les valeurs undefined pour éviter les erreurs Firestore
+    const cleanedData: Record<string, any> = {};
+    Object.keys(userData).forEach(key => {
+      const value = userData[key as keyof UserDocument];
+      // Ne pas inclure les valeurs undefined, mais garder null et les chaînes vides
+      if (value !== undefined) {
+        cleanedData[key] = value;
+      }
+    });
+    
     await updateDoc(userRef, {
-      ...userData,
+      ...cleanedData,
       updatedAt: new Date()
     });
   } catch (error) {
@@ -53,6 +90,10 @@ export const updateUserDocument = async (uid: string, userData: Partial<UserDocu
 
 export const getUserDocument = async (uid: string): Promise<UserDocument | null> => {
   try {
+    if (!db) {
+      throw new Error('Firestore n\'est pas initialisé');
+    }
+    
     const userRef = doc(db, 'users', uid);
     const userSnap = await getDoc(userRef);
     

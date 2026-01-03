@@ -12,6 +12,7 @@ export interface TemplateAssignment {
   documentType: DocumentType;
   templateId: string;
   structureId: string;
+  generationType?: 'template' | 'editor';
   createdAt: Date;
   updatedAt: Date;
 }

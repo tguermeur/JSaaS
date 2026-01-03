@@ -25,6 +25,11 @@ import {
   Select,
   Checkbox,
   ListItemIcon,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Grid,
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -123,6 +128,9 @@ const HumanResources = () => {
   const [validationFilters, setValidationFilters] = useState<string[]>([]);
 
   const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editedUser, setEditedUser] = useState<UserDetails | null>(null);
+  const [currentUserStatus, setCurrentUserStatus] = useState<string>('');
 
   const [searchParams] = useSearchParams();
 
@@ -246,12 +254,21 @@ const HumanResources = () => {
         const userData = userDocSnap.data();
         console.log("Données utilisateur:", userData); // Debug
         
+        // Stocker le statut actuel de l'utilisateur
+        const userStatus = userData.status || '';
+        setCurrentUserStatus(userStatus);
+        console.log("Statut utilisateur stocké:", userStatus);
+        
         // Vérifier si l'utilisateur est admin ou superadmin
         const isUserAdmin = userData.status === 'Admin';
         const isUserSuperAdmin = userData.status === 'Superadmin';
         
-        console.log("Est admin:", isUserAdmin); // Debug
-        console.log("Est superadmin:", isUserSuperAdmin); // Debug
+        console.log("Données utilisateur pour permissions:", {
+          status: userData.status,
+          isUserAdmin,
+          isUserSuperAdmin,
+          poles: userData.poles
+        }); // Debug
         
         setIsAdmin(isUserAdmin);
         setIsSuperAdmin(isUserSuperAdmin);
@@ -339,6 +356,211 @@ const HumanResources = () => {
     }
   };
 
+  // Fonction pour convertir variableId en balise
+  const getTagFromVariableId = (variableId: string): string => {
+    const tagMap: { [key: string]: string } = {
+      // User/Étudiant
+      lastName: '<user_nom>',
+      firstName: '<user_prenom>',
+      email: '<user_email>',
+      ecole: '<user_ecole>',
+      displayName: '<user_nom_complet>',
+      phone: '<user_telephone>',
+      socialSecurityNumber: '<user_numero_securite_sociale>',
+      studentId: '<user_numero_etudiant>',
+      address: '<user_adresse>',
+      city: '<user_ville>',
+      postalCode: '<user_code_postal>',
+      country: '<user_pays>',
+      formation: '<user_formation>',
+      program: '<user_programme>',
+      graduationYear: '<user_annee_diplome>',
+      nationality: '<user_nationalite>',
+      gender: '<user_genre>',
+      birthPlace: '<user_lieu_naissance>',
+      birthDate: '<user_date_naissance>',
+      
+      // Mission
+      numeroMission: '<mission_numero>',
+      chargeName: '<mission_cdm>',
+      missionDateDebut: '<mission_date_debut>',
+      missionDateHeureDebut: '<mission_date_heure_debut>',
+      missionDateFin: '<mission_date_fin>',
+      missionDateHeureFin: '<mission_date_heure_fin>',
+      location: '<mission_lieu>',
+      company: '<mission_entreprise>',
+      priceHT: '<mission_prix>',
+      missionDescription: '<mission_description>',
+      title: '<mission_titre>',
+      hours: '<mission_heures>',
+      studentCount: '<mission_nb_etudiants>',
+      generationDate: '<mission_date_generation>',
+      generationDatePlusOneYear: '<mission_date_generation_plus_1_an>',
+      
+      // Company/Entreprise (ne pas confondre avec les champs utilisateur)
+      companyName: '<entreprise_nom>',
+      siren: '<entreprise_siren>',
+      nSiret: '<entreprise_nsiret>',
+      companyAddress: '<entreprise_adresse>',
+      companyCity: '<entreprise_ville>',
+      companyPostalCode: '<entreprise_code_postal>',
+      companyCountry: '<entreprise_pays>',
+      companyPhone: '<entreprise_telephone>',
+      companyEmail: '<entreprise_email>',
+      website: '<entreprise_site_web>',
+      
+      // Structure
+      structure_name: '<structure_nom>',
+      structure_siret: '<structure_siret>',
+      structure_address: '<structure_adresse>',
+      structure_city: '<structure_ville>',
+      structure_postalCode: '<structure_code_postal>',
+      structure_country: '<structure_pays>',
+      structure_phone: '<structure_telephone>',
+      structure_email: '<structure_email>',
+      structure_website: '<structure_site_web>',
+      structure_president_fullName: '<structure_president_nom_complet>',
+    };
+
+    return tagMap[variableId] || `<${variableId}>`;
+  };
+
+  // Fonction pour remplacer les balises par leurs valeurs
+  const replaceTags = async (text: string, structureData?: any): Promise<string> => {
+    if (!text || !selectedUser) return text;
+
+    try {
+      // Récupérer les données de la structure si nécessaire
+      let structureInfo = structureData;
+      const structureId = currentUser?.structureId;
+      if (!structureInfo && structureId) {
+        try {
+          const structureDoc = await getDoc(doc(db, 'structures', structureId));
+          if (structureDoc.exists()) {
+            structureInfo = structureDoc.data();
+          }
+        } catch (error) {
+          console.error('Erreur lors de la récupération de la structure:', error);
+        }
+      }
+
+      // Récupérer le président du mandat le plus récent
+      let presidentFullName = '[Président non disponible]';
+      if (structureId) {
+        try {
+          const usersRef = collection(db, 'users');
+          const q = query(usersRef, where('structureId', '==', structureId));
+          const usersSnapshot = await getDocs(q);
+          
+          const members = usersSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            mandat: doc.data().mandat || null,
+            bureauRole: doc.data().bureauRole || null,
+            poles: doc.data().poles || [],
+            firstName: doc.data().firstName || '',
+            lastName: doc.data().lastName || '',
+            displayName: doc.data().displayName || ''
+          }));
+
+          // Filtrer les présidents (via bureauRole ou pôle 'pre')
+          const presidents = members.filter(member => {
+            const hasPresidentRole = member.bureauRole === 'president' || 
+              member.poles?.some((p: any) => p.poleId === 'pre');
+            return hasPresidentRole && member.mandat;
+          });
+
+          if (presidents.length > 0) {
+            // Trier les mandats pour trouver le plus récent
+            const sortedPresidents = presidents.sort((a, b) => {
+              if (!a.mandat || !b.mandat) return 0;
+              // Comparer les années de début des mandats (format: "2024-2025")
+              const aYear = parseInt(a.mandat.split('-')[0]);
+              const bYear = parseInt(b.mandat.split('-')[0]);
+              return bYear - aYear; // Plus récent en premier
+            });
+
+            const mostRecentPresident = sortedPresidents[0];
+            // Construire le nom complet : prénom + nom ou displayName
+            if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
+              presidentFullName = `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
+            } else if (mostRecentPresident.displayName) {
+              presidentFullName = mostRecentPresident.displayName;
+            }
+          }
+        } catch (error) {
+          console.error('Erreur lors de la récupération du président:', error);
+        }
+      }
+
+      const replacements: { [key: string]: string } = {
+        // Balises utilisateur/étudiant
+        '<user_nom>': selectedUser.lastName || '[Nom non disponible]',
+        '<user_prenom>': selectedUser.firstName || '[Prénom non disponible]',
+        '<user_email>': selectedUser.email || '[Email non disponible]',
+        '<user_ecole>': selectedUser.ecole || '[École non disponible]',
+        '<user_nom_complet>': `${selectedUser.firstName || ''} ${selectedUser.lastName || ''}`.trim() || '[Nom complet non disponible]',
+        '<user_telephone>': selectedUser.phone || '[Téléphone non disponible]',
+        '<user_numero_securite_sociale>': selectedUser.socialSecurityNumber || '[Numéro de sécurité sociale non disponible]',
+        '<user_numero_etudiant>': selectedUser.studentId || '[Numéro étudiant non disponible]',
+        '<user_adresse>': selectedUser.address || '[Adresse non disponible]',
+        '<user_ville>': selectedUser.city || '[Ville non disponible]',
+        '<user_code_postal>': selectedUser.postalCode || '[Code postal non disponible]',
+        '<user_pays>': selectedUser.country || '[Pays non disponible]',
+        '<user_formation>': selectedUser.formation || '[Formation non disponible]',
+        '<user_programme>': selectedUser.program || '[Programme non disponible]',
+        '<user_annee_diplome>': selectedUser.graduationYear || '[Année de diplômation non disponible]',
+        '<user_nationalite>': selectedUser.nationality || '[Nationalité non disponible]',
+        '<user_genre>': selectedUser.gender || '[Genre non disponible]',
+        '<user_lieu_naissance>': selectedUser.birthPlace || '[Lieu de naissance non disponible]',
+        '<user_date_naissance>': selectedUser.birthDate || '[Date de naissance non disponible]',
+        
+        // Balises système
+        '<generationDate>': new Date().toLocaleDateString('fr-FR'),
+        '<mission_date_generation>': new Date().toLocaleDateString('fr-FR'),
+        '<mission_date_generation_plus_1_an>': (() => {
+          const today = new Date();
+          const oneYearLater = new Date(today);
+          oneYearLater.setDate(today.getDate() + 365);
+          return oneYearLater.toLocaleDateString('fr-FR');
+        })(),
+        
+        // Balises de la structure
+        '<structure_nom>': structureInfo?.nom || '[Nom de la structure non disponible]',
+        '<structure_siret>': structureInfo?.siret || '[SIRET de la structure non disponible]',
+        '<structure_adresse>': structureInfo?.address || '[Adresse de la structure non disponible]',
+        '<structure_ville>': structureInfo?.city || '[Ville de la structure non disponible]',
+        '<structure_code_postal>': structureInfo?.postalCode || '[Code postal de la structure non disponible]',
+        '<structure_pays>': structureInfo?.country || '[Pays de la structure non disponible]',
+        '<structure_telephone>': structureInfo?.phone || '[Téléphone de la structure non disponible]',
+        '<structure_email>': structureInfo?.email || '[Email de la structure non disponible]',
+        '<structure_site_web>': structureInfo?.website || '[Site web de la structure non disponible]',
+        '<structure_president_nom_complet>': presidentFullName,
+      };
+
+      let result = text;
+      Object.entries(replacements).forEach(([tag, value]) => {
+        const regex = new RegExp(tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        result = result.replace(regex, value);
+      });
+
+      // Vérifier s'il reste des balises non remplacées
+      const remainingTags = result.match(/<[^>]+>/g);
+      if (remainingTags) {
+        remainingTags.forEach(tag => {
+          const tagName = tag.replace(/[<>]/g, '');
+          result = result.replace(tag, `[Information "${tagName}" non disponible]`);
+          console.warn(`[replaceTags] Balise inconnue non remplacée : ${tag}`);
+        });
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Erreur lors du remplacement des balises:', error);
+      return text;
+    }
+  };
+
   const generateConvention = async () => {
     if (!conventionTemplate || !selectedUser) return;
     
@@ -370,32 +592,137 @@ const HumanResources = () => {
       const pdfDoc = await PDFLib.PDFDocument.load(await pdfBlob.arrayBuffer());
       const pages = pdfDoc.getPages();
       
-      // Remplacer les variables sur chaque page
+      // Remplacer les variables sur chaque page (même méthode que MissionDetails.tsx et EntrepriseDetail.tsx)
+      const helveticaFont = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+      const helveticaFontBold = await pdfDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+      
       for (const variable of templateData.variables) {
         if (variable.position.page > pages.length) continue;
         
         const page = pages[variable.position.page - 1];
-        const { width, height } = page.getSize();
+        const pageHeight = page.getHeight();
         
-        // Convertir les coordonnées relatives en coordonnées absolues
-        const x = variable.position.x * (width / 595); // 595 est la largeur standard d'une page A4
-        const y = height - (variable.position.y * (height / 842)); // 842 est la hauteur standard d'une page A4
-        
-        // Obtenir la valeur de la variable
-        let value = '';
-        if (variable.type === 'raw') {
-          value = variable.rawText || '';
-        } else if (variable.fieldId) {
-          value = selectedUser[variable.fieldId as keyof typeof selectedUser]?.toString() || '';
+        try {
+          // Obtenir la valeur de la variable
+          let valueToReplace = '';
+          if (variable.type === 'raw') {
+            valueToReplace = variable.rawText || '';
+          } else if (variable.variableId) {
+            // Utiliser variableId pour obtenir la balise
+            valueToReplace = getTagFromVariableId(variable.variableId);
+          } else if (variable.fieldId) {
+            // Fallback sur fieldId pour compatibilité
+            const tag = getTagFromVariableId(variable.fieldId);
+            valueToReplace = tag || `<${variable.fieldId}>`;
+          }
+          
+          // Utiliser replaceTags pour remplacer les balises par leurs valeurs
+          const value = await replaceTags(valueToReplace);
+          
+          if (value && value.trim()) {
+            // Appliquer les styles et la position (identique à MissionDetails.tsx)
+            const fontSize = variable.fontSize || 12;
+            const font = variable.isBold ? helveticaFontBold : helveticaFont;
+            const { x, y } = variable.position;
+            const { width, height } = variable;
+            const textAlign = variable.textAlign || 'left';
+            const verticalAlign = variable.verticalAlign || 'top';
+            
+            // Calculer la position Y en fonction de l'alignement vertical (identique à MissionDetails.tsx)
+            let yPos = pageHeight - y;
+            const textHeight = font.heightAtSize(fontSize);
+            if (verticalAlign === 'middle') {
+              yPos = pageHeight - y - (height / 2) + (fontSize * -0.25);
+            } else if (verticalAlign === 'bottom') {
+              yPos = pageHeight - (y + height) + fontSize * 0.8;
+            }
+            
+            // Fonction pour nettoyer le texte
+            const cleanTextForPDF = (text: string): string => {
+              if (!text) return '';
+              return text
+                .replace(/\u202F/g, ' ')
+                .replace(/\u00A0/g, ' ')
+                .replace(/\u2019/g, "'")
+                .replace(/\u2018/g, "'")
+                .replace(/\u201C/g, '"')
+                .replace(/\u201D/g, '"')
+                .replace(/\u2013/g, '-')
+                .replace(/\u2014/g, '-')
+                .replace(/\u2026/g, '...')
+                .replace(/[^\x00-\x7F]/g, (char) => {
+                  const charCode = char.charCodeAt(0);
+                  if (charCode >= 0x00A0 && charCode <= 0x00FF) {
+                    return char;
+                  }
+                  return ' ';
+                });
+            };
+            
+            // Découper le texte en lignes selon la largeur max
+            const splitTextToLines = (text: string, font: any, fontSize: number, maxWidth: number): string[] => {
+              const words = text.split(' ');
+              const lines: string[] = [];
+              let currentLine = '';
+              for (let i = 0; i < words.length; i++) {
+                const testLine = currentLine ? currentLine + ' ' + words[i] : words[i];
+                const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+                if (testWidth > maxWidth && currentLine) {
+                  lines.push(currentLine);
+                  currentLine = words[i];
+                } else {
+                  currentLine = testLine;
+                }
+              }
+              if (currentLine) lines.push(currentLine);
+              return lines;
+            };
+            
+            const cleanedValue = cleanTextForPDF(value);
+            const lines = splitTextToLines(cleanedValue.trim(), font, fontSize, width);
+            let lineY = yPos;
+            const lineHeight = fontSize * 1.2;
+            
+            // Dessiner chaque ligne
+            for (let i = 0; i < lines.length; i++) {
+              const line = cleanTextForPDF(lines[i]);
+              let xLine = x;
+              const lineWidth = font.widthOfTextAtSize(line, fontSize);
+              
+              // Calculer la position X en fonction de l'alignement horizontal
+              if (textAlign === 'center') {
+                xLine = x + (width - lineWidth) / 2;
+              } else if (textAlign === 'right') {
+                xLine = x + width - lineWidth;
+              }
+              
+              try {
+                page.drawText(line, {
+                  x: xLine,
+                  y: lineY,
+                  size: fontSize,
+                  font,
+                  maxWidth: width,
+                  lineHeight: lineHeight
+                });
+              } catch (drawError) {
+                // Si l'erreur persiste, essayer avec un texte encore plus nettoyé
+                const fallbackLine = line.replace(/[^\x20-\x7E]/g, ' ');
+                page.drawText(fallbackLine, {
+                  x: xLine,
+                  y: lineY,
+                  size: fontSize,
+                  font,
+                  maxWidth: width,
+                  lineHeight: lineHeight
+                });
+              }
+              lineY -= lineHeight;
+            }
+          }
+        } catch (err) {
+          console.error(`Erreur lors du traitement de la variable ${variable.name || variable.variableId}:`, err);
         }
-        
-        // Ajouter le texte au PDF
-        page.drawText(value, {
-          x,
-          y,
-          size: variable.fontSize,
-          font: await pdfDoc.embedFont(PDFLib.StandardFonts[variable.fontFamily as keyof typeof PDFLib.StandardFonts] || PDFLib.StandardFonts.Helvetica),
-        });
       }
       
       // Générer le PDF final
@@ -549,6 +876,128 @@ const HumanResources = () => {
         open: true,
         message: 'Erreur lors de la dévalidation du dossier',
         severity: 'error'
+      });
+    }
+  };
+
+  const handleEditUser = () => {
+    if (selectedUser && canEditUser()) {
+      console.log("Accès autorisé à la modification");
+      setEditedUser({ ...selectedUser });
+      setEditModalOpen(true);
+      setAnchorEl(null);
+    } else {
+      console.log("Accès refusé à la modification");
+      setSnackbar({
+        open: true,
+        message: 'Vous n\'avez pas les permissions pour modifier ce profil',
+        severity: 'error'
+      });
+    }
+  };
+
+  // Fonction pour vérifier si l'utilisateur peut modifier les profils
+  const canEditUser = () => {
+    // Utiliser directement le statut actuel de l'utilisateur
+    const canEdit = currentUserStatus === 'Admin' || 
+                   currentUserStatus === 'Superadmin' || 
+                   currentUserStatus === 'superadmin' || // Variante minuscule
+                   isHRMember || // Vérifier aussi les membres RH
+                   (currentUser && currentUser.email?.includes('admin')); // Fallback pour les admins
+    
+    console.log("Permissions d'édition:", { 
+      currentUserStatus,
+      isAdmin, 
+      isHRMember, 
+      isSuperAdmin, 
+      canEdit,
+      currentUserEmail: currentUser?.email
+    });
+    return canEdit;
+  };
+
+  const handleCloseEditModal = () => {
+    setEditModalOpen(false);
+    setEditedUser(null);
+  };
+
+  const handleSaveUser = async () => {
+    if (!editedUser || !currentUser) return;
+
+    try {
+      const userRef = doc(db, 'users', editedUser.id);
+      
+      // Préparer les données à sauvegarder en filtrant les valeurs undefined et null
+      const updateData: Record<string, any> = {};
+      
+      // Fonction helper pour nettoyer les valeurs
+      const cleanValue = (value: any) => {
+        if (value === undefined || value === null) return null;
+        if (typeof value === 'string' && value.trim() === '') return '';
+        return value;
+      };
+      
+      // Ajouter tous les champs avec des valeurs nettoyées
+      updateData.firstName = cleanValue(editedUser.firstName);
+      updateData.lastName = cleanValue(editedUser.lastName);
+      updateData.birthDate = cleanValue(editedUser.birthDate);
+      updateData.birthPlace = cleanValue(editedUser.birthPlace);
+      updateData.birthPostalCode = cleanValue(editedUser.birthPostalCode);
+      updateData.gender = cleanValue(editedUser.gender);
+      updateData.nationality = cleanValue(editedUser.nationality);
+      updateData.email = cleanValue(editedUser.email);
+      updateData.studentId = cleanValue(editedUser.studentId);
+      updateData.studyYear = cleanValue(editedUser.studyYear);
+      updateData.address = cleanValue(editedUser.address);
+      updateData.socialSecurityNumber = cleanValue(editedUser.socialSecurityNumber);
+      updateData.phone = cleanValue(editedUser.phone);
+
+      await updateDoc(userRef, updateData);
+
+      // Mettre à jour la dernière activité
+      await updateLastActivity();
+
+      // Ajouter une entrée dans l'historique
+      const historyRef = collection(db, 'history');
+      await addDoc(historyRef, {
+        userId: editedUser.id,
+        date: new Date().toISOString(),
+        action: 'Modification du profil',
+        details: `Profil modifié par ${currentUser.displayName || currentUser.email}`,
+        type: 'profile'
+      });
+
+      // Mettre à jour l'état local
+      setSelectedUser(editedUser);
+      setUsers(prevUsers => 
+        prevUsers.map(user => 
+          user.id === editedUser.id ? editedUser : user
+        )
+      );
+
+      setSnackbar({
+        open: true,
+        message: 'Profil modifié avec succès',
+        severity: 'success'
+      });
+
+      handleCloseEditModal();
+      fetchUserHistory(editedUser.id);
+    } catch (error) {
+      console.error('Erreur lors de la modification du profil:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de la modification du profil',
+        severity: 'error'
+      });
+    }
+  };
+
+  const handleInputChange = (field: keyof UserDetails, value: string) => {
+    if (editedUser) {
+      setEditedUser({
+        ...editedUser,
+        [field]: value.trim() === '' ? '' : value
       });
     }
   };
@@ -962,7 +1411,7 @@ const HumanResources = () => {
                 <ListItemText
                   primary={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography variant="body1">{user.firstName} {user.lastName}</Typography>
+                      <Typography variant="body1" component="span">{user.firstName} {user.lastName}</Typography>
                       <Chip 
                         label={user.status} 
                         size="small"
@@ -972,11 +1421,11 @@ const HumanResources = () => {
                   }
                   secondary={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
-                      <Typography variant="body2" color="text.secondary">
+                      <Typography variant="body2" color="text.secondary" component="span">
                         {user.email}
                       </Typography>
                       {user.phone && (
-                        <Typography variant="body2" color="text.secondary">
+                        <Typography variant="body2" color="text.secondary" component="span">
                           {user.phone}
                         </Typography>
                       )}
@@ -995,11 +1444,13 @@ const HumanResources = () => {
           overflow: 'hidden',
           height: '100%',
           minWidth: 0,
-          mb: 8
+          mb: 8,
+          display: 'flex',
+          flexDirection: 'column'
         }}>
           {selectedUser ? (
             <>
-              <Box sx={{ p: 3, borderBottom: '1px solid #f0f0f0' }}>
+              <Box sx={{ p: 3, borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <Avatar 
@@ -1054,7 +1505,9 @@ const HumanResources = () => {
                       )}
                     </Box>
                   </Box>
-                  <IconButton>
+                  <IconButton
+                    onClick={(event) => setAnchorEl(event.currentTarget)}
+                  >
                     <MoreVertIcon />
                   </IconButton>
                 </Box>
@@ -1086,7 +1539,7 @@ const HumanResources = () => {
                 </Box>
               </Box>
 
-              <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+              <Box sx={{ borderBottom: 1, borderColor: 'divider', flexShrink: 0 }}>
                 <Tabs 
                   value={currentTab} 
                   onChange={handleTabChange}
@@ -1098,7 +1551,7 @@ const HumanResources = () => {
                 </Tabs>
               </Box>
 
-              <Box sx={{ p: 3, flex: 1, overflow: 'auto' }}>
+              <Box sx={{ p: 3, flex: 1, overflowY: 'auto', minHeight: 0 }}>
                 {currentTab === 0 && (
                   <Box>
                     <Typography variant="subtitle2" sx={{ mb: 2 }}>Informations personnelles</Typography>
@@ -1310,12 +1763,210 @@ const HumanResources = () => {
         open={Boolean(anchorEl)}
         onClose={() => setAnchorEl(null)}
       >
-        <MenuItem onClick={() => setAnchorEl(null)}>Modifier</MenuItem>
+        <MenuItem 
+          onClick={handleEditUser}
+          disabled={!canEditUser()}
+          title={!canEditUser() ? "Seuls les admins, membres RH et superadmins peuvent modifier les profils" : ""}
+        >
+          Modifier
+        </MenuItem>
         <MenuItem onClick={() => setAnchorEl(null)}>Désactiver le compte</MenuItem>
         <MenuItem onClick={() => setAnchorEl(null)} sx={{ color: 'error.main' }}>
           Supprimer
         </MenuItem>
       </Menu>
+
+      {/* Modal d'édition des informations utilisateur */}
+      <Dialog
+        open={editModalOpen}
+        onClose={handleCloseEditModal}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          Modifier les informations de {editedUser?.firstName} {editedUser?.lastName}
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ pt: 2 }}>
+            <Grid container spacing={3}>
+              {/* Informations personnelles */}
+              <Grid item xs={12}>
+                <Typography variant="h6" sx={{ mb: 2, color: 'primary.main' }}>
+                  Informations personnelles
+                </Typography>
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Prénom"
+                  value={editedUser?.firstName || ''}
+                  onChange={(e) => handleInputChange('firstName', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Nom"
+                  value={editedUser?.lastName || ''}
+                  onChange={(e) => handleInputChange('lastName', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Date de naissance"
+                  type="date"
+                  value={editedUser?.birthDate || ''}
+                  onChange={(e) => handleInputChange('birthDate', e.target.value)}
+                  variant="outlined"
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Lieu de naissance"
+                  value={editedUser?.birthPlace || ''}
+                  onChange={(e) => handleInputChange('birthPlace', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Code postal de naissance"
+                  value={editedUser?.birthPostalCode || ''}
+                  onChange={(e) => handleInputChange('birthPostalCode', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <FormControl fullWidth variant="outlined">
+                  <InputLabel>Sexe</InputLabel>
+                  <Select
+                    value={editedUser?.gender || ''}
+                    onChange={(e) => handleInputChange('gender', e.target.value)}
+                    label="Sexe"
+                  >
+                    <MenuItem value="Homme">Homme</MenuItem>
+                    <MenuItem value="Femme">Femme</MenuItem>
+                    <MenuItem value="Autre">Autre</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Nationalité"
+                  value={editedUser?.nationality || ''}
+                  onChange={(e) => handleInputChange('nationality', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+
+              {/* Informations de contact */}
+              <Grid item xs={12}>
+                <Typography variant="h6" sx={{ mb: 2, color: 'primary.main', mt: 3 }}>
+                  Informations de contact
+                </Typography>
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Email"
+                  type="email"
+                  value={editedUser?.email || ''}
+                  onChange={(e) => handleInputChange('email', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Numéro de téléphone"
+                  value={editedUser?.phone || ''}
+                  onChange={(e) => handleInputChange('phone', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Adresse"
+                  value={editedUser?.address || ''}
+                  onChange={(e) => handleInputChange('address', e.target.value)}
+                  variant="outlined"
+                  multiline
+                  rows={2}
+                />
+              </Grid>
+
+              {/* Informations académiques */}
+              <Grid item xs={12}>
+                <Typography variant="h6" sx={{ mb: 2, color: 'primary.main', mt: 3 }}>
+                  Informations académiques
+                </Typography>
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Numéro étudiant"
+                  value={editedUser?.studentId || ''}
+                  onChange={(e) => handleInputChange('studentId', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Année d'étude"
+                  value={editedUser?.studyYear || ''}
+                  onChange={(e) => handleInputChange('studyYear', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+              
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Numéro de sécurité sociale"
+                  value={editedUser?.socialSecurityNumber || ''}
+                  onChange={(e) => handleInputChange('socialSecurityNumber', e.target.value)}
+                  variant="outlined"
+                />
+              </Grid>
+
+            </Grid>
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ p: 3 }}>
+          <Button onClick={handleCloseEditModal} color="inherit">
+            Annuler
+          </Button>
+          <Button 
+            onClick={handleSaveUser} 
+            variant="contained" 
+            color="primary"
+            disabled={!editedUser}
+          >
+            Sauvegarder
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Snackbar
         open={snackbar.open}

@@ -171,7 +171,7 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
       });
     }
 
-    // Créer une session de paiement
+    // Créer une session de paiement avec essai gratuit de 30 jours
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
@@ -182,6 +182,9 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
         },
       ],
       mode: 'subscription',
+      subscription_data: {
+        trial_period_days: 30,
+      },
       success_url: SUCCESS_URL,
       cancel_url: CANCEL_URL,
       client_reference_id: structureId,
@@ -274,7 +277,7 @@ export const createSubscription = functions.https.onCall(async (request) => {
       console.log('Stripe Functions - ID client sauvegardé dans Firestore');
     }
 
-    // Créer la session de paiement
+    // Créer la session de paiement avec essai gratuit de 30 jours
     console.log('Stripe Functions - Création de la session de paiement');
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
@@ -286,6 +289,9 @@ export const createSubscription = functions.https.onCall(async (request) => {
         },
       ],
       mode: 'subscription',
+      subscription_data: {
+        trial_period_days: 30,
+      },
       success_url: `${process.env.FRONTEND_URL}/settings/billing?success=true`,
       cancel_url: `${process.env.FRONTEND_URL}/settings/billing?canceled=true`,
       metadata: {

@@ -382,7 +382,4 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-console.log("Composant Commercial monté !");
-
-const { userData } = useAuth();
-console.log("userData dans Commercial :", userData); 
+console.log("Extension popup chargée !"); 

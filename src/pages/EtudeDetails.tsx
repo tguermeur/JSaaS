@@ -89,7 +89,8 @@ import {
   Close as CloseIcon,
   DragIndicator as DragIndicatorIcon,
   MoreVert as MoreVertIcon,
-  CalendarMonth as CalendarMonthIcon
+  CalendarMonth as CalendarMonthIcon,
+  AutoAwesome as AutoIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase/config';
@@ -97,6 +98,7 @@ import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, dele
 import { keyframes } from '@mui/system';
 import { styled } from '@mui/material';
 import { uploadCompanyLogo } from '../firebase/storage';
+import DocumentGeneratorDialog from '../components/DocumentGeneratorDialog';
 
 // Animations
 const fadeInUp = keyframes`
@@ -345,7 +347,7 @@ interface ContactNote {
 interface Company {
   id: string;
   name: string;
-  siret?: string;
+  nSiret?: string;
   description?: string;
   address?: string;
   city?: string;
@@ -476,6 +478,11 @@ const EtudeDetails: React.FC = () => {
   const [tempHourlyRateInput, setTempHourlyRateInput] = useState<string>('');
   const [tempJehRateInput, setTempJehRateInput] = useState<string>('');
   const [tempBudgetInput, setTempBudgetInput] = useState<string>('');
+
+  // États pour le générateur de documents
+  const [documentGeneratorOpen, setDocumentGeneratorOpen] = useState(false);
+  const [companyFullData, setCompanyFullData] = useState<any>(null);
+  const [structureFullData, setStructureFullData] = useState<any>(null);
 
   // États pour le recrutement lié aux postes de budget
   const [selectedBudgetItems, setSelectedBudgetItems] = useState<string[]>([]);
@@ -741,7 +748,7 @@ const EtudeDetails: React.FC = () => {
     email: '',
     website: '',
     logo: '',
-    siret: ''
+    nSiret: ''
   });
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [newContact, setNewContact] = useState<Partial<Contact>>({
@@ -853,6 +860,9 @@ const EtudeDetails: React.FC = () => {
         // Charger les données associées
         await loadAssociatedData(etudeDoc.id);
 
+        // Charger les données complètes pour le générateur de documents
+        await loadCompleteDataForGenerator(etudeData);
+
         // Récupérer les entreprises disponibles de la structure
         if (etudeData.structureId) {
           const etudesRef = collection(db, 'etudes');
@@ -902,6 +912,34 @@ const EtudeDetails: React.FC = () => {
 
     fetchEtudeDetails();
   }, [etudeNumber, currentUser, navigate]);
+
+  // Fonction pour charger les données complètes pour le générateur de documents
+  const loadCompleteDataForGenerator = async (etudeData: EtudeData) => {
+    try {
+      // Charger les données complètes de l'entreprise
+      if (etudeData.companyId) {
+        const companyDoc = await getDoc(doc(db, 'companies', etudeData.companyId));
+        if (companyDoc.exists()) {
+          setCompanyFullData(companyDoc.data());
+        }
+      }
+
+      // Charger les données complètes de la structure
+      if (etudeData.structureId) {
+        const structureDoc = await getDoc(doc(db, 'structures', etudeData.structureId));
+        if (structureDoc.exists()) {
+          setStructureFullData(structureDoc.data());
+        }
+      }
+    } catch (error) {
+      console.error('Erreur lors du chargement des données complètes:', error);
+    }
+  };
+
+  // Fonction pour ouvrir le générateur de documents
+  const handleOpenDocumentGenerator = () => {
+    setDocumentGeneratorOpen(true);
+  };
 
   // Récupérer la template de proposition commerciale assignée à la structure de l'étude
   const getAssignedQuoteTemplate = async () => {
@@ -1369,7 +1407,7 @@ const EtudeDetails: React.FC = () => {
         email: '',
         website: '',
         logo: '',
-        siret: ''
+        nSiret: ''
       });
       setContacts([]);
       setNewCompanyDialogOpen(false);
@@ -1401,7 +1439,7 @@ const EtudeDetails: React.FC = () => {
       email: '',
       website: '',
       logo: '',
-      siret: ''
+      nSiret: ''
     });
     setContacts([]);
     setShowContactForm(false);
@@ -1975,8 +2013,8 @@ const EtudeDetails: React.FC = () => {
         // Champs pour les exigences de candidature par défaut
         requiresCV: false,
         requiresMotivation: false,
-        // Lieu par défaut
-        location: ''
+        // Lieu par défaut - utiliser la valeur du formulaire
+        location: newRecruitmentTask.location || ''
       } as RecruitmentTask;
 
       console.log('Données de la tâche à créer:', taskData);
@@ -2649,13 +2687,13 @@ const EtudeDetails: React.FC = () => {
           userDisplayName: data.userDisplayName,
           userPhotoURL: data.userPhotoURL,
           cvUrl: data.cvUrl,
-          cvUpdatedAt: data.cvUpdatedAt?.toDate(),
+          cvUpdatedAt: data.cvUpdatedAt && typeof data.cvUpdatedAt.toDate === 'function' ? data.cvUpdatedAt.toDate() : data.cvUpdatedAt,
           motivationLetter: data.motivationLetter,
           status: data.status,
-          submittedAt: data.submittedAt?.toDate() || new Date(),
-          updatedAt: data.updatedAt?.toDate() || new Date(),
+          submittedAt: data.submittedAt && typeof data.submittedAt.toDate === 'function' ? data.submittedAt.toDate() : data.submittedAt || new Date(),
+          updatedAt: data.updatedAt && typeof data.updatedAt.toDate === 'function' ? data.updatedAt.toDate() : data.updatedAt || new Date(),
           reviewedBy: data.reviewedBy,
-          reviewedAt: data.reviewedAt?.toDate(),
+          reviewedAt: data.reviewedAt && typeof data.reviewedAt.toDate === 'function' ? data.reviewedAt.toDate() : data.reviewedAt,
           reviewNotes: data.reviewNotes,
           addedManually: data.addedManually
         } as RecruitmentApplication;
@@ -2792,6 +2830,70 @@ const EtudeDetails: React.FC = () => {
       month: '2-digit',
       year: 'numeric'
     });
+  };
+
+  // Fonction utilitaire pour formater les dates de manière sécurisée
+  const formatSafeDate = (date: any, options?: Intl.DateTimeFormatOptions): string => {
+    if (!date) return 'Non définie';
+    
+    let dateObj: Date;
+    
+    // Si c'est déjà un objet Date
+    if (date instanceof Date) {
+      dateObj = date;
+    }
+    // Si c'est un Timestamp Firebase
+    else if (date && typeof date.toDate === 'function') {
+      dateObj = date.toDate();
+    }
+    // Si c'est une chaîne ou un nombre
+    else if (typeof date === 'string' || typeof date === 'number') {
+      dateObj = new Date(date);
+    }
+    // Sinon, essayer de le convertir
+    else {
+      try {
+        dateObj = new Date(date);
+      } catch {
+        return 'Date invalide';
+      }
+    }
+    
+    // Vérifier si la date est valide
+    if (isNaN(dateObj.getTime())) {
+      return 'Date invalide';
+    }
+    
+    return dateObj.toLocaleDateString('fr-FR', options || {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
+  };
+
+  // Fonction utilitaire pour formater l'heure de manière sécurisée
+  const formatSafeTime = (date: any): string => {
+    if (!date) return '';
+    
+    let dateObj: Date;
+    
+    if (date instanceof Date) {
+      dateObj = date;
+    } else if (date && typeof date.toDate === 'function') {
+      dateObj = date.toDate();
+    } else {
+      try {
+        dateObj = new Date(date);
+      } catch {
+        return '';
+      }
+    }
+    
+    if (isNaN(dateObj.getTime())) {
+      return '';
+    }
+    
+    return dateObj.toLocaleTimeString('fr-FR');
   };
 
   const getStatusColor = (status: string) => {
@@ -4826,7 +4928,7 @@ const EtudeDetails: React.FC = () => {
                         
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <Typography variant="caption" sx={{ color: '#86868b' }}>
-                            {new Date(entry.date).toLocaleDateString('fr-FR', {
+                            {formatSafeDate(entry.date, {
                               day: '2-digit',
                               month: '2-digit',
                               year: 'numeric',
@@ -4897,7 +4999,7 @@ const EtudeDetails: React.FC = () => {
                         </Typography>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <Typography variant="caption" sx={{ color: '#86868b' }}>
-                            {new Date(note.createdAt).toLocaleDateString('fr-FR', {
+                            {formatSafeDate(note.createdAt, {
                               day: '2-digit',
                               month: '2-digit',
                               year: 'numeric',
@@ -5700,12 +5802,21 @@ const EtudeDetails: React.FC = () => {
                                         color: '#667eea',
                                         cursor: 'pointer',
                                         textDecoration: 'underline',
+                                        transition: 'all 0.2s ease',
                                         '&:hover': {
-                                          color: '#5a6fd8'
+                                          color: '#5a6fd8',
+                                          backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                                          borderRadius: '4px',
+                                          padding: '2px 4px',
+                                          margin: '-2px -4px'
                                         }
                                       }}
-                                      onClick={async () => {
+                                      onClick={async (e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
                                         console.log('🖱️ Clic sur étudiants recrutés pour le poste de budget:', item.id);
+                                        // Message temporaire pour confirmer que le clic fonctionne
+                                        console.log('✅ Gestionnaire de clic activé pour le poste:', item.title);
                                         // Récupérer les étudiants recrutés pour ce poste de budget
                                         const recruitedStudents: RecruitmentApplication[] = [];
                                         
@@ -5731,11 +5842,8 @@ const EtudeDetails: React.FC = () => {
                                         
                                         console.log('📊 Étudiants recrutés pour le poste:', recruitedStudents.length);
                                         
-                                        if (recruitedStudents.length > 0) {
-                                          handleOpenRecruitedStudents(recruitedStudents, `Étudiants recrutés - ${item.title}`);
-                                        } else {
-                                          console.log('❌ Aucun étudiant recruté pour ce poste de budget');
-                                        }
+                                        // Toujours ouvrir la boîte de dialogue, même si elle est vide
+                                        handleOpenRecruitedStudents(recruitedStudents, `Étudiants recrutés - ${item.title}`);
                                       }}
                                     >
                                       {(item.recruitedStudents ?? 0)}/{item.studentsToRecruit} étudiants
@@ -5837,26 +5945,26 @@ const EtudeDetails: React.FC = () => {
                           </Box>
                         }
                         secondary={
-                          <Box component="div">
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                          <Box component="span">
+                            <span style={{ color: 'rgba(0, 0, 0, 0.6)', fontSize: '0.875rem', display: 'block', marginBottom: '8px' }}>
                               {task.description}
-                            </Typography>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                              <Typography variant="caption" color="text.secondary">
+                            </span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                              <span style={{ color: 'rgba(0, 0, 0, 0.6)', fontSize: '0.75rem' }}>
                                 {task.remuneration}€ HT
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary">
+                              </span>
+                              <span style={{ color: 'rgba(0, 0, 0, 0.6)', fontSize: '0.75rem' }}>
                                 {task.duration}h
-                              </Typography>
+                              </span>
                               {task.location && (
-                                <Typography variant="caption" color="text.secondary">
+                                <span style={{ color: 'rgba(0, 0, 0, 0.6)', fontSize: '0.75rem' }}>
                                   📍 {task.location}
-                                </Typography>
+                                </span>
                               )}
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                <Typography variant="caption" color="text.secondary">
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ color: 'rgba(0, 0, 0, 0.6)', fontSize: '0.75rem' }}>
                                   {applicationsCounts[task.id] || 0} candidatures
-                                </Typography>
+                                </span>
                                 {pendingApplicationsCounts[task.id] > 0 && (
                                   <Chip
                                     label={`${pendingApplicationsCounts[task.id]} à traiter`}
@@ -5870,33 +5978,34 @@ const EtudeDetails: React.FC = () => {
                                     }}
                                   />
                                 )}
-                              </Box>
+                              </span>
                               {task.linkedRecruitment && task.budgetItemIds && task.budgetItemIds.length > 0 && (
-                                <Chip 
-                                  label={`Lié à ${task.budgetItemIds.length} poste(s) de budget`}
-                                  size="small"
-                                  sx={{ 
-                                    bgcolor: '#667eea',
-                                    color: 'white',
-                                    fontSize: '0.7rem'
-                                  }}
-                                />
+                                <span style={{ 
+                                  backgroundColor: '#667eea',
+                                  color: 'white',
+                                  fontSize: '0.7rem',
+                                  padding: '2px 8px',
+                                  borderRadius: '12px',
+                                  display: 'inline-block'
+                                }}>
+                                  Lié à {task.budgetItemIds.length} poste(s) de budget
+                                </span>
                               )}
-                              {task.studentsToRecruit && (
-                                <Typography 
-                                  variant="caption" 
-                                  sx={{ 
+                              {typeof task.studentsToRecruit === 'number' && (
+                                <span 
+                                  style={{ 
                                     color: '#667eea', 
                                     fontWeight: 600,
                                     cursor: 'pointer',
                                     textDecoration: 'underline',
-                                    '&:hover': {
-                                      color: '#5a6fd8'
-                                    }
+                                    fontSize: '0.75rem',
+                                    transition: 'all 0.2s ease'
                                   }}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     console.log('🖱️ Clic sur étudiants recrutés pour la tâche:', task.id);
+                                    // Message temporaire pour confirmer que le clic fonctionne
+                                    console.log('✅ Gestionnaire de clic activé pour la tâche:', task.title);
                                     console.log('📊 Données disponibles:', recruitedStudentsByTask[task.id]);
                                     console.log('📊 Nombre d\'étudiants recrutés:', recruitedStudentsByTask[task.id]?.length || 0);
                                     
@@ -5905,29 +6014,23 @@ const EtudeDetails: React.FC = () => {
                                       console.log('🔄 Chargement des données pour la tâche:', task.id);
                                       getRecruitedStudentsForTask(task.id).then(students => {
                                         console.log('✅ Étudiants chargés:', students);
-                                        if (students.length > 0) {
-                                          setRecruitedStudentsByTask(prev => ({
-                                            ...prev,
-                                            [task.id]: students
-                                          }));
-                                          handleOpenRecruitedStudents(students, `Étudiants recrutés - ${task.title}`);
-                                        } else {
-                                          console.log('❌ Aucun étudiant recruté trouvé');
-                                        }
+                                        setRecruitedStudentsByTask(prev => ({
+                                          ...prev,
+                                          [task.id]: students
+                                        }));
+                                        // Toujours ouvrir la boîte de dialogue, même si elle est vide
+                                        handleOpenRecruitedStudents(students, `Étudiants recrutés - ${task.title}`);
                                       });
-                                    } else if (recruitedStudentsByTask[task.id].length > 0) {
-                                      handleOpenRecruitedStudents(recruitedStudentsByTask[task.id], `Étudiants recrutés - ${task.title}`);
                                     } else {
-                                      console.log('❌ Aucun étudiant recruté pour cette tâche');
+                                      // Toujours ouvrir la boîte de dialogue, même si elle est vide
+                                      handleOpenRecruitedStudents(recruitedStudentsByTask[task.id], `Étudiants recrutés - ${task.title}`);
                                     }
                                   }}
                                 >
                                   {task.recruitedStudents || 0}/{task.studentsToRecruit} étudiants recrutés
-                                </Typography>
+                                </span>
                               )}
-                            </Box>
-                            
-
+                            </span>
                           </Box>
                         }
                       />
@@ -6090,8 +6193,8 @@ const EtudeDetails: React.FC = () => {
                 </>
               )}
               <Button
-                startIcon={<PowerSettingsNewIcon />}
-                onClick={() => setPowerpointDialogOpen(true)}
+                startIcon={<AutoIcon />}
+                onClick={handleOpenDocumentGenerator}
                 variant="outlined"
                 sx={{ 
                   borderColor: '#667eea',
@@ -6102,7 +6205,7 @@ const EtudeDetails: React.FC = () => {
                   }
                 }}
               >
-                Générer PowerPoint
+                Générateur intelligent
               </Button>
               <Button
                 startIcon={<UploadIcon />}
@@ -8275,7 +8378,7 @@ const EtudeDetails: React.FC = () => {
           </DialogActions>
         </Dialog>
 
-        {/* PowerPoint Generation Dialog */}
+        {/* Document Generation Dialog */}
         <Dialog 
           open={powerpointDialogOpen} 
           onClose={() => setPowerpointDialogOpen(false)} 
@@ -8286,7 +8389,7 @@ const EtudeDetails: React.FC = () => {
           }}
         >
           <DialogTitle sx={{ fontWeight: 700, color: '#1d1d1f' }}>
-            Générer un document PowerPoint
+            Générer un document
           </DialogTitle>
           <DialogContent>
             <Typography variant="body1" sx={{ mb: 3, color: '#1d1d1f' }}>
@@ -8325,7 +8428,7 @@ const EtudeDetails: React.FC = () => {
               fullWidth
               multiline
               rows={6}
-              label="Template PowerPoint (utilisez les balises ci-dessus)"
+              label="Template document (utilisez les balises ci-dessus)"
               value={powerpointTemplate}
               onChange={(e) => setPowerpointTemplate(e.target.value)}
               placeholder="Exemple: Présentation de l'étude {{ETUDE_NUMERO}} pour {{ENTREPRISE}}..."
@@ -8351,7 +8454,7 @@ const EtudeDetails: React.FC = () => {
                 '&:hover': { bgcolor: '#5a6fd8' }
               }}
             >
-              Générer PowerPoint
+              Générer document
             </Button>
           </DialogActions>
         </Dialog>
@@ -8468,13 +8571,13 @@ const EtudeDetails: React.FC = () => {
                 <Grid item xs={6}>
                   <Box sx={{ display: 'flex', flexDirection: 'column' }}>
                     <Typography variant="caption" sx={{ color: 'text.secondary', mb: 1, display: 'block' }}>
-                      SIRET
+                      nSiret
                     </Typography>
                     <StyledTextField
-                      value={newCompany.siret}
-                      onChange={(e) => setNewCompany({ ...newCompany, siret: e.target.value })}
+                      value={newCompany.nSiret}
+                      onChange={(e) => setNewCompany({ ...newCompany, nSiret: e.target.value })}
                       fullWidth
-                      placeholder="Numéro SIRET"
+                      placeholder="Numéro nSiret"
                     />
                   </Box>
                 </Grid>
@@ -8968,8 +9071,8 @@ const EtudeDetails: React.FC = () => {
                           fontSize: '0.75rem'
                         }}>
                           {application.addedManually 
-                            ? `Ajouté manuellement le ${application.submittedAt.toLocaleDateString('fr-FR')}`
-                            : `Candidature soumise le ${application.submittedAt.toLocaleDateString('fr-FR')}`
+                            ? `Ajouté manuellement le ${formatSafeDate(application.submittedAt)}`
+                            : `Candidature soumise le ${formatSafeDate(application.submittedAt)}`
                           }
                         </Typography>
                       </Box>
@@ -9125,7 +9228,7 @@ const EtudeDetails: React.FC = () => {
                         Date de candidature
                       </Typography>
                       <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                        {selectedApplication.submittedAt.toLocaleDateString('fr-FR')} à {selectedApplication.submittedAt.toLocaleTimeString('fr-FR')}
+                        {formatSafeDate(selectedApplication.submittedAt)} à {formatSafeTime(selectedApplication.submittedAt)}
                       </Typography>
                     </Box>
                     
@@ -9160,7 +9263,7 @@ const EtudeDetails: React.FC = () => {
                           Date d'évaluation
                         </Typography>
                         <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                          {selectedApplication.reviewedAt.toLocaleDateString('fr-FR')} à {selectedApplication.reviewedAt.toLocaleTimeString('fr-FR')}
+                          {formatSafeDate(selectedApplication.reviewedAt)} à {formatSafeTime(selectedApplication.reviewedAt)}
                         </Typography>
                       </Box>
                     )}
@@ -9636,82 +9739,11 @@ const EtudeDetails: React.FC = () => {
                           fontSize: '0.75rem'
                         }}>
                           {student.addedManually 
-                            ? `Ajouté manuellement le ${student.submittedAt.toLocaleDateString('fr-FR')}`
-                            : `Candidature acceptée le ${student.submittedAt.toLocaleDateString('fr-FR')}`
+                            ? `Ajouté manuellement le ${formatSafeDate(student.submittedAt)}`
+                            : `Candidature acceptée le ${formatSafeDate(student.submittedAt)}`
                           }
                         </Typography>
 
-                        {/* CV et Lettre de motivation affichés directement */}
-                        <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          {student.cvUrl && (
-                            <Box sx={{ p: 2, bgcolor: '#f8f9fa', borderRadius: 2, border: '1px solid #e5e5e7' }}>
-                              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: '#1d1d1f' }}>
-                                📄 CV
-                              </Typography>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                <Typography variant="body2" sx={{ color: '#666', fontSize: '0.875rem' }}>
-                                  CV disponible
-                                </Typography>
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  onClick={() => {
-                                    setCvPreviewUrl(student.cvUrl!);
-                                    setCvPreviewOpen(true);
-                                  }}
-                                  sx={{
-                                    fontSize: '0.75rem',
-                                    textTransform: 'none',
-                                    borderColor: '#667eea',
-                                    color: '#667eea',
-                                    '&:hover': {
-                                      bgcolor: 'rgba(102, 126, 234, 0.04)',
-                                      borderColor: '#5a6fd8'
-                                    }
-                                  }}
-                                >
-                                  Voir CV
-                                </Button>
-                              </Box>
-                            </Box>
-                          )}
-
-                          {student.motivationLetter && (
-                            <Box sx={{ p: 2, bgcolor: '#f8f9fa', borderRadius: 2, border: '1px solid #e5e5e7' }}>
-                              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1, color: '#1d1d1f' }}>
-                                💌 Lettre de motivation
-                              </Typography>
-                              <Typography variant="body2" sx={{ color: '#666', fontSize: '0.875rem', mb: 2 }}>
-                                {student.motivationLetter.length > 200 
-                                  ? `${student.motivationLetter.substring(0, 200)}...` 
-                                  : student.motivationLetter
-                                }
-                              </Typography>
-                              {student.motivationLetter.length > 200 && (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  onClick={() => {
-                                    setSelectedApplication(student);
-                                    setApplicationDetailDialogOpen(true);
-                                  }}
-                                  sx={{
-                                    fontSize: '0.75rem',
-                                    textTransform: 'none',
-                                    borderColor: '#ffa502',
-                                    color: '#ffa502',
-                                    '&:hover': {
-                                      bgcolor: 'rgba(255, 165, 2, 0.04)',
-                                      borderColor: '#e69500'
-                                    }
-                                  }}
-                                >
-                                  Voir plus
-                                </Button>
-                              )}
-                            </Box>
-                          )}
-                        </Box>
                       </Box>
 
                       {/* Actions */}
@@ -10092,6 +10124,16 @@ const EtudeDetails: React.FC = () => {
             </Button>
           </DialogActions>
         </Dialog>
+
+        {/* Générateur de documents intelligent */}
+        <DocumentGeneratorDialog
+          open={documentGeneratorOpen}
+          onClose={() => setDocumentGeneratorOpen(false)}
+          etudeData={etude}
+          companyData={companyFullData}
+          contactData={contacts.find(c => c.isDefault) || contacts[0]}
+          structureData={structureFullData}
+        />
       </Box>
     </Box>
   );

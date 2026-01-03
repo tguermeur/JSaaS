@@ -1,4 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+
+// Déclaration TypeScript pour l'API EyeDropper
+declare global {
+  interface Window {
+    EyeDropper: {
+      new (): {
+        open(): Promise<{ sRGBHex: string }>;
+      };
+    };
+  }
+}
 import {
   Box,
   Typography,
@@ -38,13 +49,24 @@ import {
   Business as BusinessIcon,
   Assignment as AssignmentIcon,
   Email as EmailIcon,
-  Send as SendIcon
+  Send as SendIcon,
+  Palette as PaletteIcon,
+  Colorize as ColorizeIcon,
+  FormatAlignLeft as FormatAlignLeftIcon,
+  FormatAlignCenter as FormatAlignCenterIcon,
+  FormatAlignRight as FormatAlignRightIcon,
+  FormatAlignJustify as FormatAlignJustifyIcon,
+  TextIncrease as TextIncreaseIcon,
+  TextDecrease as TextDecreaseIcon,
+  FormatBold as FormatBoldIcon,
+  FormatItalic as FormatItalicIcon
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
-import { collection, doc, getDoc, getDocs, query, where, addDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { collection, doc, getDoc, getDocs, query, where, addDoc, updateDoc, setDoc } from 'firebase/firestore';
+import { db, storage } from '../firebase/config';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useAuth } from '../contexts/AuthContext';
-import { Document, Page, Text, View, StyleSheet, Font, Image } from '@react-pdf/renderer';
+import { Document, Page, Text, View, StyleSheet, Font, Image as PDFImage, pdf } from '@react-pdf/renderer';
 import { PDFDownloadLink } from '@react-pdf/renderer';
 
 // Types définis localement
@@ -92,6 +114,7 @@ interface Contact {
   position?: string;
   linkedin?: string;
   gender?: 'homme' | 'femme';
+  isDefault?: boolean;
 }
 
 interface QuoteLine {
@@ -153,7 +176,8 @@ const styles = StyleSheet.create({
   page: {
     flexDirection: 'column',
     backgroundColor: '#ffffff',
-    padding: 40,
+    padding: 20,
+    paddingTop: 8,
     paddingHorizontal: 60, // Augmentation des marges horizontales
     fontSize: 10,
     lineHeight: 1.2,
@@ -163,20 +187,23 @@ const styles = StyleSheet.create({
   // En-tête avec les deux sections côte à côte
   header: {
     flexDirection: 'row', // Les sections gauche et droite côte à côte
-    marginBottom: 20
+    marginBottom: 10, // Réduit de 15 à 10
+    marginTop: 0
   },
   
   // Container pour les sections structure et client
   headerContainer: {
     flexDirection: 'row',
-    marginBottom: 20,
+    marginBottom: 10, // Réduit de 15 à 10
+    marginTop: 0,
     width: '100%'
   },
   
   // Sections principales
   leftSection: {
     width: '50%',
-    padding: 24, // p: 3 = 24px
+    padding: 16, // Réduit de 24 à 16
+    paddingTop: 6, // Réduit le padding supérieur
     backgroundColor: 'white',
     borderRadius: 8, // borderRadius: 2 = 8px
     marginRight: 12, // spacing: 3 = 12px
@@ -187,7 +214,8 @@ const styles = StyleSheet.create({
   
   rightSection: {
     width: '50%',
-    padding: 24, // p: 3 = 24px
+    padding: 16, // Réduit de 24 à 16
+    paddingTop: 6, // Réduit le padding supérieur
     backgroundColor: 'white',
     borderRadius: 8, // borderRadius: 2 = 8px
     marginLeft: 12, // spacing: 3 = 12px
@@ -207,14 +235,14 @@ const styles = StyleSheet.create({
   companyName: {
     fontSize: 12, // Réduit de 14 à 12 pour une meilleure lisibilité
     fontWeight: 'bold', // Plus gras pour le contraste
-    marginBottom: 6, // Réduit de 8 à 6
-    marginTop: 0, // Pas de marge supérieure pour l'alignement
+    marginBottom: 3, // Réduit de 6 à 3
+    marginTop: 0, // Pas de marge supérieure pour l'alignement - aligné avec structureName
     color: '#000000' // Noir pur au lieu de #333
   },
   
   infoText: {
-    fontSize: 10, // Réduit de 14 à 10 pour une meilleure densité
-    marginBottom: 2, // Réduit de 3 à 2 pour un interligne plus serré
+    fontSize: 9, // Réduit de 10 à 9
+    marginBottom: 1, // Réduit de 2 à 1 pour un interligne encore plus serré
     color: '#000000', // Noir pur au lieu de #666
     lineHeight: 1.2 // Réduit de 1.3 à 1.2 pour un interligne plus serré
   },
@@ -225,29 +253,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     width: '100%',
-    marginBottom: 8 // mb: 1 = 8px
+    marginBottom: 4, // Réduit de 8 à 4
+    marginTop: 0, // Pas de marge supérieure
+    minHeight: 110 // Hauteur minimale pour aligner les noms (100px logo + 6px marginBottom + 4px marginBottom container)
   },
   
   logoImage: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    marginBottom: 12
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    marginBottom: 6 // Réduit de 12 à 6
   },
   
   logoCircle: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 100,
+    height: 100,
+    borderRadius: 50,
     backgroundColor: '#007AFF',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12
+    marginBottom: 6 // Réduit de 12 à 6
   },
   
   logoText: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 36,
     fontWeight: 'bold'
   },
   
@@ -259,24 +289,26 @@ const styles = StyleSheet.create({
   
   // Espaceur invisible pour maintenir l'alignement quand pas de logo
   logoSpacer: {
-    width: 60,
-    height: 80, // 8px (logoContainer marginBottom) + 60px (logo) + 12px (logo marginBottom)
+    width: 100,
+    height: 110, // Aligné avec logoContainer minHeight (100px logo + 6px marginBottom + 4px marginBottom container)
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
-    margin: '0 auto'
+    margin: '0 auto',
+    marginBottom: 4 // Même marginBottom que logoContainer
   },
   
   // Informations structure
   structureName: {
     fontSize: 12,
     fontWeight: 'bold',
-    marginBottom: 5,
+    marginBottom: 3, // Réduit de 5 à 3
+    marginTop: 0, // Pas de marge supérieure - aligné avec companyName
     color: '#000000'
   },
   
   structureInfo: {
-    fontSize: 9,
+    fontSize: 8, // Réduit de 9 à 8
     marginBottom: 1,
     color: '#000000'
   },
@@ -285,12 +317,12 @@ const styles = StyleSheet.create({
   clientTitle: {
     fontSize: 12,
     fontWeight: 'bold',
-    marginBottom: 10,
+    marginBottom: 6, // Réduit de 10 à 6
     color: '#000000'
   },
   
   clientInfo: {
-    fontSize: 9,
+    fontSize: 8, // Réduit de 9 à 8
     marginBottom: 1,
     color: '#000000'
   },
@@ -298,7 +330,7 @@ const styles = StyleSheet.create({
   // Section devis (pleine largeur en dessous)
   quoteSection: {
     width: '100%',
-    padding: 15,
+    padding: 10, // Réduit de 15 à 10
     borderRadius: 4
   },
   
@@ -306,7 +338,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 15
+    marginBottom: 10 // Réduit de 15 à 10
   },
   
   quoteTitle: {
@@ -339,10 +371,10 @@ const styles = StyleSheet.create({
   
   tableHeader: {
     flexDirection: 'row',
-    backgroundColor: '#6366f1',
-    padding: 8,
+    backgroundColor: '#6366f1', // Sera remplacé dynamiquement
+    padding: 6, // Réduit de 8 à 6
     borderRadius: 4,
-    marginBottom: 5
+    marginBottom: 3 // Réduit de 5 à 3
   },
   
   tableHeaderCell: {
@@ -355,7 +387,7 @@ const styles = StyleSheet.create({
   
   tableRow: {
     flexDirection: 'row',
-    padding: 8,
+    padding: 6, // Réduit de 8 à 6
     borderBottom: '1px solid #f0f0f0'
   },
   
@@ -367,14 +399,14 @@ const styles = StyleSheet.create({
   
   // Totaux
   totals: {
-    marginTop: 20,
+    marginTop: 10, // Réduit de 20 à 10
     alignItems: 'flex-end'
   },
   
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 5,
+    marginBottom: 3, // Réduit de 5 à 3
     minWidth: 150
   },
   
@@ -391,13 +423,13 @@ const styles = StyleSheet.create({
   totalTTC: {
     fontSize: 12,
     fontWeight: 'bold',
-    color: '#6366f1'
+    color: '#6366f1' // Sera remplacé dynamiquement
   },
   
   // Bas de page
   footer: {
     position: 'absolute',
-    bottom: 50, // Augmenté pour laisser de la place à la numérotation
+    bottom: 30, // Réduit pour rapprocher du numéro de page
     left: 0,
     right: 0,
     flexDirection: 'row',
@@ -444,7 +476,7 @@ const styles = StyleSheet.create({
 
   pageNumberContainer: {
     position: 'absolute',
-    bottom: 20,
+    bottom: 15,
     left: 0,
     right: 0,
     flexDirection: 'row',
@@ -455,7 +487,7 @@ const styles = StyleSheet.create({
     opacity: 0.7
   },
   
-  // Champ libre
+  // Champ libre (ancien style - gardé pour compatibilité)
   freeFieldContainer: {
     marginTop: 15,
     padding: 10,
@@ -464,10 +496,96 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff'
   },
   
+  // Champ libre - pleine largeur
+  freeFieldFullWidth: {
+    width: '100%',
+    marginTop: 4, // Réduit pour rapprocher des totaux (prix)
+    marginBottom: 4, // Réduit pour rapprocher des encarts de signature
+    padding: 10 // Réduit de 15 à 10
+  },
+  
   freeFieldText: {
     fontSize: 10,
     color: '#333',
-    lineHeight: 1.5
+    lineHeight: 1.5,
+    textAlign: 'left'
+  },
+  
+  // Caractéristiques de la prestation
+  characteristicsTable: {
+    marginTop: 2, // Réduit pour rapprocher de la proposition commerciale
+    marginBottom: 10, // Réduit de 20 à 10
+    width: '100%'
+  },
+  
+  characteristicsTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#1d1d1f',
+    marginBottom: 8 // Réduit de 10 à 8
+  },
+  
+  characteristicsRow: {
+    flexDirection: 'row',
+    paddingVertical: 4, // Réduit de 6 à 4
+    paddingHorizontal: 8,
+    borderBottom: '1px solid #e0e0e0'
+  },
+  
+  characteristicsLabel: {
+    fontSize: 8,
+    color: '#333',
+    fontWeight: 'bold',
+    width: '45%',
+    marginRight: 10
+  },
+  
+  characteristicsValue: {
+    fontSize: 8,
+    color: '#666',
+    width: '55%'
+  },
+  
+  // Encarts de signature
+  signatureContainer: {
+    flexDirection: 'row',
+    marginTop: 8,
+    marginBottom: 10,
+    width: '100%'
+  },
+  
+  signatureBox: {
+    flex: 1,
+    border: '1px solid #000',
+    padding: 8,
+    paddingTop: 4,
+    paddingLeft: 4,
+    minHeight: 70,
+    marginRight: 10
+  },
+  
+  signatureBoxLast: {
+    flex: 1,
+    border: '1px solid #000',
+    padding: 8,
+    paddingTop: 4,
+    paddingLeft: 4,
+    minHeight: 70,
+    marginRight: 0
+  },
+  
+  signatureText: {
+    fontSize: 7,
+    color: '#000',
+    marginBottom: 8,
+    marginTop: 0,
+    textAlign: 'left'
+  },
+  
+  signatureSpace: {
+    minHeight: 40,
+    marginTop: 12,
+    paddingTop: 6
   }
 });
 
@@ -515,11 +633,190 @@ const getClientData = (quoteData: QuoteData) => ({
   country: quoteData.clientInfo.country
 });
 
+// Fonction pour télécharger une image depuis une URL et la convertir en base64
+const fetchImageAsBase64 = async (url: string): Promise<string> => {
+  try {
+    console.log('🔄 fetchImageAsBase64: Téléchargement de l\'image depuis URL...', url.substring(0, 100) + '...');
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'image/*'
+      },
+      credentials: 'omit' // Ne pas envoyer de credentials pour éviter les problèmes CORS
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const blob = await response.blob();
+    console.log('🔄 fetchImageAsBase64: Blob reçu, type:', blob.type, 'taille:', blob.size);
+    
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result as string;
+        console.log('✅ fetchImageAsBase64: Image convertie en base64, longueur:', base64.length);
+        resolve(base64);
+      };
+      reader.onerror = (error) => {
+        console.error('❌ fetchImageAsBase64: Erreur lors de la lecture du blob:', error);
+        reject(error);
+      };
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.error('❌ fetchImageAsBase64: Erreur lors du téléchargement:', error);
+    throw error;
+  }
+};
+
+// Fonction pour convertir les images webp en PNG (format supporté par @react-pdf/renderer)
+// Gère aussi les URLs Firebase Storage en les téléchargeant d'abord
+const convertWebpToPng = async (imageSrc: string): Promise<string> => {
+  // Si l'image est vide ou null, retourner telle quelle
+  if (!imageSrc || imageSrc.trim() === '') {
+    console.log('🔄 convertWebpToPng: Image vide, retour telle quelle');
+    return imageSrc;
+  }
+
+  // Vérifier si c'est une URL externe (Firebase Storage, etc.)
+  const isUrl = imageSrc.startsWith('http://') || imageSrc.startsWith('https://');
+  
+  // Si c'est une URL, la télécharger et la convertir en base64 d'abord
+  if (isUrl) {
+    console.log('🔄 convertWebpToPng: URL détectée, téléchargement en cours...');
+    try {
+      const base64Image = await fetchImageAsBase64(imageSrc);
+      // Récursivement appeler la fonction avec la version base64
+      return await convertWebpToPng(base64Image);
+    } catch (error) {
+      console.error('❌ convertWebpToPng: Erreur lors du téléchargement de l\'URL:', error);
+      // En cas d'erreur, retourner l'URL originale (même si elle ne fonctionnera probablement pas)
+      return imageSrc;
+    }
+  }
+
+  // Vérifier si l'image est déjà dans un format supporté (PNG, JPEG)
+  const isPng = imageSrc.includes('data:image/png') || imageSrc.includes('image/png');
+  const isJpeg = imageSrc.includes('data:image/jpeg') || imageSrc.includes('data:image/jpg') || 
+                 imageSrc.includes('image/jpeg') || imageSrc.includes('image/jpg');
+  
+  if (isPng || isJpeg) {
+    // Si c'est déjà PNG ou JPEG, retourner l'image telle quelle
+    console.log('🔄 convertWebpToPng: Image déjà en format compatible (PNG/JPEG), retour telle quelle');
+    return imageSrc;
+  }
+
+  // Vérifier si l'image est en format webp (détection améliorée)
+  const lowerSrc = imageSrc.toLowerCase();
+  const isWebp = lowerSrc.includes('data:image/webp') || 
+                 lowerSrc.includes('image/webp') ||
+                 (imageSrc.startsWith('data:image/') && lowerSrc.includes('webp')) ||
+                 (imageSrc.startsWith('data:') && lowerSrc.includes('webp'));
+  
+  // Si ce n'est pas du webp détecté mais que c'est du base64, essayer quand même la conversion
+  // (peut être un format non détecté ou mal formaté)
+  const isBase64 = imageSrc.startsWith('data:image/') || imageSrc.startsWith('data:');
+  
+  if (!isWebp && !isBase64) {
+    console.log('🔄 convertWebpToPng: Format non reconnu et non base64, retour telle quelle');
+    return imageSrc;
+  }
+
+  console.log('🔄 convertWebpToPng: Tentative de conversion...', {
+    isWebp,
+    isBase64,
+    preview: imageSrc.substring(0, 100) + '...'
+  });
+
+  try {
+    // Créer une image à partir de la source
+    // Utiliser window.Image pour s'assurer qu'on utilise bien l'objet Image du DOM
+    // Vérifier que window est disponible (navigateur)
+    if (typeof window === 'undefined' || !window.Image) {
+      console.error('❌ convertWebpToPng: window.Image non disponible');
+      return imageSrc;
+    }
+    
+    const img = new window.Image();
+    img.crossOrigin = 'anonymous';
+    
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        console.error('❌ convertWebpToPng: Timeout lors du chargement de l\'image');
+        resolve(imageSrc); // En cas de timeout, retourner l'original
+      }, 10000); // Timeout de 10 secondes
+      
+      img.onload = () => {
+        clearTimeout(timeout);
+        try {
+          console.log('🔄 convertWebpToPng: Image chargée, dimensions:', img.width, 'x', img.height);
+          
+          // Créer un canvas pour convertir l'image
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            console.error('❌ convertWebpToPng: Impossible de créer le contexte canvas');
+            resolve(imageSrc);
+            return;
+          }
+          
+          // Dessiner l'image sur le canvas
+          ctx.drawImage(img, 0, 0);
+          
+          // Convertir le canvas en PNG (base64)
+          const pngDataUrl = canvas.toDataURL('image/png');
+          console.log('✅ convertWebpToPng: Image convertie en PNG avec succès', {
+            originalLength: imageSrc.length,
+            convertedLength: pngDataUrl.length,
+            preview: pngDataUrl.substring(0, 100) + '...'
+          });
+          resolve(pngDataUrl);
+        } catch (error) {
+          clearTimeout(timeout);
+          console.error('❌ convertWebpToPng: Erreur lors de la conversion webp -> PNG:', error);
+          // En cas d'erreur, retourner l'image originale
+          resolve(imageSrc);
+        }
+      };
+      
+      img.onerror = (error) => {
+        clearTimeout(timeout);
+        console.error('❌ convertWebpToPng: Erreur lors du chargement de l\'image pour conversion', error);
+        // En cas d'erreur, retourner l'image originale
+        resolve(imageSrc);
+      };
+      
+      // Charger l'image
+      console.log('🔄 convertWebpToPng: Chargement de l\'image...');
+      img.src = imageSrc;
+    });
+  } catch (error) {
+    console.error('❌ convertWebpToPng: Erreur dans la fonction:', error);
+    // En cas d'erreur, retourner l'image originale
+    return imageSrc;
+  }
+};
+
 // Fonction pour gérer les logos
-const getLogoSource = (logoPreview: string | null, structureLogo: string | null) => {
-  // Priorité : logo uploadé > logo structure > placeholder
+const getLogoSource = (logoPreview: string | null, structureLogo: string | null, quoteDataLogo?: string | null) => {
+  // Priorité : logo uploadé > logo quoteData > logo structure > placeholder
   if (logoPreview) {
     return logoPreview; // Déjà en base64
+  }
+  
+  if (quoteDataLogo) {
+    // Vérifier si c'est déjà en base64
+    if (quoteDataLogo.startsWith('data:image/')) {
+      return quoteDataLogo;
+    }
+    // Si c'est une URL, on peut l'utiliser directement
+    return quoteDataLogo;
   }
   
   if (structureLogo) {
@@ -537,11 +834,13 @@ const getLogoSource = (logoPreview: string | null, structureLogo: string | null)
 };
 
 // Composant PDF avec React-PDF
-const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, footerTva, footerApe, showDocumentTitle, documentTitle, showFreeField, freeFieldText, showSiret, showVatNumber, showLogo, showEmail, showPhone, showGlobalDiscount, globalDiscountPercent, globalDiscountAmount, showStructureLogo, showChargeMission, showStructureEmail, showStructurePhone, showStructureSiret, showMissionDate, showMissionValidity }: {
+const QuotePDF = ({ mission, structure, quoteData, logoPreview, convertedStructureLogo, convertedClientLogo, footerSiret, footerTva, footerApe, showDocumentTitle, documentTitle, showFreeField, freeFieldText, freeFieldSegments, freeFieldFontSize = 10, freeFieldTextAlign = 'left', showSiret, showVatNumber, showLogo, showEmail, showPhone, showGlobalDiscount, globalDiscountPercent, globalDiscountAmount, showStructureLogo, showChargeMission, showStructureEmail, showStructurePhone, showStructureSiret, showMissionDate, showMissionValidity, showServiceCharacteristics, showStudentCount, showHours, showLocation, showMissionDescription, showDatesAndSchedule, templateColor = '#6366f1', contactFirstName, contactLastName, contacts }: {
   mission: Mission | null;
   structure: any;
   quoteData: QuoteData;
   logoPreview: string | null;
+  convertedStructureLogo?: string | null;
+  convertedClientLogo?: string | null;
   footerSiret: string;
   footerTva: string;
   footerApe: string;
@@ -549,6 +848,9 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, foo
   documentTitle?: string;
   showFreeField?: boolean;
   freeFieldText?: string;
+  freeFieldSegments?: Array<{ text: string; fontSize?: number; textAlign?: string; fontWeight?: string; fontStyle?: string }> | null;
+  freeFieldFontSize?: number;
+  freeFieldTextAlign?: 'left' | 'center' | 'right' | 'justify';
   showSiret?: boolean;
   showVatNumber?: boolean;
   showLogo?: boolean;
@@ -564,10 +866,89 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, foo
   showStructureSiret?: boolean;
   showMissionDate?: boolean;
   showMissionValidity?: boolean;
+  showServiceCharacteristics?: boolean;
+  showStudentCount?: boolean;
+  showHours?: boolean;
+  showLocation?: boolean;
+  showMissionDescription?: boolean;
+  showDatesAndSchedule?: boolean;
+  templateColor?: string;
+  contactFirstName?: string | null;
+  contactLastName?: string | null;
+  contacts?: Contact[];
 }) => {
   const structureData = getStructureData(structure, mission);
   const clientData = getClientData(quoteData);
-  const logoSource = getLogoSource(logoPreview, structure?.logo);
+  
+  // Trouver le contact principal (isDefault: true) pour le companyId de la mission
+  const companyContacts = contacts?.filter(contact => contact.companyId === mission?.companyId) || [];
+  const mainContact = companyContacts.find(contact => contact.isDefault) || companyContacts[0];
+  
+  // Créer les styles dynamiquement avec la couleur du template et les préférences du champ libre
+  const dynamicStyles = StyleSheet.create({
+    ...styles,
+    tableHeader: {
+      ...styles.tableHeader,
+      backgroundColor: templateColor
+    },
+    totalTTC: {
+      ...styles.totalTTC,
+      color: templateColor
+    },
+    freeFieldText: {
+      ...styles.freeFieldText,
+      fontSize: freeFieldFontSize,
+      textAlign: freeFieldTextAlign
+    }
+  });
+  // Utiliser le logo converti de la structure si disponible, sinon utiliser l'original
+  // Priorité : convertedStructureLogo > logoPreview > structure.logo > quoteData.companyInfo.logo
+  // La conversion gère maintenant les URLs Firebase Storage, donc convertedStructureLogo devrait toujours être en base64 PNG
+  const structureLogoValue = convertedStructureLogo || logoPreview || structure?.logo || quoteData?.companyInfo?.logo || null;
+  
+  // Utiliser le logo converti du client si disponible, sinon utiliser l'original
+  const clientLogoValue = convertedClientLogo || quoteData?.clientInfo?.logo || null;
+  
+  // Logs de débogage pour le logo de la structure
+  console.log('📄 QuotePDF - ===== DÉBUT DU RENDU PDF =====');
+  console.log('📄 QuotePDF - logoPreview:', logoPreview ? logoPreview.substring(0, 100) + '...' : null);
+  console.log('📄 QuotePDF - structure?.logo (from DB):', structure?.logo ? structure.logo.substring(0, 100) + '...' : null);
+  console.log('📄 QuotePDF - quoteData?.companyInfo?.logo:', quoteData?.companyInfo?.logo ? quoteData.companyInfo.logo.substring(0, 100) + '...' : null);
+  console.log('📄 QuotePDF - convertedStructureLogo:', convertedStructureLogo ? convertedStructureLogo.substring(0, 100) + '...' : null);
+  
+  // Vérifier le format du logo de structure final
+  if (structureLogoValue) {
+    const isWebp = structureLogoValue.toLowerCase().includes('data:image/webp') || structureLogoValue.toLowerCase().includes('image/webp');
+    const isPng = structureLogoValue.toLowerCase().includes('data:image/png') || structureLogoValue.toLowerCase().includes('image/png');
+    const isJpeg = structureLogoValue.toLowerCase().includes('data:image/jpeg') || structureLogoValue.toLowerCase().includes('data:image/jpg');
+    console.log('📄 QuotePDF - structureLogoValue (final):', {
+      preview: structureLogoValue.substring(0, 100) + '...',
+      format: isWebp ? 'WEBP ⚠️' : isPng ? 'PNG ✅' : isJpeg ? 'JPEG ✅' : 'AUTRE ⚠️',
+      longueur: structureLogoValue.length,
+      utiliseConverti: structureLogoValue === convertedStructureLogo
+    });
+  } else {
+    console.log('📄 QuotePDF - structureLogoValue (final):', null);
+  }
+  
+  console.log('📄 QuotePDF - convertedClientLogo:', convertedClientLogo ? convertedClientLogo.substring(0, 100) + '...' : null);
+  
+  // Vérifier le format du logo client final
+  if (clientLogoValue) {
+    const isWebp = clientLogoValue.toLowerCase().includes('data:image/webp') || clientLogoValue.toLowerCase().includes('image/webp');
+    const isPng = clientLogoValue.toLowerCase().includes('data:image/png') || clientLogoValue.toLowerCase().includes('image/png');
+    const isJpeg = clientLogoValue.toLowerCase().includes('data:image/jpeg') || clientLogoValue.toLowerCase().includes('data:image/jpg');
+    console.log('📄 QuotePDF - clientLogoValue (final):', {
+      preview: clientLogoValue.substring(0, 100) + '...',
+      format: isWebp ? 'WEBP ⚠️' : isPng ? 'PNG ✅' : isJpeg ? 'JPEG ✅' : 'AUTRE ⚠️',
+      longueur: clientLogoValue.length,
+      utiliseConverti: clientLogoValue === convertedClientLogo
+    });
+  } else {
+    console.log('📄 QuotePDF - clientLogoValue (final):', null);
+  }
+  
+  console.log('📄 QuotePDF - ===== FIN DU RENDU PDF =====');
   
   return (
     <Document>
@@ -579,9 +960,10 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, foo
             {/* Logo de la structure */}
             {showStructureLogo && (
               <View style={styles.logoContainer}>
-                {logoSource ? (
-                  <Image 
-                    src={logoSource} 
+                {/* Utiliser le logo converti (PNG) si disponible */}
+                {structureLogoValue ? (
+                  <PDFImage 
+                    src={structureLogoValue} 
                     style={styles.logoImage}
                   />
                 ) : (
@@ -632,10 +1014,10 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, foo
           {/* Section droite - Client */}
           <View style={styles.rightSection}>
             {/* Logo du client si activé, sinon espaceur invisible pour l'alignement */}
-            {showLogo && quoteData.clientInfo.logo ? (
+            {showLogo && clientLogoValue ? (
               <View style={styles.logoContainer}>
-                <Image 
-                  src={quoteData.clientInfo.logo} 
+                <PDFImage 
+                  src={clientLogoValue} 
                   style={styles.logoImage}
                 />
               </View>
@@ -686,11 +1068,12 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, foo
           </View>
         </View>
         
+        {/* En-tête Proposition commerciale (titre, date, validité) */}
         <View style={styles.quoteSection}>
           <View style={styles.quoteHeader}>
-                            <Text style={styles.quoteTitle}>
-                  {showDocumentTitle && documentTitle ? documentTitle.toUpperCase() : `PROPOSITION COMMERCIALE N° ${mission?.numeroMission || 'MISSION'}`}
-                </Text>
+            <Text style={styles.quoteTitle}>
+              {showDocumentTitle && documentTitle ? documentTitle.toUpperCase() : `PROPOSITION COMMERCIALE N° ${mission?.numeroMission || 'MISSION'}`}
+            </Text>
             <View style={styles.quoteMeta}>
               {showMissionDate && (
                 <Text style={styles.quoteDate}>Date: {formatDateToFrench(quoteData.quoteInfo.issueDate)}</Text>
@@ -700,10 +1083,59 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, foo
               )}
             </View>
           </View>
-          
+        </View>
+        
+        {/* Caractéristiques de la prestation */}
+        {showServiceCharacteristics && mission && (
+          <View style={styles.characteristicsTable}>
+            <Text style={styles.characteristicsTitle}>Caractéristiques de la prestation</Text>
+            {showStudentCount && (
+              <View style={styles.characteristicsRow}>
+                <Text style={styles.characteristicsLabel}>Nombre d'étudiants à recruter, former, suivre :</Text>
+                <Text style={styles.characteristicsValue}>{mission.studentCount || '-'}</Text>
+              </View>
+            )}
+            {showHours && (
+              <View style={styles.characteristicsRow}>
+                <Text style={styles.characteristicsLabel}>Nombre d'heures :</Text>
+                <Text style={styles.characteristicsValue}>{mission.hours || '-'}</Text>
+              </View>
+            )}
+            {showLocation && (
+              <View style={styles.characteristicsRow}>
+                <Text style={styles.characteristicsLabel}>Lieu(x) de la mission :</Text>
+                <Text style={styles.characteristicsValue}>{mission.location || '-'}</Text>
+              </View>
+            )}
+            {showMissionDescription && (
+              <View style={styles.characteristicsRow}>
+                <Text style={styles.characteristicsLabel}>Description de la mission à effectuer par les étudiants :</Text>
+                <Text style={styles.characteristicsValue}>{mission.description || '-'}</Text>
+              </View>
+            )}
+            {showDatesAndSchedule && (mission.startDate || mission.endDate) && (
+              <View style={styles.characteristicsRow}>
+                <Text style={styles.characteristicsLabel}>Date(s) et horaires :</Text>
+                <Text style={styles.characteristicsValue}>
+                  {mission.startDate && mission.endDate 
+                    ? `Du ${formatDateToFrench(mission.startDate)} au ${formatDateToFrench(mission.endDate)} compris.`
+                    : mission.startDate 
+                    ? `À partir du ${formatDateToFrench(mission.startDate)}.`
+                    : mission.endDate
+                    ? `Jusqu'au ${formatDateToFrench(mission.endDate)}.`
+                    : '-'}
+                  {mission.hours && mission.studentCount ? ` Pour un volume d'heures total de ${mission.hours} heures qui est réparti équitablement entre les étudiants recrutés.` : ''}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+        
+        {/* Tableau et totaux de la proposition commerciale */}
+        <View style={styles.quoteSection}>
           {/* Tableau */}
           <View style={styles.table}>
-            <View style={styles.tableHeader}>
+            <View style={dynamicStyles.tableHeader}>
               <Text style={styles.tableHeaderCell}>Désignation</Text>
               <Text style={styles.tableHeaderCell}>Quantité</Text>
               <Text style={styles.tableHeaderCell}>Prix unit.</Text>
@@ -742,16 +1174,82 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, footerSiret, foo
               <Text style={styles.totalValue}>{quoteData.totals.totalTVA.toFixed(2)} €</Text>
             </View>
             <View style={styles.totalRow}>
-              <Text style={styles.totalTTC}>Total TTC:</Text>
-              <Text style={styles.totalTTC}>{quoteData.totals.totalTTC.toFixed(2)} €</Text>
+              <Text style={dynamicStyles.totalTTC}>Total TTC:</Text>
+              <Text style={dynamicStyles.totalTTC}>{quoteData.totals.totalTTC.toFixed(2)} €</Text>
             </View>
-            
-            {/* Champ libre */}
-            {showFreeField && freeFieldText && (
-              <View style={styles.freeFieldContainer}>
-                <Text style={styles.freeFieldText}>{freeFieldText}</Text>
-              </View>
+          </View>
+        </View>
+        
+        {/* Champ libre - pleine largeur */}
+        {showFreeField && (freeFieldSegments || freeFieldText) && (
+          <View style={styles.freeFieldFullWidth}>
+            {freeFieldSegments && freeFieldSegments.length > 0 ? (() => {
+              // Grouper les segments par alignement pour créer des blocs
+              const groupedSegments: Array<Array<{ text: string; fontSize?: number; textAlign?: string; fontWeight?: string; fontStyle?: string }>> = [];
+              let currentGroup: Array<{ text: string; fontSize?: number; textAlign?: string; fontWeight?: string; fontStyle?: string }> = [];
+              let currentAlign = freeFieldSegments[0]?.textAlign || freeFieldTextAlign;
+              
+              freeFieldSegments.forEach((segment, index) => {
+                if (segment.textAlign !== currentAlign && currentGroup.length > 0) {
+                  groupedSegments.push([...currentGroup]);
+                  currentGroup = [];
+                  currentAlign = segment.textAlign || freeFieldTextAlign;
+                }
+                currentGroup.push(segment);
+                if (index === freeFieldSegments.length - 1) {
+                  groupedSegments.push(currentGroup);
+                }
+              });
+              
+              return groupedSegments.map((group, groupIndex) => {
+                const align = group[0]?.textAlign || freeFieldTextAlign;
+                return (
+                  <View key={groupIndex} style={{ 
+                    marginBottom: 4,
+                    textAlign: align as 'left' | 'center' | 'right' | 'justify'
+                  }}>
+                    {group.map((segment, segIndex) => (
+                      <Text 
+                        key={segIndex} 
+                        style={{ 
+                          fontSize: segment.fontSize || freeFieldFontSize,
+                          textAlign: segment.textAlign as 'left' | 'center' | 'right' | 'justify' || freeFieldTextAlign,
+                          fontWeight: segment.fontWeight === 'bold' ? 'bold' : 'normal',
+                          fontStyle: segment.fontStyle === 'italic' ? 'italic' : 'normal'
+                        }}
+                      >
+                        {segment.text}
+                      </Text>
+                    ))}
+                  </View>
+                );
+              });
+            })() : (
+              <Text style={dynamicStyles.freeFieldText}>{freeFieldText || ''}</Text>
             )}
+          </View>
+        )}
+        
+        {/* Encarts de signature */}
+        <View style={styles.signatureContainer}>
+          {/* Encart gauche - Structure */}
+          <View style={styles.signatureBox}>
+            <Text style={styles.signatureText}>
+              Pour {structureData.name || 'Nom de la structure'}, Le Président
+            </Text>
+            <View style={styles.signatureSpace} />
+          </View>
+          
+          {/* Encart droit - Client */}
+          <View style={styles.signatureBoxLast}>
+            <Text style={styles.signatureText}>
+              {mainContact && mainContact.firstName && mainContact.lastName
+                ? `${mainContact.firstName} ${mainContact.lastName} pour ${clientData.name || 'Nom de l\'entreprise'}`
+                : clientData.name 
+                ? `Pour ${clientData.name}`
+                : 'Pour Nom de l\'entreprise'}
+            </Text>
+            <View style={styles.signatureSpace} />
           </View>
         </View>
         
@@ -830,6 +1328,8 @@ const QuoteBuilder: React.FC = () => {
 
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [convertedStructureLogo, setConvertedStructureLogo] = useState<string | null>(null);
+  const [convertedClientLogo, setConvertedClientLogo] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [quoteData, setQuoteData] = useState<QuoteData>({
@@ -893,7 +1393,19 @@ const QuoteBuilder: React.FC = () => {
   const [documentTitle, setDocumentTitle] = useState<string>('');
   const [showFreeField, setShowFreeField] = useState<boolean>(false);
   const [freeFieldText, setFreeFieldText] = useState<string>('');
+  const [freeFieldHtml, setFreeFieldHtml] = useState<string>(''); // HTML formaté pour l'éditeur
+  const [freeFieldFontSize, setFreeFieldFontSize] = useState<number>(10);
+  const [freeFieldTextAlign, setFreeFieldTextAlign] = useState<'left' | 'center' | 'right' | 'justify'>('left');
+  const freeFieldEditorRef = useRef<HTMLDivElement>(null);
   const [showGlobalDiscount, setShowGlobalDiscount] = useState<boolean>(false);
+  
+  // États pour les caractéristiques de la prestation
+  const [showServiceCharacteristics, setShowServiceCharacteristics] = useState<boolean>(true);
+  const [showStudentCount, setShowStudentCount] = useState<boolean>(true);
+  const [showHours, setShowHours] = useState<boolean>(true);
+  const [showLocation, setShowLocation] = useState<boolean>(true);
+  const [showMissionDescription, setShowMissionDescription] = useState<boolean>(true);
+  const [showDatesAndSchedule, setShowDatesAndSchedule] = useState<boolean>(true);
   
   // État pour la remise globale
   const [globalDiscountPercent, setGlobalDiscountPercent] = useState<number>(0);
@@ -909,6 +1421,14 @@ const QuoteBuilder: React.FC = () => {
   // États pour les options de mission
   const [showMissionDate, setShowMissionDate] = useState<boolean>(true);
   const [showMissionValidity, setShowMissionValidity] = useState<boolean>(true);
+  
+  // État pour la couleur du template
+  const [templateColor, setTemplateColor] = useState<string>('#6366f1');
+  const [colorPickerOpen, setColorPickerOpen] = useState<boolean>(false);
+  
+  // États pour les préférences de template
+  const [savedTemplatePreferences, setSavedTemplatePreferences] = useState<any>(null);
+  const [savePreferencesDialogOpen, setSavePreferencesDialogOpen] = useState<boolean>(false);
   
   // État local pour la saisie de date
   const [dateInputValue, setDateInputValue] = useState<string>('');
@@ -978,11 +1498,148 @@ ${structure.nom || structure.name || 'Notre équipe'}`
     }
   }, [quoteData?.quoteInfo?.issueDate]);
 
+  // Synchroniser automatiquement les logos dans quoteData et structure quand logoPreview change
+  useEffect(() => {
+    if (logoPreview && structure && quoteData) {
+      // Mettre à jour le logo de la structure
+      if (!structure.logo || structure.logo !== logoPreview) {
+        setStructure(prev => prev ? { ...prev, logo: logoPreview } : prev);
+      }
+      
+      // Mettre à jour les logos dans quoteData
+      if (!quoteData.companyInfo.logo || quoteData.companyInfo.logo !== logoPreview) {
+        setQuoteData(prev => ({
+          ...prev,
+          companyInfo: {
+            ...prev.companyInfo,
+            logo: logoPreview
+          }
+        }));
+      }
+      
+      // Ne pas écraser le logo du client s'il existe déjà (récupéré depuis la DB companies)
+      // Le logoPreview est uniquement pour le logo de la structure
+      // Le logo du client doit être récupéré depuis companies.logo
+    }
+  }, [logoPreview, structure, quoteData]);
+
+  // Synchroniser le logo de la structure dans quoteData.companyInfo.logo
+  useEffect(() => {
+    if (structure) {
+      const structureLogo = logoPreview || structure.logo || '';
+      // Mettre à jour quoteData.companyInfo.logo avec le logo de la structure
+      setQuoteData(prev => {
+        if (prev.companyInfo.logo !== structureLogo) {
+          return {
+            ...prev,
+            companyInfo: {
+              ...prev.companyInfo,
+              logo: structureLogo
+            }
+          };
+        }
+        return prev;
+      });
+    }
+  }, [logoPreview, structure?.logo]);
+
+  // Convertir les logos webp en PNG pour la compatibilité avec @react-pdf/renderer
+  useEffect(() => {
+    const convertLogos = async () => {
+      console.log('🔄 ===== DÉBUT DE LA CONVERSION DES LOGOS =====');
+      
+      // Convertir le logo de la structure
+      const structureLogo = logoPreview || structure?.logo || quoteData?.companyInfo?.logo || null;
+      if (structureLogo) {
+        console.log('🔄 [STRUCTURE] Conversion du logo de la structure...');
+        console.log('🔄 [STRUCTURE] Source:', structureLogo.substring(0, 100) + '...');
+        const isWebp = structureLogo.toLowerCase().includes('data:image/webp') || structureLogo.toLowerCase().includes('image/webp');
+        const isPng = structureLogo.toLowerCase().includes('data:image/png') || structureLogo.toLowerCase().includes('image/png');
+        const isJpeg = structureLogo.toLowerCase().includes('data:image/jpeg') || structureLogo.toLowerCase().includes('data:image/jpg');
+        console.log('📋 [STRUCTURE] Format détecté:', {
+          WEBP: isWebp,
+          PNG: isPng,
+          JPEG: isJpeg,
+          AUTRE: !isWebp && !isPng && !isJpeg
+        });
+        
+        try {
+          const converted = await convertWebpToPng(structureLogo);
+          const wasConverted = converted !== structureLogo;
+          const isConvertedPng = converted.toLowerCase().includes('data:image/png') || converted.toLowerCase().includes('image/png');
+          
+          console.log('✅ [STRUCTURE] Résultat de la conversion:', {
+            converti: wasConverted ? 'OUI (WEBP → PNG)' : 'NON (déjà compatible)',
+            estPNG: isConvertedPng,
+            longueurOriginale: structureLogo.length,
+            longueurConvertie: converted.length,
+            preview: converted.substring(0, 100) + '...'
+          });
+          
+          setConvertedStructureLogo(converted);
+          console.log('✅ [STRUCTURE] État convertedStructureLogo mis à jour');
+        } catch (error) {
+          console.error('❌ [STRUCTURE] Erreur lors de la conversion:', error);
+          setConvertedStructureLogo(structureLogo);
+        }
+      } else {
+        console.log('⚠️ [STRUCTURE] Pas de logo de structure à convertir');
+        setConvertedStructureLogo(null);
+      }
+
+      // Convertir le logo du client
+      const clientLogo = quoteData?.clientInfo?.logo || null;
+      if (clientLogo) {
+        console.log('🔄 [CLIENT] Conversion du logo du client...');
+        console.log('🔄 [CLIENT] Source:', clientLogo.substring(0, 100) + '...');
+        const isWebp = clientLogo.toLowerCase().includes('data:image/webp') || clientLogo.toLowerCase().includes('image/webp');
+        const isPng = clientLogo.toLowerCase().includes('data:image/png') || clientLogo.toLowerCase().includes('image/png');
+        const isJpeg = clientLogo.toLowerCase().includes('data:image/jpeg') || clientLogo.toLowerCase().includes('data:image/jpg');
+        console.log('📋 [CLIENT] Format détecté:', {
+          WEBP: isWebp,
+          PNG: isPng,
+          JPEG: isJpeg,
+          AUTRE: !isWebp && !isPng && !isJpeg
+        });
+        
+        try {
+          const converted = await convertWebpToPng(clientLogo);
+          const wasConverted = converted !== clientLogo;
+          const isConvertedPng = converted.toLowerCase().includes('data:image/png') || converted.toLowerCase().includes('image/png');
+          
+          console.log('✅ [CLIENT] Résultat de la conversion:', {
+            converti: wasConverted ? 'OUI (WEBP → PNG)' : 'NON (déjà compatible)',
+            estPNG: isConvertedPng,
+            longueurOriginale: clientLogo.length,
+            longueurConvertie: converted.length,
+            preview: converted.substring(0, 100) + '...'
+          });
+          
+          setConvertedClientLogo(converted);
+          console.log('✅ [CLIENT] État convertedClientLogo mis à jour');
+        } catch (error) {
+          console.error('❌ [CLIENT] Erreur lors de la conversion:', error);
+          setConvertedClientLogo(clientLogo);
+        }
+      } else {
+        console.log('⚠️ [CLIENT] Pas de logo de client à convertir');
+        setConvertedClientLogo(null);
+      }
+      
+      console.log('🔄 ===== FIN DE LA CONVERSION DES LOGOS =====');
+    };
+
+    convertLogos();
+  }, [logoPreview, structure?.logo, quoteData?.companyInfo?.logo, quoteData?.clientInfo?.logo]);
+
   // Fonction pour synchroniser les données entre l'édition et le PDF
   const syncDataForPDF = () => {
     if (!structure || !quoteData) return;
     
-    // Synchroniser les données de la structure
+    // Déterminer le logo de la structure (priorité : logoPreview > structure.logo)
+    const structureLogo = logoPreview || structure.logo || '';
+    
+    // Synchroniser les données de la structure avec le logo
     const updatedStructure = {
       ...structure,
       nom: structure.nom || structure.name || '',
@@ -992,14 +1649,20 @@ ${structure.nom || structure.name || 'Notre équipe'}`
       codePostal: structure.codePostal || structure.postalCode || '',
       postalCode: structure.codePostal || structure.postalCode || '',
       telephone: structure.telephone || structure.phone || '',
-      phone: structure.telephone || structure.phone || ''
+      phone: structure.telephone || structure.phone || '',
+      logo: structureLogo // Synchroniser le logo
     };
     
     setStructure(updatedStructure);
     
-    // Synchroniser les données client
+    // Synchroniser les données client avec les logos
     const updatedQuoteData = {
       ...quoteData,
+      companyInfo: {
+        ...quoteData.companyInfo,
+        // Toujours utiliser le logo de la structure (logoPreview ou structure.logo) pour companyInfo
+        logo: structureLogo || ''
+      },
       clientInfo: {
         ...quoteData.clientInfo,
         name: quoteData.clientInfo.name || '',
@@ -1010,7 +1673,10 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         siret: quoteData.clientInfo.siret || '',
         vatNumber: quoteData.clientInfo.vatNumber || '',
         email: quoteData.clientInfo.email || '',
-        phone: quoteData.clientInfo.phone || ''
+        phone: quoteData.clientInfo.phone || '',
+        // Préserver le logo du client récupéré depuis companies.logo
+        // Ne pas utiliser structureLogo comme fallback pour le logo du client
+        logo: quoteData.clientInfo.logo || ''
       }
     };
     
@@ -1041,8 +1707,22 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           if (draftData.structureData) {
             console.log('Restauration de la structure:', draftData.structureData);
             setStructure(draftData.structureData);
+            
+            // Restaurer le logo de la structure dans logoPreview si disponible
+            if (draftData.structureData.logo) {
+              setLogoPreview(draftData.structureData.logo);
+            }
           } else {
             console.warn('Aucune donnée de structure trouvée dans le brouillon');
+          }
+          
+          // Restaurer le logo depuis quoteData si disponible (priorité au logo de la structure)
+          if (!draftData.structureData?.logo) {
+            if (draftData.quoteData?.companyInfo?.logo) {
+              setLogoPreview(draftData.quoteData.companyInfo.logo);
+            } else if (draftData.quoteData?.clientInfo?.logo) {
+              setLogoPreview(draftData.quoteData.clientInfo.logo);
+            }
           }
           
           // Restaurer les données de la mission si disponibles
@@ -1204,8 +1884,12 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           documentData = missionDoc.data();
           collectionName = 'missions';
           
-          missionData = documentData as Mission;
-                  setMission(missionData);
+          // Créer missionData avec l'ID du document Firestore
+          missionData = {
+            id: missionDoc.id,
+            ...documentData
+          } as Mission;
+          setMission(missionData);
           
           // Définir le titre par défaut du document
           const defaultTitle = `PC-${documentNumber}`;
@@ -1214,6 +1898,51 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         
         console.log('Mission data loaded:', missionData);
         
+        // Charger les préférences de template sauvegardées
+        if (currentUser && missionData.structureId) {
+          try {
+            const preferencesRef = doc(db, 'templatePreferences', `${missionData.structureId}_proposition_commerciale`);
+            const preferencesDoc = await getDoc(preferencesRef);
+            if (preferencesDoc.exists()) {
+              const prefs = preferencesDoc.data();
+              setSavedTemplatePreferences(prefs);
+              // Appliquer les préférences sauvegardées
+              if (prefs.templateColor) setTemplateColor(prefs.templateColor);
+              if (prefs.billingType !== undefined) setBillingType(prefs.billingType);
+              if (prefs.showSiret !== undefined) setShowSiret(prefs.showSiret);
+              if (prefs.showVatNumber !== undefined) setShowVatNumber(prefs.showVatNumber);
+              if (prefs.showLogo !== undefined) setShowLogo(prefs.showLogo);
+              if (prefs.showEmail !== undefined) setShowEmail(prefs.showEmail);
+              if (prefs.showPhone !== undefined) setShowPhone(prefs.showPhone);
+              if (prefs.showPaymentTerms !== undefined) setShowPaymentTerms(prefs.showPaymentTerms);
+              if (prefs.showDocumentTitle !== undefined) setShowDocumentTitle(prefs.showDocumentTitle);
+              if (prefs.showFreeField !== undefined) setShowFreeField(prefs.showFreeField);
+              if (prefs.freeFieldText !== undefined) setFreeFieldText(prefs.freeFieldText);
+              if (prefs.freeFieldHtml !== undefined) {
+                setFreeFieldHtml(prefs.freeFieldHtml);
+              }
+              if (prefs.freeFieldFontSize !== undefined) setFreeFieldFontSize(prefs.freeFieldFontSize);
+              if (prefs.freeFieldTextAlign !== undefined) setFreeFieldTextAlign(prefs.freeFieldTextAlign);
+              if (prefs.showServiceCharacteristics !== undefined) setShowServiceCharacteristics(prefs.showServiceCharacteristics);
+              if (prefs.showStudentCount !== undefined) setShowStudentCount(prefs.showStudentCount);
+              if (prefs.showHours !== undefined) setShowHours(prefs.showHours);
+              if (prefs.showLocation !== undefined) setShowLocation(prefs.showLocation);
+              if (prefs.showMissionDescription !== undefined) setShowMissionDescription(prefs.showMissionDescription);
+              if (prefs.showDatesAndSchedule !== undefined) setShowDatesAndSchedule(prefs.showDatesAndSchedule);
+              if (prefs.showGlobalDiscount !== undefined) setShowGlobalDiscount(prefs.showGlobalDiscount);
+              if (prefs.showStructureLogo !== undefined) setShowStructureLogo(prefs.showStructureLogo);
+              if (prefs.showChargeMission !== undefined) setShowChargeMission(prefs.showChargeMission);
+              if (prefs.showStructureEmail !== undefined) setShowStructureEmail(prefs.showStructureEmail);
+              if (prefs.showStructurePhone !== undefined) setShowStructurePhone(prefs.showStructurePhone);
+              if (prefs.showStructureSiret !== undefined) setShowStructureSiret(prefs.showStructureSiret);
+              if (prefs.showMissionDate !== undefined) setShowMissionDate(prefs.showMissionDate);
+              if (prefs.showMissionValidity !== undefined) setShowMissionValidity(prefs.showMissionValidity);
+            }
+          } catch (error) {
+            console.error('Erreur lors du chargement des préférences:', error);
+          }
+        }
+        
         // Récupérer les données de la structure
         if (missionData.structureId) {
           try {
@@ -1221,6 +1950,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
             if (structureDoc.exists()) {
               const structureData = structureDoc.data();
               console.log('Structure data loaded:', structureData);
+              console.log('Structure logo from DB:', structureData.logo);
               
               // Gérer les différentes propriétés possibles pour la ville et le code postal
               const city = structureData.city || structureData.ville || '';
@@ -1236,17 +1966,37 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               setFooterTva(structureData.tvaNumber || '');
               setFooterApe(structureData.apeCode || '');
               
+              // Initialiser le logo de la structure dans quoteData.companyInfo.logo
+              // Le logo est récupéré depuis la DB structures dans le champ logo
+              if (structureData.logo) {
+                console.log('Initializing companyInfo.logo with structure logo:', structureData.logo);
+                setQuoteData(prev => ({
+                  ...prev,
+                  companyInfo: {
+                    ...prev.companyInfo,
+                    logo: structureData.logo
+                  }
+                }));
+              }
+              
               // Utiliser le logo de la structure s'il existe et qu'aucun logo n'est déjà défini
+              // Le logo sera utilisé directement depuis structure.logo dans le composant PDF
               if (structureData.logo && !logoPreview) {
-                // Vérifier que le logo est une URL valide
+                // Vérifier que le logo est une URL valide ou une base64
                 try {
-                  const logoUrl = new URL(structureData.logo);
-                  if (logoUrl.protocol === 'http:' || logoUrl.protocol === 'https:') {
+                  // Si c'est une URL, vérifier qu'elle est valide
+                  if (structureData.logo.startsWith('http://') || structureData.logo.startsWith('https://')) {
+                    const logoUrl = new URL(structureData.logo);
+                    if (logoUrl.protocol === 'http:' || logoUrl.protocol === 'https:') {
+                      setLogoPreview(structureData.logo);
+                    }
+                  } else if (structureData.logo.startsWith('data:image/')) {
+                    // Si c'est déjà en base64, l'utiliser directement
                     setLogoPreview(structureData.logo);
                   }
                 } catch (error) {
                   console.warn('Logo URL invalide:', structureData.logo);
-                  // Ne pas définir le logo si l'URL est invalide
+                  // Le logo sera quand même disponible dans structure.logo pour le PDF
                 }
               }
             }
@@ -1303,7 +2053,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                           city: companyData.city || '',
                           postalCode: companyData.postalCode || '',
                           country: companyData.country || 'France',
-                          siret: companyData.siret || ''
+                          siret: companyData.nSiret || ''
                         },
                         clientInfo: {
                           name: companyData.name || missionData.company || '',
@@ -1312,7 +2062,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                           postalCode: companyData.postalCode || '',
                           city: companyData.city || '',
                           country: companyData.country || 'France',
-                          siret: companyData.siret || '',
+                          siret: companyData.nSiret || '',
                           vatNumber: companyData.vatNumber || '',
                           logo: companyData.logo || '',
                           email: companyData.email || '',
@@ -1404,7 +2154,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                       city: companyData.city || '',
                       postalCode: companyData.postalCode || '',
                       country: companyData.country || 'France',
-                      siret: companyData.siret || ''
+                      siret: companyData.nSiret || ''
                     },
                     clientInfo: {
                       name: companyData.name || missionData.company || '',
@@ -1413,7 +2163,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                       postalCode: companyData.postalCode || '',
                       city: companyData.city || '',
                       country: companyData.country || 'France',
-                      siret: companyData.siret || '',
+                      siret: companyData.nSiret || '',
                       vatNumber: companyData.vatNumber || '',
                       logo: companyData.logo || '',
                       email: companyData.email || '',
@@ -1521,7 +2271,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                   city: companyData.city || '',
                   postalCode: companyData.postalCode || '',
                   country: companyData.country || 'France',
-                  siret: companyData.siret || ''
+                  siret: companyData.nSiret || ''
                 },
                 clientInfo: {
                   name: companyData.name || missionData.company || '',
@@ -1530,7 +2280,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                   postalCode: companyData.postalCode || '',
                   city: companyData.city || '',
                   country: companyData.country || 'France',
-                  siret: companyData.siret || '',
+                  siret: companyData.nSiret || '',
                   vatNumber: companyData.vatNumber || '',
                   logo: companyData.logo || '',
                   email: companyData.email || '',
@@ -1791,6 +2541,57 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               }));
             }
           }
+        } else if (!isEtude && missionData) {
+          // Pour les missions, créer une ligne par défaut avec les informations de la mission
+          try {
+            let missionTypeTitle = 'Mission';
+            
+            // Récupérer le type de mission si missionTypeId est disponible
+            if (missionData.missionTypeId) {
+              try {
+                const missionTypeDoc = await getDoc(doc(db, 'missionTypes', missionData.missionTypeId));
+                if (missionTypeDoc.exists()) {
+                  const missionTypeData = missionTypeDoc.data();
+                  missionTypeTitle = missionTypeData.title || 'Mission';
+                }
+              } catch (error) {
+                console.warn('Erreur lors de la récupération du type de mission:', error);
+              }
+            }
+            
+            // Calculer le prix unitaire et la quantité
+            // priceHT est le prix unitaire (prix par heure), donc on l'utilise directement
+            const hours = missionData.hours || 0;
+            const prixHT = missionData.prixHT || missionData.priceHT || 0;
+            const unitPrice = prixHT; // prixHT est déjà le prix unitaire
+            const quantity = hours > 0 ? hours : 1;
+            const totalHT = unitPrice * quantity; // Calculer le total HT
+            
+            // Créer la ligne par défaut
+            const defaultLine: QuoteLine = {
+              id: '1',
+              designation: missionTypeTitle,
+              quantity: quantity,
+              unitPrice: unitPrice,
+              tva: 20,
+              totalHT: totalHT,
+              totalTTC: totalHT * 1.2
+            };
+            
+            const totals = {
+              totalHT: defaultLine.totalHT,
+              totalTVA: defaultLine.totalHT * 0.2,
+              totalTTC: defaultLine.totalTTC
+            };
+            
+            setQuoteData(prev => ({
+              ...prev,
+              lines: [defaultLine],
+              totals
+            }));
+          } catch (error) {
+            console.error('Erreur lors de la création de la ligne par défaut:', error);
+          }
         }
       } catch (error) {
         console.error('Erreur lors du chargement des données:', error);
@@ -2004,44 +2805,533 @@ ${structure.nom || structure.name || 'Notre équipe'}`
 
   // Fonction pour générer le PDF et retourner un blob
   const generatePDF = async (): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
-      try {
-        // Créer un blob temporaire avec les informations de la proposition
-        // Note: Ceci est un placeholder. Pour un vrai PDF, il faudrait utiliser
-        // une Cloud Function ou un service de génération PDF côté serveur
-        
-        const pdfContent = `Proposition commerciale ${mission?.numeroMission || 'mission'}
-        
-        Structure: ${structure?.nom || structure?.name || ''}
-        Client: ${mission?.company || ''}
-        Montant HT: ${quoteData?.totals?.totalHT || 0} €
-        Montant TTC: ${quoteData?.totals?.totalTTC || 0} €
-        
-        Options activées:
-        - Logo structure: ${showStructureLogo ? 'Oui' : 'Non'}
-        - Logo client: ${showLogo ? 'Oui' : 'Non'}
-        - Email structure: ${showStructureEmail ? 'Oui' : 'Non'}
-        - Téléphone structure: ${showStructurePhone ? 'Oui' : 'Non'}
-        - SIRET structure: ${showStructureSiret ? 'Oui' : 'Non'}
-        - Date mission: ${showMissionDate ? 'Oui' : 'Non'}
-        - Validité mission: ${showMissionValidity ? 'Oui' : 'Non'}
-        
-        Date de génération: ${new Date().toLocaleString('fr-FR')}
-        
-        IMPORTANT: Ce fichier est un aperçu texte. Pour le vrai PDF avec mise en page,
-        utilisez le bouton "Télécharger la proposition commerciale" dans la popup principale.`;
-        
-        // Créer un blob avec le bon type MIME pour un PDF
-        const blob = new Blob([pdfContent], { type: 'application/pdf' });
-        resolve(blob);
-      } catch (error) {
-        reject(error);
+    if (!mission || !structure || !quoteData) {
+      throw new Error('Données manquantes pour générer le PDF');
+    }
+    
+    try {
+      // Générer le PDF réel avec react-pdf
+      const pdfDoc = (
+        <QuotePDF
+          mission={mission}
+          structure={structure}
+          quoteData={quoteData}
+          logoPreview={logoPreview}
+          convertedStructureLogo={convertedStructureLogo}
+          convertedClientLogo={convertedClientLogo}
+          footerSiret={footerSiret}
+          footerTva={footerTva}
+          footerApe={footerApe}
+          templateColor={templateColor}
+          showDocumentTitle={showDocumentTitle}
+          documentTitle={documentTitle}
+          showFreeField={showFreeField}
+          freeFieldText={freeFieldText}
+          freeFieldSegments={freeFieldSegments}
+          freeFieldFontSize={freeFieldFontSize}
+          freeFieldTextAlign={freeFieldTextAlign}
+          showSiret={showSiret}
+          showVatNumber={showVatNumber}
+          showLogo={showLogo}
+          showEmail={showEmail}
+          showPhone={showPhone}
+          showGlobalDiscount={showGlobalDiscount}
+          globalDiscountPercent={globalDiscountPercent}
+          globalDiscountAmount={globalDiscountAmount}
+          showStructureLogo={showStructureLogo}
+          showChargeMission={showChargeMission}
+          showStructureEmail={showStructureEmail}
+          showStructurePhone={showStructurePhone}
+          showStructureSiret={showStructureSiret}
+          showMissionDate={showMissionDate}
+          showMissionValidity={showMissionValidity}
+          showServiceCharacteristics={showServiceCharacteristics}
+          showStudentCount={showStudentCount}
+          showHours={showHours}
+          showLocation={showLocation}
+          showMissionDescription={showMissionDescription}
+          showDatesAndSchedule={showDatesAndSchedule}
+          contactFirstName={contactFirstName}
+          contactLastName={contactLastName}
+          contacts={contacts}
+        />
+      );
+      
+      const asPdf = pdf(pdfDoc);
+      const blob = await asPdf.toBlob();
+      return blob;
+    } catch (error) {
+      console.error('Erreur lors de la génération du PDF:', error);
+      throw error;
+    }
+  };
+
+  // Fonction pour mettre à jour le contenu du champ libre
+  const updateFreeFieldContent = () => {
+    if (freeFieldEditorRef.current) {
+      const html = freeFieldEditorRef.current.innerHTML;
+      setFreeFieldHtml(html);
+      const text = freeFieldEditorRef.current.innerText || freeFieldEditorRef.current.textContent || '';
+      setFreeFieldText(text);
+    }
+  };
+
+  // Synchroniser le contenu HTML de l'éditeur avec l'état
+  useEffect(() => {
+    if (freeFieldEditorRef.current && freeFieldHtml !== undefined) {
+      // Ne mettre à jour que si le contenu est différent pour éviter les boucles
+      // et seulement si l'éditeur n'a pas le focus (pour ne pas interrompre la saisie)
+      if (freeFieldEditorRef.current.innerHTML !== freeFieldHtml && document.activeElement !== freeFieldEditorRef.current) {
+        freeFieldEditorRef.current.innerHTML = freeFieldHtml || freeFieldText || '';
+      }
+    }
+  }, [freeFieldHtml, freeFieldText]);
+  
+  // Fonction pour nettoyer les spans vides (zero-width space) après la saisie
+  const cleanupEmptySpans = () => {
+    if (!freeFieldEditorRef.current) return;
+    
+    const spans = freeFieldEditorRef.current.querySelectorAll('span');
+    spans.forEach(span => {
+      // Si le span ne contient que le zero-width space ou est vide (sans texte réel), le supprimer
+      const textContent = span.textContent || '';
+      const innerHTML = span.innerHTML;
+      if ((innerHTML === '&#8203;' || innerHTML === '\u200B' || textContent === '\u200B' || textContent.trim() === '') && 
+          !span.hasAttribute('style')) {
+        // Ne supprimer que si le span n'a pas de style (pour éviter de supprimer des spans avec du formatage)
+        const parent = span.parentNode;
+        if (parent) {
+          parent.removeChild(span);
+          // Normaliser le parent pour fusionner les nœuds de texte adjacents
+          parent.normalize();
+        }
+      } else if (textContent.trim() === '' && span.style.fontSize && span.style.textAlign) {
+        // Si le span a des styles mais est vide, le supprimer aussi
+        const parent = span.parentNode;
+        if (parent) {
+          parent.removeChild(span);
+          parent.normalize();
+        }
       }
     });
   };
 
+  // Fonction pour parser le HTML et extraire les segments de texte avec leurs styles
+  const parseHtmlToTextSegments = (html: string): Array<{ text: string; fontSize?: number; textAlign?: string; fontWeight?: string; fontStyle?: string }> => {
+    if (!html) return [];
+    
+    try {
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = html;
+      
+      const segments: Array<{ text: string; fontSize?: number; textAlign?: string; fontWeight?: string; fontStyle?: string }> = [];
+      
+      const extractText = (node: Node, inheritedFontSize?: number, inheritedAlign?: string, inheritedFontWeight?: string, inheritedFontStyle?: string) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const text = node.textContent || '';
+          if (text && text !== '\u200B') { // Ignorer zero-width space
+            segments.push({
+              text: text,
+              fontSize: inheritedFontSize,
+              textAlign: inheritedAlign,
+              fontWeight: inheritedFontWeight,
+              fontStyle: inheritedFontStyle
+            });
+          }
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const element = node as HTMLElement;
+          
+          // Extraire les styles inline directement depuis l'attribut style
+          let fontSize = inheritedFontSize;
+          let textAlign = inheritedAlign;
+          let fontWeight = inheritedFontWeight;
+          let fontStyle = inheritedFontStyle;
+          
+          if (element.style.fontSize) {
+            const fontSizeValue = element.style.fontSize;
+            fontSize = parseFloat(fontSizeValue);
+          } else if (element.hasAttribute('style')) {
+            const styleAttr = element.getAttribute('style') || '';
+            const fontSizeMatch = styleAttr.match(/font-size:\s*(\d+(?:\.\d+)?)px/);
+            if (fontSizeMatch) {
+              fontSize = parseFloat(fontSizeMatch[1]);
+            }
+          }
+          
+          if (element.style.textAlign) {
+            textAlign = element.style.textAlign;
+          } else if (element.hasAttribute('style')) {
+            const styleAttr = element.getAttribute('style') || '';
+            const textAlignMatch = styleAttr.match(/text-align:\s*(\w+)/);
+            if (textAlignMatch) {
+              textAlign = textAlignMatch[1];
+            }
+          }
+          
+          if (element.style.fontWeight) {
+            fontWeight = element.style.fontWeight;
+          } else if (element.hasAttribute('style')) {
+            const styleAttr = element.getAttribute('style') || '';
+            const fontWeightMatch = styleAttr.match(/font-weight:\s*(\w+)/);
+            if (fontWeightMatch) {
+              fontWeight = fontWeightMatch[1];
+            }
+          }
+          
+          if (element.style.fontStyle) {
+            fontStyle = element.style.fontStyle;
+          } else if (element.hasAttribute('style')) {
+            const styleAttr = element.getAttribute('style') || '';
+            const fontStyleMatch = styleAttr.match(/font-style:\s*(\w+)/);
+            if (fontStyleMatch) {
+              fontStyle = fontStyleMatch[1];
+            }
+          }
+          
+          // Traiter les enfants
+          Array.from(element.childNodes).forEach(child => {
+            extractText(child, fontSize, textAlign, fontWeight, fontStyle);
+          });
+        }
+      };
+      
+      Array.from(tempDiv.childNodes).forEach(node => {
+        extractText(node, freeFieldFontSize, freeFieldTextAlign);
+      });
+      
+      return segments;
+    } catch (error) {
+      console.error('Erreur lors du parsing HTML:', error);
+      return [{ text: freeFieldText || '' }];
+    }
+  };
+  
+  // Mémoriser les segments parsés pour le PDF
+  const freeFieldSegments = useMemo(() => {
+    if (freeFieldHtml) {
+      return parseHtmlToTextSegments(freeFieldHtml);
+    }
+    return null;
+  }, [freeFieldHtml, freeFieldFontSize, freeFieldTextAlign]);
+
+  // Fonction pour appliquer la taille de police sur la sélection ou au curseur
+  const applyFontSizeToSelection = (fontSize: number) => {
+    if (!freeFieldEditorRef.current) return;
+    
+    // S'assurer que l'éditeur a le focus
+    freeFieldEditorRef.current.focus();
+    
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      // Si pas de sélection, créer un span au début de l'éditeur
+      if (freeFieldEditorRef.current) {
+        const span = document.createElement('span');
+        span.style.fontSize = `${fontSize}px`;
+        span.innerHTML = '&#8203;';
+        freeFieldEditorRef.current.appendChild(span);
+        const range = document.createRange();
+        range.setStartAfter(span);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        updateFreeFieldContent();
+      }
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    
+    // Vérifier que la sélection est dans l'éditeur
+    if (!freeFieldEditorRef.current.contains(range.commonAncestorContainer)) return;
+
+    try {
+      if (!selection.isCollapsed) {
+        // Texte sélectionné : appliquer le style à la sélection
+        const selectedText = range.toString();
+        if (!selectedText) return;
+        
+        // Créer un span avec la nouvelle taille
+        const span = document.createElement('span');
+        span.style.fontSize = `${fontSize}px`;
+        span.textContent = selectedText;
+        
+        // Supprimer le contenu sélectionné et le remplacer par le span
+        range.deleteContents();
+        range.insertNode(span);
+        
+        // Restaurer la sélection sur le nouveau span
+        selection.removeAllRanges();
+        const newRange = document.createRange();
+        newRange.selectNodeContents(span);
+        selection.addRange(newRange);
+      } else {
+        // Pas de sélection : créer un span vide au curseur pour le texte à venir
+        const span = document.createElement('span');
+        span.style.fontSize = `${fontSize}px`;
+        span.innerHTML = '&#8203;'; // Zero-width space pour maintenir le span
+        
+        // Insérer le span au curseur
+        range.insertNode(span);
+        
+        // Placer le curseur après le span
+        range.setStartAfter(span);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      
+      // Mettre à jour le contenu
+      updateFreeFieldContent();
+    } catch (error) {
+      console.error('Erreur lors de l\'application de la taille de police:', error);
+    }
+  };
+
+  // Fonction pour appliquer le gras sur la sélection ou au curseur
+  const applyBoldToSelection = () => {
+    if (!freeFieldEditorRef.current) return;
+    
+    freeFieldEditorRef.current.focus();
+    
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      if (freeFieldEditorRef.current) {
+        const span = document.createElement('span');
+        span.style.fontWeight = 'bold';
+        span.innerHTML = '&#8203;';
+        freeFieldEditorRef.current.appendChild(span);
+        const range = document.createRange();
+        range.setStartAfter(span);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        updateFreeFieldContent();
+      }
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!freeFieldEditorRef.current.contains(range.commonAncestorContainer)) return;
+
+    try {
+      if (!selection.isCollapsed) {
+        const selectedText = range.toString();
+        if (!selectedText) return;
+        
+        const span = document.createElement('span');
+        span.style.fontWeight = 'bold';
+        span.textContent = selectedText;
+        
+        range.deleteContents();
+        range.insertNode(span);
+        
+        selection.removeAllRanges();
+        const newRange = document.createRange();
+        newRange.selectNodeContents(span);
+        selection.addRange(newRange);
+      } else {
+        const span = document.createElement('span');
+        span.style.fontWeight = 'bold';
+        span.innerHTML = '&#8203;';
+        
+        range.insertNode(span);
+        range.setStartAfter(span);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      
+      updateFreeFieldContent();
+    } catch (error) {
+      console.error('Erreur lors de l\'application du gras:', error);
+    }
+  };
+
+  // Fonction pour appliquer l'italique sur la sélection ou au curseur
+  const applyItalicToSelection = () => {
+    if (!freeFieldEditorRef.current) return;
+    
+    freeFieldEditorRef.current.focus();
+    
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      if (freeFieldEditorRef.current) {
+        const span = document.createElement('span');
+        span.style.fontStyle = 'italic';
+        span.innerHTML = '&#8203;';
+        freeFieldEditorRef.current.appendChild(span);
+        const range = document.createRange();
+        range.setStartAfter(span);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        updateFreeFieldContent();
+      }
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!freeFieldEditorRef.current.contains(range.commonAncestorContainer)) return;
+
+    try {
+      if (!selection.isCollapsed) {
+        const selectedText = range.toString();
+        if (!selectedText) return;
+        
+        const span = document.createElement('span');
+        span.style.fontStyle = 'italic';
+        span.textContent = selectedText;
+        
+        range.deleteContents();
+        range.insertNode(span);
+        
+        selection.removeAllRanges();
+        const newRange = document.createRange();
+        newRange.selectNodeContents(span);
+        selection.addRange(newRange);
+      } else {
+        const span = document.createElement('span');
+        span.style.fontStyle = 'italic';
+        span.innerHTML = '&#8203;';
+        
+        range.insertNode(span);
+        range.setStartAfter(span);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      
+      updateFreeFieldContent();
+    } catch (error) {
+      console.error('Erreur lors de l\'application de l\'italique:', error);
+    }
+  };
+
+  // Fonction pour appliquer l'alignement sur la sélection ou au curseur
+  const applyTextAlignToSelection = (align: 'left' | 'center' | 'right' | 'justify') => {
+    if (!freeFieldEditorRef.current) return;
+    
+    // S'assurer que l'éditeur a le focus
+    freeFieldEditorRef.current.focus();
+    
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+    
+    // Vérifier que la sélection est dans l'éditeur
+    if (!freeFieldEditorRef.current.contains(range.commonAncestorContainer)) return;
+
+    try {
+      if (!selection.isCollapsed) {
+        // Texte sélectionné : appliquer l'alignement à la sélection
+        const selectedText = range.toString();
+        if (!selectedText) return;
+        
+        // Créer un span avec l'alignement
+        const span = document.createElement('span');
+        span.style.textAlign = align;
+        span.style.display = 'block';
+        span.textContent = selectedText;
+        
+        // Supprimer le contenu sélectionné et le remplacer par le span
+        range.deleteContents();
+        range.insertNode(span);
+        
+        // Restaurer la sélection sur le nouveau span
+        selection.removeAllRanges();
+        const newRange = document.createRange();
+        newRange.selectNodeContents(span);
+        selection.addRange(newRange);
+      } else {
+        // Pas de sélection : créer un span avec alignement au curseur pour le texte à venir
+        const span = document.createElement('span');
+        span.style.textAlign = align;
+        span.style.display = 'block';
+        span.innerHTML = '&#8203;'; // Zero-width space pour maintenir le span
+        
+        // Insérer le span au curseur
+        range.insertNode(span);
+        
+        // Placer le curseur après le span
+        range.setStartAfter(span);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      
+      // Mettre à jour le contenu
+      updateFreeFieldContent();
+    } catch (error) {
+      console.error('Erreur lors de l\'application de l\'alignement:', error);
+    }
+  };
+
   // Fonction pour sauvegarder la proposition comme document
+  // Fonction pour sauvegarder les préférences de template
+  const saveTemplatePreferences = async () => {
+    if (!currentUser || !structure?.id) return;
+    
+    try {
+      const preferences = {
+        templateColor,
+        billingType,
+        showSiret,
+        showVatNumber,
+        showLogo,
+        showEmail,
+        showPhone,
+        showPaymentTerms,
+        showDocumentTitle,
+        showFreeField,
+        freeFieldText,
+        freeFieldHtml,
+        freeFieldFontSize,
+        freeFieldTextAlign,
+        showServiceCharacteristics,
+        showStudentCount,
+        showHours,
+        showLocation,
+        showMissionDescription,
+        showDatesAndSchedule,
+        showGlobalDiscount,
+        showStructureLogo,
+        showChargeMission,
+        showStructureEmail,
+        showStructurePhone,
+        showStructureSiret,
+        showMissionDate,
+        showMissionValidity,
+        updatedAt: new Date(),
+        updatedBy: currentUser.uid
+      };
+      
+      const preferencesRef = doc(db, 'templatePreferences', `${structure.id}_proposition_commerciale`);
+      await setDoc(preferencesRef, preferences, { merge: true });
+      
+      setSavedTemplatePreferences(preferences);
+      setSavePreferencesDialogOpen(false);
+      
+      setSnackbar({
+        open: true,
+        message: 'Préférences de template enregistrées avec succès',
+        severity: 'success'
+      });
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde des préférences:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de la sauvegarde des préférences',
+        severity: 'error'
+      });
+    }
+  };
+
   const saveQuoteAsDocument = async (pdfBlob: Blob, type: string, isDraft: boolean): Promise<void> => {
+    console.log('📥 saveQuoteAsDocument appelé avec:', { type, isDraft, pdfBlobSize: pdfBlob?.size });
+    console.log('📋 Mission dans saveQuoteAsDocument:', mission);
+    console.log('📋 Storage dans saveQuoteAsDocument:', !!storage);
+    
     try {
       // Log des données avant sauvegarde pour déboguer
       if (isDraft) {
@@ -2063,8 +3353,27 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         console.log('ID du brouillon en cours d\'édition:', editingDraftId);
       }
       
-      // Préparer les données du document
-      const documentData = {
+      // Préparer les données de quoteData avec les logos
+      const quoteDataWithLogos = isDraft ? {
+        ...quoteData,
+        companyInfo: {
+          ...quoteData.companyInfo,
+          logo: quoteData.companyInfo.logo || (logoPreview ? logoPreview : structure?.logo || '')
+        },
+        clientInfo: {
+          ...quoteData.clientInfo,
+          logo: quoteData.clientInfo.logo || (logoPreview ? logoPreview : '')
+        }
+      } : null;
+
+      // Préparer les données de structure avec le logo
+      const structureDataWithLogo = isDraft && structure ? {
+        ...structure,
+        logo: structure.logo || logoPreview || ''
+      } : null;
+
+      // Préparer les données du document (filtrer les valeurs undefined)
+      const documentData: any = {
         name: showDocumentTitle && documentTitle ? documentTitle : `Proposition commerciale ${mission?.numeroMission || 'mission'}`,
         type: type,
         url: '', // URL du fichier uploadé
@@ -2072,16 +3381,13 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         uploadedBy: currentUser?.displayName || currentUser?.uid || 'unknown',
         size: pdfBlob.size,
         isDraft: isDraft,
-        // Utiliser etudeId pour la compatibilité avec EtudeDetails.tsx
-        etudeId: mission?.id,
-        missionId: mission?.id, // Garder pour la compatibilité
-        numeroMission: mission?.numeroMission,
-        structureId: structure?.id,
-        companyId: mission?.companyId,
-        companyName: mission?.company,
+        numeroMission: mission?.numeroMission || null,
+        structureId: structure?.id || null,
+        companyId: mission?.companyId || null,
+        companyName: mission?.company || null,
         // Sauvegarder toutes les données de la proposition pour permettre la reprise
-        quoteData: isDraft ? quoteData : null,
-        structureData: isDraft ? structure : null, // Données complètes de la structure
+        quoteData: quoteDataWithLogos,
+        structureData: structureDataWithLogo,
         missionData: isDraft ? mission : null, // Données complètes de la mission
         options: isDraft ? {
           showLogo,
@@ -2097,6 +3403,12 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         documentTitle: isDraft ? documentTitle : null
       };
 
+      // Ajouter etudeId et missionId seulement s'ils existent (pour éviter undefined)
+      if (mission?.id) {
+        documentData.etudeId = mission.id; // Pour la compatibilité avec EtudeDetails.tsx
+        documentData.missionId = mission.id; // Garder pour la compatibilité
+      }
+
       if (isDraft && editingDraftId) {
         // Mettre à jour le brouillon existant
         console.log('Mise à jour du brouillon existant avec ID:', editingDraftId);
@@ -2107,6 +3419,77 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         console.log('Création d\'un nouveau document');
         const docRef = await addDoc(collection(db, 'documents'), documentData);
         console.log('Document créé avec ID:', docRef.id);
+        
+        // Si ce n'est pas un brouillon, aussi sauvegarder dans generatedDocuments et uploader dans Storage
+        console.log('🔍 Vérification des conditions pour l\'upload:', {
+          isDraft,
+          hasMissionId: !!mission?.id,
+          missionId: mission?.id,
+          hasStorage: !!storage,
+          pdfBlobSize: pdfBlob?.size
+        });
+        
+        if (!isDraft && mission?.id && storage) {
+          try {
+            console.log('📤 Upload du PDF vers Firebase Storage...');
+            console.log('📋 Mission ID:', mission.id);
+            console.log('📋 Mission Number:', mission.numeroMission);
+            console.log('📋 PDF Blob size:', pdfBlob.size);
+            
+            // Créer le nom du fichier
+            const fileName = `PC_${mission.numeroMission}_${Date.now()}.pdf`;
+            const storagePath = `missions/${mission.id}/documents/${fileName}`;
+            console.log('📁 Chemin Storage:', storagePath);
+            const storageRef = ref(storage, storagePath);
+            
+            // Uploader le fichier
+            console.log('⏳ Début de l\'upload...');
+            await uploadBytes(storageRef, pdfBlob);
+            console.log('✅ Fichier uploadé vers Storage');
+            
+            // Récupérer l'URL
+            const fileUrl = await getDownloadURL(storageRef);
+            console.log('✅ URL du document:', fileUrl);
+            
+            // Préparer les données pour generatedDocuments
+            const generatedDocumentData = {
+              missionId: mission.id,
+              missionNumber: mission.numeroMission,
+              missionTitle: mission.title || mission.description || `Mission ${mission.numeroMission}`,
+              structureId: mission.structureId || structure?.id || '',
+              documentType: 'proposition_commerciale' as const,
+              fileName: fileName,
+              fileUrl: fileUrl,
+              fileSize: pdfBlob.size,
+              version: 1,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              createdBy: currentUser?.uid || '',
+              status: 'draft' as const,
+              isValid: true,
+              tags: ['proposition_commerciale', 'commercial'],
+              notes: 'Proposition commerciale générée depuis l\'éditeur'
+            };
+            
+            console.log('📊 Données du document à créer:', generatedDocumentData);
+            
+            // Créer le document dans generatedDocuments
+            const generatedDocRef = await addDoc(collection(db, 'generatedDocuments'), generatedDocumentData);
+            console.log('📊 Document créé dans generatedDocuments, ID:', generatedDocRef.id);
+            console.log('📋 Document lié à la mission ID:', mission.id);
+          } catch (error) {
+            console.error('❌ Erreur lors de la sauvegarde dans generatedDocuments:', error);
+            console.error('❌ Détails de l\'erreur:', error instanceof Error ? error.message : String(error));
+            console.error('❌ Stack trace:', error instanceof Error ? error.stack : 'Pas de stack trace');
+            // Ne pas bloquer la sauvegarde principale si cette étape échoue
+          }
+        } else {
+          console.log('⚠️ Conditions non remplies pour l\'upload:', {
+            isDraft,
+            hasMissionId: !!mission?.id,
+            hasStorage: !!storage
+          });
+        }
       }
     } catch (error) {
       console.error('Erreur lors de la sauvegarde du document:', error);
@@ -2138,7 +3521,9 @@ ${structure.nom || structure.name || 'Notre équipe'}`
       top: 0,
       left: 0,
       right: 0,
-      bottom: 0
+      bottom: 0,
+      display: 'flex',
+      flexDirection: 'column'
     }}>
       <Box sx={{ 
         width: '100%',
@@ -2150,9 +3535,10 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        justifyContent: 'flex-start',
+        justifyContent: 'space-between',
         height: '100%',
-        overflowY: 'auto'
+        overflowY: 'auto',
+        flex: 1
       }}>
       {/* Header */}
       <Box sx={{ 
@@ -2162,7 +3548,8 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         mb: 6,
         width: '100%',
         maxWidth: '1200px',
-        position: 'relative'
+        position: 'relative',
+        flexShrink: 0
       }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           <IconButton
@@ -2216,6 +3603,10 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           gap: 3,
           justifyContent: 'center',
           alignItems: 'flex-start',
+          flex: 1,
+          width: '100%',
+          overflowY: 'auto',
+          minHeight: 0,
           '@media print': {
             display: 'none'
           }
@@ -2225,7 +3616,6 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         <Box 
           sx={{ 
             width: '210mm',
-            height: '340mm',
             bgcolor: '#fafafa',
             borderRadius: '4px',
             display: 'flex',
@@ -2233,20 +3623,24 @@ ${structure.nom || structure.name || 'Notre équipe'}`
             justifyContent: 'center',
             flexShrink: 0,
             paddingTop: '20px',
-            paddingBottom: '20px'
+            paddingBottom: '20px',
+            minHeight: '297mm',
+            maxHeight: 'calc(100vh - 200px)',
+            overflowY: 'auto'
           }}
         >
         {/* Document A4 centré pour PDF */}
         <Box 
           sx={{ 
             width: '210mm',
-            height: '297mm',
             bgcolor: 'white',
             boxShadow: '0 2px 12px rgba(0,0,0,0.1)',
             borderRadius: '4px',
             overflow: 'hidden',
             flexShrink: 0,
             position: 'relative',
+            minHeight: '297mm',
+            height: 'fit-content',
             '@media print': {
               width: '100%',
               height: 'auto',
@@ -2277,10 +3671,10 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         {/* Contenu centré pour PDF */}
         <Box sx={{ 
           p: '15mm',
-          height: '100%',
           display: 'flex',
           flexDirection: 'column',
           position: 'relative',
+          minHeight: '297mm',
           '@media print': { p: '15mm' }
         }}>
 
@@ -2764,6 +4158,169 @@ ${structure.nom || structure.name || 'Notre équipe'}`
             </Box>
           </Grid>
 
+          {/* Caractéristiques de la prestation */}
+          {showServiceCharacteristics && mission && (
+            <Grid item xs={12}>
+              <Box sx={{ 
+                bgcolor: 'white',
+                p: 2, 
+                borderRadius: 1,
+                border: '1px solid #e0e0e0',
+                height: 'fit-content',
+                flexShrink: 0,
+                '@media print': { 
+                  border: '1px solid #000',
+                  bgcolor: 'white'
+                }
+              }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                  <Typography variant="h5" sx={{ fontWeight: '600', color: '#1d1d1f', fontSize: '1.25rem' }}>
+                    Caractéristiques de la prestation
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                  {showStudentCount && (
+                    <Box sx={{ display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
+                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 'bold', color: '#333', minWidth: '300px' }}>
+                        Nombre d'étudiants à recruter, former, suivre :
+                      </Typography>
+                      <TextField
+                        size="small"
+                        value={mission.studentCount || ''}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          if (mission) {
+                            setMission(prev => prev ? { ...prev, studentCount: val } : null);
+                          }
+                        }}
+                        type="number"
+                        sx={{ 
+                          width: '150px',
+                          '& .MuiInputBase-input': { fontSize: '0.875rem' }
+                        }}
+                      />
+                    </Box>
+                  )}
+                  {showHours && (
+                    <Box sx={{ display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
+                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 'bold', color: '#333', minWidth: '300px' }}>
+                        Nombre d'heures :
+                      </Typography>
+                      <TextField
+                        size="small"
+                        value={mission.hours || ''}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          if (mission) {
+                            setMission(prev => prev ? { ...prev, hours: val } : null);
+                          }
+                        }}
+                        type="number"
+                        sx={{ 
+                          width: '150px',
+                          '& .MuiInputBase-input': { fontSize: '0.875rem' }
+                        }}
+                      />
+                    </Box>
+                  )}
+                  {showLocation && (
+                    <Box sx={{ display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'center' }}>
+                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 'bold', color: '#333', minWidth: '300px' }}>
+                        Lieu(x) de la mission :
+                      </Typography>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        value={mission.location || ''}
+                        onChange={(e) => {
+                          if (mission) {
+                            setMission(prev => prev ? { ...prev, location: e.target.value } : null);
+                          }
+                        }}
+                        sx={{ 
+                          flex: 1,
+                          '& .MuiInputBase-input': { fontSize: '0.875rem' }
+                        }}
+                      />
+                    </Box>
+                  )}
+                  {showMissionDescription && (
+                    <Box sx={{ display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'flex-start' }}>
+                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 'bold', color: '#333', minWidth: '300px', pt: 1 }}>
+                        Description de la mission à effectuer par les étudiants :
+                      </Typography>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        multiline
+                        rows={3}
+                        value={mission.description || ''}
+                        onChange={(e) => {
+                          if (mission) {
+                            setMission(prev => prev ? { ...prev, description: e.target.value } : null);
+                          }
+                        }}
+                        sx={{ 
+                          flex: 1,
+                          '& .MuiInputBase-input': { fontSize: '0.875rem' }
+                        }}
+                      />
+                    </Box>
+                  )}
+                  {showDatesAndSchedule && mission.startDate && mission.endDate && (
+                    <Box sx={{ display: 'flex', flexDirection: 'row', gap: 2, alignItems: 'flex-start' }}>
+                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 'bold', color: '#333', minWidth: '300px', pt: 1 }}>
+                        Date(s) et horaires :
+                      </Typography>
+                      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Typography sx={{ fontSize: '0.875rem', color: '#666' }}>Du</Typography>
+                          <TextField
+                            size="small"
+                            type="date"
+                            value={mission.startDate ? (mission.startDate.includes('T') ? mission.startDate.split('T')[0] : mission.startDate) : ''}
+                            onChange={(e) => {
+                              if (mission) {
+                                setMission(prev => prev ? { ...prev, startDate: e.target.value } : null);
+                              }
+                            }}
+                            InputLabelProps={{ shrink: true }}
+                            sx={{ 
+                              width: '150px',
+                              '& .MuiInputBase-input': { fontSize: '0.875rem' }
+                            }}
+                          />
+                          <Typography sx={{ fontSize: '0.875rem', color: '#666' }}>au</Typography>
+                          <TextField
+                            size="small"
+                            type="date"
+                            value={mission.endDate ? (mission.endDate.includes('T') ? mission.endDate.split('T')[0] : mission.endDate) : ''}
+                            onChange={(e) => {
+                              if (mission) {
+                                setMission(prev => prev ? { ...prev, endDate: e.target.value } : null);
+                              }
+                            }}
+                            InputLabelProps={{ shrink: true }}
+                            sx={{ 
+                              width: '150px',
+                              '& .MuiInputBase-input': { fontSize: '0.875rem' }
+                            }}
+                          />
+                          <Typography sx={{ fontSize: '0.875rem', color: '#666' }}>compris.</Typography>
+                        </Box>
+                        {mission.hours && mission.studentCount && (
+                          <Typography sx={{ fontSize: '0.875rem', color: '#666' }}>
+                            Pour un volume d'heures total de {mission.hours} heures qui est réparti équitablement entre les étudiants recrutés.
+                          </Typography>
+                        )}
+                      </Box>
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            </Grid>
+          )}
+
           {/* Détails du devis */}
           <Grid item xs={12}>
             <Box sx={{ 
@@ -2857,7 +4414,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                   gridTemplateColumns: billingType === 'rapide' ? '2fr 1fr 1fr 50px' : '2fr 1fr 1fr 1fr 1fr 50px',
                   gap: 1,
                   p: 1,
-                  bgcolor: '#6366f1',
+                  bgcolor: templateColor,
                   color: 'white',
                   borderRadius: 1,
                   mb: 1,
@@ -3036,10 +4593,10 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                   </Box>
                   <Divider sx={{ my: 0.5 }} />
                   <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#6366f1', fontSize: '1rem' }}>
+                    <Typography variant="h6" sx={{ fontWeight: 'bold', color: templateColor, fontSize: '1rem' }}>
                       Total TTC
                     </Typography>
-                    <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#6366f1', fontSize: '1rem' }}>
+                    <Typography variant="h6" sx={{ fontWeight: 'bold', color: templateColor, fontSize: '1rem' }}>
                       {showGlobalDiscount ? getTotalWithDiscount().totalTTC.toFixed(2) : quoteData.totals.totalTTC.toFixed(2)} €
                     </Typography>
                   </Box>
@@ -3054,29 +4611,257 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           {showFreeField && (
             <Grid item xs={12}>
               <Box sx={{ mt: 0.25, mb: 0 }}>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={4}
-                  placeholder="Saisissez votre texte libre ici..."
-                  value={freeFieldText}
-                  onChange={(e) => setFreeFieldText(e.target.value)}
-                  variant="outlined"
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      border: '2px dashed #ccc',
-                      borderRadius: 2,
-                      padding: '8px 12px',
-                      '&:hover': {
-                        border: '2px dashed #999'
-                      },
-                      '&.Mui-focused': {
-                        border: '2px dashed #007AFF'
+                {/* Barre d'outils pour le champ libre */}
+                <Box sx={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 1, 
+                  mb: 1,
+                  p: 1,
+                  bgcolor: '#f5f5f7',
+                  borderRadius: '8px 8px 0 0',
+                  border: '1px solid #e0e0e0',
+                  borderBottom: 'none'
+                }}>
+                  {/* Contrôle de taille de police */}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <TextDecreaseIcon sx={{ fontSize: 18, color: '#8E8E93', cursor: 'pointer' }} 
+                      onClick={() => {
+                        const newSize = Math.max(4, freeFieldFontSize - 1);
+                        setFreeFieldFontSize(newSize);
+                        applyFontSizeToSelection(newSize);
+                      }} />
+                    <TextField
+                      type="number"
+                      value={freeFieldFontSize}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        if (val >= 4 && val <= 72) {
+                          setFreeFieldFontSize(val);
+                          // Ne pas appliquer automatiquement lors de la saisie manuelle
+                        }
+                      }}
+                      onBlur={(e) => {
+                        const val = parseInt(e.target.value);
+                        if (val >= 4 && val <= 72) {
+                          setFreeFieldFontSize(val);
+                          applyFontSizeToSelection(val);
+                        } else if (val < 4) {
+                          setFreeFieldFontSize(4);
+                          applyFontSizeToSelection(4);
+                        } else if (val > 72) {
+                          setFreeFieldFontSize(72);
+                          applyFontSizeToSelection(72);
+                        }
+                      }}
+                      size="small"
+                      sx={{
+                        width: '60px',
+                        '& .MuiOutlinedInput-root': {
+                          height: '32px',
+                          '& input': {
+                            textAlign: 'center',
+                            padding: '4px 8px',
+                            fontSize: '0.875rem'
+                          }
+                        }
+                      }}
+                    />
+                    <TextIncreaseIcon sx={{ fontSize: 18, color: '#8E8E93', cursor: 'pointer' }} 
+                      onClick={() => {
+                        const newSize = Math.min(24, freeFieldFontSize + 1);
+                        setFreeFieldFontSize(newSize);
+                        applyFontSizeToSelection(newSize);
+                      }} />
+                    <Typography variant="caption" sx={{ ml: 0.5, color: '#8E8E93', fontSize: '0.75rem' }}>
+                      px
+                    </Typography>
+                  </Box>
+                  
+                  <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+                  
+                  {/* Contrôles de formatage (gras, italique) */}
+                  <Box sx={{ display: 'flex', gap: 0.5 }}>
+                    <IconButton
+                      size="small"
+                      onClick={applyBoldToSelection}
+                      sx={{
+                        bgcolor: 'transparent',
+                        color: '#8E8E93',
+                        '&:hover': {
+                          bgcolor: '#E5E5EA'
+                        }
+                      }}
+                      title="Gras (Ctrl+B)"
+                    >
+                      <FormatBoldIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={applyItalicToSelection}
+                      sx={{
+                        bgcolor: 'transparent',
+                        color: '#8E8E93',
+                        '&:hover': {
+                          bgcolor: '#E5E5EA'
+                        }
+                      }}
+                      title="Italique (Ctrl+I)"
+                    >
+                      <FormatItalicIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
+                  
+                  <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+                  
+                  {/* Contrôles d'alignement */}
+                  <Box sx={{ display: 'flex', gap: 0.5 }}>
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        applyTextAlignToSelection('left');
+                      }}
+                      sx={{
+                        bgcolor: freeFieldTextAlign === 'left' ? '#007AFF' : 'transparent',
+                        color: freeFieldTextAlign === 'left' ? 'white' : '#8E8E93',
+                        '&:hover': {
+                          bgcolor: freeFieldTextAlign === 'left' ? '#0056CC' : '#E5E5EA'
+                        }
+                      }}
+                    >
+                      <FormatAlignLeftIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        applyTextAlignToSelection('center');
+                      }}
+                      sx={{
+                        bgcolor: freeFieldTextAlign === 'center' ? '#007AFF' : 'transparent',
+                        color: freeFieldTextAlign === 'center' ? 'white' : '#8E8E93',
+                        '&:hover': {
+                          bgcolor: freeFieldTextAlign === 'center' ? '#0056CC' : '#E5E5EA'
+                        }
+                      }}
+                    >
+                      <FormatAlignCenterIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        applyTextAlignToSelection('right');
+                      }}
+                      sx={{
+                        bgcolor: freeFieldTextAlign === 'right' ? '#007AFF' : 'transparent',
+                        color: freeFieldTextAlign === 'right' ? 'white' : '#8E8E93',
+                        '&:hover': {
+                          bgcolor: freeFieldTextAlign === 'right' ? '#0056CC' : '#E5E5EA'
+                        }
+                      }}
+                    >
+                      <FormatAlignRightIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        applyTextAlignToSelection('justify');
+                      }}
+                      sx={{
+                        bgcolor: freeFieldTextAlign === 'justify' ? '#007AFF' : 'transparent',
+                        color: freeFieldTextAlign === 'justify' ? 'white' : '#8E8E93',
+                        '&:hover': {
+                          bgcolor: freeFieldTextAlign === 'justify' ? '#0056CC' : '#E5E5EA'
+                        }
+                      }}
+                    >
+                      <FormatAlignJustifyIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
+                </Box>
+                
+                {/* Zone de texte avec contentEditable */}
+                <Box
+                  ref={freeFieldEditorRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  onInput={(e) => {
+                    const html = e.currentTarget.innerHTML;
+                    setFreeFieldHtml(html);
+                    // Extraire le texte brut pour la sauvegarde
+                    const text = e.currentTarget.innerText || e.currentTarget.textContent || '';
+                    setFreeFieldText(text);
+                  }}
+                  onBlur={() => {
+                    cleanupEmptySpans();
+                    updateFreeFieldContent();
+                  }}
+                  onKeyDown={(e) => {
+                    // Si l'utilisateur tape et qu'il y a un span avec zero-width space au curseur, 
+                    // remplacer le zero-width space par le caractère tapé
+                    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) { // Caractère imprimable
+                      const selection = window.getSelection();
+                      if (selection && selection.rangeCount > 0) {
+                        const range = selection.getRangeAt(0);
+                        if (range.isCollapsed) {
+                          const container = range.startContainer;
+                          if (container.nodeType === Node.TEXT_NODE) {
+                            const parent = container.parentNode;
+                            if (parent && parent.nodeName === 'SPAN') {
+                              const span = parent as HTMLElement;
+                              // Si le span ne contient que le zero-width space, le remplacer par le caractère
+                              if (span.innerHTML === '&#8203;' || span.innerHTML === '\u200B' || span.textContent === '\u200B') {
+                                e.preventDefault();
+                                span.innerHTML = '';
+                                span.textContent = e.key;
+                                // Placer le curseur après le caractère
+                                const newRange = document.createRange();
+                                newRange.setStart(span.firstChild || span, 1);
+                                newRange.collapse(true);
+                                selection.removeAllRanges();
+                                selection.addRange(newRange);
+                                updateFreeFieldContent();
+                              }
+                            } else if (container.nodeType === Node.ELEMENT_NODE && (container as HTMLElement).nodeName === 'SPAN') {
+                              const span = container as HTMLElement;
+                              if (span.innerHTML === '&#8203;' || span.innerHTML === '\u200B' || span.textContent === '\u200B') {
+                                e.preventDefault();
+                                span.innerHTML = '';
+                                span.textContent = e.key;
+                                const newRange = document.createRange();
+                                newRange.setStart(span.firstChild || span, 1);
+                                newRange.collapse(true);
+                                selection.removeAllRanges();
+                                selection.addRange(newRange);
+                                updateFreeFieldContent();
+                              }
+                            }
+                          }
+                        }
                       }
+                    }
+                  }}
+                  sx={{
+                    minHeight: '200px',
+                    maxHeight: '400px',
+                    overflowY: 'auto',
+                    border: '1px solid #e0e0e0',
+                    borderRadius: '0 0 8px 8px',
+                    padding: '12px',
+                    fontSize: `${freeFieldFontSize}px`,
+                    lineHeight: 1.5,
+                    textAlign: freeFieldTextAlign,
+                    fontFamily: 'inherit',
+                    outline: 'none',
+                    '&:hover': {
+                      border: '1px solid #999'
                     },
-                    '& .MuiInputBase-input': {
-                      fontSize: '0.875rem',
-                      lineHeight: 1.5
+                    '&:focus': {
+                      border: '1px solid #007AFF'
+                    },
+                    '&:empty:before': {
+                      content: '"Saisissez votre texte libre ici..."',
+                      color: '#999',
+                      fontSize: `${freeFieldFontSize}px`
                     }
                   }}
                 />
@@ -3204,7 +4989,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 }}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <SettingsIcon sx={{ color: '#6366f1', fontSize: 20 }} />
+                  <SettingsIcon sx={{ color: templateColor, fontSize: 20 }} />
                   <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
                     Options
                   </Typography>
@@ -3223,7 +5008,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 {/* Type de facturation */}
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                    <ReceiptIcon sx={{ color: '#6366f1', fontSize: 20 }} />
+                    <ReceiptIcon sx={{ color: templateColor, fontSize: 20 }} />
                     <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
                       Type de facturation
                     </Typography>
@@ -3247,7 +5032,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 {/* Client */}
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                    <PersonIcon sx={{ color: '#6366f1', fontSize: 20 }} />
+                    <PersonIcon sx={{ color: templateColor, fontSize: 20 }} />
                     <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
                       Client
                     </Typography>
@@ -3281,7 +5066,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 {/* Structure */}
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                    <BusinessIcon sx={{ color: '#6366f1', fontSize: 20 }} />
+                    <BusinessIcon sx={{ color: templateColor, fontSize: 20 }} />
                     <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
                       Structure
                     </Typography>
@@ -3315,7 +5100,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 {/* Mission */}
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                    <AssignmentIcon sx={{ color: '#6366f1', fontSize: 20 }} />
+                    <AssignmentIcon sx={{ color: templateColor, fontSize: 20 }} />
                     <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
                       Mission
                     </Typography>
@@ -3337,7 +5122,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 {/* Info complémentaires */}
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-                    <MenuIcon sx={{ color: '#6366f1', fontSize: 20 }} />
+                    <MenuIcon sx={{ color: templateColor, fontSize: 20 }} />
                     <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
                       Info complémentaires
                     </Typography>
@@ -3371,6 +5156,34 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         />
                       )}
                       <FormControlLabel 
+                        control={<Checkbox size="small" checked={showServiceCharacteristics} onChange={(e) => setShowServiceCharacteristics(e.target.checked)} />} 
+                        label="Caractéristiques de la prestation" 
+                      />
+                      {showServiceCharacteristics && (
+                        <Box sx={{ ml: 3, mt: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                          <FormControlLabel 
+                            control={<Checkbox size="small" checked={showStudentCount} onChange={(e) => setShowStudentCount(e.target.checked)} />} 
+                            label="Nombre d'étudiants" 
+                          />
+                          <FormControlLabel 
+                            control={<Checkbox size="small" checked={showHours} onChange={(e) => setShowHours(e.target.checked)} />} 
+                            label="Nombre d'heures" 
+                          />
+                          <FormControlLabel 
+                            control={<Checkbox size="small" checked={showLocation} onChange={(e) => setShowLocation(e.target.checked)} />} 
+                            label="Lieu(x) de la mission" 
+                          />
+                          <FormControlLabel 
+                            control={<Checkbox size="small" checked={showMissionDescription} onChange={(e) => setShowMissionDescription(e.target.checked)} />} 
+                            label="Description de la mission" 
+                          />
+                          <FormControlLabel 
+                            control={<Checkbox size="small" checked={showDatesAndSchedule} onChange={(e) => setShowDatesAndSchedule(e.target.checked)} />} 
+                            label="Date(s) et horaires" 
+                          />
+                        </Box>
+                      )}
+                      <FormControlLabel 
                         control={<Checkbox size="small" checked={showFreeField} onChange={(e) => setShowFreeField(e.target.checked)} />} 
                         label="Champ libre" 
                       />
@@ -3380,6 +5193,123 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                       />
                     </FormGroup>
                   </FormControl>
+                </Box>
+
+                {/* Couleur du template */}
+                <Box sx={{ mb: 3 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                    <PaletteIcon sx={{ color: templateColor, fontSize: 20 }} />
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      Couleur du template
+                    </Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {/* Input color natif */}
+                    <Box sx={{ position: 'relative', display: 'inline-block' }}>
+                      <input
+                        type="color"
+                        value={templateColor}
+                        onChange={(e) => setTemplateColor(e.target.value)}
+                        style={{
+                          width: '48px',
+                          height: '48px',
+                          border: '2px solid #e0e0e0',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          padding: 0,
+                          backgroundColor: templateColor
+                        }}
+                      />
+                    </Box>
+                    
+                    {/* Palette de couleurs prédéfinies */}
+                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                      {[
+                        '#6366f1', // Indigo (par défaut)
+                        '#007AFF', // Bleu Apple
+                        '#34C759', // Vert Apple
+                        '#FF9500', // Orange Apple
+                        '#FF3B30', // Rouge Apple
+                        '#AF52DE', // Violet Apple
+                        '#5856D6', // Violet foncé
+                        '#5AC8FA', // Bleu clair
+                        '#FF2D55', // Rose
+                        '#FF9500', // Orange
+                        '#FFCC00', // Jaune
+                        '#32D74B'  // Vert clair
+                      ].map((color) => (
+                        <Box
+                          key={color}
+                          onClick={() => setTemplateColor(color)}
+                          sx={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '6px',
+                            backgroundColor: color,
+                            border: templateColor === color ? '2px solid #1d1d1f' : '2px solid #e0e0e0',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s',
+                            '&:hover': {
+                              transform: 'scale(1.1)',
+                              boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+                            }
+                          }}
+                        />
+                      ))}
+                    </Box>
+                    
+                    {/* Bouton pipette */}
+                    {typeof window !== 'undefined' && 'EyeDropper' in window && (
+                      <IconButton
+                        onClick={async () => {
+                          try {
+                            const eyeDropper = new window.EyeDropper();
+                            const result = await eyeDropper.open();
+                            if (result.sRGBHex) {
+                              setTemplateColor(result.sRGBHex);
+                            }
+                          } catch (error) {
+                            // L'utilisateur a annulé ou une erreur s'est produite
+                            console.log('Pipette annulée ou erreur:', error);
+                          }
+                        }}
+                        size="small"
+                        sx={{
+                          border: '1px solid #e0e0e0',
+                          borderRadius: '6px',
+                          color: '#1d1d1f',
+                          '&:hover': {
+                            backgroundColor: '#f5f5f7',
+                            borderColor: templateColor
+                          }
+                        }}
+                        title="Pipette (sélectionner une couleur de l'écran) - Chrome, Edge, Opera uniquement"
+                      >
+                        <ColorizeIcon fontSize="small" />
+                      </IconButton>
+                    )}
+                    
+                    {/* Input texte pour la valeur hex */}
+                    <TextField
+                      size="small"
+                      value={templateColor}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (/^#[0-9A-Fa-f]{0,6}$/.test(value) || value === '') {
+                          setTemplateColor(value || '#6366f1');
+                        }
+                      }}
+                      placeholder="#6366f1"
+                      sx={{
+                        width: '100px',
+                        '& .MuiOutlinedInput-root': {
+                          borderRadius: 1,
+                          fontSize: '0.75rem',
+                          '& fieldset': { borderColor: '#e0e0e0' }
+                        }
+                      }}
+                    />
+                  </Box>
                 </Box>
               </Box>
             </Box>
@@ -3480,13 +5410,19 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                     structure={structure}
                     quoteData={quoteData}
                     logoPreview={logoPreview}
+                    convertedStructureLogo={convertedStructureLogo}
+                    convertedClientLogo={convertedClientLogo}
                     footerSiret={footerSiret}
                     footerTva={footerTva}
                     footerApe={footerApe}
+                    templateColor={templateColor}
                     showDocumentTitle={showDocumentTitle}
                     documentTitle={documentTitle}
                     showFreeField={showFreeField}
                     freeFieldText={freeFieldText}
+                    freeFieldSegments={freeFieldSegments}
+                    freeFieldFontSize={freeFieldFontSize}
+                    freeFieldTextAlign={freeFieldTextAlign}
                     showSiret={showSiret}
                     showVatNumber={showVatNumber}
                     showLogo={showLogo}
@@ -3502,6 +5438,15 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                     showStructureSiret={showStructureSiret}
                     showMissionDate={showMissionDate}
                     showMissionValidity={showMissionValidity}
+                    showServiceCharacteristics={showServiceCharacteristics}
+                    showStudentCount={showStudentCount}
+                    showHours={showHours}
+                    showLocation={showLocation}
+                    showMissionDescription={showMissionDescription}
+                    showDatesAndSchedule={showDatesAndSchedule}
+                    contactFirstName={contactFirstName}
+                    contactLastName={contactLastName}
+                    contacts={contacts}
                   />
                 }
                 fileName={showDocumentTitle && documentTitle ? `${documentTitle}.pdf` : `proposition-commerciale-${mission?.numeroMission || 'mission'}.pdf`}
@@ -3515,11 +5460,35 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                     variant="text"
                     fullWidth
                     disabled={loading || saving || pdfLoading}
-                    onClick={async () => {
+                    onClick={async (e) => {
+                      // Empêcher le comportement par défaut de PDFDownloadLink
+                      e.preventDefault();
+                      e.stopPropagation();
+                      
                       try {
+                        console.log('🖱️ Bouton télécharger cliqué');
+                        console.log('📋 Mission:', mission);
+                        console.log('📋 Storage disponible:', !!storage);
+                        
                         // Sauvegarder dans Firestore comme document final
-                        const pdfBlob = await generatePDF(); // Placeholder pour la sauvegarde
+                        console.log('🔄 Génération du PDF...');
+                        const pdfBlob = await generatePDF();
+                        console.log('✅ PDF généré, taille:', pdfBlob.size);
+                        
+                        // Télécharger le PDF
+                        const downloadUrl = URL.createObjectURL(pdfBlob);
+                        const link = document.createElement('a');
+                        link.href = downloadUrl;
+                        link.download = showDocumentTitle && documentTitle ? `${documentTitle}.pdf` : `proposition-commerciale-${mission?.numeroMission || 'mission'}.pdf`;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(downloadUrl);
+                        console.log('✅ PDF téléchargé');
+                        
+                        console.log('💾 Appel de saveQuoteAsDocument avec isDraft=false');
                         await saveQuoteAsDocument(pdfBlob, 'pdf', false);
+                        console.log('✅ saveQuoteAsDocument terminé');
                         
                         setSnackbar({
                           open: true,
@@ -3527,6 +5496,41 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                           severity: 'success'
                         });
                         setCreatePopupOpen(false);
+                        
+                        // Vérifier si les préférences ont changé et proposer de les sauvegarder
+                        // Seulement si savedTemplatePreferences existe (a été chargé depuis un template)
+                        if (savedTemplatePreferences) {
+                          const currentPreferences = {
+                            templateColor,
+                            billingType,
+                            showSiret,
+                            showVatNumber,
+                            showLogo,
+                            showEmail,
+                            showPhone,
+                            showPaymentTerms,
+                            showDocumentTitle,
+                            showFreeField,
+                            freeFieldText,
+                            freeFieldHtml,
+                            freeFieldFontSize,
+                            freeFieldTextAlign,
+                            showGlobalDiscount,
+                            showStructureLogo,
+                            showChargeMission,
+                            showStructureEmail,
+                            showStructurePhone,
+                            showStructureSiret,
+                            showMissionDate,
+                            showMissionValidity
+                          };
+                          
+                          const hasChanged = JSON.stringify(currentPreferences) !== JSON.stringify(savedTemplatePreferences);
+                          
+                          if (hasChanged) {
+                            setSavePreferencesDialogOpen(true);
+                          }
+                        }
                       } catch (error) {
                         console.error('Erreur lors de la sauvegarde:', error);
                         setSnackbar({
@@ -3595,13 +5599,9 @@ ${structure.nom || structure.name || 'Notre équipe'}`
             <Button
               variant="text"
               fullWidth
-              disabled={saving}
-              onClick={() => {
-                setCreatePopupOpen(false);
-                setEmailPopupOpen(true);
-              }}
+              disabled={true}
               sx={{
-                color: '#1d1d1f',
+                color: '#8E8E93',
                 py: 2.5,
                 px: 3,
                 textTransform: 'none',
@@ -3611,17 +5611,18 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 borderRadius: '10px',
                 minHeight: '48px',
                 justifyContent: 'flex-start',
+                cursor: 'not-allowed',
                 '&:hover': {
-                  backgroundColor: '#F2F2F7',
+                  backgroundColor: 'transparent',
                 },
                 '&:active': {
-                  backgroundColor: '#E5E5EA',
+                  backgroundColor: 'transparent',
                 },
                 transition: 'background-color 0.15s ease',
               }}
               startIcon={<UploadIcon sx={{ fontSize: 18, color: '#8E8E93' }} />}
             >
-              Envoyer la proposition commerciale
+              Indisponible pour l'instant
             </Button>
 
             {/* Bouton Enregistrer */}
@@ -3877,6 +5878,58 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 {sending ? 'Envoi...' : 'Envoyer'}
               </Button>
             </Box>
+          </Box>
+        </Box>
+      </Dialog>
+
+      {/* Dialog pour sauvegarder les préférences de template */}
+      <Dialog
+        open={savePreferencesDialogOpen}
+        onClose={() => setSavePreferencesDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '16px',
+            p: 3
+          }
+        }}
+      >
+        <Box sx={{ p: 2 }}>
+          <Typography variant="h6" sx={{ mb: 2, fontWeight: 600, color: '#1d1d1f' }}>
+            Enregistrer les préférences de template ?
+          </Typography>
+          <Typography variant="body2" sx={{ mb: 3, color: '#8E8E93' }}>
+            Vos choix de template (couleur, options affichées, etc.) sont différents de ceux enregistrés. 
+            Souhaitez-vous les enregistrer pour les prochaines générations de propositions commerciales ?
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end' }}>
+            <Button
+              onClick={() => setSavePreferencesDialogOpen(false)}
+              sx={{
+                color: '#8E8E93',
+                textTransform: 'none',
+                '&:hover': {
+                  backgroundColor: '#F2F2F7'
+                }
+              }}
+            >
+              Plus tard
+            </Button>
+            <Button
+              onClick={saveTemplatePreferences}
+              variant="contained"
+              sx={{
+                background: '#007AFF',
+                color: 'white',
+                textTransform: 'none',
+                '&:hover': {
+                  background: '#0056CC'
+                }
+              }}
+            >
+              Enregistrer
+            </Button>
           </Box>
         </Box>
       </Dialog>

@@ -30,7 +30,6 @@ import {
 } from '@mui/icons-material';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotifications } from '../../contexts/NotificationContext';
-import BackButton from '../../components/ui/BackButton';
 import { useNavigate } from 'react-router-dom';
 
 // Animation subtile
@@ -155,7 +154,6 @@ const Settings: React.FC = () => {
 
   return (
     <Container maxWidth="lg">
-      <BackButton />
       <Box sx={{ py: 4 }}>
         {/* Header avec boutons d'action */}
         <Box sx={{ mb: 4, animation: `${fadeInUp} 0.6s ease-out` }}>

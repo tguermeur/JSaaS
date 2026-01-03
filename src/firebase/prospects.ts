@@ -12,18 +12,26 @@ export interface Prospect {
   statut?: 'nouveau' | 'contacté' | 'qualifié' | 'proposition' | 'négociation' | 'gagné' | 'perdu';
   notes?: string;
   tags?: string[];
-  userId: string;
+  userId?: string;
+  structureId?: string;
   createdAt?: any;
   updatedAt?: any;
 }
 
-export const getProspects = async (userId: string): Promise<Prospect[]> => {
+export const getProspects = async (structureId: string, userStatus?: string): Promise<Prospect[]> => {
+  if (!structureId) {
+    console.warn('getProspects appelé sans structureId');
+    return [];
+  }
+
   try {
     const prospectsRef = collection(db, 'prospects');
+    
+    // Requête simplifiée sans orderBy pour éviter le problème d'index
+    // On récupère tous les prospects de la structure et on les trie côté client
     const q = query(
       prospectsRef,
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc')
+      where('structureId', '==', structureId)
     );
     
     const querySnapshot = await getDocs(q);
@@ -34,6 +42,13 @@ export const getProspects = async (userId: string): Promise<Prospect[]> => {
         id: doc.id,
         ...doc.data()
       } as Prospect);
+    });
+    
+    // Tri côté client par date de création (plus récent en premier)
+    prospects.sort((a, b) => {
+      const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+      const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+      return dateB.getTime() - dateA.getTime();
     });
     
     return prospects;

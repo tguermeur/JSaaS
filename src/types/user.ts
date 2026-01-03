@@ -37,6 +37,9 @@ export interface UserData {
   acceptsElectronicDocumentsDate?: Date; // Date à laquelle l'étudiant a accepté
   // Champs spécifiques aux entreprises
   companyName?: string;
+  position?: string; // Poste occupé
+  siret?: string; // Numéro SIRET (optionnel)
+  tvaIntra?: string; // Numéro de TVA Intracommunautaire (optionnel)
   missionType?: string;
   missionDescription?: string;
   missionDeadline?: string;

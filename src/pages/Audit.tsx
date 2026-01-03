@@ -33,7 +33,8 @@ import {
   Avatar,
   InputAdornment,
   alpha,
-  keyframes
+  keyframes,
+  Autocomplete
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -50,6 +51,22 @@ import { auditService, Mission } from '../services/auditService';
 import { AuditDocument, AuditAssignment } from '../types/audit';
 import { collection, query, where, getDocs, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
+
+// Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
+const generateMandats = (): string[] => {
+  const currentYear = new Date().getFullYear();
+  const startYear = 2022;
+  const mandats: string[] = [];
+  
+  for (let year = startYear; year <= currentYear; year++) {
+    const nextYear = year + 1;
+    mandats.push(`${year}-${nextYear}`);
+  }
+  
+  return mandats;
+};
+
+const AVAILABLE_MANDATS = generateMandats();
 
 // Animations
 const fadeIn = keyframes`
@@ -70,6 +87,8 @@ interface StructureMember {
   status?: string;
   structureId?: string;
   photoURL?: string;
+  mandat?: string;
+  poles?: { poleId: string }[];
 }
 
 const Audit: React.FC = () => {
@@ -83,6 +102,8 @@ const Audit: React.FC = () => {
   const [structureMembers, setStructureMembers] = useState<StructureMember[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [auditorFilter, setAuditorFilter] = useState<string>('all');
+  const [mandatFilter, setMandatFilter] = useState<string>('all');
+  const [auditStatusFilter, setAuditStatusFilter] = useState<'all' | 'audited' | 'not_audited'>('all');
   const [filteredMissions, setFilteredMissions] = useState<Mission[]>([]);
   
   // État pour le dialogue d'ajout de document
@@ -126,7 +147,7 @@ const Audit: React.FC = () => {
         
         console.log("Nombre total de missions trouvées:", missionsSnapshot.docs.length);
         
-        const missionsData = missionsSnapshot.docs.map(doc => {
+        const missionsData = await Promise.all(missionsSnapshot.docs.map(async (doc) => {
           const data = doc.data();
           console.log("Mission trouvée:", {
             id: doc.id,
@@ -134,11 +155,42 @@ const Audit: React.FC = () => {
             userStructureId,
             match: data.structureId === userStructureId
           });
+          
+          // Récupérer le mandat du chargé de mission si la mission a un chargeId
+          let missionMandat: string | undefined;
+          if (data.chargeId) {
+            try {
+              const chargeDoc = await getDoc(doc(db, 'users', data.chargeId));
+              if (chargeDoc.exists()) {
+                const chargeData = chargeDoc.data();
+                missionMandat = chargeData.mandat || undefined;
+              }
+            } catch (error) {
+              console.error('Erreur lors de la récupération du mandat du chargé de mission:', error);
+            }
+          }
+          
+          // Mapper isAuditComplete vers auditStatus si nécessaire
+          // Prioriser isAuditComplete s'il existe, sinon utiliser auditStatus
+          let auditStatus: 'audited' | 'not_audited';
+          if (data.isAuditComplete !== undefined) {
+            // Si isAuditComplete existe, l'utiliser comme source de vérité
+            auditStatus = data.isAuditComplete ? 'audited' : 'not_audited';
+          } else if (data.auditStatus) {
+            // Sinon, utiliser auditStatus s'il existe
+            auditStatus = data.auditStatus === 'audited' ? 'audited' : 'not_audited';
+          } else {
+            // Par défaut
+            auditStatus = 'not_audited';
+          }
+          
           return {
             id: doc.id,
-            ...data
-          } as Mission;
-        });
+            ...data,
+            mandat: data.mandat || missionMandat,
+            auditStatus: auditStatus as 'audited' | 'not_audited'
+          } as Mission & { mandat?: string };
+        }));
 
         setMissions(missionsData);
       } catch (err) {
@@ -161,6 +213,9 @@ const Audit: React.FC = () => {
         setLoading(true);
         const docs = await auditService.getAuditDocuments(selectedMission.id);
         setDocuments(docs);
+        
+        // Vérifier et mettre à jour le statut d'audit de la mission après le chargement
+        await checkAndUpdateMissionAuditStatus(selectedMission.id, docs);
       } catch (err) {
         setError('Erreur lors du chargement des documents');
         console.error(err);
@@ -172,7 +227,7 @@ const Audit: React.FC = () => {
     fetchDocuments();
   }, [selectedMission]);
 
-  // Fonction pour récupérer les membres de la structure
+  // Fonction pour récupérer les membres de la structure (pôle audit uniquement)
   const fetchStructureMembers = async () => {
     if (!currentUser) return;
 
@@ -184,14 +239,20 @@ const Audit: React.FC = () => {
         const usersRef = collection(db, 'users');
         const q = query(usersRef, where('structureId', '==', userData.structureId));
         const snapshot = await getDocs(q);
-        const membersList = snapshot.docs.map(doc => ({
-          id: doc.id,
-          displayName: doc.data().displayName || '',
-          email: doc.data().email || '',
-          status: doc.data().status,
-          structureId: doc.data().structureId,
-          photoURL: doc.data().photoURL || ''
-        })) as StructureMember[];
+        const membersList = snapshot.docs
+          .map(doc => ({
+            id: doc.id,
+            displayName: doc.data().displayName || '',
+            email: doc.data().email || '',
+            status: doc.data().status,
+            structureId: doc.data().structureId,
+            photoURL: doc.data().photoURL || '',
+            mandat: doc.data().mandat || '',
+            poles: doc.data().poles || []
+          }))
+          .filter(member => 
+            member.poles?.some(p => p.poleId === 'aq')
+          ) as StructureMember[];
         setStructureMembers(membersList);
       }
     } catch (error) {
@@ -223,6 +284,47 @@ const Audit: React.FC = () => {
     } catch (error) {
       console.error('Erreur lors de la mise à jour de l\'auditeur:', error);
       setError('Erreur lors de la mise à jour de l\'auditeur');
+    }
+  };
+
+  // Fonction pour vérifier et mettre à jour le statut d'audit de la mission
+  const checkAndUpdateMissionAuditStatus = async (missionId: string, documents: AuditDocument[]) => {
+    try {
+      // Filtrer uniquement les documents de type 'audit'
+      const auditDocuments = documents.filter(doc => doc.type === 'audit');
+      
+      // Si aucun document d'audit, ne rien faire
+      if (auditDocuments.length === 0) {
+        return;
+      }
+      
+      // Vérifier si tous les documents d'audit sont approuvés
+      const allApproved = auditDocuments.every(doc => doc.status === 'approved');
+      
+      const missionRef = doc(db, 'missions', missionId);
+      const missionDoc = await getDoc(missionRef);
+      
+      if (missionDoc.exists()) {
+        const currentAuditStatus = missionDoc.data().auditStatus;
+        const newAuditStatus = allApproved ? 'audited' : 'not_audited';
+        
+        // Mettre à jour seulement si le statut a changé
+        if (currentAuditStatus !== newAuditStatus) {
+          await updateDoc(missionRef, {
+            auditStatus: newAuditStatus,
+            isAuditComplete: allApproved // Synchroniser aussi isAuditComplete
+          });
+          
+          // Mettre à jour l'état local des missions
+          setMissions(prev => prev.map(mission => 
+            mission.id === missionId 
+              ? { ...mission, auditStatus: newAuditStatus as 'audited' | 'not_audited' }
+              : mission
+          ));
+        }
+      }
+    } catch (error) {
+      console.error('Erreur lors de la mise à jour du statut d\'audit de la mission:', error);
     }
   };
 
@@ -260,6 +362,9 @@ const Audit: React.FC = () => {
       if (selectedMission) {
         const updatedDocs = await auditService.getAuditDocuments(selectedMission.id);
         setDocuments(updatedDocs);
+        
+        // Vérifier et mettre à jour le statut d'audit de la mission
+        await checkAndUpdateMissionAuditStatus(selectedMission.id, updatedDocs);
       }
     } catch (err) {
       setError('Erreur lors de l\'ajout du document');
@@ -278,6 +383,9 @@ const Audit: React.FC = () => {
       if (selectedMission) {
         const updatedDocs = await auditService.getAuditDocuments(selectedMission.id);
         setDocuments(updatedDocs);
+        
+        // Vérifier et mettre à jour le statut d'audit de la mission
+        await checkAndUpdateMissionAuditStatus(selectedMission.id, updatedDocs);
       }
     } catch (err) {
       setError('Erreur lors de l\'approbation du document');
@@ -291,6 +399,9 @@ const Audit: React.FC = () => {
       if (selectedMission) {
         const updatedDocs = await auditService.getAuditDocuments(selectedMission.id);
         setDocuments(updatedDocs);
+        
+        // Vérifier et mettre à jour le statut d'audit de la mission (sera 'not_audited' si un document est rejeté)
+        await checkAndUpdateMissionAuditStatus(selectedMission.id, updatedDocs);
       }
     } catch (err) {
       setError('Erreur lors du rejet du document');
@@ -335,8 +446,24 @@ const Audit: React.FC = () => {
       result = result.filter(mission => mission.auditor === auditorFilter);
     }
     
+    // Filtrer par mandat
+    if (mandatFilter !== 'all') {
+      result = result.filter(mission => {
+        const missionMandat = (mission as any).mandat;
+        return missionMandat === mandatFilter;
+      });
+    }
+    
+    // Filtrer par statut d'audit
+    if (auditStatusFilter !== 'all') {
+      result = result.filter(mission => {
+        const auditStatus = mission.auditStatus || 'not_audited';
+        return auditStatus === auditStatusFilter;
+      });
+    }
+    
     setFilteredMissions(result);
-  }, [missions, searchTerm, auditorFilter]);
+  }, [missions, searchTerm, auditorFilter, mandatFilter, auditStatusFilter]);
 
   if (loading) {
     return (
@@ -653,6 +780,116 @@ const Audit: React.FC = () => {
               Missions à auditer
             </Typography>
             
+            <Paper 
+              elevation={0}
+              sx={{ 
+                p: 2, 
+                mb: 2, 
+                borderRadius: '12px',
+                backgroundColor: '#f8f9fa',
+                border: '1px solid #e5e5e7'
+              }}
+            >
+              <Box sx={{ 
+                display: 'flex', 
+                flexWrap: 'wrap',
+                gap: 2,
+                alignItems: 'center'
+              }}>
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
+                  <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
+                    Statut :
+                  </Typography>
+                  <Chip
+                    label="Tous les audits"
+                    onClick={() => setAuditStatusFilter('all')}
+                    color={auditStatusFilter === 'all' ? 'primary' : 'default'}
+                    variant={auditStatusFilter === 'all' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
+                      }
+                    }}
+                  />
+                  <Chip
+                    label="Non audité"
+                    onClick={() => setAuditStatusFilter('not_audited')}
+                    color={auditStatusFilter === 'not_audited' ? 'primary' : 'default'}
+                    variant={auditStatusFilter === 'not_audited' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
+                      }
+                    }}
+                  />
+                  <Chip
+                    label="Audité"
+                    onClick={() => setAuditStatusFilter('audited')}
+                    color={auditStatusFilter === 'audited' ? 'primary' : 'default'}
+                    variant={auditStatusFilter === 'audited' ? 'filled' : 'outlined'}
+                    sx={{
+                      borderRadius: '8px',
+                      '&.MuiChip-filled': {
+                        backgroundColor: '#007AFF',
+                      },
+                      '&.MuiChip-outlined': {
+                        borderColor: '#d2d2d7',
+                        color: '#1d1d1f',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                        }
+                      }
+                    }}
+                  />
+                </Box>
+                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                  <FormControl 
+                    size="small" 
+                    sx={{ 
+                      minWidth: 150
+                    }}
+                  >
+                    <InputLabel>Mandat</InputLabel>
+                    <Select
+                      value={mandatFilter}
+                      label="Mandat"
+                      onChange={(e) => setMandatFilter(e.target.value)}
+                      sx={{
+                        borderRadius: '8px',
+                        backgroundColor: 'white',
+                        '& .MuiOutlinedInput-notchedOutline': {
+                          borderColor: '#d2d2d7',
+                        },
+                      }}
+                    >
+                      <MenuItem value="all">Tous les mandats</MenuItem>
+                      {AVAILABLE_MANDATS.map(mandat => (
+                        <MenuItem key={mandat} value={mandat}>
+                          {mandat}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+              </Box>
+            </Paper>
+            
             <Box sx={{ 
               mb: 4, 
               display: 'flex', 
@@ -691,10 +928,72 @@ const Audit: React.FC = () => {
                   ),
                 }}
               />
+              <Autocomplete
+                options={structureMembers
+                  .sort((a, b) => {
+                    const mandatA = a.mandat || '';
+                    const mandatB = b.mandat || '';
+                    if (mandatA !== mandatB) return mandatB.localeCompare(mandatA);
+                    return a.displayName.localeCompare(b.displayName);
+                  })
+                }
+                groupBy={(option) => option.mandat ? `Mandat ${option.mandat}` : 'Autres'}
+                getOptionLabel={(option) => option.displayName || option.email}
+                value={auditorFilter === 'all' ? null : structureMembers.find(m => m.id === auditorFilter) || null}
+                onChange={(_, newValue) => {
+                  setAuditorFilter(newValue?.id || 'all');
+                }}
+                renderInput={(params) => (
+                  <TextField 
+                    {...params} 
+                    size="small" 
+                    label="Auditeur"
+                    placeholder="Tous les auditeurs"
+                    sx={{ 
+                      minWidth: 200,
+                      '& .MuiOutlinedInput-root': {
+                        backgroundColor: '#ffffff',
+                        borderRadius: '8px',
+                        '& fieldset': {
+                          borderColor: 'transparent'
+                        },
+                        '&:hover fieldset': {
+                          borderColor: '#d2d2d7'
+                        },
+                        '&.Mui-focused fieldset': {
+                          borderColor: '#0071e3'
+                        }
+                      }
+                    }}
+                    InputLabelProps={{
+                      sx: { color: '#86868b' }
+                    }}
+                  />
+                )}
+                renderOption={(props, option) => (
+                  <Box component="li" {...props} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Avatar 
+                      src={option.photoURL} 
+                      sx={{ 
+                        width: 24, 
+                        height: 24,
+                        fontSize: '0.75rem'
+                      }}
+                    >
+                      {option.displayName?.[0]}
+                    </Avatar>
+                    <Typography variant="body2">
+                      {option.displayName || option.email}
+                    </Typography>
+                  </Box>
+                )}
+                size="small"
+                sx={{ minWidth: 200 }}
+              />
               <FormControl 
                 size="small" 
                 sx={{ 
-                  minWidth: 200,
+                  minWidth: 150,
                   '& .MuiOutlinedInput-root': {
                     backgroundColor: '#ffffff',
                     borderRadius: '8px',
@@ -710,36 +1009,16 @@ const Audit: React.FC = () => {
                   }
                 }}
               >
-                <InputLabel sx={{ color: '#86868b' }}>Auditeur</InputLabel>
+                <InputLabel sx={{ color: '#86868b' }}>Mandat</InputLabel>
                 <Select
-                  value={auditorFilter}
-                  onChange={(e) => setAuditorFilter(e.target.value)}
-                  label="Auditeur"
+                  value={mandatFilter}
+                  label="Mandat"
+                  onChange={(e) => setMandatFilter(e.target.value)}
                 >
-                  <MenuItem value="all">Tous les auditeurs</MenuItem>
-                  {structureMembers.map((member) => (
-                    <MenuItem 
-                      key={member.id} 
-                      value={member.id}
-                      sx={{ 
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1
-                      }}
-                    >
-                      <Avatar 
-                        src={member.photoURL} 
-                        sx={{ 
-                          width: 24, 
-                          height: 24,
-                          fontSize: '0.75rem'
-                        }}
-                      >
-                        {member.displayName?.[0]}
-                      </Avatar>
-                      <Typography variant="body2">
-                        {member.displayName || member.email}
-                      </Typography>
+                  <MenuItem value="all">Tous les mandats</MenuItem>
+                  {AVAILABLE_MANDATS.map(mandat => (
+                    <MenuItem key={mandat} value={mandat}>
+                      {mandat}
                     </MenuItem>
                   ))}
                 </Select>

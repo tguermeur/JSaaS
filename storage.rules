@@ -2,7 +2,8 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function getUserData() {
-      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+      let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+      return userRef.exists ? userRef.data : null;
     }
 
     match /templates/{allPaths=**} {
@@ -13,8 +14,7 @@ service firebase.storage {
     match /cvs/{userId}/{fileName} {
       allow read: if request.auth != null && (
         request.auth.uid == userId ||
-        getUserData().role in ['admin', 'superadmin'] ||
-        getUserData().status in ['admin', 'superadmin']
+        (getUserData() != null && (getUserData().role in ['admin', 'superadmin'] || getUserData().status in ['admin', 'superadmin']))
       );
 
       allow write: if request.auth != null && 
@@ -37,8 +37,12 @@ service firebase.storage {
     }
     
     match /profilePictures/{userId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      // Permettre la lecture publique des images de profil (nécessaire pour les URLs générées)
+      allow read: if true;
+      // Seul le propriétaire peut écrire/modifier sa photo de profil
+      allow write: if request.auth != null && request.auth.uid == userId &&
+        request.resource.size < 5 * 1024 * 1024 && // 5MB max
+        request.resource.contentType.matches('image/.*');
     }
     
     match /error-reports/{userId}/{fileName} {
@@ -67,17 +71,67 @@ service firebase.storage {
     }
 
     match /missions/{missionId}/documents/{document} {
-      allow read: if request.auth != null;
+      // Fonction pour vérifier si l'utilisateur est autorisé via la structure de la mission
+      function canAccessMissionViaStructure() {
+        let userData = getUserData();
+        return userData != null && (
+          userData.status == 'superadmin' || 
+          userData.role == 'superadmin' ||
+          (
+            userData.status in ['admin', 'member'] && 
+            firestore.get(/databases/(default)/documents/missions/$(missionId)).exists &&
+            firestore.get(/databases/(default)/documents/missions/$(missionId)).data.structureId == userData.structureId
+          )
+        );
+      }
       
+      // Fonction pour vérifier si l'étudiant appartient à la même structure que la mission
+      function isStudentFromSameStructure() {
+        let userData = getUserData();
+        return userData != null && 
+               userData.status == 'etudiant' &&
+               firestore.get(/databases/(default)/documents/missions/$(missionId)).exists &&
+               firestore.get(/databases/(default)/documents/missions/$(missionId)).data.structureId == userData.structureId;
+      }
+      
+      // Lecture : superadmin, membres/admin de la structure, ou étudiants de la même structure
+      allow read: if request.auth != null && (
+        canAccessMissionViaStructure() ||
+        isStudentFromSameStructure()
+      );
+      
+      // Création/modification/suppression : uniquement membres autorisés de la structure
       allow create: if request.auth != null &&
+        canAccessMissionViaStructure() &&
         request.resource.size < 10 * 1024 * 1024 && // 10MB max
-        request.resource.contentType == 'application/pdf';
+        (
+          request.resource.contentType == 'application/pdf' ||
+          request.resource.contentType == 'application/msword' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+          request.resource.contentType == 'application/vnd.ms-powerpoint' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+          request.resource.contentType == 'application/vnd.ms-excel' ||
+          request.resource.contentType.matches('image/.*') ||
+          request.resource.contentType.matches('text/.*')
+        );
       
       allow update: if request.auth != null &&
+        canAccessMissionViaStructure() &&
         request.resource.size < 10 * 1024 * 1024 && // 10MB max
-        request.resource.contentType == 'application/pdf';
+        (
+          request.resource.contentType == 'application/pdf' ||
+          request.resource.contentType == 'application/msword' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+          request.resource.contentType == 'application/vnd.ms-powerpoint' ||
+          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+          request.resource.contentType == 'application/vnd.ms-excel' ||
+          request.resource.contentType.matches('image/.*') ||
+          request.resource.contentType.matches('text/.*')
+        );
       
-      allow delete: if request.auth != null;
+      allow delete: if request.auth != null && canAccessMissionViaStructure();
     }
 
     // Règles pour les documents des entreprises
@@ -96,7 +150,7 @@ service firebase.storage {
     match /expenses/{userId}/{missionId}/{fileName} {
       allow read: if request.auth != null && (
         request.auth.uid == userId ||
-        getUserData().status in ['admin', 'superadmin']
+        (getUserData() != null && getUserData().status in ['admin', 'superadmin'])
       );
 
       allow create: if request.auth != null && 
@@ -118,10 +172,10 @@ service firebase.storage {
     match /prospects/{prospectId}/mails/{fileName} {
       allow read: if request.auth != null;
       allow write: if request.auth != null && (
-        getUserData().role in ['member', 'admin', 'superadmin'] || getUserData().status in ['member', 'admin', 'superadmin']
+        (getUserData() != null && (getUserData().role in ['member', 'admin', 'superadmin'] || getUserData().status in ['member', 'admin', 'superadmin']))
       );
       allow create: if request.auth != null && (
-        getUserData().role in ['member', 'admin', 'superadmin'] || getUserData().status in ['member', 'admin', 'superadmin']
+        (getUserData() != null && (getUserData().role in ['member', 'admin', 'superadmin'] || getUserData().status in ['member', 'admin', 'superadmin']))
       ) &&
         request.resource.size < 10 * 1024 * 1024 && // 10MB max
         (

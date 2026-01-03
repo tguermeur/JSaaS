@@ -61,7 +61,6 @@ import { DocumentType, TemplateAssignment } from '../types/templates';
 import { ref, getDownloadURL, uploadBytes } from 'firebase/storage';
 import { storage } from '../firebase/config';
 import { PDFDocument } from 'pdf-lib';
-import { getTagFromVariableId, replaceTags } from '../utils/tagUtils';
 import { formatDate } from '../utils/dateUtils';
 import TaggingInput from '../components/ui/TaggingInput';
 import { NotificationService } from '../services/notificationService';
@@ -143,7 +142,7 @@ interface TabPanelProps {
 
 interface FirestoreData {
   name?: string;
-  siret?: string;
+  nSiret?: string;
   description?: string;
   address?: string;
   city?: string;
@@ -268,10 +267,40 @@ const EntrepriseDetail: React.FC = () => {
             ...doc.data()
           })) as Contact[];
 
+          // Convertir le nSiret en string pour éviter toute troncature si stocké comme nombre
+          // IMPORTANT: Si le nSiret est stocké comme nombre dans Firestore, il pourrait être tronqué
+          // lors de la conversion. On doit s'assurer de récupérer la valeur complète.
+          let nSiretValue: string | undefined = undefined;
+          if (data.nSiret) {
+            // Si c'est déjà une string, l'utiliser directement
+            if (typeof data.nSiret === 'string') {
+              nSiretValue = data.nSiret;
+            } else {
+              // Si c'est un nombre, le convertir en string en préservant tous les chiffres
+              // Utiliser toLocaleString pour éviter la notation scientifique pour les grands nombres
+              const nSiretNum = Number(data.nSiret);
+              if (!isNaN(nSiretNum) && isFinite(nSiretNum)) {
+                // Pour les grands nombres, utiliser toLocaleString puis retirer les séparateurs
+                nSiretValue = nSiretNum.toLocaleString('fr-FR', { useGrouping: false, maximumFractionDigits: 0 });
+              } else {
+                // Fallback: convertir directement en string
+                nSiretValue = String(data.nSiret);
+              }
+            }
+          }
+          
+          // Vérifier que le nSiret n'a pas été tronqué
+          if (nSiretValue && nSiretValue.length < 14 && /^\d+$/.test(nSiretValue)) {
+            console.warn(`[EntrepriseDetail] ⚠️ ATTENTION: nSiret potentiellement tronqué lors du chargement! Longueur: ${nSiretValue.length}, Valeur: "${nSiretValue}"`);
+            console.warn(`[EntrepriseDetail] ⚠️ nSiret original de Firestore (type ${typeof data.nSiret}): ${data.nSiret}`);
+          }
+          
+          console.log(`[EntrepriseDetail] nSiret récupéré de Firestore: ${data.nSiret}, type: ${typeof data.nSiret}, converti: ${nSiretValue}, longueur: ${nSiretValue?.length || 0}`);
+          
           setCompany({
             id: companyDoc.id,
             name: data.name || '',
-            siret: data.siret,
+            nSiret: nSiretValue,
             description: data.description,
             address: data.address,
             city: data.city,
@@ -416,6 +445,345 @@ const EntrepriseDetail: React.FC = () => {
       setAvailableUsers(users);
     } catch (error) {
       console.error('Erreur lors de la récupération des utilisateurs:', error);
+    }
+  };
+
+  // Fonction utilitaire pour échapper les caractères spéciaux dans les expressions régulières
+  const escapeRegExp = (string: string): string => {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  };
+
+  // Fonction locale pour convertir variableId en balise (compatible avec TemplatesPDF)
+  const getTagFromVariableId = (variableId: string): string => {
+    const tagMap: { [key: string]: string } = {
+      // Mission
+      numeroMission: '<mission_numero>',
+      chargeName: '<mission_cdm>',
+      missionDateDebut: '<mission_date_debut>',
+      missionDateHeureDebut: '<mission_date_heure_debut>',
+      missionDateFin: '<mission_date_fin>',
+      missionDateHeureFin: '<mission_date_heure_fin>',
+      location: '<mission_lieu>',
+      company: '<mission_entreprise>',
+      priceHT: '<mission_prix>',
+      missionDescription: '<mission_description>',
+      title: '<mission_titre>',
+      hours: '<mission_heures>',
+      studentCount: '<mission_nb_etudiants>',
+      generationDate: '<generationDate>',
+      generationDatePlusOneYear: '<mission_date_generation_plus_1_an>',
+      
+      // User
+      lastName: '<user_nom>',
+      firstName: '<user_prenom>',
+      email: '<user_email>',
+      ecole: '<user_ecole>',
+      displayName: '<user_nom_complet>',
+      phone: '<user_telephone>',
+      socialSecurityNumber: '<user_numero_securite_sociale>',
+      studentId: '<user_numero_etudiant>',
+      
+      // Company/Entreprise
+      name: '<entreprise_nom>',
+      companyName: '<entreprise_nom>',
+      siren: '<entreprise_siren>',
+      nSiret: '<entreprise_nsiret>',
+      address: '<entreprise_adresse>',
+      companyAddress: '<entreprise_adresse>',
+      city: '<entreprise_ville>',
+      companyCity: '<entreprise_ville>',
+      postalCode: '<entreprise_code_postal>',
+      companyPostalCode: '<entreprise_code_postal>',
+      country: '<entreprise_pays>',
+      companyPhone: '<entreprise_telephone>',
+      companyEmail: '<entreprise_email>',
+      website: '<entreprise_site_web>',
+      companyDescription: '<entreprise_description>',
+      
+      // Contacts
+      contact_fullName: '<contact_nom_complet>',
+      contact_firstName: '<contact_prenom>',
+      contact_lastName: '<contact_nom>',
+      contact_email: '<contact_email>',
+      contact_phone: '<contact_telephone>',
+      contact_position: '<contact_poste>',
+      contact_linkedin: '<contact_linkedin>',
+      
+      // Structure
+      structure_name: '<structure_nom>',
+      structure_siret: '<structure_siret>',
+      structure_address: '<structure_adresse>',
+      structure_city: '<structure_ville>',
+      structure_postalCode: '<structure_code_postal>',
+      structure_country: '<structure_pays>',
+      structure_phone: '<structure_telephone>',
+      structure_email: '<structure_email>',
+      structure_website: '<structure_site_web>',
+      structure_description: '<structure_description>',
+      structure_tvaNumber: '<structure_tvaNumber>',
+      structure_apeCode: '<structure_apeCode>',
+      structure_president_fullName: '<structure_president_nom_complet>',
+      structure_ecole: '<structure_ecole>',
+      
+      // Autres
+      charge_email: '<charge_email>',
+      charge_phone: '<charge_phone>',
+      totalHT: '<totalHT>',
+      totalTTC: '<totalTTC>',
+      tva: '<tva>',
+      courseApplication: '<courseApplication>',
+      missionLearning: '<missionLearning>',
+      studentProfile: '<studentProfile>',
+    };
+
+    return tagMap[variableId] || `<${variableId}>`;
+  };
+
+  // Fonction pour remplacer les balises par leurs valeurs (adaptée pour les données d'entreprise)
+  const replaceTags = async (text: string, structureData?: any, tempDataOverride?: { [key: string]: string }): Promise<string> => {
+    if (!text || !company) return text;
+
+    try {
+      // Récupérer les données de la structure si nécessaire
+      let structureInfo = structureData;
+      if (!structureInfo && userStructureId) {
+        try {
+          const structureDoc = await getDoc(doc(db, 'structures', userStructureId));
+          if (structureDoc.exists()) {
+            structureInfo = structureDoc.data();
+          }
+        } catch (error) {
+          console.error('Erreur lors de la récupération de la structure:', error);
+        }
+      }
+
+      // Récupérer le contact principal de l'entreprise
+      const defaultContact = company.contacts?.find(c => c.isDefault) || company.contacts?.[0];
+
+      // Récupérer le président du mandat le plus récent
+      let presidentFullName = '[Président non disponible]';
+      if (userStructureId) {
+        try {
+          const usersRef = collection(db, 'users');
+          const q = query(usersRef, where('structureId', '==', userStructureId));
+          const usersSnapshot = await getDocs(q);
+          
+          const members = usersSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            mandat: doc.data().mandat || null,
+            bureauRole: doc.data().bureauRole || null,
+            poles: doc.data().poles || [],
+            firstName: doc.data().firstName || '',
+            lastName: doc.data().lastName || '',
+            displayName: doc.data().displayName || ''
+          }));
+
+          // Filtrer les présidents (via bureauRole ou pôle 'pre')
+          const presidents = members.filter(member => {
+            const hasPresidentRole = member.bureauRole === 'president' || 
+              member.poles?.some((p: any) => p.poleId === 'pre');
+            return hasPresidentRole && member.mandat;
+          });
+
+          if (presidents.length > 0) {
+            // Trier les mandats pour trouver le plus récent
+            const sortedPresidents = presidents.sort((a, b) => {
+              if (!a.mandat || !b.mandat) return 0;
+              // Comparer les années de début des mandats (format: "2024-2025")
+              const aYear = parseInt(a.mandat.split('-')[0]);
+              const bYear = parseInt(b.mandat.split('-')[0]);
+              return bYear - aYear; // Plus récent en premier
+            });
+
+            const mostRecentPresident = sortedPresidents[0];
+            // Construire le nom complet : prénom + nom ou displayName
+            if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
+              presidentFullName = `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
+            } else if (mostRecentPresident.displayName) {
+              presidentFullName = mostRecentPresident.displayName;
+            }
+          }
+        } catch (error) {
+          console.error('Erreur lors de la récupération du président:', error);
+        }
+      }
+
+      // Extraire le SIREN du nSiret (9 premiers chiffres)
+      // S'assurer que le nSiret est une chaîne de caractères
+      // IMPORTANT: Si le nSiret est stocké comme nombre dans Firestore, il pourrait être tronqué
+      // lors de la conversion. On doit s'assurer de récupérer la valeur complète.
+      let nSiretString = '';
+      if (company.nSiret) {
+        // Si c'est déjà une string, l'utiliser directement
+        if (typeof company.nSiret === 'string') {
+          nSiretString = company.nSiret;
+        } else {
+          // Si c'est un nombre, le convertir en string en préservant tous les chiffres
+          // Utiliser toFixed(0) pour éviter la notation scientifique pour les grands nombres
+          const nSiretNum = Number(company.nSiret);
+          if (!isNaN(nSiretNum) && isFinite(nSiretNum)) {
+            // Pour les grands nombres, utiliser toLocaleString puis retirer les séparateurs
+            nSiretString = nSiretNum.toLocaleString('fr-FR', { useGrouping: false, maximumFractionDigits: 0 });
+          } else {
+            // Fallback: convertir directement en string
+            nSiretString = String(company.nSiret);
+          }
+        }
+      }
+      
+      // Vérifier que le nSiret n'a pas été tronqué
+      if (nSiretString && nSiretString.length < 14 && /^\d+$/.test(nSiretString)) {
+        console.warn(`[replaceTags] ⚠️ ATTENTION: nSiret potentiellement tronqué! Longueur: ${nSiretString.length}, Valeur: "${nSiretString}"`);
+        console.warn(`[replaceTags] ⚠️ nSiret original (type ${typeof company.nSiret}): ${company.nSiret}`);
+      }
+      
+      const siren = nSiretString ? nSiretString.substring(0, 9) : '';
+      
+      console.log(`[replaceTags] nSiret complet de la DB: ${company.nSiret}, Type: ${typeof company.nSiret}`);
+      console.log(`[replaceTags] nSiret converti en string: "${nSiretString}", Longueur: ${nSiretString.length}`);
+      console.log(`[replaceTags] SIREN extrait: ${siren}`);
+
+      // Dictionnaire de remplacements pour toutes les balises
+      const replacements: { [key: string]: string } = {
+        // Balises de l'entreprise
+        '<entreprise_nom>': company.name || '[Nom entreprise non disponible]',
+        '<entreprise_siren>': siren || '[SIREN non disponible]',
+        '<entreprise_nsiret>': nSiretString || '[nSiret non disponible]',
+        '<entreprise_adresse>': company.address || '[Adresse entreprise non disponible]',
+        '<entreprise_ville>': company.city || '[Ville entreprise non disponible]',
+        '<entreprise_code_postal>': company.postalCode || '[Code postal non disponible]',
+        '<entreprise_pays>': company.country || '[Pays entreprise non disponible]',
+        '<entreprise_telephone>': company.phone || '[Téléphone entreprise non disponible]',
+        '<entreprise_email>': company.email || '[Email entreprise non disponible]',
+        '<entreprise_site_web>': company.website || '[Site web entreprise non disponible]',
+        '<entreprise_description>': company.description || '[Description entreprise non disponible]',
+        
+        // Balises alternatives pour l'entreprise (format avec underscore)
+        '<company_nom>': company.name || '[Nom entreprise non disponible]',
+        '<company_siren>': siren || '[SIREN non disponible]',
+        '<company_nsiret>': nSiretString || '[nSiret non disponible]',
+        '<company_adresse>': company.address || '[Adresse entreprise non disponible]',
+        '<company_ville>': company.city || '[Ville entreprise non disponible]',
+        '<company_telephone>': company.phone || '[Téléphone entreprise non disponible]',
+        '<company_email>': company.email || '[Email entreprise non disponible]',
+        
+        // Balises alternatives pour l'entreprise (format camelCase)
+        '<companyName>': company.name || '[Nom entreprise non disponible]',
+        '<siren>': siren || '[SIREN non disponible]',
+        '<nsiret>': nSiretString || '[nSiret non disponible]',
+        '<companyAddress>': company.address || '[Adresse entreprise non disponible]',
+        '<companyCity>': company.city || '[Ville entreprise non disponible]',
+        '<companyPostalCode>': company.postalCode || '[Code postal non disponible]',
+        '<country>': company.country || '[Pays entreprise non disponible]',
+        '<companyPhone>': company.phone || '[Téléphone entreprise non disponible]',
+        '<companyEmail>': company.email || '[Email entreprise non disponible]',
+        '<website>': company.website || '[Site web entreprise non disponible]',
+        '<companyDescription>': company.description || '[Description entreprise non disponible]',
+        
+        // Balises de mission qui peuvent référencer l'entreprise (pour compatibilité avec les templates)
+        '<mission_entreprise>': company.name || '[Nom entreprise non disponible]',
+        '<mission_date_generation>': new Date().toLocaleDateString('fr-FR'),
+        '<mission_date_generation_plus_1_an>': (() => {
+          const today = new Date();
+          const oneYearLater = new Date(today);
+          oneYearLater.setDate(today.getDate() + 365);
+          return oneYearLater.toLocaleDateString('fr-FR');
+        })(),
+        
+        // Balises système supplémentaires
+        '<totalHT>': '[Total HT non disponible]',
+        '<totalTTC>': '[Total TTC non disponible]',
+        '<tva>': '[TVA non disponible]',
+        '<courseApplication>': '[Application du cours non disponible]',
+        '<missionLearning>': '[Apprentissage non disponible]',
+        '<studentProfile>': '[Profil étudiant non disponible]',
+        
+        // Balises de contact alternatives (compatibilité avec TemplatesPDF)
+        '<contact_fullName>': defaultContact ? `${defaultContact.firstName || ''} ${defaultContact.lastName || ''}`.trim() : '[Nom complet du contact non disponible]',
+        '<contact_firstName>': defaultContact?.firstName || '[Prénom du contact non disponible]',
+        '<contact_lastName>': defaultContact?.lastName || '[Nom du contact non disponible]',
+        '<contact_phone>': defaultContact?.phone || '[Téléphone du contact non disponible]',
+        '<contact_position>': defaultContact?.position || '[Poste du contact non disponible]',
+        '<contact_linkedin>': defaultContact?.linkedin || '[LinkedIn du contact non disponible]',
+
+        // Balises du contact principal
+        '<contact_nom>': defaultContact?.lastName || '[Nom du contact non disponible]',
+        '<contact_prenom>': defaultContact?.firstName || '[Prénom du contact non disponible]',
+        '<contact_email>': defaultContact?.email || '[Email du contact non disponible]',
+        '<contact_telephone>': defaultContact?.phone || '[Téléphone du contact non disponible]',
+        '<contact_poste>': defaultContact?.position || '[Poste du contact non disponible]',
+        '<contact_linkedin>': defaultContact?.linkedin || '[LinkedIn du contact non disponible]',
+        '<contact_nom_complet>': defaultContact ? `${defaultContact.firstName || ''} ${defaultContact.lastName || ''}`.trim() : '[Nom complet du contact non disponible]',
+
+        // Balises de la structure
+        '<structure_nom>': structureInfo?.nom || '[Nom de la structure non disponible]',
+        '<structure_ecole>': structureInfo?.ecole || '[École de la structure non disponible]',
+        '<structure_adresse>': structureInfo?.address || '[Adresse de la structure non disponible]',
+        '<structure_ville>': structureInfo?.city || '[Ville de la structure non disponible]',
+        '<structure_code_postal>': structureInfo?.postalCode || '[Code postal de la structure non disponible]',
+        '<structure_pays>': structureInfo?.country || '[Pays de la structure non disponible]',
+        '<structure_telephone>': structureInfo?.phone || '[Téléphone de la structure non disponible]',
+        '<structure_email>': structureInfo?.email || '[Email de la structure non disponible]',
+        '<structure_site_web>': structureInfo?.website || '[Site web de la structure non disponible]',
+        '<structure_siret>': structureInfo?.siret || '[SIRET de la structure non disponible]',
+        '<structure_tvaNumber>': structureInfo?.tvaNumber || '[Numéro de TVA de la structure non disponible]',
+        '<structure_apeCode>': structureInfo?.apeCode || '[Code APE de la structure non disponible]',
+        '<structure_president_nom_complet>': presidentFullName,
+
+        // Balises système
+        '<generationDate>': new Date().toLocaleDateString('fr-FR'),
+        '<currentDate>': new Date().toLocaleDateString('fr-FR'),
+        '<currentYear>': new Date().getFullYear().toString(),
+        '<currentMonth>': new Date().toLocaleDateString('fr-FR', { month: 'long' }),
+        '<mission_date_generation>': new Date().toLocaleDateString('fr-FR'),
+        '<mission_date_generation_plus_1_an>': (() => {
+          const today = new Date();
+          const oneYearLater = new Date(today);
+          oneYearLater.setDate(today.getDate() + 365);
+          return oneYearLater.toLocaleDateString('fr-FR');
+        })(),
+      };
+      
+      console.log(`[replaceTags] Nombre de remplacements disponibles: ${Object.keys(replacements).length}`);
+      console.log(`[replaceTags] Balises disponibles:`, Object.keys(replacements));
+
+      let result = text;
+      console.log(`[replaceTags] Texte initial: ${text}`);
+
+      // Appliquer les remplacements
+      Object.entries(replacements).forEach(([tag, value]) => {
+        const regex = new RegExp(escapeRegExp(tag), 'g');
+        const before = result;
+        
+        // Utiliser les données temporaires si disponibles
+        const tempValue = tempDataOverride?.[tag.replace(/[<>]/g, '')];
+        const finalValue = tempValue || value;
+        
+        result = result.replace(regex, finalValue);
+        
+        // Log si un remplacement a eu lieu
+        if (result !== before) {
+          console.log(`[replaceTags] Remplacé ${tag} par: ${finalValue}`);
+        }
+      });
+      
+      console.log(`[replaceTags] Texte final: ${result}`);
+
+      // Vérifier s'il reste des balises non remplacées
+      const remainingTags = result.match(/<[^>]+>/g);
+      if (remainingTags) {
+        remainingTags.forEach(tag => {
+          const tagName = tag.replace(/[<>]/g, '');
+          result = result.replace(tag, `[Information "${tagName}" non disponible]`);
+          console.warn(`[replaceTags] Balise inconnue non remplacée : ${tag}`);
+        });
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Erreur lors du remplacement des variables:', error);
+      return text;
     }
   };
 
@@ -671,6 +1039,7 @@ const EntrepriseDetail: React.FC = () => {
       });
     } catch (error) {
       console.error("Erreur lors du téléchargement du logo:", error);
+      
       setSnackbar({
         open: true,
         message: "Erreur lors du téléchargement du logo",
@@ -713,23 +1082,11 @@ const EntrepriseDetail: React.FC = () => {
 
       const pdfDoc = await PDFDocument.load(pdfBytes);
       const helveticaFont = await pdfDoc.embedFont('Helvetica');
+      const helveticaFontBold = await pdfDoc.embedFont('Helvetica-Bold');
       const pages = pdfDoc.getPages();
 
       // Tableau pour stocker les variables non reconnues
       const unrecognizedVariables: string[] = [];
-
-      // Préparer les données de l'entreprise pour le remplacement des tags
-      const companyData = {
-        name: company.name,
-        siren: company.siret?.substring(0, 9), // Extraire le SIREN du SIRET
-        address: company.address,
-        city: company.city,
-        country: company.country,
-        phone: company.phone,
-        email: company.email,
-        website: company.website,
-        description: company.description
-      };
 
       // 2. Traiter chaque variable du template
       for (const variable of templateVariables) {
@@ -743,11 +1100,25 @@ const EntrepriseDetail: React.FC = () => {
             valueToReplace = variable.rawText || '';
           } else if (variable.variableId) {
             valueToReplace = getTagFromVariableId(variable.variableId);
+            console.log(`[Convention] Variable ${variable.variableId} -> Balise: ${valueToReplace}`);
           } else {
             valueToReplace = '';
           }
 
-          const value = await replaceTags(valueToReplace, null, null, companyData);
+          // Utiliser la fonction replaceTags locale qui gère toutes les balises d'entreprise
+          const value = await replaceTags(valueToReplace);
+          console.log(`[Convention] Variable: ${variable.variableId}, Balise: ${valueToReplace} -> Valeur: "${value}"`);
+          console.log(`[Convention] Longueur de la valeur: ${value?.length || 0} caractères`);
+          
+          // Vérifier spécifiquement pour les nSiret
+          if (variable.variableId === 'nSiret' || variable.variableId === 'nsiret' || valueToReplace.includes('nsiret')) {
+            console.log(`[Convention] ⚠️ nSiret DÉTECTÉ - Variable ID: ${variable.variableId}, Balise: ${valueToReplace}`);
+            console.log(`[Convention] ⚠️ nSiret - Valeur complète: "${value}", Longueur: ${value?.length || 0}`);
+            console.log(`[Convention] ⚠️ nSiret - nSiret de la company: "${company.nSiret}", Type: ${typeof company.nSiret}`);
+            if (value && value.length < 14) {
+              console.error(`[Convention] ❌ ERREUR: nSiret tronqué! Longueur attendue: 14, Longueur actuelle: ${value.length}`);
+            }
+          }
 
           if (value === undefined || value === null) {
             unrecognizedVariables.push(variable.name || variable.variableId || 'Variable sans nom');
@@ -757,37 +1128,204 @@ const EntrepriseDetail: React.FC = () => {
           if (value && value.trim()) {
             // Appliquer les styles et la position
             const fontSize = variable.fontSize || 12;
+            const font = variable.isBold ? helveticaFontBold : helveticaFont;
             const { x, y } = variable.position;
             const { width, height } = variable;
             const textAlign = variable.textAlign || 'left';
             const verticalAlign = variable.verticalAlign || 'top';
 
-            // Calculer la position Y en fonction de l'alignement vertical
+            // Fonction pour nettoyer le texte des caractères non-encodables en WinAnsi
+            const cleanTextForPDF = (text: string, isNumericIdentifier: boolean = false): string => {
+              if (!text) return '';
+              
+              // Pour les identifiants numériques (SIRET, SIREN, etc.), ne pas modifier le texte
+              // sauf pour les espaces insécables qui pourraient causer des problèmes
+              if (isNumericIdentifier && /^[\d\s\-]+$/.test(text)) {
+                // Seulement remplacer les espaces insécables par des espaces normaux
+                return text
+                  .replace(/\u202F/g, ' ') // Espace insécable fine (0x202f) -> espace normal
+                  .replace(/\u00A0/g, ' '); // Espace insécable (nbsp) -> espace normal
+              }
+              
+              // Remplacer les caractères Unicode problématiques par leurs équivalents ASCII
+              return text
+                .replace(/\u202F/g, ' ') // Espace insécable fine (0x202f) -> espace normal
+                .replace(/\u00A0/g, ' ') // Espace insécable (nbsp) -> espace normal
+                .replace(/\u2019/g, "'") // Apostrophe courbe -> apostrophe droite
+                .replace(/\u2018/g, "'") // Guillemet simple ouvrant -> apostrophe
+                .replace(/\u201C/g, '"') // Guillemet double ouvrant -> guillemet droit
+                .replace(/\u201D/g, '"') // Guillemet double fermant -> guillemet droit
+                .replace(/\u2013/g, '-') // Tiret cadratin -> tiret
+                .replace(/\u2014/g, '-') // Tiret cadratin long -> tiret
+                .replace(/\u2026/g, '...') // Points de suspension -> trois points
+                .replace(/[^\x00-\x7F]/g, (char) => {
+                  // Pour les autres caractères non-ASCII, essayer de les convertir
+                  // ou les remplacer par un caractère de remplacement
+                  const charCode = char.charCodeAt(0);
+                  if (charCode >= 0x00A0 && charCode <= 0x00FF) {
+                    // Caractères Latin-1, les garder tels quels
+                    return char;
+                  }
+                  // Pour les autres, remplacer par un espace
+                  return ' ';
+                });
+            };
+
+            // Découper le texte en lignes selon la largeur max
+            const splitTextToLines = (text: string, font: any, fontSize: number, maxWidth: number, isShortIdentifier: boolean = false): string[] => {
+              // Pour les identifiants courts, ne jamais découper - retourner le texte tel quel
+              if (isShortIdentifier) {
+                console.log(`[splitTextToLines] Identifiant court détecté, retour du texte complet: "${text}" (longueur: ${text.length})`);
+                // Vérifier que le texte n'a pas été tronqué
+                if (text.length < 14 && /^\d+$/.test(text)) {
+                  console.warn(`[splitTextToLines] ⚠️ ATTENTION: Identifiant court détecté mais longueur suspecte: ${text.length} caractères`);
+                }
+                return [text];
+              }
+              
+              // Si le texte est court, vérifier s'il rentre en une seule ligne
+              const fullTextWidth = font.widthOfTextAtSize(text, fontSize);
+              if (fullTextWidth <= maxWidth * 1.1) {
+                // Si le texte rentre (avec une marge de 10%), le retourner tel quel
+                return [text];
+              }
+              
+              // Sinon, découper par mots
+              const words = text.split(' ');
+              const lines: string[] = [];
+              let currentLine = '';
+              for (let i = 0; i < words.length; i++) {
+                const testLine = currentLine ? currentLine + ' ' + words[i] : words[i];
+                const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+                if (testWidth > maxWidth && currentLine) {
+                  lines.push(currentLine);
+                  currentLine = words[i];
+                } else {
+                  currentLine = testLine;
+                }
+              }
+              if (currentLine) lines.push(currentLine);
+              return lines;
+            };
+
+            // Détecter si c'est un identifiant court (nSiret, SIREN, etc.) - moins de 25 caractères
+            // Vérifier aussi si c'est une variable nSiret spécifiquement
+            const isSiretVariable = variable.variableId === 'nSiret' || 
+                                     variable.variableId === 'nsiret' ||
+                                     variable.variableId === 'entreprise_nsiret' ||
+                                     variable.variableId === 'company_nsiret' ||
+                                     valueToReplace.includes('nsiret');
+            const isNumericIdentifier = /^[\d\s\-]+$/.test(value.trim());
+            const isShortIdentifier = (value.trim().length < 25 && isNumericIdentifier) || isSiretVariable;
+            
+            // Nettoyer le texte en préservant les identifiants numériques
+            const cleanedValue = cleanTextForPDF(value, isNumericIdentifier);
+            const trimmedValue = cleanedValue.trim();
+            
+            // Calculer la largeur réelle du texte complet
+            const fullTextWidth = font.widthOfTextAtSize(trimmedValue, fontSize);
+            
+            console.log(`[Convention] Texte avant traitement: "${trimmedValue}", Longueur: ${trimmedValue.length}, Est identifiant court: ${isShortIdentifier}, Est variable SIRET: ${isSiretVariable}, Largeur réelle: ${fullTextWidth}, Largeur zone: ${width}`);
+            
+            // Pour les identifiants courts et les SIRET, utiliser une largeur très grande pour éviter toute troncature
+            // Pour les autres textes, utiliser la largeur de la zone
+            const effectiveWidth = isShortIdentifier 
+              ? Math.max(fullTextWidth * 2, width * 3) // Utiliser au minimum 2x la largeur réelle ou 3x la largeur de zone
+              : (fullTextWidth > width && fullTextWidth < width * 1.5 
+                  ? fullTextWidth * 1.1 
+                  : width);
+            
+            const lines = splitTextToLines(trimmedValue, font, fontSize, effectiveWidth, isShortIdentifier);
+            
+            console.log(`[Convention] Après splitTextToLines - Lignes: ${lines.length}`, lines);
+            
+            // Calculer la position Y en fonction de l'alignement vertical (identique à MissionDetails.tsx)
             let yPos = pageHeight - y;
+            const textHeight = font.heightAtSize(fontSize); // Hauteur réelle du texte
             if (verticalAlign === 'middle') {
-              yPos = pageHeight - (y + height / 2);
+              yPos = pageHeight - y - (height / 2) + (fontSize * -0.25);
             } else if (verticalAlign === 'bottom') {
-              yPos = pageHeight - (y + height);
+              yPos = pageHeight - (y + height) + fontSize * 0.8;
             }
 
-            // Calculer la position X en fonction de l'alignement horizontal
-            let xPos = x;
-            const textWidth = helveticaFont.widthOfTextAtSize(value, fontSize);
-            if (textAlign === 'center') {
-              xPos = x + (width - textWidth) / 2;
-            } else if (textAlign === 'right') {
-              xPos = x + width - textWidth;
-            }
+            const lineHeight = fontSize * 1.2;
+            let lineY = yPos;
 
-            // Dessiner le texte avec les styles appropriés
-            page.drawText(value.trim(), {
-              x: xPos,
-              y: yPos,
-              size: fontSize,
-              font: helveticaFont,
-              maxWidth: width,
-              lineHeight: fontSize * 1.2
-            });
+            // Dessiner chaque ligne
+            for (let i = 0; i < lines.length; i++) {
+              const line = cleanTextForPDF(lines[i], isNumericIdentifier);
+              const lineWidth = font.widthOfTextAtSize(line, fontSize);
+              
+              console.log(`[Convention] Ligne ${i + 1}/${lines.length}: "${line}", Largeur: ${lineWidth}, Largeur zone: ${width}`);
+              
+              // Pour les identifiants courts, utiliser la largeur réelle du texte au lieu de la largeur de la zone
+              // Pour les autres, utiliser la largeur de la zone
+              const referenceWidth = isShortIdentifier ? lineWidth : width;
+              
+              let xLine = x;
+              
+              // Calculer la position X en fonction de l'alignement horizontal
+              if (textAlign === 'center') {
+                xLine = x + (referenceWidth - lineWidth) / 2;
+              } else if (textAlign === 'right') {
+                xLine = x + referenceWidth - lineWidth;
+              } else {
+                // left: utiliser x tel quel
+                xLine = x;
+              }
+
+              try {
+                // Pour les identifiants courts, ne JAMAIS utiliser maxWidth - laisser pdf-lib dessiner sans limitation
+                const drawOptions: any = {
+                  x: xLine,
+                  y: lineY,
+                  size: fontSize,
+                  font,
+                  lineHeight: lineHeight
+                };
+                
+                // Ne JAMAIS utiliser maxWidth pour les identifiants courts
+                // Pour les autres textes, utiliser effectiveWidth
+                if (!isShortIdentifier) {
+                  drawOptions.maxWidth = effectiveWidth;
+                } else {
+                  // Pour les identifiants courts, s'assurer qu'on n'utilise PAS maxWidth
+                  // et utiliser une largeur très grande si nécessaire
+                  // Ne pas définir maxWidth du tout pour permettre au texte de s'étendre
+                }
+                
+                console.log(`[Convention] Dessin ligne ${i + 1}: "${line}", Longueur: ${line.length}, x: ${xLine}, y: ${lineY}, maxWidth: ${drawOptions.maxWidth || 'NON DÉFINI (identifiant court)'}, referenceWidth: ${referenceWidth}, lineWidth: ${lineWidth}`);
+                
+                // Vérifier que le texte complet est bien dessiné
+                if (isShortIdentifier && line.length !== trimmedValue.length && lines.length === 1) {
+                  console.warn(`[Convention] ⚠️ ATTENTION: Le texte pourrait être tronqué. Longueur ligne: ${line.length}, Longueur original: ${trimmedValue.length}`);
+                }
+                
+                page.drawText(line, drawOptions);
+              } catch (drawError) {
+                console.error(`[Convention] Erreur lors du dessin de la ligne ${i + 1}:`, drawError, line);
+                // Si l'erreur persiste, essayer avec un texte encore plus nettoyé
+                const fallbackLine = line.replace(/[^\x20-\x7E]/g, ' ');
+                const fallbackWidth = font.widthOfTextAtSize(fallbackLine, fontSize);
+                
+                const fallbackDrawOptions: any = {
+                  x: xLine,
+                  y: lineY,
+                  size: fontSize,
+                  font,
+                  lineHeight: lineHeight
+                };
+                
+                // Pour les identifiants courts, ne JAMAIS utiliser maxWidth même dans le fallback
+                if (!isShortIdentifier) {
+                  fallbackDrawOptions.maxWidth = width;
+                }
+                // Pour les identifiants courts, on ne met PAS maxWidth du tout
+                
+                page.drawText(fallbackLine, fallbackDrawOptions);
+              }
+              lineY -= lineHeight;
+            }
           }
         } catch (err) {
           console.error(`Erreur lors du traitement de la variable ${variable.name}:`, err);
@@ -1205,9 +1743,9 @@ const EntrepriseDetail: React.FC = () => {
               {company.name}
             </Typography>
             <Stack direction="row" spacing={2}>
-              {company.siret && (
+              {company.nSiret && (
                 <Chip 
-                  label={`SIRET: ${company.siret}`}
+                  label={`nSiret: ${company.nSiret}`}
                   sx={{ 
                     bgcolor: '#f5f5f7',
                     color: '#1d1d1f',
@@ -2140,10 +2678,10 @@ const EntrepriseDetail: React.FC = () => {
             </Grid>
             <Grid item xs={12} sm={6}>
               <TextField
-                label="SIRET"
+                label="nSiret"
                 fullWidth
-                value={editedCompany.siret || ''}
-                onChange={(e) => setEditedCompany(prev => ({ ...prev, siret: e.target.value }))}
+                value={editedCompany.nSiret || ''}
+                onChange={(e) => setEditedCompany(prev => ({ ...prev, nSiret: e.target.value }))}
               />
             </Grid>
             <Grid item xs={12}>

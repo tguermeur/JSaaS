@@ -43,8 +43,13 @@ import {
   Switch,
   useTheme,
   alpha,
-  Menu
+  AppBar,
+  Toolbar,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails
 } from '@mui/material';
+// Ajout de l'import ContentCopyIcon pour les balises si pas déjà présent (il l'est déjà pour le header)
 import {
   Add as AddIcon,
   Delete as DeleteIcon,
@@ -65,7 +70,13 @@ import {
   VerticalAlignBottom as VerticalAlignBottomIcon,
   Info as InfoIcon,
   TextSnippet as TextSnippetIcon,
-  Remove as RemoveIcon
+  Remove as RemoveIcon,
+  ContentCopy as ContentCopyIcon,
+  ExpandMore as ExpandMoreIcon,
+  Close as CloseIcon,
+  Code as CodeIcon, // Nouvel icône pour les balises
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon
 } from '@mui/icons-material';
 import { useMission } from '../contexts/MissionContext';
 import { getFileURL } from '../firebase/storage';
@@ -73,7 +84,6 @@ import { Document, Page } from 'react-pdf';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import pdfjs from '../utils/pdfWorker';
-import BackButton from '../components/ui/BackButton';
 
 // Configuration du worker PDF.js
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -156,6 +166,7 @@ interface FirestoreTemplate {
   name: string;
   description: string;
   pdfUrl: string;
+  fileName?: string;
   variables: TemplateVariable[];
   createdAt: Date;
   createdBy: string;
@@ -175,17 +186,36 @@ export const VARIABLE_TAGS: TagMapping[] = [
   // Tags pour les missions
   { tag: '<mission_numero>', variableId: 'numeroMission', description: 'Numéro de mission', example: 'M2024-001' },
   { tag: '<mission_cdm>', variableId: 'chargeName', description: 'Prénom Nom CDM', example: 'Jean Dupont' },
-  { tag: '<mission_debut>', variableId: 'missionStartDate', description: 'Début de mission', example: '01/01/2024' },
-  { tag: '<mission_fin>', variableId: 'missionEndDate', description: 'Fin de mission', example: '31/01/2024' },
+  { tag: '<mission_date_debut>', variableId: 'missionDateDebut', description: 'Date de début (date seule)', example: '01/01/2024' },
+  { tag: '<mission_date_heure_debut>', variableId: 'missionDateHeureDebut', description: 'Date et heure de début', example: '01/01/2024 à 09:00' },
+  { tag: '<mission_date_fin>', variableId: 'missionDateFin', description: 'Date de fin (date seule)', example: '31/01/2024' },
+  { tag: '<mission_date_heure_fin>', variableId: 'missionDateHeureFin', description: 'Date et heure de fin', example: '31/01/2024 à 17:00' },
   { tag: '<mission_lieu>', variableId: 'location', description: 'Lieu de la mission', example: 'Paris' },
   { tag: '<mission_entreprise>', variableId: 'company', description: 'Nom de l\'entreprise', example: 'Entreprise SA' },
   { tag: '<mission_type>', variableId: 'missionType', description: 'Type de mission', example: 'Consulting' },
   { tag: '<mission_date_generation>', variableId: 'generationDate', description: 'Date de génération du document', example: '01/01/2024' },
+  { tag: '<mission_date_generation_plus_1_an>', variableId: 'generationDatePlusOneYear', description: 'Date de génération + 1 an (365 jours)', example: '01/01/2025' },
   { tag: '<mission_prix>', variableId: 'priceHT', description: 'Prix HT', example: '1000€' },
+  { tag: '<mission_prix_horaire_ht>', variableId: 'priceHT', description: 'Prix horaire HT', example: '25.00' },
+  { tag: '<mission_prix_total_heures_ht>', variableId: 'totalHoursHT', description: 'Prix total des heures travaillées HT (prix horaire × nombre d\'heures)', example: '1000.00' },
   { tag: '<mission_description>', variableId: 'missionDescription', description: 'Description de la mission', example: 'Description détaillée...' },
   { tag: '<mission_titre>', variableId: 'title', description: 'Titre', example: 'Titre de la mission' },
   { tag: '<mission_heures>', variableId: 'hours', description: 'Nombre d\'heures', example: '40' },
   { tag: '<mission_nb_etudiants>', variableId: 'studentCount', description: 'Nombre d\'étudiants', example: '4' },
+  
+  // Tags pour les dépenses (jusqu'à 4 dépenses)
+  { tag: '<depense1_nom>', variableId: 'nomdepense1', description: 'Nom de la dépense 1', example: 'Frais de déplacement' },
+  { tag: '<depense1_tva>', variableId: 'tvadepense1', description: 'TVA de la dépense 1 (%)', example: '20' },
+  { tag: '<depense1_prix>', variableId: 'totaldepense1', description: 'Prix HT de la dépense 1', example: '150.00' },
+  { tag: '<depense2_nom>', variableId: 'nomdepense2', description: 'Nom de la dépense 2', example: 'Matériel' },
+  { tag: '<depense2_tva>', variableId: 'tvadepense2', description: 'TVA de la dépense 2 (%)', example: '20' },
+  { tag: '<depense2_prix>', variableId: 'totaldepense2', description: 'Prix HT de la dépense 2', example: '200.00' },
+  { tag: '<depense3_nom>', variableId: 'nomdepense3', description: 'Nom de la dépense 3', example: 'Formation' },
+  { tag: '<depense3_tva>', variableId: 'tvadepense3', description: 'TVA de la dépense 3 (%)', example: '10' },
+  { tag: '<depense3_prix>', variableId: 'totaldepense3', description: 'Prix HT de la dépense 3', example: '300.00' },
+  { tag: '<depense4_nom>', variableId: 'nomdepense4', description: 'Nom de la dépense 4', example: 'Autre frais' },
+  { tag: '<depense4_tva>', variableId: 'tvadepense4', description: 'TVA de la dépense 4 (%)', example: '20' },
+  { tag: '<depense4_prix>', variableId: 'totaldepense4', description: 'Prix HT de la dépense 4', example: '100.00' },
   
   // Tags pour les utilisateurs
   { tag: '<user_nom>', variableId: 'lastName', description: 'Nom de famille', example: 'Dupont' },
@@ -202,10 +232,12 @@ export const VARIABLE_TAGS: TagMapping[] = [
   { tag: '<user_genre>', variableId: 'gender', description: 'Genre', example: 'M' },
   { tag: '<user_lieu_naissance>', variableId: 'birthPlace', description: 'Lieu de naissance', example: 'Paris' },
   { tag: '<user_date_naissance>', variableId: 'birthDate', description: 'Date de naissance', example: '01/01/2000' },
+  { tag: '<user_numero_etudiant>', variableId: 'studentId', description: 'Numéro étudiant', example: '183934' },
   
   // Tags pour les entreprises
   { tag: '<entreprise_nom>', variableId: 'name', description: 'Nom de l\'entreprise', example: 'Entreprise SA' },
   { tag: '<entreprise_siren>', variableId: 'siren', description: 'Numéro SIREN', example: '123456789' },
+  { tag: '<entreprise_nsiret>', variableId: 'nSiret', description: 'Numéro nSiret', example: '12345678901234' },
   { tag: '<entreprise_adresse>', variableId: 'address', description: 'Adresse', example: '123 rue Example' },
   { tag: '<entreprise_ville>', variableId: 'city', description: 'Ville', example: 'Paris' },
   { tag: '<entreprise_pays>', variableId: 'country', description: 'Pays', example: 'France' },
@@ -262,12 +294,7 @@ export const VARIABLE_TAGS: TagMapping[] = [
   { tag: '<structure_telephone>', variableId: 'structure_phone', description: 'Téléphone de la structure', example: '01 23 45 67 89' },
   { tag: '<structure_email>', variableId: 'structure_email', description: 'Email de la structure', example: 'contact@structure.fr' },
   { tag: '<structure_site_web>', variableId: 'structure_website', description: 'Site web de la structure', example: 'www.structure.fr' },
-  { tag: '<structure_site_web>', variableId: 'structure_website', description: 'Site web de la structure', example: 'www.structure.fr' },
-  { tag: '<structure_email>', variableId: 'structure_email', description: 'Email de la structure', example: 'contact@structure.fr' },
-  { tag: '<structure_site_web>', variableId: 'structure_website', description: 'Site web de la structure', example: 'www.structure.fr' },
-  { tag: '<structure_address>', variableId: 'structure_address', description: 'Adresse de la structure', example: '123 rue Example' },
-  { tag: '<structure_phone>', variableId: 'structure_phone', description: 'N° de téléphone de la structure', example: '01 23 45 67 89' },
-  { tag: '<structure_email>', variableId: 'structure_email', description: 'Email de la structure', example: 'contact@structure.fr' }
+  { tag: '<structure_president_nom_complet>', variableId: 'structure_president_fullName', description: 'Prénom et Nom du président du mandat le plus récent', example: 'Jean Dupont' }
 ];
 
 // Ajouter la fonction utilitaire escapeRegExp si elle n'existe pas
@@ -282,9 +309,67 @@ const getVariableValue = (variableId: string, missionData: any, userData: any, c
     return new Date().toLocaleDateString('fr-FR');
   }
 
+  // Si c'est la date de génération + 1 an, retourner la date actuelle + 365 jours
+  if (variableId === 'generationDatePlusOneYear') {
+    const today = new Date();
+    const oneYearLater = new Date(today);
+    oneYearLater.setDate(today.getDate() + 365);
+    return oneYearLater.toLocaleDateString('fr-FR');
+  }
+
   // Si c'est le type de mission, utiliser directement la valeur de la mission
   if (variableId === 'missionType') {
     return missionData?.missionType || '';
+  }
+
+  // Si c'est le prix total des heures travaillées HT, calculer priceHT * hours
+  if (variableId === 'totalHoursHT') {
+    if (missionData?.priceHT && missionData?.hours) {
+      const total = missionData.priceHT * missionData.hours;
+      return total.toFixed(2);
+    }
+    return '0.00';
+  }
+
+  // Gestion des dates de début et fin avec formatage spécifique
+  if (variableId === 'missionDateDebut') {
+    // Date seule de début
+    if (missionData?.startDate) {
+      const date = new Date(missionData.startDate);
+      return date.toLocaleDateString('fr-FR');
+    }
+    return '';
+  }
+
+  if (variableId === 'missionDateHeureDebut') {
+    // Date et heure de début au format jj/mm/aaaa à hh:mm
+    if (missionData?.startDate) {
+      const date = new Date(missionData.startDate);
+      const dateStr = date.toLocaleDateString('fr-FR');
+      const timeStr = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      return `${dateStr} à ${timeStr}`;
+    }
+    return '';
+  }
+
+  if (variableId === 'missionDateFin') {
+    // Date seule de fin
+    if (missionData?.endDate) {
+      const date = new Date(missionData.endDate);
+      return date.toLocaleDateString('fr-FR');
+    }
+    return '';
+  }
+
+  if (variableId === 'missionDateHeureFin') {
+    // Date et heure de fin au format jj/mm/aaaa à hh:mm
+    if (missionData?.endDate) {
+      const date = new Date(missionData.endDate);
+      const dateStr = date.toLocaleDateString('fr-FR');
+      const timeStr = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      return `${dateStr} à ${timeStr}`;
+    }
+    return '';
   }
 
   // Pour les autres champs, utiliser la logique existante
@@ -313,6 +398,21 @@ const replaceTags = (text: string, missionData?: any, userData?: any, companyDat
     return result;
   } catch (error) {
     console.error('Erreur lors du remplacement des balises:', error);
+    return text;
+  }
+};
+
+// Fonction pour remplacer les balises par leurs exemples (pour l'aperçu)
+const replaceTagsWithExamples = (text: string): string => {
+  if (!text) return '';
+  try {
+    let result = text;
+    VARIABLE_TAGS.forEach(({ tag, example }) => {
+      result = result.replace(new RegExp(escapeRegExp(tag), 'g'), example || '');
+    });
+    return result;
+  } catch (error) {
+    console.error('Erreur lors du remplacement des balises par les exemples:', error);
     return text;
   }
 };
@@ -419,12 +519,29 @@ const TemplatesPDF: React.FC = () => {
       const q = query(templatesRef, where('structureId', '==', userData.structureId));
       const snapshot = await getDocs(q);
       
-      const templatesList = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Template[];
+      const templatesList = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          // S'assurer que le champ file est rempli avec pdfUrl si nécessaire
+          file: data.file || (data.pdfUrl ? {
+            url: data.pdfUrl,
+            name: data.fileName || 'template.pdf',
+            type: 'application/pdf'
+          } : null)
+        } as Template;
+      });
       
       setTemplates(templatesList);
+      
+      // Si un template est sélectionné, mettre à jour son URL si nécessaire
+      if (selectedTemplate) {
+        const updatedSelected = templatesList.find(t => t.id === selectedTemplate.id);
+        if (updatedSelected) {
+          setSelectedTemplate(updatedSelected);
+        }
+      }
     } catch (error) {
       console.error("Erreur lors du chargement des templates:", error);
       setSnackbar({
@@ -540,9 +657,9 @@ const TemplatesPDF: React.FC = () => {
         type: 'text'
       },
       {
-        id: 'siret',
-        name: 'SIRET',
-        description: 'Numéro SIRET de l\'entreprise',
+        id: 'nSiret',
+        name: 'nSiret',
+        description: 'Numéro nSiret de l\'entreprise',
         type: 'text'
       },
       {
@@ -728,9 +845,18 @@ const TemplatesPDF: React.FC = () => {
   const [currentFontSize, setCurrentFontSize] = useState<number>(12);
   const [scale, setScale] = useState<number>(1);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replacePdfInputRef = useRef<HTMLInputElement>(null);
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
+  const [replacePdfDialogOpen, setReplacePdfDialogOpen] = useState(false);
+  const [replacementPdfFile, setReplacementPdfFile] = useState<File | null>(null);
+  const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const [duplicateTemplateName, setDuplicateTemplateName] = useState<string>('');
+  const [tagsDialogOpen, setTagsDialogOpen] = useState(false); // État pour le dialogue des balises
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false); // État pour le dialogue de renommage
+  const [newTemplateName, setNewTemplateName] = useState<string>(''); // État pour le nouveau nom
+  const [previewMode, setPreviewMode] = useState<boolean>(false); // État pour le mode aperçu
   
   const [newTemplate, setNewTemplate] = useState<{
     name: string;
@@ -758,7 +884,6 @@ const TemplatesPDF: React.FC = () => {
   // Ajout des états au début du composant
   const [rawText, setRawText] = useState<string>('');
   const [isAddingRawText, setIsAddingRawText] = useState<boolean>(false);
-  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   
   // Ajouter ces états et fonctions pour gérer le redimensionnement
   const [resizingVariable, setResizingVariable] = useState<string | null>(null);
@@ -857,6 +982,205 @@ const TemplatesPDF: React.FC = () => {
       });
     }
   };
+
+  const handleReplacePdfFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setReplacementPdfFile(e.target.files[0]);
+    }
+  };
+
+  const handleReplacePdf = async () => {
+    if (!selectedTemplate || !replacementPdfFile || !currentUser) {
+      setSnackbar({
+        open: true,
+        message: 'Veuillez sélectionner un fichier PDF',
+        severity: 'error'
+      });
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      // Récupérer le structureId de l'utilisateur
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const userData = userDoc.data();
+
+      if (!userData?.structureId) {
+        throw new Error('Aucune structure associée à l\'utilisateur');
+      }
+
+      // Créer un nom de fichier unique
+      const fileName = `${Date.now()}_${replacementPdfFile.name.replace(/\s+/g, '_')}`;
+      const storageRef = ref(storage, `templates/${fileName}`);
+
+      // Upload du nouveau fichier
+      await uploadBytes(storageRef, replacementPdfFile);
+      const newPdfUrl = await getDownloadURL(storageRef);
+
+      // Supprimer l'ancien fichier du storage si possible (optionnel, pour économiser l'espace)
+      // Note: On garde l'ancien fichier pour l'historique, mais on peut le supprimer si nécessaire
+      try {
+        if (selectedTemplate.pdfUrl && selectedTemplate.fileName) {
+          // Utiliser le fileName stocké dans le template pour supprimer l'ancien fichier
+          const oldStorageRef = ref(storage, `templates/${selectedTemplate.fileName}`);
+          await deleteObject(oldStorageRef).catch(error => {
+            console.warn('Impossible de supprimer l\'ancien fichier (peut ne plus exister):', error);
+          });
+        }
+      } catch (deleteError) {
+        console.warn('Erreur lors de la tentative de suppression de l\'ancien fichier:', deleteError);
+        // Ne pas bloquer si la suppression échoue - le fichier pourrait ne plus exister ou être utilisé ailleurs
+      }
+
+      // Mettre à jour le document dans Firestore avec le nouveau PDF
+      const templateRef = doc(db, 'templates', selectedTemplate.id);
+      await updateDoc(templateRef, {
+        pdfUrl: newPdfUrl,
+        fileName: fileName,
+        updatedAt: serverTimestamp()
+      });
+
+      // Mettre à jour l'état local
+      const updatedTemplate = {
+        ...selectedTemplate,
+        pdfUrl: newPdfUrl,
+        fileName: fileName,
+        file: {
+          url: newPdfUrl, // Utiliser l'URL Firebase au lieu de createObjectURL pour la persistance
+          name: replacementPdfFile.name,
+          type: replacementPdfFile.type
+        }
+      };
+
+      setTemplates(prev => prev.map(template =>
+        template.id === selectedTemplate.id ? updatedTemplate : template
+      ));
+      setSelectedTemplate(updatedTemplate);
+
+      // Réinitialiser le formulaire
+      setReplacementPdfFile(null);
+      setReplacePdfDialogOpen(false);
+
+      // Réinitialiser le nombre de pages et le document PDF pour forcer le rechargement
+      setNumPages(0);
+      setPdfDocument(null);
+      setPageNumber(1);
+
+      setSnackbar({
+        open: true,
+        message: 'PDF remplacé avec succès. Les balises existantes sont conservées.',
+        severity: 'success'
+      });
+
+    } catch (error) {
+      console.error('Erreur lors du remplacement du PDF:', error);
+      setSnackbar({
+        open: true,
+        message: `Erreur lors du remplacement du PDF: ${error instanceof Error ? error.message : 'Erreur inconnue'}`,
+        severity: 'error'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenReplacePdfDialog = () => {
+    setReplacePdfDialogOpen(true);
+    setReplacementPdfFile(null);
+  };
+
+  const handleCloseReplacePdfDialog = () => {
+    setReplacePdfDialogOpen(false);
+    setReplacementPdfFile(null);
+  };
+
+  const handleOpenDuplicateDialog = () => {
+    if (selectedTemplate) {
+      setDuplicateTemplateName(`${selectedTemplate.name} (copie)`);
+      setDuplicateDialogOpen(true);
+    }
+  };
+
+  const handleCloseDuplicateDialog = () => {
+    setDuplicateDialogOpen(false);
+    setDuplicateTemplateName('');
+  };
+
+  const handleDuplicateTemplate = async () => {
+    if (!selectedTemplate || !duplicateTemplateName.trim() || !currentUser) {
+      setSnackbar({
+        open: true,
+        message: 'Veuillez saisir un nom pour la nouvelle template',
+        severity: 'error'
+      });
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      // Récupérer le structureId de l'utilisateur
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const userData = userDoc.data();
+
+      if (!userData?.structureId) {
+        throw new Error('Aucune structure associée à l\'utilisateur');
+      }
+
+      // Créer une copie du template avec un nouveau nom
+      // Générer de nouveaux IDs uniques pour chaque variable
+      const duplicatedVariables = selectedTemplate.variables.map((v, index) => ({
+        ...v,
+        id: `${Date.now()}_${index}_${Math.random().toString(36).substr(2, 9)}`
+      }));
+
+      const duplicatedTemplateData: FirestoreTemplate = {
+        name: duplicateTemplateName.trim(),
+        description: selectedTemplate.description || '',
+        pdfUrl: selectedTemplate.pdfUrl,
+        fileName: selectedTemplate.fileName,
+        variables: duplicatedVariables,
+        createdAt: new Date(),
+        createdBy: currentUser.uid,
+        structureId: userData.structureId
+      };
+
+      // Créer le nouveau document dans Firestore
+      const docRef = await addDoc(collection(db, 'templates'), duplicatedTemplateData);
+
+      // Mettre à jour l'état local
+      const newDuplicatedTemplate: Template = {
+        id: docRef.id,
+        name: duplicatedTemplateData.name,
+        description: duplicatedTemplateData.description,
+        file: selectedTemplate.file,
+        pdfUrl: duplicatedTemplateData.pdfUrl,
+        fileName: duplicatedTemplateData.fileName,
+        variables: duplicatedTemplateData.variables
+      };
+
+      setTemplates(prev => [...prev, newDuplicatedTemplate]);
+      setSelectedTemplate(newDuplicatedTemplate);
+
+      setSnackbar({
+        open: true,
+        message: 'Template dupliquée avec succès',
+        severity: 'success'
+      });
+
+      handleCloseDuplicateDialog();
+    } catch (error) {
+      console.error('Erreur lors de la duplication du template:', error);
+      setSnackbar({
+        open: true,
+        message: `Erreur lors de la duplication du template: ${error instanceof Error ? error.message : 'Erreur inconnue'}`,
+        severity: 'error'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
   
   const handleSaveTemplate = async () => {
     if (!newTemplate.name || !newTemplate.file || !currentUser) {
@@ -892,6 +1216,7 @@ const TemplatesPDF: React.FC = () => {
         name: newTemplate.name,
         description: newTemplate.description,
         pdfUrl,
+        fileName,
         variables: [],
         createdAt: new Date(),
         createdBy: currentUser.uid,
@@ -908,7 +1233,7 @@ const TemplatesPDF: React.FC = () => {
         name: templateData.name,
         description: templateData.description,
         file: {
-          url: URL.createObjectURL(newTemplate.file),
+          url: pdfUrl, // Utiliser l'URL Firebase pour la persistance
           name: newTemplate.file.name,
           type: newTemplate.file.type
         },
@@ -1396,7 +1721,11 @@ const TemplatesPDF: React.FC = () => {
           onMouseUp={handleVariableMouseUp}
           onMouseMove={handleVariableMouseMove}
         >
-          {variable.type === 'raw' ? replaceTags(variable.rawText || '', missionData, currentUser, {}) : variable.name}
+          {variable.type === 'raw' 
+            ? (previewMode 
+                ? replaceTagsWithExamples(variable.rawText || '') 
+                : replaceTags(variable.rawText || '', missionData, currentUser, {})) 
+            : variable.name}
           
           {/* Poignées de redimensionnement */}
           {selectedPlacedVariable === variable.id && (
@@ -1487,12 +1816,15 @@ const TemplatesPDF: React.FC = () => {
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      const popup = document.querySelector('.variable-popup');
-      const isClickInsidePopup = popup?.contains(target);
-      
-      if (!isClickInsidePopup && !target.closest('.MuiMenu-root')) {
-        setPopupPosition(null);
-        setSelectedPlacedVariable(null);
+      // Ajustement pour la nouvelle structure : vérifier si le clic est dans le panneau latéral ou sur un élément de menu
+      const sidebar = document.querySelector('.properties-sidebar');
+      const isClickInsideSidebar = sidebar?.contains(target);
+      const isClickInsideMenu = target.closest('.MuiMenu-root') || target.closest('.MuiDialog-root');
+      const isClickInsidePdfContainer = pdfContainerRef.current?.contains(target);
+
+      if (!isClickInsideSidebar && !isClickInsideMenu && !isClickInsidePdfContainer) {
+        // Optionnel : Désélectionner si on clique vraiment en dehors de tout
+        // setSelectedPlacedVariable(null);
       }
     };
 
@@ -1500,7 +1832,7 @@ const TemplatesPDF: React.FC = () => {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [popupPosition]);
+  }, []);
   
   const handleSaveVariables = async () => {
     if (!selectedTemplate || !currentUser) {
@@ -1671,8 +2003,34 @@ const TemplatesPDF: React.FC = () => {
     standardFontDataUrl: 'https://unpkg.com/pdfjs-dist@3.11.174/standard_fonts/'
   }), []);
 
+  // Fonction pour obtenir l'URL du PDF avec proxy si nécessaire
+  const getPdfUrl = React.useCallback((url: string): string => {
+    if (!url) return '';
+    
+    // En développement, utiliser le proxy pour éviter les problèmes CORS
+    const isDevelopment = window.location.hostname === 'localhost';
+    if (isDevelopment && url.includes('firebasestorage.googleapis.com')) {
+      // Extraire le chemin et les paramètres de l'URL Firebase
+      try {
+        const firebaseUrl = new URL(url);
+        // Construire l'URL du proxy avec le chemin et les paramètres
+        const proxyUrl = '/pdf-proxy' + firebaseUrl.pathname + firebaseUrl.search;
+        return proxyUrl;
+      } catch (error) {
+        console.error('Erreur lors de la construction de l\'URL proxy:', error);
+        // En cas d'erreur, utiliser l'URL originale
+        return url;
+      }
+    }
+    
+    return url;
+  }, []);
+
   const renderPDF = () => {
     if (!selectedTemplate?.file?.url) return null;
+
+    // Utiliser le proxy en développement pour éviter les problèmes CORS
+    const pdfUrl = getPdfUrl(selectedTemplate.file.url);
 
     return (
       <Box 
@@ -1702,15 +2060,12 @@ const TemplatesPDF: React.FC = () => {
           }}
         >
           <Document
-            file={selectedTemplate.file.url}
+            file={pdfUrl}
             onLoadSuccess={(pdf) => handleDocumentLoadSuccess({ numPages: pdf.numPages, pdf })}
             onLoadError={(error) => {
               console.error('Erreur de chargement du PDF:', error);
-              setSnackbar({
-                open: true,
-                message: 'Erreur lors du chargement du PDF',
-                severity: 'error'
-              });
+              // Ne pas afficher d'erreur immédiatement car cela peut être un problème temporaire
+              console.warn('Le PDF n\'a pas pu être chargé. Vérifiez les règles Firebase Storage et les permissions.');
             }}
             loading={
               <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
@@ -1743,9 +2098,26 @@ const TemplatesPDF: React.FC = () => {
           {selectedTemplate.variables
             .filter(v => v.position.page === pageNumber)
             .map(variable => (
+              <Tooltip
+                key={variable.id}
+                title={
+                  <Box sx={{ p: 0.5 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>{variable.name}</Typography>
+                    {variable.type === 'raw' && (
+                      <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontStyle: 'italic' }}>
+                        {variable.rawText}
+                      </Typography>
+                    )}
+                    <Typography variant="caption" sx={{ display: 'block', mt: 0.5, opacity: 0.8 }}>
+                      {variable.fontSize}pt • {variable.fontFamily || 'Arial'}
+                    </Typography>
+                  </Box>
+                }
+                arrow
+                placement="top"
+              >
               <Box
                 component="div"
-                key={variable.id}
                 sx={{
                   position: 'absolute',
                   left: `${variable.position.x}px`,
@@ -1762,12 +2134,14 @@ const TemplatesPDF: React.FC = () => {
                   fontWeight: variable.isBold ? 'bold' : 'normal',
                   border: selectedPlacedVariable === variable.id 
                     ? '1px solid #0071e3' 
-                    : '1px solid transparent',
+                    : '1px solid rgba(0, 113, 227, 0.3)',
                   cursor: draggingVariable === variable.id ? 'grabbing' : 'grab',
                   userSelect: 'none',
                   zIndex: draggingVariable === variable.id ? 1000 : 1,
                   display: 'flex',
-                  alignItems: 'center',  // Forcer l'alignement vertical au centre
+                  alignItems: variable.verticalAlign === 'top' ? 'flex-start' :
+                             variable.verticalAlign === 'bottom' ? 'flex-end' :
+                             'center',  // 'middle' ou par défaut
                   justifyContent: variable.textAlign === 'left' ? 'flex-start' : 
                                  variable.textAlign === 'right' ? 'flex-end' : 
                                  variable.textAlign === 'justify' ? 'space-between' : 'center',
@@ -1777,7 +2151,15 @@ const TemplatesPDF: React.FC = () => {
                   pointerEvents: 'auto',
                   overflow: 'hidden',
                   textAlign: variable.textAlign === 'justify' ? 'justify' : variable.textAlign,
-                  transition: draggingVariable === variable.id ? 'none' : 'all 0.2s ease'
+                  transition: draggingVariable === variable.id ? 'none' : 'all 0.2s ease',
+                  padding: '2px',  // Petit padding pour éviter que le texte touche les bords
+                  boxSizing: 'border-box',
+                  // Ajout pour garantir la visibilité minimale au survol
+                  '&:hover': {
+                    backgroundColor: 'rgba(0, 113, 227, 0.2)',
+                    border: '1px solid rgba(0, 113, 227, 0.5)',
+                    zIndex: 100, // Passer au premier plan au survol
+                  }
                 }}
                 onClick={(e) => handleVariableSelect(variable.id, e)}
                 onMouseDown={(e) => handleVariableMouseDown(e, variable.id)}
@@ -1787,15 +2169,40 @@ const TemplatesPDF: React.FC = () => {
                 <Box
                   sx={{
                     width: '100%',
+                    maxWidth: '100%',
                     height: '100%',
                     display: 'flex',
-                    alignItems: 'center',  // Forcer l'alignement vertical au centre
-                    justifyContent: variable.textAlign === 'left' ? 'flex-start' : 
-                                   variable.textAlign === 'right' ? 'flex-end' : 
-                                   variable.textAlign === 'justify' ? 'space-between' : 'center',
+                    flexDirection: 'column',
+                    alignItems: variable.textAlign === 'left' ? 'flex-start' : 
+                               variable.textAlign === 'right' ? 'flex-end' : 
+                               variable.textAlign === 'justify' ? 'stretch' : 'center',
+                    justifyContent: variable.verticalAlign === 'top' ? 'flex-start' :
+                                   variable.verticalAlign === 'bottom' ? 'flex-end' :
+                                   'center',
+                    overflow: 'hidden',
+                    wordBreak: 'break-word',
+                    lineHeight: variable.lineHeight || 1.2,
+                    textAlign: variable.textAlign,
                   }}
                 >
-                  {variable.type === 'raw' ? replaceTags(variable.rawText || '', missionData, currentUser, {}) : variable.name}
+                  <Box
+                    component="span"
+                    sx={{
+                      display: 'block',
+                      width: '100%',
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      wordBreak: 'break-word',
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: variable.lineHeight || 1.2,
+                    }}
+                  >
+                    {variable.type === 'raw' 
+            ? (previewMode 
+                ? replaceTagsWithExamples(variable.rawText || '') 
+                : replaceTags(variable.rawText || '', missionData, currentUser, {})) 
+            : variable.name}
+                  </Box>
                 </Box>
                 
                 {/* Poignées de redimensionnement */}
@@ -1819,6 +2226,7 @@ const TemplatesPDF: React.FC = () => {
                   </>
                 )}
               </Box>
+              </Tooltip>
             ))}
         </Box>
       </Box>
@@ -1855,157 +2263,20 @@ const TemplatesPDF: React.FC = () => {
       if (!missionsSnapshot.empty || !usersSnapshot.empty || !companiesSnapshot.empty || 
           !expenseNotesSnapshot.empty || !workingHoursSnapshot.empty) {
         
-        const missionDoc = missionsSnapshot.docs[0]?.data() || {};
-        const userDoc = usersSnapshot.docs[0]?.data() || {};
-        const companyDoc = companiesSnapshot.docs[0]?.data() || {};
-        const expenseNoteDoc = expenseNotesSnapshot.docs[0]?.data() || {};
-        const workingHourDoc = workingHoursSnapshot.docs[0]?.data() || {};
-
-        // Définir les descriptions spécifiques pour chaque type de champ
-        const fieldDescriptions: { [key: string]: string } = {
-          // Champs des missions
-          isPublic: "Indique si la mission est visible publiquement ou non",
-          chargeId: "Numéro du chargé de mission",
-          chargeName: "Nom complet du chargé de mission",
-          numeroMission: "Numéro unique de la mission",
-          missionStartDate: "Date de début de la mission",
-          missionEndDate: "Date de fin de la mission",
-          location: "Lieu où se déroule la mission",
-          company: "Entreprise pour laquelle la mission est réalisée",
-          priceHT: "Prix hors taxes de la mission",
-          missionDescription: "Description détaillée de la mission",
-          title: "Titre de la mission",
-          hours: "Nombre total d'heures de la mission",
-          missionStatus: "État actuel de la mission (En cours, Terminée, etc.)",
-          hoursPerStudent: "Nombre d'heures allouées par étudiant",
-          studentCount: "Nombre total d'étudiants sur la mission",
-          structureId: "Identifiant de la structure associée à la mission",
-          createdBy: "Identifiant de l'utilisateur ayant créé la mission",
-          missionCreatedAt: "Date de création de la mission",
-          missionUpdatedAt: "Date de dernière modification de la mission",
-          updatedBy: "Identifiant de l'utilisateur ayant modifié la mission en dernier",
-          
-          // Champs des utilisateurs
-          lastName: "Nom de famille de l'utilisateur",
-          firstName: "Prénom de l'utilisateur",
-          userEmail: "Adresse email de l'utilisateur",
-          ecole: "École de formation de l'utilisateur",
-          userPhone: "Numéro de téléphone de l'utilisateur",
-          userAddress: "Adresse postale de l'utilisateur",
-          userCity: "Ville de résidence de l'utilisateur",
-          formation: "Formation suivie par l'utilisateur",
-          speciality: "Spécialité de l'utilisateur",
-          studyLevel: "Niveau d'études de l'utilisateur",
-          displayName: "Nom complet de l'utilisateur",
-          program: "Programme de l'utilisateur (PGE, Bachelor...)",
-          graduationYear: "Année de diplômation de l'utilisateur",
-          nationality: "Nationalité de l'utilisateur",
-          gender: "Sexe de l'utilisateur",
-          birthPlace: "Lieu de naissance de l'utilisateur",
-          birthDate: "Date de naissance de l'utilisateur",
-          studentId: "Identifiant unique de l'utilisateur",
-          studentStatus: "Statut de l'utilisateur (Actif, Inactif, etc.)",
-          studentUpdatedAt: "Date de dernière modification de l'utilisateur",
-          socialSecurityNumber: "Numéro de sécurité sociale de l'utilisateur",
-          
-          // Champs des entreprises
-          companyName: "Nom de l'entreprise",
-          siren: "Numéro SIREN de l'entreprise",
-          companyAddress: "Adresse du siège social",
-          companyCity: "Ville du siège social",
-          country: "Pays de l'entreprise",
-          companyPhone: "Numéro de téléphone de l'entreprise",
-          companyEmail: "Email de contact de l'entreprise",
-          website: "Site web de l'entreprise",
-          companyUpdatedAt: "Date de dernière modification de l'entreprise",
-          
-          // Champs des notes de frais
-          amount: "Montant total de la note de frais",
-          expenseDescription: "Description détaillée des frais",
-          expenseDate: "Date de la note de frais",
-          expenseStatus: "État de la note de frais (En attente, Validée, Refusée)",
-          expenseCreatedAt: "Date de création de la note de frais",
-          expenseUpdatedAt: "Date de dernière modification de la note de frais",
-          
-          // Variables supplémentaires trouvées dans le code
-          email: "Adresse email",
-          phone: "Numéro de téléphone",
-          address: "Adresse",
-          city: "Ville",
-          description: "Description",
-          name: "Nom",
-          status: "Statut de la mission (En attente...)",
-          date: "Date",
-          userDisplayName: "Nom d'affichage de l'utilisateur",
-          userNomComplet: "Nom complet de l'utilisateur",
-          
-          // Champs des heures de travail
-          workingHoursDate: "Date des heures travaillées",
-          workingHoursStartTime: "Heure de début",
-          workingHoursEndTime: "Heure de fin",
-          workingHoursBreaks: "Liste des pauses",
-          workingHoursTotal: "Total des heures travaillées",
-          workingHoursCreatedAt: "Date de création",
-          workingHoursUpdatedAt: "Date de mise à jour",
-          
-          // Champs des avenants
-          amendmentNumber: "Numéro d'avenant",
-          amendmentDate: "Date de l'avenant",
-          amendmentDescription: "Description de l'avenant",
-          amendmentAmount: "Montant de l'avenant",
-          amendmentStatus: "Statut de l'avenant",
-          plannedStartDate: "Date de début prévue",
-          plannedEndDate: "Date de fin prévue",
-          actualStartDate: "Date de début réelle",
-          actualEndDate: "Date de fin réelle",
-          plannedHours: "Heures prévues",
-          actualHours: "Heures réelles",
-          reason: "Motif",
-          createdAt: "Date de création",
-          createdByName: "Créé par",
-          
-          // Champs des contacts
-          contact_fullName: "Prénom et Nom du contact",
-          contact_firstName: "Prénom du contact",
-          contact_lastName: "Nom du contact",
-          contact_email: "Email du contact",
-          contact_phone: "Téléphone du contact",
-          contact_position: "Poste du contact",
-          contact_linkedin: "LinkedIn du contact",
-          
-          // Champs de la structure
-          structure_name: "Nom de la structure",
-          structure_siret: "Numéro SIRET de la structure",
-          structure_address: "Adresse de la structure",
-          structure_city: "Ville de la structure",
-          structure_postalCode: "Code postal de la structure",
-          structure_country: "Pays de la structure",
-          structure_phone: "Téléphone de la structure",
-          structure_email: "Email de la structure",
-          structure_website: "Site web de la structure",
-          structure_description: "Description de la structure",
-          structure_tvaNumber: "Numéro de TVA intracommunautaire de la structure",
-          structure_apeCode: "Code APE de la structure",
-          charge_email: "Email du chargé de mission",
-          charge_phone: "Téléphone du chargé de mission",
-          totalHT: "Total HT",
-          totalTTC: "Total TTC",
-          tva: "Montant TVA",
-          courseApplication: "Application du cours",
-          missionLearning: "Apprentissage",
-          studentProfile: "Profil étudiant"
-        };
-
         const missionFields = [
           { id: 'numeroMission', name: 'Numéro de mission', description: 'Numéro unique de la mission', type: 'text' },
           { id: 'chargeName', name: 'Prénom Nom CDM', description: 'Nom du chef de mission', type: 'text' },
-          { id: 'missionStartDate', name: 'Début de mission', description: 'Date de début de la mission', type: 'date' },
-          { id: 'missionEndDate', name: 'Fin de mission', description: 'Date de fin de la mission', type: 'date' },
+          { id: 'missionDateDebut', name: 'Date de début (date seule)', description: 'Date de début de la mission (format: jj/mm/aaaa)', type: 'date' },
+          { id: 'missionDateHeureDebut', name: 'Date et heure de début', description: 'Date et heure de début de la mission (format: jj/mm/aaaa à hh:mm)', type: 'date' },
+          { id: 'missionDateFin', name: 'Date de fin (date seule)', description: 'Date de fin de la mission (format: jj/mm/aaaa)', type: 'date' },
+          { id: 'missionDateHeureFin', name: 'Date et heure de fin', description: 'Date et heure de fin de la mission (format: jj/mm/aaaa à hh:mm)', type: 'date' },
           { id: 'location', name: 'Lieu de la mission', description: 'Lieu où se déroule la mission', type: 'text' },
           { id: 'company', name: 'Nom de l\'entreprise', description: 'Entreprise pour laquelle la mission est réalisée', type: 'text' },
           { id: 'missionType', name: 'Type de mission', description: 'Type de la mission', type: 'text' },
           { id: 'generationDate', name: 'Date de génération', description: 'Date à laquelle le document est généré', type: 'date' },
-          { id: 'priceHT', name: 'Prix HT', description: 'Prix hors taxes de la mission', type: 'number' },
+          { id: 'generationDatePlusOneYear', name: 'Date de génération + 1 an', description: 'Date de génération + 365 jours', type: 'date' },
+          { id: 'priceHT', name: 'Prix horaire HT', description: 'Prix horaire hors taxes', type: 'number' },
+          { id: 'totalHoursHT', name: 'Prix total des heures travaillées HT', description: 'Prix total des heures travaillées HT (prix horaire × nombre d\'heures)', type: 'number' },
           { id: 'missionDescription', name: 'Description de la mission', description: 'Description détaillée de la mission', type: 'text' },
           { id: 'title', name: 'Titre', description: 'Titre de la mission', type: 'text' },
           { id: 'hours', name: 'Nombre d\'heures', description: 'Nombre total d\'heures de la mission', type: 'number' },
@@ -2017,7 +2288,20 @@ const TemplatesPDF: React.FC = () => {
           { id: 'tva', name: 'Montant TVA', description: 'Montant de la TVA calculé sur le total TTC', type: 'number' },
           { id: 'courseApplication', name: 'Application du cours', description: 'Gestion des papiers et application du cours', type: 'text' },
           { id: 'missionLearning', name: 'Apprentissage', description: 'Objectifs d\'apprentissage de la mission', type: 'text' },
-          { id: 'studentProfile', name: 'Profil étudiant', description: 'Profil type de l\'étudiant recherché', type: 'text' }
+          { id: 'studentProfile', name: 'Profil étudiant', description: 'Profil type de l\'étudiant recherché', type: 'text' },
+          // Dépenses (jusqu'à 4)
+          { id: 'nomdepense1', name: 'Nom dépense 1', description: 'Nom de la première dépense', type: 'text' },
+          { id: 'tvadepense1', name: 'TVA dépense 1', description: 'TVA de la première dépense (%)', type: 'number' },
+          { id: 'totaldepense1', name: 'Prix HT dépense 1', description: 'Prix HT de la première dépense', type: 'number' },
+          { id: 'nomdepense2', name: 'Nom dépense 2', description: 'Nom de la deuxième dépense', type: 'text' },
+          { id: 'tvadepense2', name: 'TVA dépense 2', description: 'TVA de la deuxième dépense (%)', type: 'number' },
+          { id: 'totaldepense2', name: 'Prix HT dépense 2', description: 'Prix HT de la deuxième dépense', type: 'number' },
+          { id: 'nomdepense3', name: 'Nom dépense 3', description: 'Nom de la troisième dépense', type: 'text' },
+          { id: 'tvadepense3', name: 'TVA dépense 3', description: 'TVA de la troisième dépense (%)', type: 'number' },
+          { id: 'totaldepense3', name: 'Prix HT dépense 3', description: 'Prix HT de la troisième dépense', type: 'number' },
+          { id: 'nomdepense4', name: 'Nom dépense 4', description: 'Nom de la quatrième dépense', type: 'text' },
+          { id: 'tvadepense4', name: 'TVA dépense 4', description: 'TVA de la quatrième dépense (%)', type: 'number' },
+          { id: 'totaldepense4', name: 'Prix HT dépense 4', description: 'Prix HT de la quatrième dépense', type: 'number' }
         ];
 
         const userFields = [
@@ -2027,6 +2311,7 @@ const TemplatesPDF: React.FC = () => {
           { id: 'ecole', name: 'École', description: 'École de formation de l\'utilisateur', type: 'text' },
           { id: 'phone', name: 'Téléphone', description: 'Numéro de téléphone de l\'utilisateur', type: 'text' },
           { id: 'socialSecurityNumber', name: 'Numéro de sécurité sociale', description: 'Numéro de sécurité sociale de l\'utilisateur', type: 'text' },
+          { id: 'studentId', name: 'Numéro étudiant', description: 'Numéro étudiant de l\'utilisateur', type: 'text' },
           { id: 'address', name: 'Adresse', description: 'Adresse postale de l\'utilisateur', type: 'text' },
           { id: 'city', name: 'Ville', description: 'Ville de résidence de l\'utilisateur', type: 'text' },
           { id: 'formation', name: 'Formation', description: 'Formation suivie par l\'utilisateur', type: 'text' },
@@ -2040,7 +2325,7 @@ const TemplatesPDF: React.FC = () => {
 
         const companyFields = [
           { id: 'companyName', name: 'Nom de l\'entreprise', description: 'Nom de l\'entreprise', type: 'text' },
-          { id: 'siren', name: 'Numéro SIRET', description: 'Numéro SIRET de l\'entreprise', type: 'text' },
+          { id: 'nSiret', name: 'Numéro nSiret', description: 'Numéro nSiret de l\'entreprise', type: 'text' },
           { id: 'companyAddress', name: 'Adresse', description: 'Adresse du siège social', type: 'text' },
           { id: 'companyCity', name: 'Ville', description: 'Ville du siège social', type: 'text' },
           { id: 'country', name: 'Pays', description: 'Pays de l\'entreprise', type: 'text' },
@@ -2127,12 +2412,13 @@ const TemplatesPDF: React.FC = () => {
           { id: 'email', name: 'Email', description: 'Email de contact de la structure', type: 'text' },
           { id: 'website', name: 'Site web', description: 'Site web de la structure', type: 'text' },
           { id: 'description', name: 'Description', description: 'Description de la structure', type: 'text' },
-          { id: 'siret', name: 'SIRET', description: 'Numéro SIRET de la structure (14 chiffres)', type: 'text' },
+          { id: 'nSiret', name: 'nSiret', description: 'Numéro nSiret de la structure (14 chiffres)', type: 'text' },
           { id: 'tvaNumber', name: 'N° de TVA intracommunautaire', description: 'Numéro de TVA intracommunautaire de la structure (format FR + 11 chiffres)', type: 'text' },
           { id: 'apeCode', name: 'Code APE', description: 'Code APE de la structure (4 chiffres + 1 lettre)', type: 'text' },
           { id: 'structure_address', name: 'Adresse de la structure', description: 'Adresse de la structure', type: 'text' },
           { id: 'structure_phone', name: 'N° de téléphone de la structure', description: 'N° de téléphone de la structure', type: 'text' },
-          { id: 'structure_email', name: 'Email de la structure', description: 'Email de la structure', type: 'text' }
+          { id: 'structure_email', name: 'Email de la structure', description: 'Email de la structure', type: 'text' },
+          { id: 'structure_president_fullName', name: 'Prénom et Nom du président', description: 'Prénom et Nom du président du mandat le plus récent', type: 'text' }
         ];
 
         setDatabaseFields({
@@ -2247,15 +2533,20 @@ const TemplatesPDF: React.FC = () => {
       // Mission
       numeroMission: '<mission_numero>',
       chargeName: '<mission_cdm>',
-      missionStartDate: '<mission_debut>',
-      missionEndDate: '<mission_fin>',
+      missionDateDebut: '<mission_date_debut>',
+      missionDateHeureDebut: '<mission_date_heure_debut>',
+      missionDateFin: '<mission_date_fin>',
+      missionDateHeureFin: '<mission_date_heure_fin>',
       location: '<mission_lieu>',
       company: '<mission_entreprise>',
-      priceHT: '<mission_prix>',
+      priceHT: '<mission_prix_horaire_ht>',
+      totalHoursHT: '<mission_prix_total_heures_ht>',
       missionDescription: '<mission_description>',
       title: '<mission_titre>',
       hours: '<mission_heures>',
       studentCount: '<mission_nb_etudiants>',
+      generationDate: '<mission_date_generation>',
+      generationDatePlusOneYear: '<mission_date_generation_plus_1_an>',
       
       // User
       lastName: '<user_nom>',
@@ -2265,10 +2556,12 @@ const TemplatesPDF: React.FC = () => {
       displayName: '<user_nom_complet>',
       phone: '<user_telephone>',
       socialSecurityNumber: '<user_numero_securite_sociale>',
+      studentId: '<user_numero_etudiant>',
       
       // Company
       companyName: '<company_nom>',
       siren: '<company_siren>',
+      nSiret: '<company_nsiret>',
       companyAddress: '<company_adresse>',
       
       // Expense Note
@@ -2320,6 +2613,7 @@ const TemplatesPDF: React.FC = () => {
       structure_description: '<structure_description>',
       structure_tvaNumber: '<structure_tvaNumber>',
       structure_apeCode: '<structure_apeCode>',
+      structure_president_fullName: '<structure_president_nom_complet>',
       charge_email: '<charge_email>',
       charge_phone: '<charge_phone>',
       totalHT: '<total_ht>',
@@ -2327,7 +2621,20 @@ const TemplatesPDF: React.FC = () => {
       tva: '<tva>',
       courseApplication: '<course_application>',
       missionLearning: '<mission_learning>',
-      studentProfile: '<student_profile>'
+      studentProfile: '<student_profile>',
+      // Dépenses
+      nomdepense1: '<depense1_nom>',
+      tvadepense1: '<depense1_tva>',
+      totaldepense1: '<depense1_prix>',
+      nomdepense2: '<depense2_nom>',
+      tvadepense2: '<depense2_tva>',
+      totaldepense2: '<depense2_prix>',
+      nomdepense3: '<depense3_nom>',
+      tvadepense3: '<depense3_tva>',
+      totaldepense3: '<depense3_prix>',
+      nomdepense4: '<depense4_nom>',
+      tvadepense4: '<depense4_tva>',
+      totaldepense4: '<depense4_prix>'
     };
 
     return tagMap[variableId] || variableId;
@@ -2383,6 +2690,17 @@ const TemplatesPDF: React.FC = () => {
     setIsAddingRawText(false);
   };
 
+  const handleCopyTag = (tag: string) => {
+    navigator.clipboard.writeText(tag);
+    setRawText((prev) => prev + tag);
+    setSnackbar({
+      open: true,
+      message: `Balise ${tag} ajoutée au texte`,
+      severity: 'success'
+    });
+    setTagsDialogOpen(false);
+  };
+  
   const handleTemplateSelect = (template: Template) => {
     setSelectedTemplate(template);
     // ... autre logique existante ...
@@ -2422,1236 +2740,579 @@ const TemplatesPDF: React.FC = () => {
     handleCloseLineHeightDialog();
   };
 
-  return (
-    <Box sx={{ p: 3 }}>
-      <BackButton />
-      {/* En-tête avec les boutons et le sélecteur de template */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1 }}>
-          <FormControl sx={{ minWidth: 300 }}>
-            <InputLabel>Template</InputLabel>
-            <Select
-              value={selectedTemplate?.id || ''}
-              onChange={(e) => {
-                const template = templates.find(t => t.id === e.target.value);
-                setSelectedTemplate(template || null);
-              }}
-              label="Template"
-            >
-              {templates.map(template => (
-                <MenuItem
-                  key={template.id}
-                  value={template.id}
-                  onClick={() => handleTemplateSelect(template)}
-                  sx={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    '&:hover': {
-                      backgroundColor: alpha(theme.palette.primary.main, 0.1)
-                    }
-                  }}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'center', flex: 1 }}>
-                    <TextSnippetIcon sx={{ mr: 1, color: 'text.secondary' }} />
-                    <Typography>{template.name}</Typography>
-                  </Box>
-                  {!defaultTemplates[template.id] && (
-                    <IconButton
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteTemplate(template.id);
-                      }}
-                      size="small"
-                      sx={{
-                        color: theme.palette.error.main,
-                        '&:hover': {
-                          backgroundColor: alpha(theme.palette.error.main, 0.1)
-                        }
-                      }}
-                    >
-                      <DeleteIcon fontSize="small" />
+  const handleRenameTemplate = async () => {
+    if (!selectedTemplate || !newTemplateName.trim() || !currentUser) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      
+      // Mettre à jour dans Firestore
+      const templateRef = doc(db, 'templates', selectedTemplate.id);
+      await updateDoc(templateRef, { 
+        name: newTemplateName.trim(),
+        updatedAt: serverTimestamp()
+      });
+      
+      // Mettre à jour localement
+      const updatedTemplate = { ...selectedTemplate, name: newTemplateName.trim() };
+      setTemplates(templates.map(t => t.id === selectedTemplate.id ? updatedTemplate : t));
+      setSelectedTemplate(updatedTemplate);
+      
+      setRenameDialogOpen(false);
+      setSnackbar({
+        open: true,
+        message: 'Template renommé avec succès',
+        severity: 'success'
+      });
+    } catch (error) {
+      console.error('Erreur lors du renommage:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors du renommage du template',
+        severity: 'error'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: '#f5f5f5' }}>
+        {/* HEADER */}
+        <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: '1px solid #e0e0e0', bgcolor: 'white' }}>
+            <Toolbar variant="dense" sx={{ justifyContent: 'space-between', minHeight: 64 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <FormControl size="small" sx={{ minWidth: 250 }}>
+                        <Select
+                            displayEmpty
+                            value={selectedTemplate?.id || ''}
+                            onChange={(e) => {
+                                const template = templates.find(t => t.id === e.target.value);
+                                setSelectedTemplate(template || null);
+                            }}
+                            renderValue={(value) => {
+                                if (!value) return <Typography color="text.secondary">Sélectionner un modèle</Typography>;
+                                const template = templates.find(t => t.id === value);
+                                return template?.name;
+                            }}
+                        >
+                            <MenuItem value="" disabled>Sélectionner un modèle</MenuItem>
+                            {templates.map(t => (
+                                <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+                    {selectedTemplate && (
+                        <IconButton
+                            size="small"
+                            onClick={() => {
+                                setNewTemplateName(selectedTemplate.name);
+                                setRenameDialogOpen(true);
+                            }}
+                        >
+                            <EditIcon />
+                        </IconButton>
+                    )}
+                    <Button startIcon={<AddIcon />} size="small" onClick={() => setOpenDialog(true)}>
+                        Nouveau
+                    </Button>
+                </Box>
+
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <IconButton onClick={() => setPageNumber(Math.max(1, pageNumber - 1))} disabled={pageNumber <= 1} size="small">
+                         <KeyboardArrowDownIcon sx={{ transform: 'rotate(90deg)' }} />
                     </IconButton>
-                  )}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <Button
-            variant="contained"
-            color="primary"
-            onClick={() => setOpenDialog(true)}
-            startIcon={<AddIcon />}
-          >
-            Créer une nouvelle template
-          </Button>
-        </Box>
-      </Box>
-
-      {/* Bouton de sauvegarde fixe */}
-      {selectedTemplate && (
-        <Box
-          sx={{
-            position: 'fixed',
-            top: 130,
-            right: 75,
-            zIndex: 1000,
-            display: 'flex',
-            gap: 1,
-            backgroundColor: 'transparent'
-          }}
-        >
-          <Button
-            variant="contained"
-            color="primary"
-            onClick={handleSaveVariables}
-            disabled={loading || !hasUnsavedChanges}
-            startIcon={loading ? <CircularProgress size={20} /> : <SaveIcon />}
-            sx={{
-              boxShadow: 3,
-              '&:hover': {
-                boxShadow: 6
-              },
-              minWidth: '200px'
-            }}
-          >
-            {loading ? 'Enregistrement...' : 'Enregistrer les modifications'}
-          </Button>
-        </Box>
-      )}
-
-      {/* Popup de modification rapide */}
-      {selectedPlacedVariable && popupPosition && (
-        <Box
-          className="variable-popup"
-          sx={{
-            position: 'fixed',
-            left: `${popupPosition.x}px`,
-            top: `${popupPosition.y}px`,
-            zIndex: 9999,
-            backgroundColor: 'white',
-            borderRadius: 1,
-            boxShadow: 3,
-            p: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 1,
-            pointerEvents: 'auto',
-            minWidth: '200px',
-            border: '1px solid #e0e0e0'
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="body2">Police:</Typography>
-            <FormControl size="small" sx={{ minWidth: 120 }}>
-              <Select
-                value={selectedTemplate?.variables.find(v => v.id === selectedPlacedVariable)?.fontFamily || 'Arial'}
-                onChange={(e) => {
-                  if (!selectedTemplate) return;
-                  const updatedVariables = selectedTemplate.variables.map(v =>
-                    v.id === selectedPlacedVariable
-                      ? { ...v, fontFamily: e.target.value }
-                      : v
-                  );
-                  setSelectedTemplate({
-                    ...selectedTemplate,
-                    variables: updatedVariables
-                  });
-                  setHasUnsavedChanges(true);
-                }}
-                size="small"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {FONT_FAMILIES.map(font => (
-                  <MenuItem key={font.value} value={font.value} sx={{ fontFamily: font.value }}>
-                    {font.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
-
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="body2">Taille:</Typography>
-            <FormControl size="small" sx={{ minWidth: 80 }}>
-              <Select
-                value={selectedTemplate?.variables.find(v => v.id === selectedPlacedVariable)?.fontSize || 12}
-                onChange={(e) => {
-                  if (!selectedTemplate) return;
-                  const updatedVariables = selectedTemplate.variables.map(v =>
-                    v.id === selectedPlacedVariable
-                      ? { ...v, fontSize: Number(e.target.value) }
-                      : v
-                  );
-                  setSelectedTemplate({
-                    ...selectedTemplate,
-                    variables: updatedVariables
-                  });
-                  setHasUnsavedChanges(true);
-                }}
-                size="small"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {FONT_SIZES.map(size => (
-                  <MenuItem key={size} value={size}>
-                    {size}pt
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
-
-          {selectedPlacedVariable && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-              <Typography variant="body2">Gras:</Typography>
-              <Switch
-                size="small"
-                checked={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.isBold || false}
-                onChange={(e) => {
-                  const updatedVariables = selectedTemplate.variables.map(v =>
-                    v.id === selectedPlacedVariable
-                      ? { ...v, isBold: e.target.checked }
-                      : v
-                  );
-                  setSelectedTemplate({
-                    ...selectedTemplate,
-                    variables: updatedVariables
-                  });
-                  setHasUnsavedChanges(true);
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </Box>
-          )}
-        </Box>
-      )}
-
-      {/* Conteneur principal */}
-      <Box sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 150px)' }}>
-        {/* Section des contrôles et variables */}
-        {selectedTemplate && (
-          <Box sx={{ mb: 2 }}>
-            <Grid container spacing={2}>
-              {/* Variables disponibles et propriétés */}
-              <Grid item xs={12}>
-                <Grid container spacing={2}>
-                  {/* Variables disponibles */}
-                  <Grid item xs={12}>
-                    <Card>
-                      <CardContent>
-                        <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          Variables disponibles
-                          <Tooltip 
-                            title={
-                              <Box sx={{ p: 1 }}>
-                                <Typography variant="subtitle2" gutterBottom>Description des variables :</Typography>
-                                {databaseFields[selectedDatabase].map(variable => (
-                                  <Box key={variable.id} sx={{ mb: 1 }}>
-                                    <Typography variant="body2" sx={{ fontWeight: 'bold' }}>{variable.name} :</Typography>
-                                    <Typography variant="body2">{variable.description}</Typography>
-                                  </Box>
-                                ))}
-                              </Box>
-                            }
-                            arrow
-                            placement="right"
-                          >
-                            <IconButton size="small" sx={{ ml: 1 }}>
-                              <InfoIcon fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
-                        </Typography>
-                        
-                        <Box sx={{ display: 'flex', gap: 2 }}>
-                          {/* Colonne de gauche - Variables disponibles */}
-                          <Box sx={{ flex: 1 }}>
-                            <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-                              <InputLabel>Source des données</InputLabel>
-                              <Select
-                                value={selectedDatabase}
-                                onChange={(e) => setSelectedDatabase(e.target.value as 'missions' | 'users' | 'companies' | 'contacts' | 'expenseNotes' | 'workingHours' | 'amendments' | 'structures')}
-                                label="Source des données"
-                              >
-                                <MenuItem value="missions">Missions</MenuItem>
-                                <MenuItem value="users">Utilisateurs</MenuItem>
-                                <MenuItem value="companies">Entreprises</MenuItem>
-                                <MenuItem value="contacts">Contacts</MenuItem>
-                                <MenuItem value="expenseNotes">Notes de frais</MenuItem>
-                                <MenuItem value="workingHours">Heures de travail</MenuItem>
-                                <MenuItem value="amendments">Avenants</MenuItem>
-                                <MenuItem value="structures">Structure</MenuItem>
-                              </Select>
-                            </FormControl>
-
-                            <Box sx={{ maxHeight: '150px', overflowY: 'auto' }}>
-                              {databaseFields[selectedDatabase].map(variable => (
-                                <Tooltip 
-                                  key={variable.id} 
-                                  title={`${variable.description} - Type: ${variable.type}`}
-                                  arrow
+                    <Typography variant="body2">Page {pageNumber} / {numPages || 1}</Typography>
+                    <IconButton onClick={() => setPageNumber(Math.min(numPages || 1, pageNumber + 1))} disabled={pageNumber >= (numPages || 1)} size="small">
+                         <KeyboardArrowDownIcon sx={{ transform: 'rotate(-90deg)' }} />
+                    </IconButton>
+                    <Divider orientation="vertical" flexItem variant="middle" />
+                    <Box sx={{ width: 100, display: 'flex', alignItems: 'center' }}>
+                        <Slider
+                            size="small"
+                            value={zoom}
+                            min={0.5}
+                            max={2}
+                            step={0.1}
+                            onChange={(_, v) => setZoom(v as number)}
+                        />
+                    </Box>
+                    <Typography variant="caption" sx={{ width: 35 }}>{Math.round(zoom * 100)}%</Typography>
+                    {selectedTemplate && (
+                        <>
+                            <Divider orientation="vertical" flexItem variant="middle" />
+                            <Tooltip title={previewMode ? "Désactiver l'aperçu" : "Aperçu avec exemples"}>
+                                <IconButton
+                                    size="small"
+                                    onClick={() => setPreviewMode(!previewMode)}
+                                    color={previewMode ? "primary" : "default"}
                                 >
-                                  <Chip
-                                    label={variable.name}
-                                    onClick={() => setSelectedVariableId(selectedVariableId === variable.id ? null : variable.id)}
-                                    color={selectedVariableId === variable.id ? "primary" : "default"}
-                                    sx={{ 
-                                      m: 0.5, 
-                                      cursor: 'pointer',
-                                      fontSize: currentFontSize + 'px',
-                                      height: 'auto',
-                                      py: 0.5
-                                    }}
-                                  />
-                                </Tooltip>
-                              ))}
-                            </Box>
-                          </Box>
+                                    {previewMode ? <VisibilityOffIcon /> : <VisibilityIcon />}
+                                </IconButton>
+                            </Tooltip>
+                        </>
+                    )}
+                </Box>
 
-                          {/* Colonne de droite - Zone de texte */}
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle2" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              Texte à ajouter
-                              <Tooltip 
-                                title={
-                                  <Box sx={{ 
-                                    p: 1, 
-                                    maxWidth: 400,
-                                    maxHeight: '80vh',
-                                    overflowY: 'auto',
-                                    '&::-webkit-scrollbar': {
-                                      width: '8px',
-                                    },
-                                    '&::-webkit-scrollbar-track': {
-                                      background: '#f1f1f1',
-                                      borderRadius: '4px',
-                                    },
-                                    '&::-webkit-scrollbar-thumb': {
-                                      background: '#888',
-                                      borderRadius: '4px',
-                                      '&:hover': {
-                                        background: '#555',
-                                      },
-                                    },
-                                  }}>
-                                    <Typography variant="subtitle2" gutterBottom>
-                                      Comment inclure des variables dans le texte :
-                                    </Typography>
-                                    <Typography variant="body2" paragraph>
-                                      Utilisez les balises suivantes dans votre texte :
-                                    </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {selectedTemplate && (
+                        <>
+                             <Button
+                                variant="outlined"
+                                size="small"
+                                onClick={handleOpenReplacePdfDialog}
+                                startIcon={<UploadIcon />}
+                             >
+                                PDF
+                             </Button>
+                             <Button
+                                variant="outlined"
+                                size="small"
+                                onClick={handleOpenDuplicateDialog}
+                                startIcon={<ContentCopyIcon />}
+                             >
+                                Dupliquer
+                             </Button>
+                             <Button
+                                variant="contained"
+                                color="primary"
+                                onClick={handleSaveVariables}
+                                disabled={loading || !hasUnsavedChanges}
+                                startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+                             >
+                                Enregistrer
+                             </Button>
+                        </>
+                    )}
+                </Box>
+            </Toolbar>
+        </AppBar>
 
-                                    {/* Balises pour les missions */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les missions :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_numero&gt; - Numéro de mission
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_cdm&gt; - Chef de mission
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_date&gt; - Date de mission
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_lieu&gt; - Lieu
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_entreprise&gt; - Entreprise
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_prix&gt; - Prix HT
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_description&gt; - Description
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_titre&gt; - Titre
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_heures&gt; - Nombre d'heures
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_statut&gt; - Statut
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_heures_par_etudiant&gt; - Heures par étudiant
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;mission_nb_etudiants&gt; - Nombre d'étudiants
-                                      </Typography>
-                                    </Box>
-
-                                    {/* Balises pour les utilisateurs */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les utilisateurs :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_nom&gt; - Nom utilisateur
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_prenom&gt; - Prénom utilisateur
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_email&gt; - Email
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_ecole&gt; - École
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_telephone&gt; - Téléphone
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_adresse&gt; - Adresse
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_ville&gt; - Ville
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_formation&gt; - Formation
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_programme&gt; - Programme
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_annee_diplome&gt; - Année de diplômation
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_nationalite&gt; - Nationalité
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_genre&gt; - Genre
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_lieu_naissance&gt; - Lieu de naissance
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;user_date_naissance&gt; - Date de naissance
-                                      </Typography>
-                                    </Box>
-
-                                    {/* Balises pour les entreprises */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les entreprises :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_nom&gt; - Nom de l'entreprise
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_siren&gt; - Numéro SIREN
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_adresse&gt; - Adresse
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_ville&gt; - Ville
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_pays&gt; - Pays
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_telephone&gt; - Téléphone
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_email&gt; - Email
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_site_web&gt; - Site web
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;entreprise_description&gt; - Description
-                                      </Typography>
-                                    </Box>
-
-                                    {/* Balises pour les notes de frais */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les notes de frais :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;note_frais_montant&gt; - Montant
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;note_frais_description&gt; - Description
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;note_frais_date&gt; - Date
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;note_frais_statut&gt; - Statut
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;note_frais_creation&gt; - Date de création
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;note_frais_maj&gt; - Date de mise à jour
-                                      </Typography>
-                                    </Box>
-
-                                    {/* Balises pour les heures de travail */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les heures de travail :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursDateDebut&gt; - Date de début des heures travaillées
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursHeureDebut&gt; - Heure de début
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursDateFin&gt; - Date de fin des heures travaillées
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursHeureFin&gt; - Heure de fin
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursPauses&gt; - Liste des pauses
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursTotal&gt; - Total des heures travaillées
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursCreation&gt; - Date de création
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;workingHoursMaj&gt; - Date de mise à jour
-                                      </Typography>
-                                    </Box>
-
-                                    {/* Balises pour les avenants */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les avenants :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;amendment_planned_start_date&gt; - Date de début prévue
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;amendment_planned_end_date&gt; - Date de fin prévue
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;amendment_actual_start_date&gt; - Date de début réelle
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;amendment_actual_end_date&gt; - Date de fin réelle
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;amendment_planned_hours&gt; - Heures prévues
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;amendment_actual_hours&gt; - Heures réelles
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;amendment_reason&gt; - Motif
-                                      </Typography>
-                                    </Box>
-
-                                    {/* Balises pour les contacts */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les contacts :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;contact_nom&gt; - Nom du contact
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;contact_prenom&gt; - Prénom du contact
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;contact_email&gt; - Email du contact
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;contact_telephone&gt; - Téléphone du contact
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;contact_poste&gt; - Poste du contact
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;contact_linkedin&gt; - LinkedIn du contact
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;contact_nom_complet&gt; - Nom complet du contact
-                                      </Typography>
-                                    </Box>
-
-                                    {/* Balises pour les structures */}
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: 'primary.main' }}>
-                                      Balises pour les structures :
-                                    </Typography>
-                                    <Box component="ul" sx={{ pl: 2, m: 0 }}>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_nom&gt; - Nom de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_siret&gt; - SIRET de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_tvaNumber&gt; - N° de TVA intracommunautaire
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_apeCode&gt; - Code APE
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_ecole&gt; - École de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_id&gt; - Identifiant de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_creation&gt; - Date de création de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_maj&gt; - Date de mise à jour de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_address&gt; - Adresse de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_phone&gt; - N° de téléphone de la structure
-                                      </Typography>
-                                      <Typography component="li" variant="body2">
-                                        &lt;structure_email&gt; - Email de la structure
-                                      </Typography>
-                                    </Box>
-
-                                    <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
-                                      Exemple :
-                                    </Typography>
-                                    <Typography variant="body2" sx={{ 
-                                      p: 1, 
-                                      bgcolor: 'rgba(0,0,0,0.04)', 
-                                      borderRadius: 1,
-                                      fontFamily: 'monospace'
-                                    }}>
-                                      Mission &lt;mission_numero&gt; du &lt;mission_date&gt; à &lt;mission_lieu&gt;
-                                    </Typography>
-                                    <Typography variant="body2" sx={{ mt: 1, color: 'text.secondary' }}>
-                                      Résultat : Mission M2024-001 du 01/01/2024 à Paris
-                                    </Typography>
-                                  </Box>
-                                }
-                                arrow
-                                placement="right"
-                              >
-                                <span>
-                                  <IconButton size="small">
-                                    <InfoIcon fontSize="small" />
-                                  </IconButton>
-                                </span>
-                              </Tooltip>
-                              </Typography>
-                            
-                            <TextField
-                              id="raw-text-input"
-                              fullWidth
-                              size="small"
-                              multiline
-                              rows={4}
-                              placeholder="Saisissez votre texte ici"
-                              value={rawText}
-                              onChange={(e) => setRawText(e.target.value)}
-                              sx={{ mb: 1 }}
-                            />
-
-                            <Button
-                              variant="contained"
-                              fullWidth
-                              startIcon={isAddingRawText ? <CheckIcon /> : <AddIcon />}
-                              onClick={() => {
-                                setIsAddingRawText(!isAddingRawText);
-                                setSelectedVariableId(null);
-                              }}
-                              disabled={!rawText.trim()}
-                              color={isAddingRawText ? "success" : "primary"}
-                            >
-                              {isAddingRawText ? "Cliquez sur le PDF pour placer le texte" : "Ajouter le texte"}
-                            </Button>
-                          </Box>
-                        </Box>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-              </Grid>
-            </Grid>
-          </Box>
-        )}
-
-        {/* Zone centrale avec le PDF */}
-        <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          {selectedTemplate ? (
-            <Card sx={{ display: 'flex', flexDirection: 'column' }}>
-              {/* Barre d'outils des propriététés */}
-              {selectedPlacedVariable && (
-                <Box sx={{ 
-                  p: 1, 
-                  borderBottom: 1, 
-                  borderColor: 'divider',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 2,
-                  flexWrap: 'wrap'
-                }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="body2">Position X:</Typography>
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={Math.round(selectedTemplate.variables.find(
-                        v => v.id === selectedPlacedVariable
-                      )?.position.x || 0)}
-                      onChange={(e) => {
-                        const newX = Number(e.target.value);
-                        const updatedVariables = selectedTemplate.variables.map(v =>
-                          v.id === selectedPlacedVariable
-                            ? { ...v, position: { ...v.position, x: newX } }
-                            : v
-                        );
-                        setSelectedTemplate({
-                          ...selectedTemplate,
-                          variables: updatedVariables
-                        });
-                        setHasUnsavedChanges(true);
-                      }}
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                      }}
-                      InputProps={{
-                        endAdornment: <Typography variant="caption">px</Typography>
-                      }}
-                      sx={{ width: 80 }}
-                    />
-                  </Box>
-
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="body2">Y:</Typography>
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={Math.round(selectedTemplate.variables.find(
-                        v => v.id === selectedPlacedVariable
-                      )?.position.y || 0)}
-                      onChange={(e) => {
-                        const newY = Number(e.target.value);
-                        const updatedVariables = selectedTemplate.variables.map(v =>
-                          v.id === selectedPlacedVariable
-                            ? { ...v, position: { ...v.position, y: newY } }
-                            : v
-                        );
-                        setSelectedTemplate({
-                          ...selectedTemplate,
-                          variables: updatedVariables
-                        });
-                        setHasUnsavedChanges(true);
-                      }}
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                      }}
-                      InputProps={{
-                        endAdornment: <Typography variant="caption">px</Typography>
-                      }}
-                      sx={{ width: 80 }}
-                    />
-                  </Box>
-
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="body2">Largeur:</Typography>
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={Math.round(selectedTemplate.variables.find(
-                        v => v.id === selectedPlacedVariable
-                      )?.width || 100)}
-                      onChange={(e) => {
-                        const newWidth = Number(e.target.value);
-                        const updatedVariables = selectedTemplate.variables.map(v =>
-                          v.id === selectedPlacedVariable
-                            ? { ...v, width: newWidth }
-                            : v
-                        );
-                        setSelectedTemplate({
-                          ...selectedTemplate,
-                          variables: updatedVariables
-                        });
-                        setHasUnsavedChanges(true);
-                      }}
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                      }}
-                      InputProps={{
-                        endAdornment: <Typography variant="caption">px</Typography>
-                      }}
-                      sx={{ width: 80 }}
-                    />
-                  </Box>
-
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="body2">Hauteur:</Typography>
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={Math.round(selectedTemplate.variables.find(
-                        v => v.id === selectedPlacedVariable
-                      )?.height || 30)}
-                      onChange={(e) => {
-                        const newHeight = Number(e.target.value);
-                        const updatedVariables = selectedTemplate.variables.map(v =>
-                          v.id === selectedPlacedVariable
-                            ? { ...v, height: newHeight }
-                            : v
-                        );
-                        setSelectedTemplate({
-                          ...selectedTemplate,
-                          variables: updatedVariables
-                        });
-                        setHasUnsavedChanges(true);
-                      }}
-                      onMouseDown={(e) => {
-                        e.stopPropagation();
-                      }}
-                      InputProps={{
-                        endAdornment: <Typography variant="caption">px</Typography>
-                      }}
-                      sx={{ width: 80 }}
-                    />
-                  </Box>
-
-                  <Divider orientation="vertical" flexItem />
-
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="body2">Alignement:</Typography>
-                    <Box sx={{ display: 'flex', gap: 0.5 }}>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const updatedVariables = selectedTemplate.variables.map(v =>
-                            v.id === selectedPlacedVariable
-                              ? { ...v, textAlign: 'left' as const }
-                              : v
-                          );
-                          setSelectedTemplate({
-                            ...selectedTemplate,
-                            variables: updatedVariables
-                          });
-                          setHasUnsavedChanges(true);
+        {/* MAIN CONTENT */}
+        <Box sx={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+            {/* CANVAS AREA */}
+            <Box
+                sx={{
+                    flex: 1,
+                    bgcolor: '#F3F4F6',
+                    overflow: 'auto',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'flex-start',
+                    p: 4
+                }}
+                onClick={() => setSelectedPlacedVariable(null)}
+            >
+                {selectedTemplate ? (
+                     <Box
+                        sx={{
+                            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                            // Ensure relative positioning for absolute children (PDF pages)
+                            position: 'relative',
+                            display: 'inline-block' 
                         }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                        color={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.textAlign === 'left' ? 'primary' : 'default'}
-                      >
-                        <FormatAlignLeftIcon fontSize="small" />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const updatedVariables = selectedTemplate.variables.map(v =>
-                            v.id === selectedPlacedVariable
-                              ? { ...v, textAlign: 'center' as const }
-                              : v
-                          );
-                          setSelectedTemplate({
-                            ...selectedTemplate,
-                            variables: updatedVariables
-                          });
-                          setHasUnsavedChanges(true);
-                        }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                        color={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.textAlign === 'center' ? 'primary' : 'default'}
-                      >
-                        <FormatAlignCenterIcon fontSize="small" />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const updatedVariables = selectedTemplate.variables.map(v =>
-                            v.id === selectedPlacedVariable
-                              ? { ...v, textAlign: 'right' as const }
-                              : v
-                          );
-                          setSelectedTemplate({
-                            ...selectedTemplate,
-                            variables: updatedVariables
-                          });
-                          setHasUnsavedChanges(true);
-                        }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                        color={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.textAlign === 'right' ? 'primary' : 'default'}
-                      >
-                        <FormatAlignRightIcon fontSize="small" />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const updatedVariables = selectedTemplate.variables.map(v =>
-                            v.id === selectedPlacedVariable
-                              ? { ...v, textAlign: 'justify' as const }
-                              : v
-                          );
-                          setSelectedTemplate({
-                            ...selectedTemplate,
-                            variables: updatedVariables
-                          });
-                          setHasUnsavedChanges(true);
-                        }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                        color={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.textAlign === 'justify' ? 'primary' : 'default'}
-                      >
-                        <FormatAlignJustifyIcon fontSize="small" />
-                      </IconButton>
-                    </Box>
-                  </Box>
-
-                  <Divider orientation="vertical" flexItem />
-
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Typography variant="body2">Vertical:</Typography>
-                    <Box sx={{ display: 'flex', gap: 0.5 }}>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const updatedVariables = selectedTemplate.variables.map(v => 
-                            v.id === selectedPlacedVariable 
-                              ? { ...v, verticalAlign: 'top' as const }
-                              : v
-                          );
-                          setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
-                          setHasUnsavedChanges(true);
-                        }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                        color={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.verticalAlign === 'top' ? 'primary' : 'default'}
-                      >
-                        <VerticalAlignTopIcon fontSize="small" />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const updatedVariables = selectedTemplate.variables.map(v => 
-                            v.id === selectedPlacedVariable 
-                              ? { ...v, verticalAlign: 'middle' as const }
-                              : v
-                          );
-                          setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
-                          setHasUnsavedChanges(true);
-                        }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                        color={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.verticalAlign === 'middle' ? 'primary' : 'default'}
-                      >
-                        <VerticalAlignCenterIcon fontSize="small" />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          const updatedVariables = selectedTemplate.variables.map(v => 
-                            v.id === selectedPlacedVariable 
-                              ? { ...v, verticalAlign: 'bottom' as const }
-                              : v
-                          );
-                          setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
-                          setHasUnsavedChanges(true);
-                        }}
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                        color={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.verticalAlign === 'bottom' ? 'primary' : 'default'}
-                      >
-                        <VerticalAlignBottomIcon fontSize="small" />
-                      </IconButton>
-
-                      {/* Ajout du contrôle d'espacement des lignes */}
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Typography variant="body2" sx={{ whiteSpace: 'nowrap' }}>
-                          Espacement:
-                        </Typography>
-                        <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid rgba(0, 0, 0, 0.23)', borderRadius: 1 }}>
-                          <IconButton
-                            size="small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              const currentValue = selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.lineHeight || 1.2;
-                              const newValue = Math.max(0.5, currentValue - 0.1);
-                              const updatedVariables = selectedTemplate.variables.map(v => 
-                                v.id === selectedPlacedVariable 
-                                  ? { ...v, lineHeight: Number(newValue.toFixed(1)) }
-                                  : v
-                              );
-                              setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
-                              setHasUnsavedChanges(true);
+                     >
+                        <Paper
+                            elevation={3}
+                            ref={pdfContainerRef}
+                            onClick={handlePdfClick}
+                            onMouseMove={(e) => {
+                                if (resizingVariable) handleResizeMove(e);
+                                else handleVariableMouseMove(e);
                             }}
-                            onMouseDown={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
+                            onMouseUp={() => {
+                                if (resizingVariable) handleResizeEnd();
+                                else handleVariableMouseUp();
                             }}
-                            sx={{ p: 0.5 }}
-                          >
-                            <RemoveIcon fontSize="small" />
-                          </IconButton>
-                          <Typography
+                            onMouseLeave={() => {
+                                if (resizingVariable) handleResizeEnd();
+                                else handleVariableMouseUp();
+                            }}
                             sx={{
-                              px: 1,
-                              minWidth: '40px',
-                              textAlign: 'center',
-                              userSelect: 'none'
+                                position: 'relative',
+                                width: 595 * zoom,
+                                height: 842 * zoom,
+                                overflow: 'hidden',
+                                bgcolor: 'white'
                             }}
-                          >
-                            {(selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.lineHeight || 1.2).toFixed(1)}
-                          </Typography>
-                          <IconButton
-                            size="small"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              const currentValue = selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.lineHeight || 1.2;
-                              const newValue = Math.min(3, currentValue + 0.1);
-                              const updatedVariables = selectedTemplate.variables.map(v => 
-                                v.id === selectedPlacedVariable 
-                                  ? { ...v, lineHeight: Number(newValue.toFixed(1)) }
-                                  : v
-                              );
-                              setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
-                              setHasUnsavedChanges(true);
-                            }}
-                            onMouseDown={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                            }}
-                            sx={{ p: 0.5 }}
-                          >
-                            <AddIcon fontSize="small" />
-                          </IconButton>
-                        </Box>
-                      </Box>
+                        >
+                             {renderPDF()}
+                        </Paper>
+                     </Box>
+                ) : (
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'text.secondary' }}>
+                        <Typography>Sélectionnez ou créez un modèle pour commencer</Typography>
                     </Box>
-                  </Box>
-
-                  <Box sx={{ flexGrow: 1 }} />
-
-                  <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button
-                      size="small"
-                      startIcon={<SaveIcon />}
-                      variant="contained"
-                      onClick={handleSaveVariables}
-                      disabled={!hasUnsavedChanges}
-                    >
-                      Enregistrer
-                    </Button>
-                  </Box>
-                </Box>
-              )}
-
-              <CardContent sx={{ display: 'flex', flexDirection: 'column', p: 2 }}>
-                {/* Contrôle de zoom et variables sélectionnées */}
-                <Box sx={{ 
-                  mb: 2, 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'space-between',
-                  gap: 2,
-                  width: '100%'
-                }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <Typography variant="body2">Zoom:</Typography>
-                    <Slider
-                      value={zoom}
-                      onChange={(_, newValue) => setZoom(newValue as number)}
-                      min={0.5}
-                      max={2}
-                      step={0.1}
-                      marks={[
-                        { value: 0.5, label: '50%' },
-                        { value: 1, label: '100%' },
-                        { value: 2, label: '200%' }
-                      ]}
-                      sx={{ width: 200 }}
-                    />
-                    <Typography variant="body2">{Math.round(zoom * 100)}%</Typography>
-                  </Box>
-
-                  {/* Variables sélectionnées */}
-                  <Box sx={{ 
-                    display: 'flex', 
-                    flexWrap: 'wrap', 
-                    gap: 1,
-                    maxWidth: '50%',
-                    justifyContent: 'flex-end'
-                  }}>
-                    {selectedTemplate.variables.map(variable => (
-                      <Chip
-                        key={variable.id}
-                        label={variable.name}
-                        onClick={() => setSelectedPlacedVariable(variable.id)}
-                        color={selectedPlacedVariable === variable.id ? "primary" : "default"}
-                        onDelete={() => handleDeleteVariable(variable.id)}
-                        size="small"
-                      />
-                    ))}
-                  </Box>
-                </Box>
-
-                <Box sx={{ 
-                  display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'flex-start',
-                  backgroundColor: '#f5f5f7',
-                  borderRadius: 1,
-                  overflow: 'auto',
-                  p: 2,
-                  pb: 8,
-                  userSelect: 'none',
-                  WebkitUserSelect: 'none',
-                  MozUserSelect: 'none',
-                  msUserSelect: 'none',
-                  minHeight: `${842 * zoom + 32}px`, // Hauteur du PDF + padding
-                  width: '100%'
-                }}>
-                  <Paper 
-                    elevation={0} 
-                    sx={{ 
-                      position: 'relative',
-                      display: 'inline-block',
-                      backgroundColor: 'transparent',
-                      userSelect: 'none',
-                      WebkitUserSelect: 'none',
-                      MozUserSelect: 'none',
-                      msUserSelect: 'none',
-                      '& .react-pdf__Document': {
-                        width: '100%',
-                        height: '100%',
-                        display: 'flex',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        userSelect: 'none',
-                        WebkitUserSelect: 'none',
-                        MozUserSelect: 'none',
-                        msUserSelect: 'none'
-                      },
-                      '& .react-pdf__Page': {
-                        width: '100% !important',
-                        height: '100% !important',
-                        maxWidth: '100%',
-                        maxHeight: '100%',
-                        userSelect: 'none',
-                        WebkitUserSelect: 'none',
-                        MozUserSelect: 'none',
-                        msUserSelect: 'none'
-                      }
-                    }}
-                    ref={pdfContainerRef}
-                    onClick={handlePdfClick}
-                    onMouseMove={(e) => {
-                      if (resizingVariable) {
-                        handleResizeMove(e);
-                      } else {
-                        handleVariableMouseMove(e);
-                      }
-                    }}
-                    onMouseUp={() => {
-                      if (resizingVariable) {
-                        handleResizeEnd();
-                      } else {
-                        handleVariableMouseUp();
-                      }
-                    }}
-                    onMouseLeave={() => {
-                      if (resizingVariable) {
-                        handleResizeEnd();
-                      } else {
-                        handleVariableMouseUp();
-                      }
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        position: 'relative',
-                        display: 'inline-block',
-                        width: `${595 * zoom}px`,
-                        height: `${842 * zoom}px`,
-                        maxWidth: '100%',
-                        maxHeight: '100%',
-                        overflow: 'hidden'
-                      }}
-                    >
-                      {renderPDF()}
-                    </Box>
-                  </Paper>
-                </Box>
-                
-                {numPages && numPages > 1 && (
-                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
-                    <Button 
-                      disabled={pageNumber <= 1} 
-                      onClick={() => setPageNumber(pageNumber - 1)}
-                    >
-                      Précédent
-                    </Button>
-                    <Typography sx={{ mx: 2, display: 'flex', alignItems: 'center' }}>
-                      Page {pageNumber} sur {numPages}
-                    </Typography>
-                    <Button 
-                      disabled={pageNumber >= numPages} 
-                      onClick={() => setPageNumber(pageNumber + 1)}
-                    >
-                      Suivant
-                    </Button>
-                  </Box>
                 )}
-              </CardContent>
-            </Card>
-          ) : (
-            <Card sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <CardContent sx={{ textAlign: 'center' }}>
-                <Typography variant="h6" color="textSecondary" gutterBottom>
-                  Aucun template sélectionné
-                </Typography>
-                <Typography variant="body2" color="textSecondary">
-                  Sélectionnez un template existant ou créez-en un nouveau
-                </Typography>
-              </CardContent>
-            </Card>
-          )}
-        </Box>
-      </Box>
+            </Box>
 
-      {/* Garder les dialogues existants */}
-      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
+            {/* RIGHT SIDEBAR (INSPECTOR) */}
+            <Paper
+                square
+                elevation={0}
+                className="properties-sidebar"
+                sx={{
+                    width: 350,
+                    borderLeft: '1px solid #e0e0e0',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    bgcolor: 'white',
+                    zIndex: 10,
+                    height: '100%'
+                }}
+            >
+                {selectedTemplate ? (
+                    selectedPlacedVariable ? (
+                        // STATE 2: PROPERTIES
+                        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                            <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <Typography variant="subtitle1" fontWeight="bold">Propriétés</Typography>
+                                <IconButton size="small" onClick={() => setSelectedPlacedVariable(null)}>
+                                    <CloseIcon />
+                                </IconButton>
+                            </Box>
+                            <Box sx={{ p: 2, overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                {/* Content Editing */}
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ mb: 1, display: 'block' }}>
+                                        {selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.type === 'raw' ? 'CONTENU DU TEXTE' : 'NOM DE LA VARIABLE'}
+                                    </Typography>
+                                    <TextField
+                                        fullWidth
+                                        size="small"
+                                        multiline={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.type === 'raw'}
+                                        rows={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.type === 'raw' ? 4 : 1}
+                                        value={
+                                            selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.type === 'raw'
+                                                ? selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.rawText
+                                                : selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.name
+                                        }
+                                        onChange={(e) => {
+                                            const val = e.target.value;
+                                            const isRaw = selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.type === 'raw';
+                                            
+                                            const updatedVariables = selectedTemplate.variables.map(v =>
+                                                v.id === selectedPlacedVariable
+                                                    ? { 
+                                                        ...v, 
+                                                        [isRaw ? 'rawText' : 'name']: val,
+                                                        ...(isRaw ? { name: val.substring(0, 20) + (val.length > 20 ? '...' : '') } : {})
+                                                      }
+                                                    : v
+                                            );
+                                            setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                            setHasUnsavedChanges(true);
+                                        }}
+                                    />
+                                </Box>
+
+                                {/* Position */}
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ mb: 1, display: 'block' }}>POSITION & TAILLE</Typography>
+                                    <Grid container spacing={2}>
+                                        <Grid item xs={6}>
+                                            <TextField
+                                                label="X"
+                                                size="small"
+                                                type="number"
+                                                fullWidth
+                                                value={Math.round(selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.position.x || 0)}
+                                                onChange={(e) => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, position: { ...v.position, x: Number(e.target.value) } } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            />
+                                        </Grid>
+                                        <Grid item xs={6}>
+                                            <TextField
+                                                label="Y"
+                                                size="small"
+                                                type="number"
+                                                fullWidth
+                                                value={Math.round(selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.position.y || 0)}
+                                                onChange={(e) => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, position: { ...v.position, y: Number(e.target.value) } } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            />
+                                        </Grid>
+                                        <Grid item xs={6}>
+                                            <TextField
+                                                label="Largeur"
+                                                size="small"
+                                                type="number"
+                                                fullWidth
+                                                value={Math.round(selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.width || 100)}
+                                                onChange={(e) => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, width: Number(e.target.value) } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            />
+                                        </Grid>
+                                        <Grid item xs={6}>
+                                            <TextField
+                                                label="Hauteur"
+                                                size="small"
+                                                type="number"
+                                                fullWidth
+                                                value={Math.round(selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.height || 30)}
+                                                onChange={(e) => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, height: Number(e.target.value) } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            />
+                                        </Grid>
+                                    </Grid>
+                                </Box>
+
+                                {/* Typography */}
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ mb: 1, display: 'block' }}>TYPOGRAPHIE</Typography>
+                                    <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+                                        <InputLabel>Police</InputLabel>
+                                        <Select
+                                            label="Police"
+                                            value={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.fontFamily || 'Arial'}
+                                            onChange={(e) => {
+                                                const updatedVariables = selectedTemplate.variables.map(v =>
+                                                    v.id === selectedPlacedVariable ? { ...v, fontFamily: e.target.value } : v
+                                                );
+                                                setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                setHasUnsavedChanges(true);
+                                            }}
+                                        >
+                                            {FONT_FAMILIES.map(font => (
+                                                <MenuItem key={font.value} value={font.value} style={{ fontFamily: font.value }}>{font.label}</MenuItem>
+                                            ))}
+                                        </Select>
+                                    </FormControl>
+                                    
+                                    <Grid container spacing={2}>
+                                        <Grid item xs={6}>
+                                            <TextField
+                                                label="Taille (pt)"
+                                                size="small"
+                                                type="number"
+                                                fullWidth
+                                                value={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.fontSize || 12}
+                                                onChange={(e) => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, fontSize: Number(e.target.value) } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            />
+                                        </Grid>
+                                        <Grid item xs={6}>
+                                            <TextField
+                                                label="Interligne"
+                                                size="small"
+                                                type="number"
+                                                fullWidth
+                                                inputProps={{ step: 0.1, min: 0.5, max: 3 }}
+                                                value={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.lineHeight || 1.2}
+                                                onChange={(e) => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, lineHeight: Number(e.target.value) } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            />
+                                        </Grid>
+                                    </Grid>
+                                </Box>
+
+                                {/* Appearance & Alignment */}
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary" fontWeight="bold" sx={{ mb: 1, display: 'block' }}>APPARENCE</Typography>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                                        <Typography variant="body2">Gras</Typography>
+                                        <Switch
+                                            size="small"
+                                            checked={selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.isBold || false}
+                                            onChange={(e) => {
+                                                const updatedVariables = selectedTemplate.variables.map(v =>
+                                                    v.id === selectedPlacedVariable ? { ...v, isBold: e.target.checked } : v
+                                                );
+                                                setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                setHasUnsavedChanges(true);
+                                            }}
+                                        />
+                                    </Box>
+                                    
+                                    <Typography variant="caption" sx={{ mb: 0.5, display: 'block' }}>Alignement Horizontal</Typography>
+                                    <Box sx={{ display: 'flex', bgcolor: '#f5f5f5', borderRadius: 1, p: 0.5, mb: 2 }}>
+                                        {['left', 'center', 'right', 'justify'].map((align) => (
+                                            <IconButton
+                                                key={align}
+                                                size="small"
+                                                sx={{ flex: 1, bgcolor: selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.textAlign === align ? 'white' : 'transparent', borderRadius: 0.5, boxShadow: selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.textAlign === align ? 1 : 0 }}
+                                                onClick={() => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, textAlign: align as any } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            >
+                                                {align === 'left' && <FormatAlignLeftIcon fontSize="small" />}
+                                                {align === 'center' && <FormatAlignCenterIcon fontSize="small" />}
+                                                {align === 'right' && <FormatAlignRightIcon fontSize="small" />}
+                                                {align === 'justify' && <FormatAlignJustifyIcon fontSize="small" />}
+                                            </IconButton>
+                                        ))}
+                                    </Box>
+                                    
+                                    <Typography variant="caption" sx={{ mb: 0.5, display: 'block' }}>Alignement Vertical</Typography>
+                                    <Box sx={{ display: 'flex', bgcolor: '#f5f5f5', borderRadius: 1, p: 0.5 }}>
+                                        {['top', 'middle', 'bottom'].map((align) => (
+                                            <IconButton
+                                                key={align}
+                                                size="small"
+                                                sx={{ flex: 1, bgcolor: selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.verticalAlign === align ? 'white' : 'transparent', borderRadius: 0.5, boxShadow: selectedTemplate.variables.find(v => v.id === selectedPlacedVariable)?.verticalAlign === align ? 1 : 0 }}
+                                                onClick={() => {
+                                                    const updatedVariables = selectedTemplate.variables.map(v =>
+                                                        v.id === selectedPlacedVariable ? { ...v, verticalAlign: align as any } : v
+                                                    );
+                                                    setSelectedTemplate({ ...selectedTemplate, variables: updatedVariables });
+                                                    setHasUnsavedChanges(true);
+                                                }}
+                                            >
+                                                {align === 'top' && <VerticalAlignTopIcon fontSize="small" />}
+                                                {align === 'middle' && <VerticalAlignCenterIcon fontSize="small" />}
+                                                {align === 'bottom' && <VerticalAlignBottomIcon fontSize="small" />}
+                                            </IconButton>
+                                        ))}
+                                    </Box>
+                                </Box>
+                            </Box>
+                            <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
+                                <Button
+                                    fullWidth
+                                    variant="outlined"
+                                    color="error"
+                                    startIcon={<DeleteIcon />}
+                                    onClick={() => handleDeleteVariable(selectedPlacedVariable)}
+                                >
+                                    Supprimer la variable
+                                </Button>
+                            </Box>
+                        </Box>
+                    ) : (
+                        // STATE 1: AVAILABLE VARIABLES
+                        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                            <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0' }}>
+                                <Typography variant="subtitle1" fontWeight="bold">Variables disponibles</Typography>
+                            </Box>
+                            <Box sx={{ flex: 1, overflowY: 'auto' }}>
+                                {/* Raw Text Input Section */}
+                                <Box sx={{ p: 2, borderBottom: '1px solid #f0f0f0' }}>
+                                    <Typography variant="caption" color="text.secondary" fontWeight="bold" gutterBottom>TEXTE LIBRE</Typography>
+                                    <TextField
+                                        fullWidth
+                                        multiline
+                                        rows={2}
+                                        size="small"
+                                        placeholder="Ajouter du texte brut..."
+                                        value={rawText}
+                                        onChange={(e) => setRawText(e.target.value)}
+                                        sx={{ mb: 1 }}
+                                    />
+                                    <Box sx={{ display: 'flex', gap: 1 }}>
+                                      <Button
+                                          fullWidth
+                                          variant="outlined"
+                                          size="small"
+                                          startIcon={isAddingRawText ? <CheckIcon /> : <AddIcon />}
+                                          onClick={() => {
+                                              setIsAddingRawText(!isAddingRawText);
+                                              setSelectedVariableId(null);
+                                          }}
+                                          color={isAddingRawText ? "success" : "primary"}
+                                          disabled={!rawText.trim()}
+                                      >
+                                          {isAddingRawText ? "Placer" : "Ajouter"}
+                                      </Button>
+                                      <Tooltip title="Insérer une balise dynamique">
+                                        <IconButton size="small" onClick={() => setTagsDialogOpen(true)}>
+                                          <CodeIcon />
+                                        </IconButton>
+                                      </Tooltip>
+                                    </Box>
+                                </Box>
+
+                                {/* Database Fields Accordions */}
+                                {Object.keys(databaseFields).map((key) => {
+                                    const dataSourceKey = key as keyof DatabaseFields;
+                                    const dataSourceName = {
+                                        missions: 'Missions',
+                                        users: 'Utilisateurs',
+                                        companies: 'Entreprises',
+                                        contacts: 'Contacts',
+                                        expenseNotes: 'Notes de frais',
+                                        workingHours: 'Heures de travail',
+                                        amendments: 'Avenants',
+                                        structures: 'Structure'
+                                    }[dataSourceKey] || key;
+
+                                    return (
+                                        <Accordion key={key} disableGutters elevation={0} sx={{ '&:before': { display: 'none' }, borderBottom: '1px solid #f0f0f0' }}>
+                                            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                                <Typography variant="body2" fontWeight="medium">{dataSourceName}</Typography>
+                                            </AccordionSummary>
+                                            <AccordionDetails sx={{ p: 1, pt: 0 }}>
+                                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                                    {databaseFields[dataSourceKey].map(field => (
+                                                        <Tooltip key={field.id} title={field.description} arrow placement="left">
+                                                            <Chip
+                                                                label={field.name}
+                                                                size="small"
+                                                                onClick={() => {
+                                                                    setSelectedDatabase(dataSourceKey);
+                                                                    setSelectedVariableId(selectedVariableId === field.id ? null : field.id);
+                                                                }}
+                                                                color={selectedVariableId === field.id ? "primary" : "default"}
+                                                                sx={{ cursor: 'pointer' }}
+                                                            />
+                                                        </Tooltip>
+                                                    ))}
+                                                </Box>
+                                            </AccordionDetails>
+                                        </Accordion>
+                                    );
+                                })}
+                            </Box>
+                        </Box>
+                    )
+                ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', alignItems: 'center', justifyContent: 'center', p: 3, textAlign: 'center' }}>
+                         <TextSnippetIcon sx={{ fontSize: 40, color: 'text.disabled', mb: 2 }} />
+                         <Typography variant="body2" color="text.secondary">
+                             Aucun template sélectionné
+                         </Typography>
+                    </Box>
+                )}
+            </Paper>
+        </Box>
+
+        {/* Dialogs */}
+        <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
         <DialogTitle>Ajouter un nouveau template</DialogTitle>
         <DialogContent>
           <TextField
@@ -3705,33 +3366,77 @@ const TemplatesPDF: React.FC = () => {
         </DialogActions>
       </Dialog>
       
-      <Dialog open={openFontSizeDialog} onClose={handleCloseFontSizeDialog} maxWidth="xs" fullWidth>
-        <DialogTitle>Modifier la taille de police</DialogTitle>
+      <Dialog open={replacePdfDialogOpen} onClose={handleCloseReplacePdfDialog} maxWidth="sm" fullWidth>
+        <DialogTitle>Remplacer le PDF du template</DialogTitle>
         <DialogContent>
-          <Box sx={{ mt: 2 }}>
-            <Typography gutterBottom>
-              Taille: {currentFontSize}pt
-            </Typography>
-            <Slider
-              value={currentFontSize}
-              min={5}
-              max={32}
-              step={1}
-              marks={[
-                { value: 5, label: '5pt' },
-                { value: 10, label: '10pt' },
-                { value: 16, label: '16pt' },
-                { value: 24, label: '24pt' },
-                { value: 32, label: '32pt' }
-              ]}
-              onChange={(_, newValue) => setCurrentFontSize(newValue as number)}
+          <DialogContentText sx={{ mb: 2 }}>
+            Sélectionnez un nouveau fichier PDF pour remplacer le PDF actuel du template "{selectedTemplate?.name}".
+            Les balises existantes seront conservées et resteront aux mêmes positions.
+          </DialogContentText>
+          <Button
+            variant="outlined"
+            component="label"
+            startIcon={<UploadIcon />}
+            fullWidth
+          >
+            {replacementPdfFile ? replacementPdfFile.name : 'Sélectionner un nouveau PDF'}
+            <input
+              type="file"
+              hidden
+              accept=".pdf"
+              ref={replacePdfInputRef}
+              onChange={handleReplacePdfFileChange}
             />
-          </Box>
+          </Button>
+          {replacementPdfFile && (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              Le nouveau PDF sera uploadé et remplacera l'ancien. Les balises existantes seront conservées.
+            </Alert>
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleCloseFontSizeDialog}>Annuler</Button>
-          <Button onClick={handleSaveFontSize} variant="contained">
-            Appliquer
+          <Button onClick={handleCloseReplacePdfDialog}>Annuler</Button>
+          <Button
+            onClick={handleReplacePdf}
+            variant="contained"
+            disabled={!replacementPdfFile || loading}
+            startIcon={loading ? <CircularProgress size={20} /> : <UploadIcon />}
+          >
+            {loading ? 'Remplacement...' : 'Remplacer le PDF'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={duplicateDialogOpen} onClose={handleCloseDuplicateDialog} maxWidth="sm" fullWidth>
+        <DialogTitle>Dupliquer le template</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Entrez un nom pour la nouvelle template dupliquée. Toutes les variables et le PDF seront copiés.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Nom de la nouvelle template"
+            fullWidth
+            variant="outlined"
+            value={duplicateTemplateName}
+            onChange={(e) => setDuplicateTemplateName(e.target.value)}
+            onKeyPress={(e) => {
+              if (e.key === 'Enter' && duplicateTemplateName.trim()) {
+                handleDuplicateTemplate();
+              }
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseDuplicateDialog}>Annuler</Button>
+          <Button
+            onClick={handleDuplicateTemplate}
+            variant="contained"
+            disabled={!duplicateTemplateName.trim() || loading}
+            startIcon={loading ? <CircularProgress size={20} /> : <ContentCopyIcon />}
+          >
+            {loading ? 'Duplication...' : 'Dupliquer'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -3760,6 +3465,118 @@ const TemplatesPDF: React.FC = () => {
         </DialogActions>
       </Dialog>
 
+      <Dialog open={renameDialogOpen} onClose={() => setRenameDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Renommer le template</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Nom du template"
+            fullWidth
+            variant="outlined"
+            value={newTemplateName}
+            onChange={(e) => setNewTemplateName(e.target.value)}
+            onKeyPress={(e) => {
+              if (e.key === 'Enter' && newTemplateName.trim() && selectedTemplate) {
+                handleRenameTemplate();
+              }
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenameDialogOpen(false)}>Annuler</Button>
+          <Button
+            onClick={handleRenameTemplate}
+            variant="contained"
+            disabled={!newTemplateName.trim() || !selectedTemplate || loading}
+            startIcon={loading ? <CircularProgress size={20} /> : null}
+          >
+            Enregistrer
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={tagsDialogOpen} onClose={() => setTagsDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="h6">Balises disponibles</Typography>
+            <IconButton onClick={() => setTagsDialogOpen(false)} size="small">
+              <CloseIcon />
+            </IconButton>
+          </Box>
+          <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {['Mission', 'Utilisateur', 'Entreprise', 'Notes de frais & Dépenses', 'Heures de travail', 'Avenants', 'Contacts', 'Structure'].map((cat) => (
+              <Chip
+                key={cat}
+                label={cat}
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  const element = document.getElementById(`category-${cat}`);
+                  if (element) {
+                    element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
+                }}
+                clickable
+              />
+            ))}
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" paragraph>
+            Cliquez sur une balise pour l'insérer dans votre texte. Ces balises seront remplacées automatiquement lors de la génération du document.
+          </Typography>
+          
+          {[
+            { title: 'Mission', prefix: ['<mission_', '<total_', '<tva>'] },
+            { title: 'Utilisateur', prefix: ['<user_'] },
+            { title: 'Entreprise', prefix: ['<entreprise_'] },
+            { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
+            { title: 'Heures de travail', prefix: ['<workingHours'] },
+            { title: 'Avenants', prefix: ['<amendment'] },
+            { title: 'Contacts', prefix: ['<contact'] },
+            { title: 'Structure', prefix: ['<structure_', '<charge_'] },
+          ].map(category => {
+            const categoryTags = VARIABLE_TAGS.filter(tag => category.prefix.some(p => tag.tag.startsWith(p)));
+            
+            if (categoryTags.length === 0) return null;
+
+            return (
+              <Box key={category.title} id={`category-${category.title}`} sx={{ mb: 3, scrollMarginTop: '20px' }}>
+                <Typography variant="subtitle2" sx={{ mb: 1, color: 'primary.main', fontWeight: 'bold', borderBottom: '1px solid #eee', pb: 0.5 }}>
+                  {category.title}
+                </Typography>
+                <Grid container spacing={2}>
+                  {categoryTags.map((tagItem) => (
+                    <Grid item xs={12} sm={6} md={4} key={tagItem.tag}>
+                      <Card 
+                        variant="outlined" 
+                        sx={{ 
+                          cursor: 'pointer', 
+                          '&:hover': { bgcolor: 'action.hover', borderColor: 'primary.main' },
+                          height: '100%',
+                          display: 'flex',
+                          flexDirection: 'column'
+                        }}
+                        onClick={() => handleCopyTag(tagItem.tag)}
+                      >
+                        <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 }, flex: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                            <Chip label={tagItem.tag} size="small" color="primary" variant="outlined" sx={{ fontFamily: 'monospace', fontSize: '0.75rem', height: 24 }} />
+                          </Box>
+                          <Typography variant="body2" fontWeight="bold" sx={{ fontSize: '0.85rem', lineHeight: 1.2, mb: 0.5 }}>{tagItem.description}</Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem', display: 'block' }}>Ex: {tagItem.example}</Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  ))}
+                </Grid>
+              </Box>
+            );
+          })}
+        </DialogContent>
+      </Dialog>
+
       <Snackbar 
         open={snackbar.open} 
         autoHideDuration={6000} 
@@ -3772,47 +3589,8 @@ const TemplatesPDF: React.FC = () => {
           {snackbar.message}
         </Alert>
       </Snackbar>
-
-      <Dialog open={lineHeightDialogOpen} onClose={handleCloseLineHeightDialog}>
-        <DialogTitle>Modifier l'espacement des lignes</DialogTitle>
-        <DialogContent>
-          <TextField
-            type="number"
-            label="Espacement des lignes"
-            value={selectedLineHeight}
-            onChange={(e) => setSelectedLineHeight(parseFloat(e.target.value))}
-            inputProps={{ step: 0.1, min: 0.5, max: 3 }}
-            fullWidth
-            margin="normal"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseLineHeightDialog}>Annuler</Button>
-          <Button onClick={handleSaveLineHeight} color="primary">
-            Enregistrer
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {selectedPlacedVariable && (
-        <Menu
-          anchorEl={anchorEl}
-          open={Boolean(anchorEl)}
-          onClose={() => setAnchorEl(null)}
-        >
-          <MenuItem onClick={() => handleOpenFontSizeDialog(selectedPlacedVariable)}>
-            Modifier la taille de police
-          </MenuItem>
-          <MenuItem onClick={() => handleOpenLineHeightDialog(selectedPlacedVariable)}>
-            Modifier l'espacement des lignes
-          </MenuItem>
-          <MenuItem onClick={() => handleDeleteVariable(selectedPlacedVariable)}>
-            Supprimer
-          </MenuItem>
-        </Menu>
-      )}
     </Box>
   );
 };
 
-export default TemplatesPDF; 
+export default TemplatesPDF;

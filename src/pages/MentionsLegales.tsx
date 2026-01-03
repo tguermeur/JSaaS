@@ -26,7 +26,7 @@ const MentionsLegales: React.FC = () => {
             src="/images/logo.png"
             alt="JS Connect Logo"
             sx={{
-              height: 24,
+              height: 40,
               mr: 4,
               transition: 'transform 0.3s ease',
               '&:hover': {
@@ -281,7 +281,7 @@ const MentionsLegales: React.FC = () => {
                 mb: 1
               }}
             >
-              JS Connect permet à des étudiants de s'inscrire et de postuler à des missions ponctuelles rémunérées proposées par une Junior-Entreprise ou une Job Service. L'accès est réservé aux personnes majeures et inscrites dans un établissement d'enseignement supérieur.
+              JS Connect permet à des étudiants de s'inscrire et de postuler à des missions ponctuelles rémunérées proposées par une Junior-Entreprise ou une Junior. L'accès est réservé aux personnes majeures et inscrites dans un établissement d'enseignement supérieur.
             </Typography>
           </Box>
 

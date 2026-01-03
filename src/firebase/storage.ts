@@ -158,42 +158,135 @@ export const uploadProfilePicture = async (file: File, userId: string): Promise<
   }
 };
 
+
+// Fonction pour encoder image en base64
+const encodeToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
+
 export const uploadErrorImage = async (file: File, userId: string): Promise<string> => {
+  console.log('🔥 uploadErrorImage appelé avec file:', file?.name, 'userId:', userId);
+  
   if (!storage) {
-    throw new Error('Firebase Storage non disponible');
+    console.error('❌ Firebase Storage non disponible - activation mode temporaire base64');
+    
+    try {
+      if (!file) {
+        throw new Error('Aucun fichier fourni');
+      }
+      
+      // Limite pour l'encoding temporaire
+      if (file.size > 3 * 1024 * 1024) {
+        throw new Error('Fichier trop volumineux pour encodage temporaire (>3MB)');
+      }
+      
+      console.log('📤 ENCODAGE BASE64 TEMPORAIRE activé...');
+      const base64String = await encodeToBase64(file);
+      console.log('✅ Image encodée en base64 temporaire avec succès');
+      return base64String;
+    } catch (fallbackError) {
+      console.error('❌ Échec même encodage base64 temporaire:', fallbackError);
+      throw new Error(`Firebase Storage indisponible et encodage temporaire échoué: ${fallbackError.message}`);
+    }
   }
   
   try {
-    // Créer une référence unique pour l'image avec un timestamp
-    const imageRef = ref(storage, `error-reports/${userId}/${Date.now()}-${file.name}`);
+    // Vérifier que le fichier existe
+    if (!file) {
+      console.error('❌ Aucun fichier fourni');
+      throw new Error('Aucun fichier fourni');
+    }
     
+    console.log('📤 Préparation upload image Firebase Storage:', {
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+      userId: userId
+    });
+    
+    // Créer une référence unique pour l'image avec un timestamp
+    const fileName = `${Date.now()}-${file.name}`;
+    const imagePath = `error-reports/${userId}/${fileName}`;
+    console.log('🔗 Chemin de référence créé:', imagePath);
+    
+    const imageRef = ref(storage, imagePath);
+    
+    console.log('⏳ Début de l\'upload vers Firebase Storage...');
     // Uploader le fichier
     await uploadBytes(imageRef, file);
+    console.log('✅ Upload vers Firebase Storage réussi');
     
     // Récupérer l'URL de téléchargement
+    console.log('🔗 Récupération de l\'URL Firebase Storage...');
     const downloadURL = await getDownloadURL(imageRef);
+    console.log('✅ URL Firebase Storage obtenue:', downloadURL);
     
     return downloadURL;
   } catch (error) {
-    console.error('Erreur lors du téléchargement de l\'image:', error);
+    console.error('❌ Erreur lors du téléchargement vers Firebase Storage:', error);
+    console.error('Détails de l\'erreur:', error.message);
     throw error;
   }
 };
 
 export const uploadCompanyLogo = async (file: File, companyId: string): Promise<string> => {
+  console.log('🔥 uploadCompanyLogo appelé avec file:', file?.name, 'companyId:', companyId);
+
   if (!storage) {
-    throw new Error('Firebase Storage non disponible');
+    console.error('❌ Firebase Storage non disponible - activation mode temporaire base64');
+    
+    try {
+      if (!file) {
+        throw new Error('Aucun fichier fourni');
+      }
+      
+      // Limite pour l'encoding temporaire
+      if (file.size > 3 * 1024 * 1024) {
+        throw new Error('Fichier trop volumineux pour encodage temporaire (>3MB)');
+      }
+      
+      console.log('📤 ENCODAGE BASE64 TEMPORAIRE pour logo entreprise...');
+      const base64String = await encodeToBase64(file);
+      console.log('✅ Logo encodé en base64 temporaire avec succès');
+      return base64String;
+    } catch (fallbackError) {
+      console.error('❌ Échec même encodage base64 temporaire:', fallbackError);
+      throw new Error(`Firebase Storage indisponible et encodage temporaire échoué: ${fallbackError.message}`);
+    }
   }
   
   try {
+    // Vérifier que le fichier existe
+    if (!file) {
+      console.error('❌ Aucun fichier fourni');
+      throw new Error('Aucun fichier fourni');
+    }
+    
+    console.log('📤 Préparation upload logo entreprise Firebase Storage:', {
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+      companyId: companyId
+    });
+    
     // Créer une référence unique pour le logo avec un timestamp
     const logoRef = ref(storage, `company-logos/${companyId}/${Date.now()}-${file.name}`);
+    console.log('🔗 Chemin de référence logo créé:', `company-logos/${companyId}/${Date.now()}-${file.name}`);
     
+    console.log('⏳ Début de l\'upload logo vers Firebase Storage...');
     // Uploader le fichier
     await uploadBytes(logoRef, file);
+    console.log('✅ Upload logo vers Firebase Storage réussi');
     
     // Récupérer l'URL de téléchargement
+    console.log('🔗 Récupération de l\'URL Firebase Storage logo...');
     const downloadURL = await getDownloadURL(logoRef);
+    console.log('✅ URL Firebase Storage logo obtenue:', downloadURL);
     
     // Vérifier que l'URL est valide
     if (!downloadURL || (!downloadURL.startsWith('http://') && !downloadURL.startsWith('https://'))) {
@@ -202,7 +295,8 @@ export const uploadCompanyLogo = async (file: File, companyId: string): Promise<
     
     return downloadURL;
   } catch (error) {
-    console.error('Erreur lors du téléchargement du logo de l\'entreprise:', error);
+    console.error('❌ Erreur lors du téléchargement du logo vers Firebase Storage:', error);
+    console.error('Détails de l\'erreur:', error.message);
     throw error;
   }
 }; 

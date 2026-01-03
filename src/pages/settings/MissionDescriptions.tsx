@@ -28,9 +28,9 @@ import {
 import { collection, addDoc, updateDoc, deleteDoc, doc, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
-import BackButton from '../../components/ui/BackButton';
 import { styled } from '@mui/material';
 import { keyframes } from '@mui/system';
+import { useSearchParams } from 'react-router-dom';
 
 // Animations
 const fadeIn = keyframes`
@@ -88,6 +88,7 @@ interface MissionDescription {
 
 const MissionDescriptions: React.FC = () => {
   const { userData } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [descriptions, setDescriptions] = useState<MissionDescription[]>([]);
   const [openDialog, setOpenDialog] = useState(false);
   const [currentDescription, setCurrentDescription] = useState<MissionDescription>({
@@ -123,6 +124,20 @@ const MissionDescriptions: React.FC = () => {
 
     fetchDescriptions();
   }, [userData?.structureId]);
+
+  // Ouvrir automatiquement le dialogue si un ID est passé en paramètre d'URL
+  useEffect(() => {
+    const missionTypeId = searchParams.get('id');
+    if (missionTypeId && descriptions.length > 0) {
+      const description = descriptions.find(d => d.id === missionTypeId);
+      if (description) {
+        setCurrentDescription(description);
+        setOpenDialog(true);
+        // Nettoyer le paramètre d'URL après ouverture
+        setSearchParams({}, { replace: true });
+      }
+    }
+  }, [descriptions, searchParams, setSearchParams]);
 
   const handleOpenDialog = (description?: MissionDescription) => {
     if (description) {
@@ -200,7 +215,6 @@ const MissionDescriptions: React.FC = () => {
 
   return (
     <Box>
-      <BackButton />
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Typography 
           variant="h5" 
