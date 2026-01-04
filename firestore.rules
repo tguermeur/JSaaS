@@ -315,6 +315,132 @@ service cloud.firestore {
           getUserData().structureId == structureId
         );
       }
+
+      // Règles pour la sous-collection folders (dossiers de documents)
+      match /folders/{folderId} {
+        // Fonction pour vérifier l'accès via structureId
+        function canAccessFolder() {
+          let userData = getUserData();
+          let folderData = resource.data;
+          return userData != null && 
+                 userData.structureId != null &&
+                 userData.structureId != '' &&
+                 folderData.structureId == userData.structureId;
+        }
+
+        // Fonction pour vérifier l'accès aux dossiers restreints
+        function canAccessRestrictedFolder() {
+          let userData = getUserData();
+          let folderData = resource.data;
+          // Si le dossier n'est pas restreint, l'accès est autorisé si canAccessFolder()
+          // Sinon, vérifier le rôle
+          return canAccessFolder() && (
+            !folderData.isRestricted ||
+            isSuperAdmin() ||
+            (userData.status == 'admin') ||
+            (folderData.allowedRoles != null && 
+             folderData.allowedRoles.hasAny([userData.status]) &&
+             userData.status in ['admin', 'member'])
+          );
+        }
+
+        // Lecture : membres de la structure, avec vérification des restrictions
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() ||
+          canAccessRestrictedFolder()
+        );
+
+        // Création : membres de la structure
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (
+            getUserData().status in ['admin', 'member'] && 
+            request.resource.data.structureId == getUserData().structureId
+          )
+        );
+
+        // Mise à jour : membres de la structure
+        allow update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (
+            getUserData().status in ['admin', 'member'] && 
+            resource.data.structureId == getUserData().structureId &&
+            request.resource.data.structureId == resource.data.structureId
+          )
+        );
+
+        // Suppression : membres de la structure
+        allow delete: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (
+            getUserData().status in ['admin', 'member'] && 
+            resource.data.structureId == getUserData().structureId
+          )
+        );
+      }
+
+      // Règles pour la sous-collection documents (gestion de documents)
+      match /documents/{documentId} {
+        // Fonction pour vérifier l'accès via structureId
+        function canAccessDocument() {
+          let userData = getUserData();
+          let docData = resource.data;
+          return userData != null && 
+                 userData.structureId != null &&
+                 userData.structureId != '' &&
+                 docData.structureId == userData.structureId;
+        }
+
+        // Fonction pour vérifier l'accès aux documents restreints
+        function canAccessRestrictedDocument() {
+          let userData = getUserData();
+          let docData = resource.data;
+          // Si le document n'est pas restreint, l'accès est autorisé si canAccessDocument()
+          // Sinon, vérifier le rôle
+          return canAccessDocument() && (
+            !docData.isRestricted ||
+            isSuperAdmin() ||
+            (userData.status == 'admin') ||
+            (docData.allowedRoles != null && 
+             docData.allowedRoles.hasAny([userData.status]) &&
+             userData.status in ['admin', 'member'])
+          );
+        }
+
+        // Lecture : membres de la structure, avec vérification des restrictions
+        allow read: if isAuthenticated() && (
+          isSuperAdmin() ||
+          canAccessRestrictedDocument()
+        );
+
+        // Création : membres de la structure
+        allow create: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (
+            getUserData().status in ['admin', 'member'] && 
+            request.resource.data.structureId == getUserData().structureId
+          )
+        );
+
+        // Mise à jour : membres de la structure
+        allow update: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (
+            getUserData().status in ['admin', 'member'] && 
+            resource.data.structureId == getUserData().structureId &&
+            request.resource.data.structureId == resource.data.structureId
+          )
+        );
+
+        // Suppression : membres de la structure
+        allow delete: if isAuthenticated() && (
+          isSuperAdmin() ||
+          (
+            getUserData().status in ['admin', 'member'] && 
+            resource.data.structureId == getUserData().structureId
+          )
+        );
+      }
     }
 
     // Permettre la lecture des domaines pour la vérification des emails

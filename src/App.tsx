@@ -64,6 +64,7 @@ import Profile from './pages/Profile';
 import CotisationPayment from './pages/CotisationPayment';
 import CotisationSuccess from './pages/CotisationSuccess';
 import CotisationCancel from './pages/CotisationCancel';
+import Documents from './pages/Documents';
 
 
 function App(): JSX.Element {
@@ -189,6 +190,11 @@ function App(): JSX.Element {
                       <Route path="entreprises/:id" element={
                         <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
                           <EntrepriseDetail />
+                        </RequireRole>
+                      } />
+                      <Route path="documents" element={
+                        <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                          <Documents />
                         </RequireRole>
                       } />
                       <Route path="commercial" element={

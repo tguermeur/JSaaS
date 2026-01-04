@@ -29,14 +29,17 @@ import {
   Assignment as AssignmentIcon,
   Work as WorkIcon,
   Group as GroupIcon,
-  Add as AddIcon
+  Add as AddIcon,
+  Description as DescriptionIcon,
+  ArrowForward as ArrowForwardIcon
 } from '@mui/icons-material';
 import EnterpriseMissionForm from '../components/missions/EnterpriseMissionForm';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { logoutUser } from '../firebase/auth';
-import { collection, query, where, getDocs, addDoc, Timestamp, getDoc, doc } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, Timestamp, getDoc, doc, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import { Document } from '../types/document';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -146,6 +149,7 @@ export default function Dashboard(): JSX.Element {
   });
   const [enterpriseMissionDialogOpen, setEnterpriseMissionDialogOpen] = useState(false);
   const [enterpriseMissionTab, setEnterpriseMissionTab] = useState(0);
+  const [recentDocuments, setRecentDocuments] = useState<Document[]>([]);
 
   // Utiliser l'animation du compteur
   const animatedRevenue = useCountAnimation(statistics.totalRevenue);
@@ -698,6 +702,60 @@ export default function Dashboard(): JSX.Element {
     }
     
     fetchData();
+  }, [currentUser, userData, isEntreprise]);
+
+  // Charger les documents récents
+  useEffect(() => {
+    const fetchRecentDocuments = async () => {
+      if (!currentUser || !userData?.structureId) return;
+      if (isEntreprise) return;
+
+      try {
+        const structureId = userData.structureId;
+        const docsRef = collection(db, 'structures', structureId, 'documents');
+        const docsQuery = query(
+          docsRef,
+          orderBy('createdAt', 'desc'),
+          limit(5)
+        );
+        const docsSnapshot = await getDocs(docsQuery);
+
+        const docsList: Document[] = [];
+        for (const docSnap of docsSnapshot.docs) {
+          const data = docSnap.data();
+          // Récupérer le nom de l'utilisateur
+          let uploadedByName = '';
+          try {
+            const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
+            const userDocData = userDoc.data();
+            uploadedByName = userDocData?.displayName || userDocData?.firstName + ' ' + userDocData?.lastName || 'Inconnu';
+          } catch (e) {
+            console.error('Erreur lors de la récupération du nom utilisateur:', e);
+          }
+
+          // Vérifier l'accès aux documents restreints
+          const canAccess = !data.isRestricted || 
+            userData.status === 'superadmin' || 
+            userData.status === 'admin' ||
+            (data.allowedRoles && data.allowedRoles.includes(userData.status));
+
+          if (canAccess) {
+            docsList.push({
+              id: docSnap.id,
+              ...data,
+              uploadedByName,
+              createdAt: data.createdAt,
+            } as Document);
+          }
+        }
+
+        setRecentDocuments(docsList);
+      } catch (error) {
+        console.error('Erreur lors du chargement des documents récents:', error);
+      }
+    };
+
+    fetchRecentDocuments();
   }, [currentUser, userData, isEntreprise]);
 
   useEffect(() => {
@@ -1763,7 +1821,8 @@ export default function Dashboard(): JSX.Element {
                 boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
                 background: 'rgba(255, 255, 255, 0.8)',
                 backdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255, 255, 255, 0.3)'
+                border: '1px solid rgba(255, 255, 255, 0.3)',
+                mb: 3
               }}
             >
               <CardContent sx={{ p: '20px !important' }}>
@@ -1854,6 +1913,103 @@ export default function Dashboard(): JSX.Element {
                     </Box>
                   </Box>
                 ))}
+              </CardContent>
+            </Card>
+
+            {/* Carte pour les documents récents */}
+            <Card 
+              elevation={0}
+              sx={{
+                borderRadius: '16px',
+                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
+                background: 'rgba(255, 255, 255, 0.8)',
+                backdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255, 255, 255, 0.3)'
+              }}
+            >
+              <CardContent sx={{ p: '20px !important' }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                  <Typography 
+                    variant="h6" 
+                    sx={{ 
+                      fontWeight: 600,
+                      fontSize: '1.1rem',
+                      color: '#1d1d1f'
+                    }}
+                  >
+                    Documents récents
+                  </Typography>
+                  <Button
+                    size="small"
+                    endIcon={<ArrowForwardIcon />}
+                    onClick={() => navigate('/app/documents')}
+                    sx={{ textTransform: 'none' }}
+                  >
+                    Voir tout
+                  </Button>
+                </Box>
+                
+                {recentDocuments.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                    Aucun document récent
+                  </Typography>
+                ) : (
+                  recentDocuments.map((doc) => (
+                    <Box 
+                      key={doc.id}
+                      sx={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        mb: 1.5,
+                        p: 1,
+                        borderRadius: '8px',
+                        transition: 'all 0.2s ease',
+                        cursor: 'pointer',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 0, 0, 0.03)'
+                        }
+                      }}
+                      onClick={() => navigate('/app/documents')}
+                    >
+                      <Box sx={{ mr: 1.5 }}>
+                        <DescriptionIcon sx={{ color: '#007AFF', fontSize: 24 }} />
+                      </Box>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography 
+                          variant="body2" 
+                          sx={{ 
+                            fontWeight: 500,
+                            color: '#1d1d1f',
+                            fontSize: '0.875rem',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {doc.name}
+                        </Typography>
+                        <Typography 
+                          variant="caption" 
+                          sx={{ 
+                            color: '#86868b',
+                            fontSize: '0.75rem'
+                          }}
+                        >
+                          {doc.createdAt && (doc.createdAt as any).toDate
+                            ? (doc.createdAt as any).toDate().toLocaleDateString('fr-FR', {
+                                day: 'numeric',
+                                month: 'short'
+                              })
+                            : new Date(doc.createdAt as Date).toLocaleDateString('fr-FR', {
+                                day: 'numeric',
+                                month: 'short'
+                              })}
+                          {doc.uploadedByName && ` • ${doc.uploadedByName}`}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  ))
+                )}
               </CardContent>
             </Card>
           </Grid>

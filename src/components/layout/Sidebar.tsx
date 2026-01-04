@@ -47,6 +47,7 @@ import {
   Security as SecurityIcon,
   Notifications as NotificationsIcon,
   Add as AddIcon,
+  Folder as FolderIcon,
 } from '@mui/icons-material';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -304,6 +305,13 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       icon: <BusinessIcon />,
       iconSidebarIcon: <AppsIcon />,
       path: '/app/entreprises',
+      section: 'crm',
+    },
+    {
+      text: 'Documents',
+      icon: <FolderIcon />,
+      iconSidebarIcon: <AppsIcon />,
+      path: '/app/documents',
       section: 'crm',
     },
     {

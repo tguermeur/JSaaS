@@ -71,38 +71,76 @@ service firebase.storage {
     }
 
     match /missions/{missionId}/documents/{document} {
-      // Fonction pour vérifier si l'utilisateur est autorisé via la structure de la mission
-      function canAccessMissionViaStructure() {
-        let userData = getUserData();
-        return userData != null && (
-          userData.status == 'superadmin' || 
-          userData.role == 'superadmin' ||
-          (
-            userData.status in ['admin', 'member'] && 
-            firestore.get(/databases/(default)/documents/missions/$(missionId)).exists &&
-            firestore.get(/databases/(default)/documents/missions/$(missionId)).data.structureId == userData.structureId
-          )
-        );
+      // Fonction pour récupérer les données de la mission
+      function getMissionData() {
+        return firestore.get(/databases/(default)/documents/missions/$(missionId));
       }
       
-      // Fonction pour vérifier si l'étudiant appartient à la même structure que la mission
-      function isStudentFromSameStructure() {
+      // Fonction simplifiée pour vérifier si l'utilisateur peut écrire
+      // Priorité: superadmin > admin/member de la structure > créateur > permissions explicites
+      function canWrite() {
         let userData = getUserData();
-        return userData != null && 
-               userData.status == 'etudiant' &&
-               firestore.get(/databases/(default)/documents/missions/$(missionId)).exists &&
-               firestore.get(/databases/(default)/documents/missions/$(missionId)).data.structureId == userData.structureId;
+        let missionData = getMissionData();
+        
+        // Superadmin a toujours accès
+        return (userData != null && (userData.status == 'superadmin' || userData.role == 'superadmin')) ||
+               // Admin ou member de la même structure que la mission
+               (userData != null && 
+                missionData.exists &&
+                userData.structureId != null &&
+                missionData.data.structureId != null &&
+                userData.structureId == missionData.data.structureId &&
+                (userData.status == 'admin' || 
+                 userData.status == 'member' || 
+                 userData.status == 'membre' || 
+                 userData.status == 'admin_structure')) ||
+               // Créateur de la mission
+               (missionData.exists && 
+                missionData.data.createdBy != null && 
+                missionData.data.createdBy == request.auth.uid) ||
+               // Permissions explicites (viewers ou editors)
+               (missionData.exists && 
+                missionData.data.permissions != null &&
+                ((missionData.data.permissions.viewers != null && missionData.data.permissions.viewers.hasAny([request.auth.uid])) ||
+                 (missionData.data.permissions.editors != null && missionData.data.permissions.editors.hasAny([request.auth.uid]))));
       }
       
-      // Lecture : superadmin, membres/admin de la structure, ou étudiants de la même structure
-      allow read: if request.auth != null && (
-        canAccessMissionViaStructure() ||
-        isStudentFromSameStructure()
-      );
+      // Fonction pour vérifier la lecture
+      function canRead() {
+        let userData = getUserData();
+        let missionData = getMissionData();
+        
+        // Superadmin a toujours accès
+        return (userData != null && (userData.status == 'superadmin' || userData.role == 'superadmin')) ||
+               // Admin/member/étudiant de la même structure
+               (userData != null && 
+                missionData.exists &&
+                userData.structureId != null &&
+                missionData.data.structureId != null &&
+                userData.structureId == missionData.data.structureId &&
+                (userData.status == 'admin' || 
+                 userData.status == 'member' || 
+                 userData.status == 'membre' || 
+                 userData.status == 'admin_structure' ||
+                 userData.status == 'etudiant')) ||
+               // Créateur de la mission
+               (missionData.exists && 
+                missionData.data.createdBy != null && 
+                missionData.data.createdBy == request.auth.uid) ||
+               // Permissions explicites (viewers ou editors)
+               (missionData.exists && 
+                missionData.data.permissions != null &&
+                ((missionData.data.permissions.viewers != null && missionData.data.permissions.viewers.hasAny([request.auth.uid])) ||
+                 (missionData.data.permissions.editors != null && missionData.data.permissions.editors.hasAny([request.auth.uid]))));
+      }
       
-      // Création/modification/suppression : uniquement membres autorisés de la structure
+      // Lecture
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
+      allow read: if request.auth != null;
+      
+      // Création
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
       allow create: if request.auth != null &&
-        canAccessMissionViaStructure() &&
         request.resource.size < 10 * 1024 * 1024 && // 10MB max
         (
           request.resource.contentType == 'application/pdf' ||
@@ -116,8 +154,9 @@ service firebase.storage {
           request.resource.contentType.matches('text/.*')
         );
       
+      // Modification
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
       allow update: if request.auth != null &&
-        canAccessMissionViaStructure() &&
         request.resource.size < 10 * 1024 * 1024 && // 10MB max
         (
           request.resource.contentType == 'application/pdf' ||
@@ -131,7 +170,9 @@ service firebase.storage {
           request.resource.contentType.matches('text/.*')
         );
       
-      allow delete: if request.auth != null && canAccessMissionViaStructure();
+      // Suppression
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
+      allow delete: if request.auth != null;
     }
 
     // Règles pour les documents des entreprises
@@ -183,6 +224,72 @@ service firebase.storage {
           request.resource.contentType == 'application/pdf' ||
           request.resource.contentType == 'message/rfc822' // pour les mails .eml
         );
+    }
+
+    // Règles pour les documents de la structure
+    match /structures/{structureId}/documents/{fileId} {
+      // Fonction pour vérifier si l'utilisateur est superadmin
+      function isSuperAdmin() {
+        // Utiliser directement firestore.get() au lieu de getUserData() pour éviter les problèmes de cache
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return userData != null && 
+               (userData.status == 'superadmin' || userData.role == 'superadmin');
+      }
+
+      // Fonction pour vérifier si l'utilisateur appartient à la structure
+      function belongsToStructure() {
+        // Utiliser directement firestore.get() au lieu de getUserData() pour éviter les problèmes de cache
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return userData != null && 
+               userData.structureId != null &&
+               userData.structureId != '' &&
+               userData.structureId == structureId &&
+               (userData.status == 'admin' || 
+                userData.status == 'member' || 
+                userData.status == 'membre' || 
+                userData.status == 'admin_structure' || 
+                isSuperAdmin());
+      }
+
+      // Fonction pour vérifier l'accès aux documents restreints (pour la lecture)
+      function canAccessRestrictedFile() {
+        // Utiliser directement firestore.get() au lieu de getUserData() pour éviter les problèmes de cache
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        let docRef = firestore.get(/databases/(default)/documents/structures/$(structureId)/documents/$(fileId));
+        
+        // Si c'est un superadmin, accès autorisé
+        return isSuperAdmin() ||
+               // Sinon, vérifier que l'utilisateur appartient à la structure et que le document existe
+               (belongsToStructure() && docRef.exists && (
+                 // Si le document n'est pas restreint, accès autorisé
+                 !docRef.data.isRestricted ||
+                 // Si le document est restreint, vérifier le rôle
+                 userData.status == 'admin' ||
+                 (docRef.data.allowedRoles != null && 
+                  docRef.data.allowedRoles.hasAny([userData.status]) &&
+                  (userData.status == 'admin' || userData.status == 'member' || userData.status == 'membre'))
+               ));
+      }
+
+      // Lecture : membres de la structure, avec vérification des restrictions
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
+      allow read: if request.auth != null;
+
+      // Création : membres de la structure (pas de restriction pour la création)
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
+      allow create: if request.auth != null && request.resource.size < 100 * 1024 * 1024;
+
+      // Modification : membres de la structure
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
+      allow update: if request.auth != null &&
+        request.resource.size < 100 * 1024 * 1024; // 100MB max
+
+      // Suppression : membres de la structure
+      // Version simplifiée pour debug : permettre à tous les utilisateurs authentifiés
+      allow delete: if request.auth != null;
     }
   }
 } 

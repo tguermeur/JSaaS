@@ -8,7 +8,7 @@ import {
   ListResult,
   uploadBytes
 } from "firebase/storage";
-import { storage } from "./config";
+import { storage, auth } from "./config";
 
 interface FileUploadResult {
   url: string;
@@ -23,12 +23,23 @@ interface FileInfo {
 
 // Télécharger un fichier
 export const uploadFile = async (file: File, path: string): Promise<FileUploadResult> => {
+  // #region agent log
+  const authUser = auth?.currentUser;
+  const authToken = authUser ? await authUser.getIdToken().catch(() => null) : null;
+  fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:26',message:'uploadFile entry',data:{path,fileName:file.name,fileSize:file.size,fileType:file.type,authUserExists:!!authUser,authUserId:authUser?.uid,authTokenExists:!!authToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
+  
   if (!storage) {
     throw new Error('Firebase Storage non disponible');
   }
   
   try {
     const storageRef = ref(storage, path);
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:33',message:'Before uploadBytesResumable',data:{path,storageRefExists:!!storageRef,authUserExists:!!authUser},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
+    // #endregion
+    
     const uploadTask: UploadTask = uploadBytesResumable(storageRef, file);
     
     return new Promise((resolve, reject) => {
@@ -39,10 +50,16 @@ export const uploadFile = async (file: File, path: string): Promise<FileUploadRe
           console.log(`Progression du téléchargement: ${progress}%`);
         },
         (error) => {
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:44',message:'Upload error',data:{errorCode:error?.code,errorMessage:error?.message,errorName:error?.name,path,authUserExists:!!authUser,authUserId:authUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+          // #endregion
           reject(error);
         },
         async () => {
           const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:50',message:'Upload success',data:{path,downloadURL:downloadURL?.substring(0,50)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+          // #endregion
           resolve({
             url: downloadURL,
             path: path
@@ -51,6 +68,9 @@ export const uploadFile = async (file: File, path: string): Promise<FileUploadRe
       );
     });
   } catch (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:58',message:'Upload catch error',data:{errorCode:error?.code,errorMessage:error?.message,errorName:error?.name,path},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+    // #endregion
     throw error;
   }
 };

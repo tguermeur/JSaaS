@@ -382,6 +382,8 @@ interface GeneratedDocument {
   // Informations sur la création
   createdAt: Date;
   createdBy: string;
+  createdByName?: string;
+  createdByPhotoURL?: string;
   
   // Informations sur la dernière modification
   updatedAt: Date;
@@ -405,6 +407,8 @@ interface GeneratedDocument {
   signedAt?: Date;
   originalDocumentId?: string;  // Pour lier les versions signées à leur document original
   expenseNoteId?: string;
+  category?: 'contrats' | 'facturation' | 'autres';  // Catégorie pour les documents uploadés manuellement
+  isUploaded?: boolean;  // Indique si le document a été uploadé manuellement
 }
 
 interface EditableFieldProps {
@@ -4013,15 +4017,58 @@ const MissionDetails: React.FC = () => {
         }
       } else {
         try {
+          // Logs de débogage pour comprendre pourquoi les règles échouent
+          console.log('🔍 Débogage des permissions Storage:');
+          console.log('  - Utilisateur UID:', currentUser?.uid);
+          console.log('  - Mission ID:', mission.id);
+          console.log('  - Mission structureId:', mission.structureId);
+          console.log('  - Mission createdBy:', mission.createdBy);
+          console.log('  - Mission permissions:', mission.permissions);
+          
+          // Récupérer les données utilisateur complètes depuis Firestore
+          if (currentUser?.uid) {
+            try {
+              const userDocRef = doc(db, 'users', currentUser.uid);
+              const userDocSnap = await getDoc(userDocRef);
+              if (userDocSnap.exists()) {
+                const userDataFromFirestore = userDocSnap.data();
+                console.log('  - User status:', userDataFromFirestore.status);
+                console.log('  - User role:', userDataFromFirestore.role);
+                console.log('  - User structureId:', userDataFromFirestore.structureId);
+                console.log('  - StructureId match:', userDataFromFirestore.structureId === mission.structureId);
+                console.log('  - Is superadmin:', userDataFromFirestore.status === 'superadmin' || userDataFromFirestore.role === 'superadmin');
+                console.log('  - Is admin/member:', userDataFromFirestore.status && ['admin', 'member', 'admin_structure'].includes(userDataFromFirestore.status));
+                console.log('  - Is creator:', mission.createdBy === currentUser.uid);
+                if (mission.permissions) {
+                  console.log('  - In viewers:', mission.permissions.viewers?.includes(currentUser.uid));
+                  console.log('  - In editors:', mission.permissions.editors?.includes(currentUser.uid));
+                }
+              }
+            } catch (userDataError) {
+              console.warn('  - Erreur lors de la récupération des données utilisateur:', userDataError);
+            }
+          }
+          
           const storagePath = `missions/${mission.id}/documents/${fileName}`;
           const documentStorageRef = ref(storage, storagePath);
-          await uploadBytes(documentStorageRef, blob);
+          // Spécifier explicitement le contentType dans les métadonnées
+          const metadata = {
+            contentType: 'application/pdf',
+            customMetadata: {
+              missionId: mission.id,
+              documentType: documentType,
+              generatedAt: new Date().toISOString()
+            }
+          };
+          await uploadBytes(documentStorageRef, blob, metadata);
           console.log('☁️ Fichier uploadé vers Storage');
           documentUrl = await getDownloadURL(documentStorageRef);
           console.log('☁️ URL du document:', documentUrl);
           uploadSucceeded = true;
         } catch (uploadError: any) {
           console.warn('⚠️ Erreur lors de l\'upload vers Storage (le téléchargement continuera):', uploadError);
+          console.warn('⚠️ Code d\'erreur:', uploadError.code);
+          console.warn('⚠️ Message d\'erreur:', uploadError.message);
           // Ne pas bloquer le processus - le téléchargement fonctionnera quand même
           uploadSucceeded = false;
         }
@@ -5657,6 +5704,77 @@ const MissionDetails: React.FC = () => {
     } catch (error) {
       console.error('Erreur lors de l\'ajout de la version signée:', error);
       enqueueSnackbar('Erreur lors de l\'ajout de la version signée', { variant: 'error' });
+    }
+  };
+
+  const handleUploadDocument = async (event: React.ChangeEvent<HTMLInputElement>, category: 'contrats' | 'facturation' | 'autres') => {
+    if (mission?.isArchived) {
+      enqueueSnackbar('Impossible d\'uploader un document pour une mission archivée', { variant: 'error' });
+      return;
+    }
+    if (!event.target.files || !event.target.files[0] || !mission) return;
+
+    const file = event.target.files[0];
+    const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
+    const timestamp = Date.now();
+    const fileName = `${timestamp}_${file.name}`;
+    const storagePath = `missions/${mission.id}/documents/${fileName}`;
+    const storageRef = ref(storage, storagePath);
+
+    try {
+      // Upload du fichier vers Storage
+      await uploadBytes(storageRef, file);
+      const fileUrl = await getDownloadURL(storageRef);
+
+      // Déterminer le documentType en fonction de la catégorie
+      let documentType: DocumentType = 'proposition_commerciale';
+      if (category === 'contrats') {
+        documentType = 'convention_etudiant';
+      } else if (category === 'facturation') {
+        documentType = 'facture';
+      }
+
+      // Créer le document dans Firestore
+      const newDocumentData: Omit<GeneratedDocument, 'id'> = {
+        missionId: mission.id,
+        missionNumber: mission.numeroMission || '',
+        missionTitle: mission.title || '',
+        structureId: mission.structureId || '',
+        documentType,
+        fileName: file.name,
+        fileUrl,
+        fileSize: file.size,
+        version: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        createdBy: currentUser?.uid || '',
+        createdByName: userData?.displayName || '',
+        status: 'final',
+        isValid: true,
+        tags: [],
+        category,
+        isUploaded: true
+      };
+
+      // Ajouter les champs optionnels s'ils existent
+      if (userData?.photoURL) {
+        newDocumentData.createdByPhotoURL = userData.photoURL;
+      }
+
+      // Sauvegarder dans Firestore
+      const newDocRef = await addDoc(collection(db, 'generatedDocuments'), newDocumentData);
+      const newDocument: GeneratedDocument = { id: newDocRef.id, ...newDocumentData };
+
+      // Mettre à jour l'état local
+      setGeneratedDocuments(prev => [newDocument, ...prev]);
+
+      // Réinitialiser l'input file
+      event.target.value = '';
+
+      enqueueSnackbar('Document uploadé avec succès', { variant: 'success' });
+    } catch (error) {
+      console.error('Erreur lors de l\'upload du document:', error);
+      enqueueSnackbar('Erreur lors de l\'upload du document', { variant: 'error' });
     }
   };
 
@@ -8582,6 +8700,136 @@ const MissionDetails: React.FC = () => {
                         </Table>
                       </TableContainer>
                     </Paper>
+
+                    {/* Section Documents - Contrats */}
+                    <Box sx={{ mt: 3 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                        <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
+                          Documents
+                        </Typography>
+                        <input
+                          accept="*/*"
+                          style={{ display: 'none' }}
+                          id="upload-document-contrats"
+                          type="file"
+                          onChange={(e) => handleUploadDocument(e, 'contrats')}
+                        />
+                        <label htmlFor="upload-document-contrats">
+                          <IconButton
+                            component="span"
+                            sx={{
+                              width: 36,
+                              height: 36,
+                              backgroundColor: '#007AFF',
+                              color: 'white',
+                              '&:hover': {
+                                backgroundColor: '#0A84FF',
+                              },
+                              boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
+                            }}
+                          >
+                            <AddIcon />
+                          </IconButton>
+                        </label>
+                      </Box>
+                      <Box sx={{ 
+                        maxHeight: '400px',
+                        overflowY: 'auto'
+                      }}>
+                        {generatedDocuments.filter(doc => 
+                          doc.category === 'contrats' || 
+                          doc.documentType === 'lettre_mission' || 
+                          doc.documentType === 'convention_etudiant' || 
+                          doc.documentType === 'convention_entreprise'
+                        ).length === 0 ? (
+                          <Typography 
+                            variant="body2" 
+                            color="text.secondary"
+                            sx={{ 
+                              textAlign: 'center',
+                              py: 2
+                            }}
+                          >
+                            Aucun document pour le moment
+                          </Typography>
+                        ) : (
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                            {generatedDocuments
+                              .filter(doc => 
+                                doc.category === 'contrats' || 
+                                doc.documentType === 'lettre_mission' || 
+                                doc.documentType === 'convention_etudiant' || 
+                                doc.documentType === 'convention_entreprise'
+                              )
+                              .map((doc) => (
+                                <Box
+                                  key={doc.id}
+                                  onClick={() => window.open(doc.fileUrl, '_blank')}
+                                  sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 2,
+                                    p: 1.5,
+                                    borderRadius: '10px',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s ease-in-out',
+                                    '&:hover': {
+                                      backgroundColor: '#f5f5f7',
+                                      transform: 'translateY(-1px)'
+                                    },
+                                    position: 'relative'
+                                  }}
+                                >
+                                  <Box sx={{
+                                    width: 36,
+                                    height: 36,
+                                    borderRadius: '8px',
+                                    backgroundColor: '#f5f5f7',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: '#1d1d1f',
+                                    flexShrink: 0
+                                  }}>
+                                    <PdfIcon sx={{ fontSize: 20 }} />
+                                  </Box>
+                                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                                    <Typography sx={{ 
+                                      fontSize: '0.875rem',
+                                      fontWeight: '500',
+                                      color: '#1d1d1f',
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis'
+                                    }}>
+                                      {doc.fileName}
+                                    </Typography>
+                                    <Typography sx={{ 
+                                      fontSize: '0.75rem',
+                                      color: '#86868b'
+                                    }}>
+                                      {doc.createdAt.toLocaleDateString()}
+                                    </Typography>
+                                  </Box>
+                                  <IconButton
+                                    size="small"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDocumentMenuOpen(e, doc);
+                                    }}
+                                    sx={{
+                                      color: '#86868b',
+                                      '&:hover': { color: '#1d1d1f' }
+                                    }}
+                                  >
+                                    <MoreVertIcon fontSize="small" />
+                                  </IconButton>
+                                </Box>
+                              ))}
+                          </Box>
+                        )}
+                      </Box>
+                    </Box>
                   </Box>
                 )
               },
@@ -8721,6 +8969,134 @@ const MissionDetails: React.FC = () => {
                           note.status === 'Validée' ? sum + note.amount : sum, 0
                         ).toFixed(2)} €
                       </Typography>
+                    </Box>
+
+                    {/* Section Documents - Facturation */}
+                    <Box sx={{ mt: 3 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                        <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
+                          Documents
+                        </Typography>
+                        <input
+                          accept="*/*"
+                          style={{ display: 'none' }}
+                          id="upload-document-facturation"
+                          type="file"
+                          onChange={(e) => handleUploadDocument(e, 'facturation')}
+                        />
+                        <label htmlFor="upload-document-facturation">
+                          <IconButton
+                            component="span"
+                            sx={{
+                              width: 36,
+                              height: 36,
+                              backgroundColor: '#007AFF',
+                              color: 'white',
+                              '&:hover': {
+                                backgroundColor: '#0A84FF',
+                              },
+                              boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
+                            }}
+                          >
+                            <AddIcon />
+                          </IconButton>
+                        </label>
+                      </Box>
+                      <Box sx={{ 
+                        maxHeight: '400px',
+                        overflowY: 'auto'
+                      }}>
+                        {generatedDocuments.filter(doc => 
+                          doc.category === 'facturation' || 
+                          doc.documentType === 'facture' || 
+                          doc.documentType === 'note_de_frais'
+                        ).length === 0 ? (
+                          <Typography 
+                            variant="body2" 
+                            color="text.secondary"
+                            sx={{ 
+                              textAlign: 'center',
+                              py: 2
+                            }}
+                          >
+                            Aucun document pour le moment
+                          </Typography>
+                        ) : (
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                            {generatedDocuments
+                              .filter(doc => 
+                                doc.category === 'facturation' || 
+                                doc.documentType === 'facture' || 
+                                doc.documentType === 'note_de_frais'
+                              )
+                              .map((doc) => (
+                                <Box
+                                  key={doc.id}
+                                  onClick={() => window.open(doc.fileUrl, '_blank')}
+                                  sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 2,
+                                    p: 1.5,
+                                    borderRadius: '10px',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s ease-in-out',
+                                    '&:hover': {
+                                      backgroundColor: '#f5f5f7',
+                                      transform: 'translateY(-1px)'
+                                    },
+                                    position: 'relative'
+                                  }}
+                                >
+                                  <Box sx={{
+                                    width: 36,
+                                    height: 36,
+                                    borderRadius: '8px',
+                                    backgroundColor: '#f5f5f7',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: '#1d1d1f',
+                                    flexShrink: 0
+                                  }}>
+                                    <PdfIcon sx={{ fontSize: 20 }} />
+                                  </Box>
+                                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                                    <Typography sx={{ 
+                                      fontSize: '0.875rem',
+                                      fontWeight: '500',
+                                      color: '#1d1d1f',
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis'
+                                    }}>
+                                      {doc.fileName}
+                                    </Typography>
+                                    <Typography sx={{ 
+                                      fontSize: '0.75rem',
+                                      color: '#86868b'
+                                    }}>
+                                      {doc.createdAt.toLocaleDateString()}
+                                    </Typography>
+                                  </Box>
+                                  <IconButton
+                                    size="small"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDocumentMenuOpen(e, doc);
+                                    }}
+                                    sx={{
+                                      color: '#86868b',
+                                      '&:hover': { color: '#1d1d1f' }
+                                    }}
+                                  >
+                                    <MoreVertIcon fontSize="small" />
+                                  </IconButton>
+                                </Box>
+                              ))}
+                          </Box>
+                        )}
+                      </Box>
                     </Box>
                   </Box>
                 )
@@ -9070,7 +9446,7 @@ const MissionDetails: React.FC = () => {
 
 
 
-          {/* Documents Générés */}
+          {/* Documents */}
           <Paper sx={{ 
             p: 3,
             mb: 3,
@@ -9078,17 +9454,42 @@ const MissionDetails: React.FC = () => {
             borderRadius: '20px',
             boxShadow: '0 2px 12px rgba(0, 0, 0, 0.04)',
           }}>
-            <Typography variant="h6" sx={{ 
-              fontWeight: 500, 
-              color: '#1d1d1f',
-              mb: 2,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1
-            }}>
-              <DescriptionIcon sx={{ fontSize: 20 }} />
-              Documents générés
-            </Typography>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Typography variant="h6" sx={{ 
+                fontWeight: 500, 
+                color: '#1d1d1f',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1
+              }}>
+                <DescriptionIcon sx={{ fontSize: 20 }} />
+                Documents
+              </Typography>
+              <input
+                accept="*/*"
+                style={{ display: 'none' }}
+                id="upload-document-autres"
+                type="file"
+                onChange={(e) => handleUploadDocument(e, 'autres')}
+              />
+              <label htmlFor="upload-document-autres">
+                <IconButton
+                  component="span"
+                  sx={{
+                    width: 36,
+                    height: 36,
+                    backgroundColor: '#007AFF',
+                    color: 'white',
+                    '&:hover': {
+                      backgroundColor: '#0A84FF',
+                    },
+                    boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
+                  }}
+                >
+                  <AddIcon />
+                </IconButton>
+              </label>
+            </Box>
 
             <Box sx={{ 
               maxHeight: 'calc(100vh - 400px)',
@@ -9103,11 +9504,12 @@ const MissionDetails: React.FC = () => {
                     py: 2
                   }}
                 >
-                  Aucun document généré pour le moment
+                  Aucun document pour le moment
                 </Typography>
               ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                  {generatedDocuments.map((doc) => (
+                  {generatedDocuments
+                    .map((doc) => (
                     <Box
                       key={doc.id}
                       onClick={() => window.open(doc.fileUrl, '_blank')}
