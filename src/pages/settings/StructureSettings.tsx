@@ -1228,7 +1228,7 @@ const StructureSettings: React.FC = () => {
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                         <WorkIcon sx={{ color: theme.palette.primary.main, fontSize: 18 }} />
                         <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                          Junior
+                          Job Service
                         </Typography>
                       </Box>
                     </MenuItem>

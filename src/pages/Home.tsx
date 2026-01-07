@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import emailjs from '@emailjs/browser';
+import { getFirebaseFunctions } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
 import { 
   Box, 
   Container, 
@@ -359,17 +360,16 @@ export default function Home(): JSX.Element {
     setLoading(true);
 
     try {
-      await emailjs.send(
-        'service_wd96h7i', // À remplacer par votre Service ID EmailJS
-        'template_bjcdscc', // À remplacer par votre Template ID EmailJS
-        {
-          from_company: formData.company,
-          from_email: formData.email,
-          message: formData.message,
-          to_email: 'teo.guermeur@gmail.com' // Votre email où vous voulez recevoir les demandes
-        },
-        'Hn6_ev50BvQzoNSS0' // À remplacer par votre Public Key EmailJS
-      );
+      const functionsInstance = await getFirebaseFunctions();
+      if (!functionsInstance) {
+        throw new Error("Le service Functions n'est pas disponible");
+      }
+      const sendContactEmail = httpsCallable(functionsInstance, 'sendContactEmail');
+      await sendContactEmail({
+        company: formData.company,
+        email: formData.email,
+        message: formData.message
+      });
 
       setSnackbar({
         open: true,
@@ -384,6 +384,7 @@ export default function Home(): JSX.Element {
         message: ''
       });
     } catch (error) {
+      console.error("Erreur d'envoi:", error);
       setSnackbar({
         open: true,
         message: 'Une erreur est survenue. Veuillez réessayer.',

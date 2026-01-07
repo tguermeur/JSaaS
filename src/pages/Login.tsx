@@ -10,7 +10,11 @@ import {
   Alert,
   IconButton,
   InputAdornment,
-  Divider
+  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material';
 import { 
   Visibility, 
@@ -20,6 +24,9 @@ import { useNavigate, Link as RouterLink } from 'react-router-dom';
 import { loginUser, resetPassword } from '../firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import { signOut } from 'firebase/auth';
+import { auth } from '../firebase/config';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 export default function Login(): JSX.Element {
   const [email, setEmail] = useState<string>('');
@@ -28,6 +35,14 @@ export default function Login(): JSX.Element {
   const [loading, setLoading] = useState<boolean>(false);
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [resetEmailSent, setResetEmailSent] = useState<boolean>(false);
+  
+  // État pour la 2FA
+  const [twoFactorRequired, setTwoFactorRequired] = useState<boolean>(false);
+  const [twoFactorCode, setTwoFactorCode] = useState<string>('');
+  const [twoFactorLoading, setTwoFactorLoading] = useState<boolean>(false);
+  const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
+  const [pendingUserId, setPendingUserId] = useState<string | null>(null);
+  const [pendingUserStatus, setPendingUserStatus] = useState<string | null>(null);
 
   const navigate = useNavigate();
 
@@ -55,14 +70,28 @@ export default function Login(): JSX.Element {
     try {
       const user = await loginUser(email, password);
       
-      // Récupérer le statut de l'utilisateur pour rediriger correctement
+      // Récupérer le statut de l'utilisateur pour vérifier la 2FA
       try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
           const userData = userDoc.data();
           const userStatus = userData.status;
-          const redirectPath = getRedirectPath(userStatus);
-          navigate(redirectPath);
+          
+          // Vérifier si la 2FA est activée
+          if (userData.twoFactorEnabled) {
+            // La 2FA est activée, demander le code
+            setPendingUserId(user.uid);
+            setPendingUserStatus(userStatus);
+            setTwoFactorRequired(true);
+            setTwoFactorError(null);
+            setTwoFactorCode('');
+            setLoading(false);
+            return; // Ne pas rediriger, attendre la vérification 2FA
+          } else {
+            // Pas de 2FA, rediriger normalement
+            const redirectPath = getRedirectPath(userStatus);
+            navigate(redirectPath);
+          }
         } else {
           navigate('/app/dashboard');
         }
@@ -76,6 +105,127 @@ export default function Login(): JSX.Element {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Fonction pour détecter les informations de l'appareil
+  const getDeviceInfo = (uid: string) => {
+    const userAgent = navigator.userAgent;
+    const platform = navigator.platform;
+    
+    // Détecter le nom de l'appareil/navigateur
+    let deviceName = 'Appareil inconnu';
+    if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
+      deviceName = 'Chrome';
+    } else if (userAgent.includes('Firefox')) {
+      deviceName = 'Firefox';
+    } else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) {
+      deviceName = 'Safari';
+    } else if (userAgent.includes('Edg')) {
+      deviceName = 'Edge';
+    }
+    
+    // Détecter le système d'exploitation
+    let os = 'Unknown';
+    if (userAgent.includes('Windows')) {
+      os = 'Windows';
+      if (userAgent.includes('Windows NT 10.0')) deviceName += ' sur Windows 10/11';
+      else if (userAgent.includes('Windows NT 6.3')) deviceName += ' sur Windows 8.1';
+      else if (userAgent.includes('Windows NT 6.2')) deviceName += ' sur Windows 8';
+      else deviceName += ' sur Windows';
+    } else if (userAgent.includes('Mac OS X') || userAgent.includes('Macintosh')) {
+      os = 'macOS';
+      deviceName += ' sur macOS';
+    } else if (userAgent.includes('Linux')) {
+      os = 'Linux';
+      deviceName += ' sur Linux';
+    } else if (userAgent.includes('Android')) {
+      os = 'Android';
+      deviceName = 'Appareil Android';
+    } else if (userAgent.includes('iPhone') || userAgent.includes('iPad')) {
+      os = 'iOS';
+      deviceName = userAgent.includes('iPad') ? 'iPad' : 'iPhone';
+    }
+    
+    // Générer un ID unique pour cet appareil (basé sur userAgent + quelques caractéristiques)
+    const deviceId = `${uid}_${btoa(userAgent + platform).substring(0, 16)}`;
+    
+    return {
+      deviceId,
+      deviceName,
+      userAgent,
+      platform: os
+    };
+  };
+
+  const handleTwoFactorVerify = async () => {
+    if (!pendingUserId || twoFactorCode.length !== 6) {
+      setTwoFactorError('Veuillez entrer un code à 6 chiffres');
+      return;
+    }
+
+    setTwoFactorLoading(true);
+    setTwoFactorError(null);
+
+    try {
+      const functions = getFunctions();
+      const verifyTwoFactorCode = httpsCallable(functions, 'verifyTwoFactorCode');
+      
+      // Récupérer les informations de l'appareil
+      const deviceInfo = getDeviceInfo(pendingUserId);
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Login.tsx:177',message:'Before calling verifyTwoFactorCode',data:{uid:pendingUserId,codeLength:twoFactorCode.length,deviceInfo},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      
+      // Envoyer le code et les infos de l'appareil
+      await verifyTwoFactorCode({ 
+        uid: pendingUserId, 
+        code: twoFactorCode,
+        deviceInfo 
+      });
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Login.tsx:186',message:'verifyTwoFactorCode call successful',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+
+      // Code valide, rediriger
+      const redirectPath = getRedirectPath(pendingUserStatus || '');
+      navigate(redirectPath);
+    } catch (error: any) {
+      console.error('Erreur vérification 2FA:', error);
+      setTwoFactorError(error.message || 'Code invalide. Veuillez réessayer.');
+      
+      // Déconnecter l'utilisateur en cas d'échec
+      try {
+        await signOut(auth);
+      } catch (signOutError) {
+        console.error('Erreur lors de la déconnexion:', signOutError);
+      }
+      
+      // Réinitialiser l'état
+      setTwoFactorRequired(false);
+      setTwoFactorCode('');
+      setPendingUserId(null);
+      setPendingUserStatus(null);
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const handleTwoFactorCancel = async () => {
+    // Déconnecter l'utilisateur
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Erreur lors de la déconnexion:', error);
+    }
+    
+    // Réinitialiser l'état
+    setTwoFactorRequired(false);
+    setTwoFactorCode('');
+    setPendingUserId(null);
+    setPendingUserStatus(null);
+    setTwoFactorError(null);
   };
 
   const handleTogglePasswordVisibility = () => {
@@ -299,6 +449,83 @@ export default function Login(): JSX.Element {
           </Link>
         </Box>
       </Paper>
+      
+      {/* Dialog pour la vérification 2FA */}
+      <Dialog
+        open={twoFactorRequired}
+        onClose={handleTwoFactorCancel}
+        maxWidth="sm"
+        fullWidth
+        disableEscapeKeyDown
+      >
+        <DialogTitle>
+          Authentification à deux facteurs
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" paragraph sx={{ mt: 1 }}>
+            Un code de vérification a été généré par votre application d'authentification.
+            Veuillez entrer ce code pour compléter la connexion.
+          </Typography>
+          
+          {twoFactorError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {twoFactorError}
+            </Alert>
+          )}
+          
+          <TextField
+            fullWidth
+            label="Code de vérification"
+            value={twoFactorCode}
+            onChange={(e) => {
+              const value = e.target.value.replace(/\D/g, '').slice(0, 6);
+              setTwoFactorCode(value);
+              setTwoFactorError(null);
+            }}
+            inputProps={{ 
+              maxLength: 6, 
+              style: { 
+                textAlign: 'center', 
+                fontSize: '1.5rem', 
+                letterSpacing: '0.5rem',
+                fontFamily: 'monospace'
+              } 
+            }}
+            placeholder="000000"
+            disabled={twoFactorLoading}
+            sx={{ 
+              mt: 2,
+              '& .MuiOutlinedInput-root': {
+                fontSize: '1.5rem',
+                letterSpacing: '0.5rem',
+              }
+            }}
+            autoFocus
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button 
+            onClick={handleTwoFactorCancel}
+            disabled={twoFactorLoading}
+          >
+            Annuler
+          </Button>
+          <Button
+            onClick={handleTwoFactorVerify}
+            variant="contained"
+            disabled={twoFactorLoading || twoFactorCode.length !== 6}
+          >
+            {twoFactorLoading ? (
+              <>
+                <CircularProgress size={20} sx={{ mr: 1 }} />
+                Vérification...
+              </>
+            ) : (
+              'Vérifier'
+            )}
+          </Button>
+        </DialogActions>
+      </Dialog>
       
       <Typography variant="body2" color="text.secondary" sx={{ mt: 4, textAlign: 'center' }}>
         En vous connectant, vous acceptez les{' '}

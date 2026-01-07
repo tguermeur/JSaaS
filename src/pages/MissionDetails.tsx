@@ -83,6 +83,7 @@ import {
   Upload as UploadIcon,
   Category as CategoryIcon,
   DragIndicator as DragIndicatorIcon,
+  CloudUpload as CloudUploadIcon,
 } from '@mui/icons-material';
 import { doc, collection, query, where, getDocs, addDoc, updateDoc, orderBy, deleteDoc, getDoc, setDoc, writeBatch, limit, deleteField } from 'firebase/firestore';
 import { db } from '../firebase/config';
@@ -409,6 +410,12 @@ interface GeneratedDocument {
   expenseNoteId?: string;
   category?: 'contrats' | 'facturation' | 'autres';  // Catégorie pour les documents uploadés manuellement
   isUploaded?: boolean;  // Indique si le document a été uploadé manuellement
+  
+  // Informations spécifiques aux factures
+  isInvoice?: boolean;  // Indique si le document est une facture
+  invoiceSentDate?: Date;  // Date d'envoi de la facture
+  invoiceDueDate?: Date;  // Date d'échéance de la facture
+  invoiceAmount?: number;  // Montant de la facture (TTC + notes de frais)
 }
 
 interface EditableFieldProps {
@@ -905,8 +912,10 @@ const MissionEtape: React.FC<{ etape: MissionEtape; onEtapeChange?: (newEtape: M
   );
 };
 
+import { trackUserActivity } from '../services/userActivityService';
+
 const MissionDetails: React.FC = () => {
-  const { missionNumber } = useParams<{ missionNumber: string }>();
+  const { missionId } = useParams<{ missionId: string }>();
   const navigate = useNavigate();
   const { currentUser, userData } = useAuth();
   const [mission, setMission] = useState<Mission | null>(null);
@@ -1087,6 +1096,27 @@ const MissionDetails: React.FC = () => {
   const [startDateTime, setStartDateTime] = useState<string>('');
   const [endDateDate, setEndDateDate] = useState<string>('');
   const [endDateTime, setEndDateTime] = useState<string>('');
+
+  // État pour le dialog d'upload de document avec drag & drop
+  const [uploadDialog, setUploadDialog] = useState<{
+    open: boolean;
+    category: 'contrats' | 'facturation' | 'autres';
+    file: File | null;
+    isDragging: boolean;
+    isInvoice: boolean;
+    invoiceSentDate: string;
+    invoiceDueDate: string;
+    invoiceAmount: string;
+  }>({
+    open: false,
+    category: 'autres',
+    file: null,
+    isDragging: false,
+    isInvoice: false,
+    invoiceSentDate: new Date().toISOString().split('T')[0],
+    invoiceDueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    invoiceAmount: '0.00'
+  });
 
   // État pour la popup de données manquantes
   const [missingDataDialog, setMissingDataDialog] = useState<{
@@ -1382,127 +1412,46 @@ const MissionDetails: React.FC = () => {
           throw new Error("Aucune structure associée à l'utilisateur");
         }
 
-        console.log('🔍 Recherche de la mission:', {
-          missionNumber,
-          userStatus,
-          userStructureId,
-          isEntreprise,
-          missionNumberType: typeof missionNumber
-        });
-
-        const missionsRef = collection(db, 'missions');
-        let missionQuery;
-
-        if (userStatus === 'superadmin') {
-          missionQuery = query(missionsRef, where('numeroMission', '==', missionNumber));
-        } else if (isEntreprise) {
-          // Pour les entreprises, chercher par companyId
-          missionQuery = query(
-            missionsRef,
-            where('numeroMission', '==', missionNumber),
-            where('companyId', '==', currentUser.uid)
-          );
-        } else {
-          missionQuery = query(
-            missionsRef,
-            where('numeroMission', '==', missionNumber),
-            where('structureId', '==', userStructureId)
-          );
+        if (!missionId) {
+          throw new Error("ID de mission manquant");
         }
 
-        const missionSnapshot = await getDocs(missionQuery);
-
-        console.log('📊 Résultats de la requête:', {
-          nombreResultats: missionSnapshot.docs.length,
-          missionNumber,
+        console.log('🔍 Recherche de la mission par ID:', {
+          missionId,
+          userStatus,
           userStructureId,
-          userStatus
+          isEntreprise
         });
 
-        if (missionSnapshot.empty) {
-          // Essayer une recherche sans filtre structureId pour voir si la mission existe
-          const fallbackQuery = query(missionsRef, where('numeroMission', '==', missionNumber));
-          const fallbackSnapshot = await getDocs(fallbackQuery);
-          
-          console.log('⚠️ Mission non trouvée avec filtres. Résultats sans filtre structureId:', {
-            nombreResultats: fallbackSnapshot.docs.length,
-            missionsTrouvees: fallbackSnapshot.docs.map(doc => ({
-              id: doc.id,
-              numeroMission: doc.data().numeroMission,
-              structureId: doc.data().structureId,
-              company: doc.data().company
-            }))
-          });
+        // Chercher directement la mission par son ID
+        const missionDoc = await getDoc(doc(db, 'missions', missionId));
+        
+        if (!missionDoc.exists()) {
+          throw new Error("Mission non trouvée");
+        }
 
-          // Si la recherche ressemble à un ID Firestore (longueur ~20 caractères alphanumériques)
-          // Essayer de chercher directement par ID
-          if (missionNumber && missionNumber.length >= 20 && /^[a-zA-Z0-9]+$/.test(missionNumber)) {
-            console.log('🔍 Tentative de recherche par ID Firestore:', missionNumber);
-            try {
-              const missionDoc = await getDoc(doc(db, 'missions', missionNumber));
-              if (missionDoc.exists()) {
-                const missionData = missionDoc.data();
-                console.log('✅ Mission trouvée par ID:', {
-                  id: missionDoc.id,
-                  numeroMission: missionData.numeroMission,
-                  structureId: missionData.structureId,
-                  userStructureId
-                });
-                
-                // Vérifier que l'utilisateur a accès à cette mission
-                if (userStatus === 'superadmin') {
-                  // Superadmin a accès à tout
-                } else if (isEntreprise) {
-                  // Pour les entreprises, vérifier par companyId
-                  if (missionData.companyId !== currentUser.uid) {
-                    throw new Error("Mission non trouvée ou accès non autorisé");
-                  }
-                } else if (missionData.structureId !== userStructureId) {
-                  throw new Error("Mission non trouvée ou accès non autorisé");
-                }
-                
-                // Utiliser cette mission trouvée par ID
-                const missionDocData = missionDoc.data();
-                const missionWithId = {
-                  id: missionDoc.id,
-                  ...missionDocData,
-                  etape: missionDocData.etape || 'Négociation',
-                  structureId: missionDocData.structureId || userStructureId,
-                  missionTypeId: missionDocData.missionTypeId || null
-                } as Mission;
-                
-                // Charger les informations du contact si nécessaire
-                let contact = null;
-                if (missionWithId.contactId) {
-                  const contactDoc = await getDoc(doc(db, 'contacts', missionWithId.contactId));
-                  if (contactDoc.exists()) {
-                    const contactData = contactDoc.data();
-                    contact = {
-                      id: contactDoc.id,
-                      firstName: contactData.firstName,
-                      lastName: contactData.lastName,
-                      email: contactData.email,
-                      phone: contactData.phone,
-                      position: contactData.position,
-                      createdAt: contactData.createdAt?.toDate() || new Date()
-                    };
-                  }
-                }
-                
-                setMission({ ...missionWithId, contact });
-                setLoading(false);
-                return;
-              }
-            } catch (idError) {
-              console.error('Erreur lors de la recherche par ID:', idError);
-            }
+        const missionData = missionDoc.data();
+        
+        // Vérifier que l'utilisateur a accès à cette mission
+        if (userStatus === 'superadmin') {
+          // Superadmin a accès à tout
+        } else if (isEntreprise) {
+          // Pour les entreprises, vérifier par companyId
+          if (missionData.companyId !== currentUser.uid) {
+            throw new Error("Mission non trouvée ou accès non autorisé");
           }
-
+        } else if (missionData.structureId !== userStructureId) {
           throw new Error("Mission non trouvée ou accès non autorisé");
         }
 
-        const missionDoc = missionSnapshot.docs[0];
-        const missionData = missionDoc.data() as {
+        console.log('✅ Mission trouvée par ID:', {
+          id: missionDoc.id,
+          numeroMission: missionData.numeroMission,
+          structureId: missionData.structureId,
+          userStructureId
+        });
+        
+        const typedMissionData = missionData as {
           structureId?: string;
           contactId?: string;
           etape?: MissionEtape;
@@ -1513,19 +1462,19 @@ const MissionDetails: React.FC = () => {
         };
         
         // S'assurer que la structure est définie (sauf pour les entreprises)
-        if (!missionData.structureId && !isEntreprise && userStructureId) {
+        if (!typedMissionData.structureId && !isEntreprise && userStructureId) {
           // Si la mission n'a pas de structure, utiliser celle de l'utilisateur
           await updateDoc(doc(db, 'missions', missionDoc.id), {
             structureId: userStructureId,
             updatedAt: new Date()
           });
-          missionData.structureId = userStructureId;
+          typedMissionData.structureId = userStructureId;
         }
 
         // Charger les informations du contact si un contactId est présent
         let contact = null;
-        if (missionData.contactId) {
-          const contactDoc = await getDoc(doc(db, 'contacts', missionData.contactId));
+        if (typedMissionData.contactId) {
+          const contactDoc = await getDoc(doc(db, 'contacts', typedMissionData.contactId));
           if (contactDoc.exists()) {
             const contactData = contactDoc.data();
             contact = {
@@ -1542,11 +1491,11 @@ const MissionDetails: React.FC = () => {
 
         const mission = {
           id: missionDoc.id,
-          ...missionData,
+          ...typedMissionData,
           contact,
-          etape: missionData.etape || 'Négociation',
-          structureId: missionData.structureId || userStructureId,
-          missionTypeId: missionData.missionTypeId || null
+          etape: typedMissionData.etape || 'Négociation',
+          structureId: typedMissionData.structureId || userStructureId,
+          missionTypeId: typedMissionData.missionTypeId || null
         } as Mission;
 
         console.log("Mission trouvée avec structure:", {
@@ -1604,8 +1553,8 @@ const MissionDetails: React.FC = () => {
           setEndDateTime('');
         }
 
-        if (missionData.priceHT) {
-          setPriceHT(missionData.priceHT);
+        if (typedMissionData.priceHT) {
+          setPriceHT(typedMissionData.priceHT);
           setIsPriceSaved(true);
 
           // Charger les dépenses depuis la mission (nomdepense1, tvadepense1, totaldepense1, etc.)
@@ -1616,12 +1565,12 @@ const MissionDetails: React.FC = () => {
             const tvaKey = `tvadepense${index}`;
             const totalKey = `totaldepense${index}`;
             
-            if (missionData[nameKey] && missionData[totalKey]) {
+            if (typedMissionData[nameKey] && typedMissionData[totalKey]) {
               loadedExpenses.push({
                 id: `expense-${mission.id}-${index}`,
-                name: missionData[nameKey] || '',
-                tva: missionData[tvaKey] || 20,
-                priceHT: missionData[totalKey] || 0,
+                name: typedMissionData[nameKey] || '',
+                tva: typedMissionData[tvaKey] || 20,
+                priceHT: typedMissionData[totalKey] || 0,
                 isSaved: true,
                 savedIndex: index
               });
@@ -1633,7 +1582,7 @@ const MissionDetails: React.FC = () => {
           setExpenses(loadedExpenses);
 
           // Calculer les totaux initiaux avec les dépenses
-          const { totalHT, totalTTC } = calculatePrices(missionData.priceHT, missionData.hours, loadedExpenses);
+          const { totalHT, totalTTC } = calculatePrices(typedMissionData.priceHT, typedMissionData.hours, loadedExpenses);
           setTotalHT(totalHT);
           setTotalTTC(totalTTC);
         }
@@ -1651,7 +1600,7 @@ const MissionDetails: React.FC = () => {
     };
 
     fetchMissionDetails();
-  }, [currentUser, missionNumber]);
+  }, [currentUser, missionId]);
 
   // Mettre à jour le texte du bouton PC quand la mission est chargée
   useEffect(() => {
@@ -3499,7 +3448,7 @@ const MissionDetails: React.FC = () => {
       if (generationType === 'editor') {
         console.log('📝 Type de génération: éditeur - redirection vers QuoteBuilder');
         // Rediriger vers l'éditeur (QuoteBuilder)
-        const url = `/app/mission/${mission.numeroMission}/quote?template=${templateId}`;
+        const url = `/app/mission/${mission.id}/quote?template=${templateId}`;
         navigate(url);
         setGeneratingDoc(false);
         return;
@@ -5311,7 +5260,7 @@ const MissionDetails: React.FC = () => {
     }
   };
 
-  const calculateAndUpdatePrices = async (forceUpdate: boolean = false) => {
+  const calculateAndUpdatePrices = async (forceUpdate: boolean = false, showNotification: boolean = false) => {
     if (!mission?.id || !mission.priceHT || !mission.hours) return;
 
     // Si les totaux existent déjà et qu'on ne force pas la mise à jour, on ne fait rien
@@ -5344,33 +5293,27 @@ const MissionDetails: React.FC = () => {
         tva
       } : null);
 
-      enqueueSnackbar('Montants mis à jour avec succès', { variant: 'success' });
+      // Afficher la notification uniquement si demandé (pas lors du chargement initial)
+      if (showNotification) {
+        enqueueSnackbar('Montants mis à jour avec succès', { variant: 'success' });
+      }
     } catch (error) {
       console.error('Erreur lors de la mise à jour des montants:', error);
       enqueueSnackbar('Erreur lors de la mise à jour des montants', { variant: 'error' });
     }
   };
 
-  // Ajoutons un nouvel effet pour le calcul initial
-  useEffect(() => {
-    if (mission) {
-      calculateAndUpdatePrices(false);
-    }
-  }, [mission]);
-
-  // Modifions l'effet existant pour forcer la mise à jour lors des changements
-  useEffect(() => {
-    if (mission?.priceHT && mission?.hours) {
-      calculateAndUpdatePrices(true);
-    }
-  }, [mission?.priceHT, mission?.hours]);
-
-  // Assurez-vous que le calcul est effectué dès que la mission est chargée
+  // Effet unique consolidé pour le calcul des montants
   useEffect(() => {
     if (mission && mission.priceHT && mission.hours) {
-      calculateAndUpdatePrices(true);
+      // Utiliser un timeout pour éviter les appels multiples lors du chargement initial
+      const timeoutId = setTimeout(() => {
+        calculateAndUpdatePrices(false);
+      }, 100);
+      
+      return () => clearTimeout(timeoutId);
     }
-  }, [mission]);
+  }, [mission?.id, mission?.priceHT, mission?.hours, expenses]);
 
   // Ajouter cette nouvelle fonction
   const handleCompanyClick = async (companyName: string) => {
@@ -5427,7 +5370,11 @@ const MissionDetails: React.FC = () => {
           ...data,
           tags: data.tags || [], // S'assurer que tags est toujours un tableau
           createdAt: data.createdAt?.toDate() || new Date(),
-          updatedAt: data.updatedAt?.toDate() || new Date()
+          updatedAt: data.updatedAt?.toDate() || new Date(),
+          // Convertir les dates spécifiques aux factures
+          invoiceSentDate: data.invoiceSentDate?.toDate?.() || data.invoiceSentDate,
+          invoiceDueDate: data.invoiceDueDate?.toDate?.() || data.invoiceDueDate,
+          signedAt: data.signedAt?.toDate?.() || data.signedAt
         } as GeneratedDocument;
       });
       
@@ -5512,13 +5459,13 @@ const MissionDetails: React.FC = () => {
       try {
         const templateData = await loadQuoteTemplate(selectedQuoteTemplate);
         // Rediriger vers QuoteBuilder avec les données du template
-        navigate(`/quote-builder/${mission?.numeroMission}?template=${selectedQuoteTemplate}`);
+        navigate(`/quote-builder/${mission?.id}?template=${selectedQuoteTemplate}`);
       } catch (error) {
         enqueueSnackbar('Erreur lors du chargement du template', { variant: 'error' });
       }
     } else {
       // Rediriger vers QuoteBuilder sans template
-      navigate(`/quote-builder/${mission?.numeroMission}`);
+      navigate(`/quote-builder/${mission?.id}`);
     }
   };
 
@@ -5707,24 +5654,196 @@ const MissionDetails: React.FC = () => {
     }
   };
 
-  const handleUploadDocument = async (event: React.ChangeEvent<HTMLInputElement>, category: 'contrats' | 'facturation' | 'autres') => {
+  // Ouvrir le dialog d'upload
+  const handleOpenUploadDialog = (category: 'contrats' | 'facturation' | 'autres', file?: File) => {
     if (mission?.isArchived) {
       enqueueSnackbar('Impossible d\'uploader un document pour une mission archivée', { variant: 'error' });
       return;
     }
-    if (!event.target.files || !event.target.files[0] || !mission) return;
+    
+    // Calculer le montant par défaut de la facture (TTC + notes de frais)
+    const calculateDefaultInvoiceAmount = () => {
+      if (category !== 'facturation' || !mission) return '0.00';
+      
+      // Calculer le TTC
+      const priceHT = mission.priceHT || parseFloat(mission.salary || '0');
+      const totalHours = mission.totalHours || 0;
+      const totalHT = mission.totalHT || (priceHT * totalHours);
+      const totalTTC = mission.totalTTC || (totalHT * 1.2);
+      
+      // Calculer les notes de frais validées
+      const validatedExpensesTotal = expenseNotes
+        .filter(note => note.status === 'Validée')
+        .reduce((total, note) => total + note.amount, 0);
+      
+      const finalAmount = totalTTC + validatedExpensesTotal;
+      return finalAmount.toFixed(2);
+    };
+    
+    // Récupérer le nombre de jours d'échéance depuis la structure (par défaut 30)
+    const fetchPaymentTerms = async () => {
+      if (mission?.structureId) {
+        try {
+          const structureDoc = await getDoc(doc(db, 'structures', mission.structureId));
+          const paymentTermsDays = structureDoc.data()?.paymentTermsDays || 30;
+          
+          const today = new Date();
+          const dueDate = new Date(today);
+          dueDate.setDate(dueDate.getDate() + paymentTermsDays);
+          
+          const defaultAmount = calculateDefaultInvoiceAmount();
+          
+          setUploadDialog({
+            open: true,
+            category,
+            file: file || null,
+            isDragging: false,
+            isInvoice: category === 'facturation',
+            invoiceSentDate: today.toISOString().split('T')[0],
+            invoiceDueDate: dueDate.toISOString().split('T')[0],
+            invoiceAmount: defaultAmount
+          });
+        } catch (error) {
+          console.error('Erreur lors de la récupération des termes de paiement:', error);
+          // Utiliser les valeurs par défaut en cas d'erreur
+          const today = new Date();
+          const dueDate = new Date(today);
+          dueDate.setDate(dueDate.getDate() + 30);
+          
+          const defaultAmount = calculateDefaultInvoiceAmount();
+          
+          setUploadDialog({
+            open: true,
+            category,
+            file: file || null,
+            isDragging: false,
+            isInvoice: category === 'facturation',
+            invoiceSentDate: today.toISOString().split('T')[0],
+            invoiceDueDate: dueDate.toISOString().split('T')[0],
+            invoiceAmount: defaultAmount
+          });
+        }
+      }
+    };
+    
+    fetchPaymentTerms();
+  };
 
+  const handleUploadDocument = async (event: React.ChangeEvent<HTMLInputElement>, category: 'contrats' | 'facturation' | 'autres') => {
+    if (!event.target.files || !event.target.files[0]) return;
     const file = event.target.files[0];
-    const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
+    handleOpenUploadDialog(category, file);
+    event.target.value = ''; // Réinitialiser l'input
+  };
+
+  // Fonction pour vérifier les permissions avant l'upload
+  const checkUploadPermissions = async (): Promise<{ canUpload: boolean; reason?: string }> => {
+    if (!currentUser || !mission) {
+      return { canUpload: false, reason: 'Utilisateur ou mission non trouvé' };
+    }
+
+    // Récupérer les données de l'utilisateur depuis Firestore pour être sûr
+    try {
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      if (!userDoc.exists()) {
+        return { canUpload: false, reason: 'Document utilisateur non trouvé dans Firestore' };
+      }
+
+      const freshUserData = userDoc.data();
+      console.log('🔍 Vérification des permissions:', {
+        userId: currentUser.uid,
+        userEmail: currentUser.email,
+        userStatus: freshUserData?.status,
+        userStructureId: freshUserData?.structureId,
+        missionId: mission.id,
+        missionStructureId: mission.structureId,
+        missionCreatedBy: mission.createdBy
+      });
+
+      // Superadmin peut tout faire
+      if (freshUserData?.status === 'superadmin' || freshUserData?.role === 'superadmin') {
+        console.log('✅ Superadmin détecté');
+        return { canUpload: true };
+      }
+
+      // Vérifier que l'utilisateur a un structureId
+      if (!freshUserData?.structureId) {
+        return { 
+          canUpload: false, 
+          reason: 'Votre compte n\'est pas associé à une structure. Contactez un administrateur.' 
+        };
+      }
+
+      // Vérifier que la mission a un structureId
+      if (!mission.structureId) {
+        return { 
+          canUpload: false, 
+          reason: 'Cette mission n\'est pas associée à une structure.' 
+        };
+      }
+
+      // Vérifier que les structures correspondent
+      if (freshUserData.structureId !== mission.structureId) {
+        return { 
+          canUpload: false, 
+          reason: `Vous faites partie d'une autre structure. Votre structure: ${freshUserData.structureId}, Structure de la mission: ${mission.structureId}` 
+        };
+      }
+
+      // Vérifier le statut de l'utilisateur
+      const allowedStatuses = ['admin', 'member', 'membre', 'admin_structure'];
+      if (!allowedStatuses.includes(freshUserData.status)) {
+        return { 
+          canUpload: false, 
+          reason: `Votre statut (${freshUserData.status}) ne permet pas d'uploader des documents. Statut requis: admin, member, ou membre.` 
+        };
+      }
+
+      console.log('✅ Permissions validées');
+      return { canUpload: true };
+
+    } catch (error) {
+      console.error('Erreur lors de la vérification des permissions:', error);
+      return { canUpload: false, reason: 'Erreur lors de la vérification des permissions' };
+    }
+  };
+
+  // Fonction pour uploader effectivement le document
+  const handleConfirmUpload = async () => {
+    if (!uploadDialog.file || !mission) return;
+
+    // Vérifier les permissions avant l'upload
+    const permissionCheck = await checkUploadPermissions();
+    if (!permissionCheck.canUpload) {
+      enqueueSnackbar(
+        permissionCheck.reason || 'Vous n\'avez pas les permissions pour uploader ce document',
+        { variant: 'error', autoHideDuration: 8000 }
+      );
+      return;
+    }
+
+    const file = uploadDialog.file;
+    const category = uploadDialog.category;
     const timestamp = Date.now();
-    const fileName = `${timestamp}_${file.name}`;
+    
+    // Nettoyer le nom de fichier pour éviter les caractères spéciaux qui pourraient causer des problèmes
+    const cleanFileName = file.name
+      .replace(/[[\]]/g, '_')  // Remplacer les crochets par des underscores
+      .replace(/[<>:"/\\|?*]/g, '_');  // Remplacer les autres caractères problématiques
+    
+    const fileName = `${timestamp}_${cleanFileName}`;
     const storagePath = `missions/${mission.id}/documents/${fileName}`;
     const storageRef = ref(storage, storagePath);
 
     try {
+      console.log('📤 Upload du fichier:', { storagePath, fileName });
+
       // Upload du fichier vers Storage
       await uploadBytes(storageRef, file);
+      console.log('✅ Fichier uploadé avec succès');
+      
       const fileUrl = await getDownloadURL(storageRef);
+      console.log('✅ URL récupérée:', fileUrl);
 
       // Déterminer le documentType en fonction de la catégorie
       let documentType: DocumentType = 'proposition_commerciale';
@@ -5756,6 +5875,14 @@ const MissionDetails: React.FC = () => {
         isUploaded: true
       };
 
+      // Ajouter les champs pour les factures
+      if (uploadDialog.isInvoice) {
+        newDocumentData.isInvoice = true;
+        newDocumentData.invoiceSentDate = new Date(uploadDialog.invoiceSentDate);
+        newDocumentData.invoiceDueDate = new Date(uploadDialog.invoiceDueDate);
+        newDocumentData.invoiceAmount = parseFloat(uploadDialog.invoiceAmount) || 0;
+      }
+
       // Ajouter les champs optionnels s'ils existent
       if (userData?.photoURL) {
         newDocumentData.createdByPhotoURL = userData.photoURL;
@@ -5768,13 +5895,31 @@ const MissionDetails: React.FC = () => {
       // Mettre à jour l'état local
       setGeneratedDocuments(prev => [newDocument, ...prev]);
 
-      // Réinitialiser l'input file
-      event.target.value = '';
+      // Fermer le dialog
+      setUploadDialog({
+        open: false,
+        category: 'autres',
+        file: null,
+        isDragging: false,
+        isInvoice: false,
+        invoiceSentDate: new Date().toISOString().split('T')[0],
+        invoiceDueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        invoiceAmount: '0.00'
+      });
 
       enqueueSnackbar('Document uploadé avec succès', { variant: 'success' });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erreur lors de l\'upload du document:', error);
-      enqueueSnackbar('Erreur lors de l\'upload du document', { variant: 'error' });
+      
+      let errorMessage = 'Erreur lors de l\'upload du document';
+      
+      if (error.code === 'storage/unauthorized') {
+        errorMessage = 'Vous n\'avez pas les permissions pour uploader un document sur cette mission. Vérifiez que vous faites partie de la même structure.';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      enqueueSnackbar(errorMessage, { variant: 'error', autoHideDuration: 6000 });
     }
   };
 
@@ -8149,18 +8294,18 @@ const MissionDetails: React.FC = () => {
                                 await downloadTemplatePDF('proposition_commerciale');
                               } else {
                                 // Rediriger vers QuoteBuilder avec l'ID de la template
-                                const url = `/app/mission/${mission.numeroMission}/quote?template=${assignedTemplate.id}`;
+                                const url = `/app/mission/${mission.id}/quote?template=${assignedTemplate.id}`;
                                 console.log('🚀 Redirection vers:', url);
                                 navigate(url);
                               }
                             } else {
                               console.log('⚠️ Aucune template assignée, redirection sans template');
-                              navigate(`/app/mission/${mission.numeroMission}/quote`);
+                              navigate(`/app/mission/${mission.id}/quote`);
                             }
                           } catch (error) {
                             console.error('❌ Erreur lors de la récupération de la template:', error);
                             // En cas d'erreur, rediriger sans template
-                            navigate(`/app/mission/${mission.numeroMission}/quote`);
+                            navigate(`/app/mission/${mission.id}/quote`);
                           }
                         }}
                         sx={{
@@ -9002,6 +9147,57 @@ const MissionDetails: React.FC = () => {
                           </IconButton>
                         </label>
                       </Box>
+
+                      {/* Zone de drag & drop pour les factures - N'afficher que s'il n'y a pas de facture */}
+                      {generatedDocuments.filter(doc => 
+                        (doc.category === 'facturation' || doc.documentType === 'facture') && doc.isInvoice
+                      ).length === 0 && (
+                        <Box
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.currentTarget.style.borderColor = '#007AFF';
+                            e.currentTarget.style.backgroundColor = 'rgba(0, 122, 255, 0.05)';
+                          }}
+                          onDragLeave={(e) => {
+                            e.currentTarget.style.borderColor = '#e5e5ea';
+                            e.currentTarget.style.backgroundColor = 'transparent';
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.currentTarget.style.borderColor = '#e5e5ea';
+                            e.currentTarget.style.backgroundColor = 'transparent';
+                            
+                            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                              const droppedFile = e.dataTransfer.files[0];
+                              handleOpenUploadDialog('facturation', droppedFile);
+                            }
+                          }}
+                          sx={{
+                            border: '2px dashed #e5e5ea',
+                            borderRadius: '12px',
+                            p: 3,
+                            textAlign: 'center',
+                            backgroundColor: 'transparent',
+                            transition: 'all 0.2s',
+                            cursor: 'pointer',
+                            mb: 2,
+                            '&:hover': {
+                              borderColor: '#007AFF',
+                              backgroundColor: 'rgba(0, 122, 255, 0.02)'
+                            }
+                          }}
+                          onClick={() => document.getElementById('upload-document-facturation')?.click()}
+                        >
+                          <CloudUploadIcon sx={{ fontSize: 40, color: '#86868b', mb: 1 }} />
+                          <Typography variant="body1" sx={{ fontWeight: 500, mb: 0.5 }}>
+                            Glissez-déposez une facture ici
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            ou cliquez pour sélectionner un fichier
+                          </Typography>
+                        </Box>
+                      )}
+
                       <Box sx={{ 
                         maxHeight: '400px',
                         overflowY: 'auto'
@@ -9035,14 +9231,16 @@ const MissionDetails: React.FC = () => {
                                   onClick={() => window.open(doc.fileUrl, '_blank')}
                                   sx={{
                                     display: 'flex',
-                                    alignItems: 'center',
+                                    alignItems: 'flex-start',
                                     gap: 2,
                                     p: 1.5,
                                     borderRadius: '10px',
                                     cursor: 'pointer',
                                     transition: 'all 0.2s ease-in-out',
+                                    backgroundColor: doc.isInvoice ? 'rgba(52, 199, 89, 0.03)' : 'transparent',
+                                    border: doc.isInvoice ? '1px solid rgba(52, 199, 89, 0.2)' : 'none',
                                     '&:hover': {
-                                      backgroundColor: '#f5f5f7',
+                                      backgroundColor: doc.isInvoice ? 'rgba(52, 199, 89, 0.08)' : '#f5f5f7',
                                       transform: 'translateY(-1px)'
                                     },
                                     position: 'relative'
@@ -9052,32 +9250,69 @@ const MissionDetails: React.FC = () => {
                                     width: 36,
                                     height: 36,
                                     borderRadius: '8px',
-                                    backgroundColor: '#f5f5f7',
+                                    backgroundColor: doc.isInvoice ? '#34C759' : '#f5f5f7',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
-                                    color: '#1d1d1f',
+                                    color: doc.isInvoice ? 'white' : '#1d1d1f',
                                     flexShrink: 0
                                   }}>
-                                    <PdfIcon sx={{ fontSize: 20 }} />
+                                    <ReceiptIcon sx={{ fontSize: 20 }} />
                                   </Box>
                                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                                    <Typography sx={{ 
-                                      fontSize: '0.875rem',
-                                      fontWeight: '500',
-                                      color: '#1d1d1f',
-                                      whiteSpace: 'nowrap',
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis'
-                                    }}>
-                                      {doc.fileName}
-                                    </Typography>
-                                    <Typography sx={{ 
-                                      fontSize: '0.75rem',
-                                      color: '#86868b'
-                                    }}>
-                                      {doc.createdAt.toLocaleDateString()}
-                                    </Typography>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                                      <Typography sx={{ 
+                                        fontSize: '0.875rem',
+                                        fontWeight: '500',
+                                        color: '#1d1d1f',
+                                        whiteSpace: 'nowrap',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis'
+                                      }}>
+                                        {doc.fileName}
+                                      </Typography>
+                                      {doc.isInvoice && (
+                                        <Chip
+                                          label="Facture"
+                                          size="small"
+                                          sx={{
+                                            height: 18,
+                                            fontSize: '0.65rem',
+                                            backgroundColor: '#34C759',
+                                            color: 'white',
+                                            fontWeight: 600
+                                          }}
+                                        />
+                                      )}
+                                    </Box>
+                                    
+                                    {/* Informations de la facture */}
+                                    {doc.isInvoice ? (
+                                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
+                                        <Typography sx={{ fontSize: '0.7rem', color: '#86868b' }}>
+                                          Ajouté par {doc.createdByName || 'Utilisateur'} le {doc.createdAt.toLocaleDateString('fr-FR')}
+                                        </Typography>
+                                        {doc.invoiceSentDate && (
+                                          <Typography sx={{ fontSize: '0.7rem', color: '#86868b' }}>
+                                            Envoyée le {new Date(doc.invoiceSentDate).toLocaleDateString('fr-FR')}
+                                          </Typography>
+                                        )}
+                                        {doc.invoiceDueDate && (
+                                          <Typography sx={{ 
+                                            fontSize: '0.7rem', 
+                                            color: new Date(doc.invoiceDueDate) < new Date() ? '#FF3B30' : '#007AFF',
+                                            fontWeight: new Date(doc.invoiceDueDate) < new Date() ? 600 : 500
+                                          }}>
+                                            Échéance : {new Date(doc.invoiceDueDate).toLocaleDateString('fr-FR')}
+                                            {new Date(doc.invoiceDueDate) < new Date() && ' • En retard'}
+                                          </Typography>
+                                        )}
+                                      </Box>
+                                    ) : (
+                                      <Typography sx={{ fontSize: '0.75rem', color: '#86868b' }}>
+                                        {doc.createdAt.toLocaleDateString('fr-FR')}
+                                      </Typography>
+                                    )}
                                   </Box>
                                   <IconButton
                                     size="small"
@@ -9512,7 +9747,17 @@ const MissionDetails: React.FC = () => {
                     .map((doc) => (
                     <Box
                       key={doc.id}
-                      onClick={() => window.open(doc.fileUrl, '_blank')}
+                      onClick={() => {
+                        if (currentUser) {
+                          trackUserActivity(currentUser.uid, 'document', {
+                            id: doc.id,
+                            title: doc.fileName || 'Document',
+                            subtitle: `Mission ${mission?.numeroMission || ''}`,
+                            url: doc.fileUrl
+                          });
+                        }
+                        window.open(doc.fileUrl, '_blank');
+                      }}
                       sx={{
                         display: 'flex',
                         alignItems: 'center',
@@ -11165,6 +11410,234 @@ const MissionDetails: React.FC = () => {
             }}
           >
             Générer avec données saisies
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog d'upload de document avec drag & drop */}
+      <Dialog
+        open={uploadDialog.open}
+        onClose={() => setUploadDialog({ ...uploadDialog, open: false })}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ 
+          borderBottom: '1px solid #e5e5ea',
+          pb: 2,
+          fontWeight: 600
+        }}>
+          {uploadDialog.category === 'contrats' && 'Uploader un contrat'}
+          {uploadDialog.category === 'facturation' && 'Uploader une facture'}
+          {uploadDialog.category === 'autres' && 'Uploader un document'}
+        </DialogTitle>
+        <DialogContent sx={{ mt: 3 }}>
+          {/* Zone de drag & drop */}
+          <Box
+            onDragOver={(e) => {
+              e.preventDefault();
+              setUploadDialog({ ...uploadDialog, isDragging: true });
+            }}
+            onDragLeave={() => {
+              setUploadDialog({ ...uploadDialog, isDragging: false });
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setUploadDialog({ ...uploadDialog, isDragging: false });
+              if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                const droppedFile = e.dataTransfer.files[0];
+                setUploadDialog({ ...uploadDialog, file: droppedFile, isDragging: false });
+              }
+            }}
+            sx={{
+              border: uploadDialog.isDragging 
+                ? '2px dashed #007AFF' 
+                : uploadDialog.file 
+                  ? '2px solid #34C759'
+                  : '2px dashed #c7c7cc',
+              borderRadius: '12px',
+              p: 4,
+              textAlign: 'center',
+              backgroundColor: uploadDialog.isDragging 
+                ? 'rgba(0, 122, 255, 0.05)' 
+                : uploadDialog.file
+                  ? 'rgba(52, 199, 89, 0.05)'
+                  : '#f5f5f7',
+              transition: 'all 0.2s',
+              cursor: 'pointer',
+              mb: 3
+            }}
+            onClick={() => {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = '*/*';
+              input.onchange = (e: any) => {
+                if (e.target.files && e.target.files[0]) {
+                  setUploadDialog({ ...uploadDialog, file: e.target.files[0] });
+                }
+              };
+              input.click();
+            }}
+          >
+            {uploadDialog.file ? (
+              <>
+                <CheckCircleIcon sx={{ fontSize: 48, color: '#34C759', mb: 2 }} />
+                <Typography variant="h6" sx={{ fontWeight: 500, mb: 1 }}>
+                  {uploadDialog.file.name}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {(uploadDialog.file.size / 1024 / 1024).toFixed(2)} MB
+                </Typography>
+              </>
+            ) : (
+              <>
+                <CloudUploadIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
+                <Typography variant="h6" sx={{ fontWeight: 500, mb: 1 }}>
+                  Glissez-déposez votre fichier ici
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  ou cliquez pour sélectionner un fichier
+                </Typography>
+              </>
+            )}
+          </Box>
+
+          {/* Checkbox pour indiquer si c'est une facture (uniquement pour la catégorie facturation) */}
+          {uploadDialog.category === 'facturation' && (
+            <>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={uploadDialog.isInvoice}
+                    onChange={(e) => setUploadDialog({ ...uploadDialog, isInvoice: e.target.checked })}
+                    sx={{
+                      color: '#007AFF',
+                      '&.Mui-checked': {
+                        color: '#007AFF'
+                      }
+                    }}
+                  />
+                }
+                label="Ce document est une facture"
+                sx={{ mb: 2 }}
+              />
+
+              {/* Champs de date si c'est une facture */}
+              {uploadDialog.isInvoice && (
+                <Box sx={{ 
+                  p: 2, 
+                  backgroundColor: '#f5f5f7', 
+                  borderRadius: '12px',
+                  border: '1px solid #e5e5ea'
+                }}>
+                  <TextField
+                    fullWidth
+                    label="Date d'envoi"
+                    type="date"
+                    value={uploadDialog.invoiceSentDate}
+                    onChange={async (e) => {
+                      const sentDate = new Date(e.target.value);
+                      
+                      // Récupérer le nombre de jours depuis la structure
+                      let paymentTermsDays = 30;
+                      if (mission?.structureId) {
+                        try {
+                          const structureDoc = await getDoc(doc(db, 'structures', mission.structureId));
+                          paymentTermsDays = structureDoc.data()?.paymentTermsDays || 30;
+                        } catch (error) {
+                          console.error('Erreur lors de la récupération des termes de paiement:', error);
+                        }
+                      }
+                      
+                      // Calculer la date d'échéance
+                      const dueDate = new Date(sentDate);
+                      dueDate.setDate(dueDate.getDate() + paymentTermsDays);
+                      
+                      setUploadDialog({ 
+                        ...uploadDialog, 
+                        invoiceSentDate: e.target.value,
+                        invoiceDueDate: dueDate.toISOString().split('T')[0]
+                      });
+                    }}
+                    InputLabelProps={{ shrink: true }}
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Date d'échéance"
+                    type="date"
+                    value={uploadDialog.invoiceDueDate}
+                    onChange={(e) => setUploadDialog({ ...uploadDialog, invoiceDueDate: e.target.value })}
+                    InputLabelProps={{ shrink: true }}
+                    helperText="Calculée automatiquement selon les paramètres de la structure"
+                    sx={{ mb: 2 }}
+                  />
+                  <TextField
+                    fullWidth
+                    label="Montant de la facture (€)"
+                    type="number"
+                    value={uploadDialog.invoiceAmount}
+                    onChange={(e) => setUploadDialog({ ...uploadDialog, invoiceAmount: e.target.value })}
+                    InputLabelProps={{ shrink: true }}
+                    helperText="TTC + notes de frais validées (montant calculé automatiquement, modifiable)"
+                    inputProps={{
+                      step: "0.01",
+                      min: "0"
+                    }}
+                    sx={{
+                      '& .MuiOutlinedInput-root': {
+                        backgroundColor: 'rgba(0, 122, 255, 0.03)',
+                        '&:hover': {
+                          backgroundColor: 'rgba(0, 122, 255, 0.05)'
+                        },
+                        '&.Mui-focused': {
+                          backgroundColor: 'white'
+                        }
+                      }
+                    }}
+                  />
+                </Box>
+              )}
+            </>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2.5, borderTop: '1px solid #e5e5ea' }}>
+          <Button
+            onClick={() => setUploadDialog({ 
+              open: false,
+              category: 'autres',
+              file: null,
+              isDragging: false,
+              isInvoice: false,
+              invoiceSentDate: new Date().toISOString().split('T')[0],
+              invoiceDueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              invoiceAmount: '0.00'
+            })}
+            sx={{
+              textTransform: 'none',
+              color: '#86868b',
+              fontWeight: 500
+            }}
+          >
+            Annuler
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleConfirmUpload}
+            disabled={!uploadDialog.file}
+            sx={{
+              textTransform: 'none',
+              backgroundColor: '#007AFF',
+              fontWeight: 500,
+              '&:hover': {
+                backgroundColor: '#0A84FF'
+              },
+              '&:disabled': {
+                backgroundColor: '#f5f5f7',
+                color: '#c7c7cc'
+              }
+            }}
+          >
+            Uploader
           </Button>
         </DialogActions>
       </Dialog>

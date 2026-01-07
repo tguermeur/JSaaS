@@ -79,9 +79,25 @@ import { fr } from 'date-fns/locale';
 import { uploadFile } from '../firebase/storage';
 import { auth } from '../firebase/config';
 
+interface Experience {
+  company?: string;
+  duration?: string;
+  title?: string;
+}
+
+interface CompanyData {
+  raisonSociale?: string;
+  secteur?: string;
+  siegeSocial?: string;
+  siren?: string;
+  siret?: string;
+  companySector?: string;
+}
+
 interface Prospect {
   id: string;
   nom: string;
+  name?: string;
   company?: string;
   entreprise?: string;
   email?: string;
@@ -94,6 +110,7 @@ interface Prospect {
   statut: string;
   ownerId: string;
   dateCreation: any;
+  dateAjout?: string;
   photoUrl?: string;
   valeurPotentielle?: number;
   derniereInteraction?: any;
@@ -105,6 +122,10 @@ interface Prospect {
   userId: string;
   updatedAt: any;
   dateRecontact?: string;
+  about?: string;
+  companyData?: CompanyData;
+  experience?: Experience[];
+  extractionMethod?: string;
 }
 
 interface StructureMember {
@@ -171,6 +192,12 @@ const capitalizeWords = (str: string): string => {
     .join(' ');
 };
 
+// Fonction utilitaire pour obtenir le nom du prospect
+const getProspectName = (prospect: Prospect | null): string => {
+  if (!prospect) return 'Nom non spécifié';
+  return prospect.name || prospect.nom || prospect.entreprise || prospect.company || 'Nom non spécifié';
+};
+
 // Fonction utilitaire pour parser les dates
 const parseDate = (date: any): Date | null => {
   if (!date) return null;
@@ -221,9 +248,8 @@ const ProspectDetails: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingStatus, setIsEditingStatus] = useState(false);
   const [editedProspect, setEditedProspect] = useState<Partial<Prospect>>({});
-  const [tabValue, setTabValue] = useState(0);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [tab, setTab] = useState(0); // 0: Contact, 1: Activité
+  const [rightTabValue, setRightTabValue] = useState(0); // 0: Détails, 1: Entreprise, 2: Expérience, 3: Activité
   const [canDelete, setCanDelete] = useState(false);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [activityDialogOpen, setActivityDialogOpen] = useState(false);
@@ -425,6 +451,13 @@ const ProspectDetails: React.FC = () => {
         changes.company = changes.entreprise;
       } else if (changes.company !== undefined) {
         changes.entreprise = changes.company;
+      }
+
+      // Synchroniser name et nom
+      if (changes.name !== undefined) {
+        changes.nom = changes.name;
+      } else if (changes.nom !== undefined) {
+        changes.name = changes.nom;
       }
 
       if (Object.keys(changes).length > 0) {
@@ -759,6 +792,29 @@ const ProspectDetails: React.FC = () => {
       </ListItem>
     ) : null;
 
+  // Calculer les index des onglets (Activité en premier)
+  const getTabIndex = (tabName: 'details' | 'about' | 'company' | 'experience' | 'activity') => {
+    let index = 0;
+    if (tabName === 'activity') return 0; // Activité toujours en premier
+    if (tabName === 'details') return 1; // Détails en deuxième
+    if (tabName === 'about') {
+      index = 2;
+      return prospect.about ? index : -1;
+    }
+    if (tabName === 'company') {
+      index = 2;
+      if (prospect.about) index++;
+      return prospect.companyData ? index : -1;
+    }
+    if (tabName === 'experience') {
+      index = 2;
+      if (prospect.about) index++;
+      if (prospect.companyData) index++;
+      return (prospect.experience && prospect.experience.length > 0) ? index : -1;
+    }
+    return -1;
+  };
+
   // Dans l'affichage des activités, filtrer pour n'afficher qu'une seule activité de type 'creation'
   const filteredActivities = React.useMemo(() => {
     let creationShown = false;
@@ -797,9 +853,9 @@ const ProspectDetails: React.FC = () => {
             <Alert severity="error">{error || 'Prospect non trouvé'}</Alert>
           </Box>
         ) : (
-          <Box sx={{ p: { xs: 1, md: 4 } }}>
+          <Box sx={{ p: { xs: 1, md: 3 } }}>
               {/* Breadcrumbs */}
-              <Box sx={{ mb: 2 }}>
+              <Box sx={{ mb: 1.5 }}>
                 <Typography variant="body2" color="textSecondary">
                   <span style={{ cursor: 'pointer', color: '#0071e3' }} onClick={() => navigate('/app/commercial')}>Contacts</span> &gt; Fiche société
                 </Typography>
@@ -807,30 +863,32 @@ const ProspectDetails: React.FC = () => {
 
               {/* CRM Alerts */}
               {duplicateWarning && (
-                <Alert severity="warning" sx={{ mb: 3, borderRadius: 2 }}>
+                <Alert severity="warning" sx={{ mb: 2, borderRadius: 2 }}>
                   {duplicateWarning}
                 </Alert>
               )}
               
               {suggestedNextStep && (
-                <Alert severity="info" icon={<NotificationsIcon />} sx={{ mb: 3, borderRadius: 2, bgcolor: '#e3f2fd' }}>
+                <Alert severity="info" icon={<NotificationsIcon />} sx={{ mb: 2, borderRadius: 2, bgcolor: '#e3f2fd' }}>
                   Action recommandée : <strong>{suggestedNextStep}</strong>
                 </Alert>
               )}
 
               {/* Header */}
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                {prospect.photoUrl && (
                 <Avatar
                   src={prospect.photoUrl}
-                  alt={prospect.nom || prospect.entreprise || prospect.company}
-                  sx={{ width: 64, height: 64, bgcolor: '#f5f5f7', fontSize: 32, mr: 2 }}
+                    alt={getProspectName(prospect)}
+                    sx={{ width: 64, height: 64, bgcolor: '#f5f5f7', fontSize: 32, mr: 2, flexShrink: 0 }}
                 >
-                  {(prospect.nom || prospect.entreprise || prospect.company || '?').charAt(0)}
+                    {getProspectName(prospect).charAt(0)}
                 </Avatar>
-                <Box>
+                )}
+                <Box sx={{ flex: 1 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <Typography variant="h4" sx={{ fontWeight: 700, fontSize: '2rem', color: '#000' }}>
-                      {prospect?.nom || prospect?.entreprise || prospect?.company || 'Nom non spécifié'}
+                      {getProspectName(prospect)}
                     </Typography>
                     {isEditing ? (
                       <Select
@@ -1017,7 +1075,7 @@ const ProspectDetails: React.FC = () => {
                 </Box>
               </Box>
 
-              <Grid container spacing={3}>
+              <Grid container spacing={2}>
                 {/* Colonne gauche */}
                 <Grid item xs={12} md={4}>
                   {/* Bloc contact */}
@@ -1056,8 +1114,14 @@ const ProspectDetails: React.FC = () => {
                                 <TextField
                                   fullWidth
                                   variant="standard"
-                                  value={editedProspect.nom || ''}
-                                  onChange={handleChange('nom')}
+                                  value={editedProspect.name || editedProspect.nom || ''}
+                                  onChange={(e) => {
+                                    setEditedProspect(prev => ({
+                                      ...prev,
+                                      name: e.target.value,
+                                      nom: e.target.value
+                                    }));
+                                  }}
                                   size="small"
                                   sx={{ mt: 1 }}
                                   InputProps={{
@@ -1100,6 +1164,24 @@ const ProspectDetails: React.FC = () => {
                                       company: e.target.value
                                     }));
                                   }}
+                                  size="small"
+                                  sx={{ mt: 1 }}
+                                  InputProps={{
+                                    style: { fontSize: 'inherit' }
+                                  }}
+                                />
+                              }
+                            />
+                          </ListItem>
+                          <ListItem>
+                            <ListItemText 
+                              primary="Secteur"
+                              secondary={
+                                <TextField
+                                  fullWidth
+                                  variant="standard"
+                                  value={editedProspect.secteur || ''}
+                                  onChange={handleChange('secteur')}
                                   size="small"
                                   sx={{ mt: 1 }}
                                   InputProps={{
@@ -1165,9 +1247,10 @@ const ProspectDetails: React.FC = () => {
                         </>
                       ) : (
                         <>
-                          {renderIf('Nom', prospect.nom)}
+                          {renderIf('Nom', prospect.name || prospect.nom)}
                           {renderIf('Poste', prospect.title)}
                           {renderIf('Entreprise', capitalizeWords(prospect.entreprise || prospect.company || ''))}
+                          {renderIf('Secteur', prospect.secteur)}
                           {prospect.linkedinUrl && (
                             <ListItem>
                               <ListItemText 
@@ -1205,374 +1288,507 @@ const ProspectDetails: React.FC = () => {
 
                 {/* Colonne droite */}
                 <Grid item xs={12} md={8}>
-                  {/* Premier groupe - Détails */}
-                  <Paper sx={{ p: 2, borderRadius: 3, mb: 3 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                      <NoteIcon sx={{ color: '#0071e3', mr: 1 }} />
-                      <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                        Détails du contact
-                      </Typography>
-                    </Box>
-                    <List dense>
-                      {isEditingStatus ? (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <Select
-                            value={editedProspect.statut || 'non_qualifie'}
-                            onChange={(e) => handleChange('statut')(e as any)}
-                            size="small"
-                            sx={{
-                              minWidth: 150,
-                              '& .MuiSelect-select': {
-                                py: 0.5
+                  {/* Colonne droite avec onglets */}
+                  <Paper sx={{ p: 0, borderRadius: 3, overflow: 'hidden' }}>
+                    {/* Barre d'onglets */}
+                    <Box sx={{ 
+                      borderBottom: '1px solid #e5e5ea',
+                      px: 2,
+                      pt: 1
+                    }}>
+                      <Tabs
+                        value={rightTabValue}
+                        onChange={(e, newValue) => setRightTabValue(newValue)}
+                        variant="scrollable"
+                        scrollButtons="auto"
+                        sx={{
+                          minHeight: 44,
+                          '& .MuiTab-root': {
+                            textTransform: 'none',
+                            fontWeight: 500,
+                            fontSize: '0.875rem',
+                            minHeight: 44,
+                            paddingX: 2.5,
+                            paddingY: 1,
+                            color: '#86868b',
+                            transition: 'color 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                            '&.Mui-selected': {
+                              color: '#0071e3',
+                              fontWeight: 600
+                            },
+                            '&:hover': {
+                              color: '#0071e3',
+                              backgroundColor: 'transparent'
+                            },
+                            '& .MuiTab-iconWrapper': {
+                              marginRight: 1,
+                              '& svg': {
+                                fontSize: '1rem'
                               }
-                            }}
-                          >
-                            <MenuItem value="non_qualifie">Non qualifié</MenuItem>
-                            <MenuItem value="contacte">Contacté</MenuItem>
-                            <MenuItem value="a_recontacter">À recontacter</MenuItem>
-                            <MenuItem value="negociation">Négociation</MenuItem>
-                            <MenuItem value="abandon">Abandon</MenuItem>
-                            <MenuItem value="deja_client">Déjà client</MenuItem>
-                          </Select>
-                          <IconButton 
-                            color="primary" 
-                            size="small"
-                            onClick={handleSaveStatus}
-                            sx={{ 
-                              backgroundColor: 'primary.main',
-                              color: 'white',
-                              '&:hover': {
-                                backgroundColor: 'primary.dark'
-                              }
-                            }}
-                          >
-                            <SaveIcon fontSize="small" />
-                          </IconButton>
-                        </Box>
-                      ) : (
-                        <ListItem>
-                          <ListItemText 
-                            primary="Statut" 
-                            secondary={
-                              <Box
-                                sx={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 1
-                                }}
-                              >
-                                <Typography variant="body2" color="text.secondary">
-                                  {prospect?.statut === 'non_qualifie' ? 'Non qualifié' :
-                                   prospect?.statut === 'contacte' ? 'Contacté' :
-                                   prospect?.statut === 'a_recontacter' ? 'À recontacter' :
-                                   prospect?.statut === 'negociation' ? 'Négociation' :
-                                   prospect?.statut === 'abandon' ? 'Abandon' :
-                                   prospect?.statut === 'deja_client' ? 'Déjà client' : 'Non qualifié'}
-                                </Typography>
-                                <IconButton 
-                                  size="small" 
-                                  onClick={handleEditStatus}
-                                  sx={{ 
-                                    opacity: 0,
-                                    transition: 'opacity 0.2s',
-                                    '&:hover': {
-                                      opacity: 1
-                                    }
-                                  }}
-                                >
-                                  <EditIcon fontSize="small" />
-                                </IconButton>
-                              </Box>
                             }
+                          },
+                          '& .MuiTabs-indicator': {
+                            height: 2,
+                            backgroundColor: '#0071e3',
+                            borderRadius: '1px 1px 0 0'
+                          },
+                          '& .MuiTabs-scrollButtons': {
+                            color: '#0071e3',
+                            '&.Mui-disabled': {
+                              opacity: 0.3
+                            }
+                          }
+                        }}
+                      >
+                        <Tab 
+                          label="Activité" 
+                          icon={<AssignmentIcon />} 
+                          iconPosition="start"
+                        />
+                        <Tab 
+                          label="Détails" 
+                          icon={<NoteIcon />} 
+                          iconPosition="start"
+                        />
+                        {prospect.about && (
+                          <Tab 
+                            label="À propos" 
+                            icon={<PersonIcon />} 
+                            iconPosition="start"
                           />
-                        </ListItem>
-                      )}
-                      {renderIf('Valeur potentielle', prospect.valeurPotentielle ? `${prospect.valeurPotentielle} €` : undefined)}
-                      {renderIf('Date d\'ajout', formatDate(prospect.dateCreation))}
-                      {renderIf('Dernière interaction', formatDate(prospect.derniereInteraction))}
-                      {prospect.dateRecontact ? (
-                        <ListItem>
-                          {isEditing ? (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                              <TextField
-                                type="date"
-                                value={editedProspect.dateRecontact || prospect.dateRecontact}
-                                onChange={(e) => setEditedProspect(prev => ({ ...prev, dateRecontact: e.target.value }))}
+                        )}
+                        {prospect.companyData && (
+                          <Tab 
+                            label="Entreprise" 
+                            icon={<BusinessIcon />} 
+                            iconPosition="start"
+                          />
+                        )}
+                        {prospect.experience && prospect.experience.length > 0 && (
+                          <Tab 
+                            label="Expérience" 
+                            icon={<WorkIcon />} 
+                            iconPosition="start"
+                          />
+                        )}
+                      </Tabs>
+                    </Box>
+
+                    {/* Contenu des onglets */}
+                    <Box sx={{ p: 2 }}>
+                      {/* Onglet Activité */}
+                      <TabPanel value={rightTabValue} index={0}>
+                        <Box sx={{ position: 'relative', pl: 3 }}>
+                          {/* Timeline verticale */}
+                          <Box sx={{
+                            position: 'absolute',
+                            left: 18,
+                            top: 0,
+                            bottom: 0,
+                            width: 2,
+                            bgcolor: '#e0e3e7',
+                            zIndex: 0
+                          }} />
+                          <Box>
+                            {filteredActivities.map((activity, idx) => {
+                              // Définir l'icône et la couleur selon le type
+                              let icon, iconBg, title;
+                              switch (activity.type) {
+                                case 'creation':
+                                  icon = <PersonIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#0071e3';
+                                  title = 'Contact créé';
+                                  break;
+                                case 'modification':
+                                  icon = <EditIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#6366f1';
+                                  // Le titre sera ajusté plus tard si c'est un changement de statut ou de date de relance
+                                  title = activity.details?.field === 'Statut' ? 'Changement de status' :
+                                          activity.details?.field === 'Date de relance' ? 'Date de relance modifiée' :
+                                          'Contact modifié';
+                                  break;
+                                case 'email':
+                                  icon = <EmailIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#ff9800';
+                                  title = 'Email envoyé';
+                                  break;
+                                case 'call':
+                                  icon = <CallIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#2196f3';
+                                  title = 'Appel passé';
+                                  break;
+                                case 'note':
+                                  icon = <NoteIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#607d8b';
+                                  title = 'Note ajoutée';
+                                  break;
+                                case 'reminder':
+                                  icon = <NotificationsIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#00bcd4';
+                                  title = 'Rappel créé';
+                                  break;
+                                case 'mail_upload':
+                                  icon = <UploadIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#8bc34a';
+                                  title = 'Mail uploadé';
+                                  break;
+                                case 'linkedin_request':
+                                  icon = <LinkIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#0a66c2';
+                                  title = 'Demande LinkedIn';
+                                  break;
+                                case 'linkedin_message':
+                                  icon = <LanguageIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#0a66c2';
+                                  title = 'Message LinkedIn';
+                                  break;
+                                default:
+                                  icon = <AssignmentIcon sx={{ color: '#fff' }} />;
+                                  iconBg = '#bdbdbd';
+                                  title = 'Activité';
+                              }
+                              // Date formatée
+                              let date;
+                              if (activity.type === 'creation' && prospect?.dateCreation) {
+                                date = parseDate(prospect.dateCreation);
+                              } else {
+                                date = parseDate(activity.timestamp);
+                              }
+                              const formattedDate = date ? new Intl.DateTimeFormat('fr-FR', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                timeZone: 'Europe/Paris'
+                              }).format(date) : 'Date invalide';
+                              // Détails
+                              let details = '';
+                              if (activity.type === 'note') details = activity.details?.noteContent || '';
+                              if (activity.type === 'email') details = activity.details?.emailContent || '';
+                              if (activity.type === 'call') details = activity.details?.callDuration ? `Durée : ${activity.details.callDuration} min` : '';
+                              if (activity.type === 'reminder') details = activity.details?.reminderTitle ? `Titre : ${activity.details.reminderTitle}` : '';
+                              if (activity.type === 'modification' && activity.details?.field) {
+                                const fieldName = activity.details.field;
+                                const oldValue = activity.details.oldValue || 'Non défini';
+                                const newValue = activity.details.newValue || 'Non défini';
+                                
+                                // Traduire les valeurs de statut
+                                const translateStatus = (status: string) => {
+                                  const statusMap: Record<string, string> = {
+                                    'non_qualifie': 'Non qualifié',
+                                    'contacte': 'Contacté',
+                                    'a_recontacter': 'À recontacter',
+                                    'negociation': 'Négociation',
+                                    'abandon': 'Abandon',
+                                    'deja_client': 'Déjà client'
+                                  };
+                                  return statusMap[status] || status;
+                                };
+                                
+                                if (fieldName === 'Statut') {
+                                  details = `${translateStatus(oldValue)} -> ${translateStatus(newValue)}`;
+                                  // Mettre à jour le titre pour les changements de statut
+                                  title = 'Changement de status';
+                                } else if (fieldName === 'Date de relance') {
+                                  details = `Date de relance changée : ${oldValue} -> ${newValue}`;
+                                  // Mettre à jour le titre pour les changements de date de relance
+                                  title = 'Date de relance modifiée';
+                                } else {
+                                  details = `${fieldName} : ${oldValue} -> ${newValue}`;
+                                }
+                              }
+                              if (activity.type === 'mail_upload') {
+                                if (activity.details?.mailFile && (activity.details.mailFile.endsWith('.png') || activity.details.mailFile.endsWith('.jpg') || activity.details.mailFile.endsWith('.jpeg') || activity.details.mailFile.endsWith('.gif') || activity.details.mailFile.endsWith('.webp'))) {
+                                  details = `<img src='${activity.details.mailFile}' alt='Pièce jointe' style='max-width:100px;max-height:100px;border-radius:8px;margin-top:4px;' />`;
+                                } else if (activity.details?.mailFile && (activity.details.mailFile.endsWith('.pdf') || activity.details.mailFile.endsWith('.eml'))) {
+                                  details = `<a href='${activity.details.mailFile}' target='_blank' rel='noopener noreferrer'>Télécharger le fichier</a>`;
+                                } else if (activity.details?.mailFile) {
+                                  details = `<a href='${activity.details.mailFile}' target='_blank' rel='noopener noreferrer'>Voir le fichier</a>`;
+                                }
+                              }
+                              return (
+                                <Box key={activity.id} sx={{ display: 'flex', alignItems: 'flex-start', mb: 2, position: 'relative' }}>
+                                  {/* Pastille icône */}
+                                  <Box sx={{
+                                    zIndex: 1,
+                                    width: 32,
+                                    height: 32,
+                                    borderRadius: '50%',
+                                    bgcolor: iconBg,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    boxShadow: '0 2px 8px 0 rgba(0,0,0,0.08)',
+                                    position: 'absolute',
+                                    left: -34,
+                                    top: 8
+                                  }}>
+                                    {icon}
+                                  </Box>
+                                  {/* Carte activité */}
+                                  <Paper elevation={1} sx={{
+                                    flex: 1,
+                                    ml: 2,
+                                    p: 2,
+                                    borderRadius: 2,
+                                    minWidth: 0,
+                                    bgcolor: '#fff',
+                                    boxShadow: '0 1px 4px 0 rgba(0,0,0,0.04)',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: 0.5
+                                  }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                      <Typography variant="subtitle1" sx={{ fontWeight: 600, fontSize: '1rem' }}>{title}</Typography>
+                                      <Typography variant="caption" color="text.secondary" sx={{ ml: 2, whiteSpace: 'nowrap' }}>{formattedDate}</Typography>
+                                    </Box>
+                                    {details && activity.type === 'mail_upload' ? (
+                                      <Box sx={{ mt: 0.5 }} dangerouslySetInnerHTML={{ __html: details }} />
+                                    ) : details && (
+                                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{details}</Typography>
+                                    )}
+                                    <Typography variant="caption" color="text.disabled" sx={{ mt: 1 }}>
+                                      {activity.userName ? `Par ${activity.userName}` : ''}
+                                    </Typography>
+                                  </Paper>
+                                </Box>
+                              );
+                            })}
+                          </Box>
+                        </Box>
+                      </TabPanel>
+
+                      {/* Onglet Détails */}
+                      <TabPanel value={rightTabValue} index={1}>
+                        <List dense>
+                          {isEditingStatus ? (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                              <Select
+                                value={editedProspect.statut || 'non_qualifie'}
+                                onChange={(e) => handleChange('statut')(e as any)}
                                 size="small"
-                                sx={{ flex: 1 }}
-                              />
-                              <IconButton 
-                                size="small"
-                                onClick={async () => {
-                                  const oldDate = prospect.dateRecontact;
-                                  const newDate = editedProspect.dateRecontact;
-                                  if (newDate && newDate !== oldDate) {
-                                    try {
-                                      await updateDoc(doc(db, 'prospects', id!), {
-                                        dateRecontact: newDate,
-                                        updatedAt: serverTimestamp()
-                                      });
-                                      
-                                      // Enregistrer dans l'activité
-                                      await saveActivity({
-                                        type: 'modification',
-                                        userId: userData?.uid || '',
-                                        userName: userData?.displayName || 'Utilisateur inconnu',
-                                        details: {
-                                          field: 'Date de relance',
-                                          oldValue: oldDate ? formatDate(oldDate) : 'Aucune',
-                                          newValue: formatDate(newDate)
-                                        },
-                                        timestamp: serverTimestamp()
-                                      });
-                                      
-                                      setProspect(prev => prev ? { ...prev, dateRecontact: newDate } : null);
-                                      setEditedProspect(prev => ({ ...prev, dateRecontact: undefined }));
-                                    } catch (err) {
-                                      console.error('Erreur lors de la mise à jour de la date de relance:', err);
-                                    }
+                                sx={{
+                                  minWidth: 150,
+                                  '& .MuiSelect-select': {
+                                    py: 0.5
                                   }
                                 }}
-                                sx={{ color: '#0071e3' }}
                               >
-                                <CheckCircleIcon />
-                              </IconButton>
+                                <MenuItem value="non_qualifie">Non qualifié</MenuItem>
+                                <MenuItem value="contacte">Contacté</MenuItem>
+                                <MenuItem value="a_recontacter">À recontacter</MenuItem>
+                                <MenuItem value="negociation">Négociation</MenuItem>
+                                <MenuItem value="abandon">Abandon</MenuItem>
+                                <MenuItem value="deja_client">Déjà client</MenuItem>
+                              </Select>
                               <IconButton 
+                                color="primary" 
                                 size="small"
-                                onClick={() => {
-                                  setEditedProspect(prev => ({ ...prev, dateRecontact: undefined }));
+                                onClick={handleSaveStatus}
+                                sx={{ 
+                                  backgroundColor: 'primary.main',
+                                  color: 'white',
+                                  '&:hover': {
+                                    backgroundColor: 'primary.dark'
+                                  }
                                 }}
                               >
-                                <CloseIcon />
+                                <SaveIcon fontSize="small" />
                               </IconButton>
                             </Box>
                           ) : (
-                            <>
+                            <ListItem>
                               <ListItemText 
-                                primary="Date de relance" 
-                                secondary={formatDate(prospect.dateRecontact)} 
+                                primary="Statut" 
+                                secondary={
+                                  <Box
+                                    sx={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 1
+                                    }}
+                                  >
+                                    <Typography variant="body2" color="text.secondary">
+                                      {prospect?.statut === 'non_qualifie' ? 'Non qualifié' :
+                                       prospect?.statut === 'contacte' ? 'Contacté' :
+                                       prospect?.statut === 'a_recontacter' ? 'À recontacter' :
+                                       prospect?.statut === 'negociation' ? 'Négociation' :
+                                       prospect?.statut === 'abandon' ? 'Abandon' :
+                                       prospect?.statut === 'deja_client' ? 'Déjà client' : 'Non qualifié'}
+                                    </Typography>
+                                    <IconButton 
+                                      size="small" 
+                                      onClick={handleEditStatus}
+                                      sx={{ 
+                                        opacity: 0,
+                                        transition: 'opacity 0.2s',
+                                        '&:hover': {
+                                          opacity: 1
+                                        }
+                                      }}
+                                    >
+                                      <EditIcon fontSize="small" />
+                                    </IconButton>
+                                  </Box>
+                                }
                               />
-                              <IconButton 
-                                size="small"
-                                onClick={() => {
-                                  setEditedProspect(prev => ({ ...prev, dateRecontact: prospect.dateRecontact }));
-                                }}
-                                sx={{ opacity: 0, transition: 'opacity 0.2s', '&:hover': { opacity: 1 } }}
-                              >
-                                <EditIcon fontSize="small" />
-                              </IconButton>
-                            </>
+                            </ListItem>
                           )}
-                        </ListItem>
-                      ) : (
-                        isEditing && (
-                          <ListItem>
-                            <ListItemText 
-                              primary="Date de relance" 
-                              secondary="Non définie" 
-                            />
-                            <TextField
-                              type="date"
-                              value={editedProspect.dateRecontact || ''}
-                              onChange={(e) => setEditedProspect(prev => ({ ...prev, dateRecontact: e.target.value }))}
-                              size="small"
-                              sx={{ minWidth: 150 }}
-                            />
-                          </ListItem>
-                        )
-                      )}
-                      {renderIf('Adresse', prospect.adresse)}
-                      {renderIf('Secteur', prospect.secteur)}
-                      {renderIf('Source', prospect.source)}
-                    </List>
-                  </Paper>
-
-                  {/* Deuxième groupe - Activité */}
-                  <Paper sx={{ p: 2, borderRadius: 3, bgcolor: 'transparent', boxShadow: 'none' }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                      <AssignmentIcon sx={{ color: '#0071e3', mr: 1 }} />
-                      <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                        Activité
-                      </Typography>
-                    </Box>
-                    <Box sx={{ position: 'relative', pl: 3 }}>
-                      {/* Timeline verticale */}
-                      <Box sx={{
-                        position: 'absolute',
-                        left: 18,
-                        top: 0,
-                        bottom: 0,
-                        width: 2,
-                        bgcolor: '#e0e3e7',
-                        zIndex: 0
-                      }} />
-                      <Box>
-                        {filteredActivities.map((activity, idx) => {
-                          // Définir l'icône et la couleur selon le type
-                          let icon, iconBg, title;
-                          switch (activity.type) {
-                            case 'creation':
-                              icon = <PersonIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#0071e3';
-                              title = 'Contact créé';
-                              break;
-                            case 'modification':
-                              icon = <EditIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#6366f1';
-                              // Le titre sera ajusté plus tard si c'est un changement de statut ou de date de relance
-                              title = activity.details?.field === 'Statut' ? 'Changement de status' :
-                                      activity.details?.field === 'Date de relance' ? 'Date de relance modifiée' :
-                                      'Contact modifié';
-                              break;
-                            case 'email':
-                              icon = <EmailIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#ff9800';
-                              title = 'Email envoyé';
-                              break;
-                            case 'call':
-                              icon = <CallIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#2196f3';
-                              title = 'Appel passé';
-                              break;
-                            case 'note':
-                              icon = <NoteIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#607d8b';
-                              title = 'Note ajoutée';
-                              break;
-                            case 'reminder':
-                              icon = <NotificationsIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#00bcd4';
-                              title = 'Rappel créé';
-                              break;
-                            case 'mail_upload':
-                              icon = <UploadIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#8bc34a';
-                              title = 'Mail uploadé';
-                              break;
-                            case 'linkedin_request':
-                              icon = <LinkIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#0a66c2';
-                              title = 'Demande LinkedIn';
-                              break;
-                            case 'linkedin_message':
-                              icon = <LanguageIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#0a66c2';
-                              title = 'Message LinkedIn';
-                              break;
-                            default:
-                              icon = <AssignmentIcon sx={{ color: '#fff' }} />;
-                              iconBg = '#bdbdbd';
-                              title = 'Activité';
-                          }
-                          // Date formatée
-                          let date;
-                          if (activity.type === 'creation' && prospect?.dateCreation) {
-                            date = parseDate(prospect.dateCreation);
-                          } else {
-                            date = parseDate(activity.timestamp);
-                          }
-                          const formattedDate = date ? new Intl.DateTimeFormat('fr-FR', {
-                            day: '2-digit',
-                            month: '2-digit',
-                            year: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            timeZone: 'Europe/Paris'
-                          }).format(date) : 'Date invalide';
-                          // Détails
-                          let details = '';
-                          if (activity.type === 'note') details = activity.details?.noteContent || '';
-                          if (activity.type === 'email') details = activity.details?.emailContent || '';
-                          if (activity.type === 'call') details = activity.details?.callDuration ? `Durée : ${activity.details.callDuration} min` : '';
-                          if (activity.type === 'reminder') details = activity.details?.reminderTitle ? `Titre : ${activity.details.reminderTitle}` : '';
-                          if (activity.type === 'modification' && activity.details?.field) {
-                            const fieldName = activity.details.field;
-                            const oldValue = activity.details.oldValue || 'Non défini';
-                            const newValue = activity.details.newValue || 'Non défini';
-                            
-                            // Traduire les valeurs de statut
-                            const translateStatus = (status: string) => {
-                              const statusMap: Record<string, string> = {
-                                'non_qualifie': 'Non qualifié',
-                                'contacte': 'Contacté',
-                                'a_recontacter': 'À recontacter',
-                                'negociation': 'Négociation',
-                                'abandon': 'Abandon',
-                                'deja_client': 'Déjà client'
-                              };
-                              return statusMap[status] || status;
-                            };
-                            
-                            if (fieldName === 'Statut') {
-                              details = `${translateStatus(oldValue)} -> ${translateStatus(newValue)}`;
-                              // Mettre à jour le titre pour les changements de statut
-                              title = 'Changement de status';
-                            } else if (fieldName === 'Date de relance') {
-                              details = `Date de relance changée : ${oldValue} -> ${newValue}`;
-                              // Mettre à jour le titre pour les changements de date de relance
-                              title = 'Date de relance modifiée';
-                            } else {
-                              details = `${fieldName} : ${oldValue} -> ${newValue}`;
-                            }
-                          }
-                          if (activity.type === 'mail_upload') {
-                            if (activity.details?.mailFile && (activity.details.mailFile.endsWith('.png') || activity.details.mailFile.endsWith('.jpg') || activity.details.mailFile.endsWith('.jpeg') || activity.details.mailFile.endsWith('.gif') || activity.details.mailFile.endsWith('.webp'))) {
-                              details = `<img src='${activity.details.mailFile}' alt='Pièce jointe' style='max-width:100px;max-height:100px;border-radius:8px;margin-top:4px;' />`;
-                            } else if (activity.details?.mailFile && (activity.details.mailFile.endsWith('.pdf') || activity.details.mailFile.endsWith('.eml'))) {
-                              details = `<a href='${activity.details.mailFile}' target='_blank' rel='noopener noreferrer'>Télécharger le fichier</a>`;
-                            } else if (activity.details?.mailFile) {
-                              details = `<a href='${activity.details.mailFile}' target='_blank' rel='noopener noreferrer'>Voir le fichier</a>`;
-                            }
-                          }
-                          return (
-                            <Box key={activity.id} sx={{ display: 'flex', alignItems: 'flex-start', mb: 2, position: 'relative' }}>
-                              {/* Pastille icône */}
-                              <Box sx={{
-                                zIndex: 1,
-                                width: 32,
-                                height: 32,
-                                borderRadius: '50%',
-                                bgcolor: iconBg,
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                boxShadow: '0 2px 8px 0 rgba(0,0,0,0.08)',
-                                position: 'absolute',
-                                left: -34,
-                                top: 8
-                              }}>
-                                {icon}
-                              </Box>
-                              {/* Carte activité */}
-                              <Paper elevation={1} sx={{
-                                flex: 1,
-                                ml: 2,
-                                p: 2,
-                                borderRadius: 2,
-                                minWidth: 0,
-                                bgcolor: '#fff',
-                                boxShadow: '0 1px 4px 0 rgba(0,0,0,0.04)',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: 0.5
-                              }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                  <Typography variant="subtitle1" sx={{ fontWeight: 600, fontSize: '1rem' }}>{title}</Typography>
-                                  <Typography variant="caption" color="text.secondary" sx={{ ml: 2, whiteSpace: 'nowrap' }}>{formattedDate}</Typography>
+                          {renderIf('Valeur potentielle', prospect.valeurPotentielle ? `${prospect.valeurPotentielle} €` : undefined)}
+                          {renderIf('Date d\'ajout', formatDate(prospect.dateCreation))}
+                          {renderIf('Dernière interaction', formatDate(prospect.derniereInteraction))}
+                          {renderIf('Adresse', prospect.adresse)}
+                          {renderIf('Secteur', prospect.secteur)}
+                          {renderIf('Source', prospect.source)}
+                          {renderIf('Extension IA', prospect.extractionMethod === 'ai_server' ? 'Oui' : undefined)}
+                          {prospect.dateRecontact ? (
+                            <ListItem>
+                              {isEditing ? (
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+                                  <TextField
+                                    type="date"
+                                    value={editedProspect.dateRecontact || prospect.dateRecontact}
+                                    onChange={(e) => setEditedProspect(prev => ({ ...prev, dateRecontact: e.target.value }))}
+                                    size="small"
+                                    sx={{ flex: 1 }}
+                                  />
+                                  <IconButton 
+                                    size="small"
+                                    onClick={async () => {
+                                      const oldDate = prospect.dateRecontact;
+                                      const newDate = editedProspect.dateRecontact;
+                                      if (newDate && newDate !== oldDate) {
+                                        try {
+                                          await updateDoc(doc(db, 'prospects', id!), {
+                                            dateRecontact: newDate,
+                                            updatedAt: serverTimestamp()
+                                          });
+                                          
+                                          // Enregistrer dans l'activité
+                                          await saveActivity({
+                                            type: 'modification',
+                                            userId: userData?.uid || '',
+                                            userName: userData?.displayName || 'Utilisateur inconnu',
+                                            details: {
+                                              field: 'Date de relance',
+                                              oldValue: oldDate ? formatDate(oldDate) : 'Aucune',
+                                              newValue: formatDate(newDate)
+                                            },
+                                            timestamp: serverTimestamp()
+                                          });
+                                          
+                                          setProspect(prev => prev ? { ...prev, dateRecontact: newDate } : null);
+                                          setEditedProspect(prev => ({ ...prev, dateRecontact: undefined }));
+                                        } catch (err) {
+                                          console.error('Erreur lors de la mise à jour de la date de relance:', err);
+                                        }
+                                      }
+                                    }}
+                                    sx={{ color: '#0071e3' }}
+                                  >
+                                    <CheckCircleIcon />
+                                  </IconButton>
+                                  <IconButton 
+                                    size="small"
+                                    onClick={() => {
+                                      setEditedProspect(prev => ({ ...prev, dateRecontact: undefined }));
+                                    }}
+                                  >
+                                    <CloseIcon />
+                                  </IconButton>
                                 </Box>
-                                {details && activity.type === 'mail_upload' ? (
-                                  <Box sx={{ mt: 0.5 }} dangerouslySetInnerHTML={{ __html: details }} />
-                                ) : details && (
-                                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{details}</Typography>
-                                )}
-                                <Typography variant="caption" color="text.disabled" sx={{ mt: 1 }}>
-                                  {activity.userName ? `Par ${activity.userName}` : ''}
+                              ) : (
+                                <>
+                                  <ListItemText 
+                                    primary="Date de relance" 
+                                    secondary={formatDate(prospect.dateRecontact)} 
+                                  />
+                                  <IconButton 
+                                    size="small"
+                                    onClick={() => {
+                                      setEditedProspect(prev => ({ ...prev, dateRecontact: prospect.dateRecontact }));
+                                    }}
+                                    sx={{ opacity: 0, transition: 'opacity 0.2s', '&:hover': { opacity: 1 } }}
+                                  >
+                                    <EditIcon fontSize="small" />
+                                  </IconButton>
+                                </>
+                              )}
+                            </ListItem>
+                          ) : (
+                            isEditing && (
+                              <ListItem>
+                                <ListItemText 
+                                  primary="Date de relance" 
+                                  secondary="Non définie" 
+                                />
+                                <TextField
+                                  type="date"
+                                  value={editedProspect.dateRecontact || ''}
+                                  onChange={(e) => setEditedProspect(prev => ({ ...prev, dateRecontact: e.target.value }))}
+                                  size="small"
+                                  sx={{ minWidth: 150 }}
+                                />
+                              </ListItem>
+                            )
+                          )}
+                        </List>
+                      </TabPanel>
+
+                      {/* Onglet À propos */}
+                      {prospect.about && (
+                        <TabPanel value={rightTabValue} index={getTabIndex('about')}>
+                          <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
+                            {prospect.about}
+                          </Typography>
+                        </TabPanel>
+                      )}
+
+                      {/* Onglet Entreprise */}
+                      {prospect.companyData && (
+                        <TabPanel value={rightTabValue} index={getTabIndex('company')}>
+                          <List dense>
+                            {renderIf('Raison sociale', prospect.companyData.raisonSociale)}
+                            {renderIf('Secteur d\'activité', prospect.companyData.companySector)}
+                            {renderIf('Code secteur', prospect.companyData.secteur)}
+                            {renderIf('Siège social', prospect.companyData.siegeSocial)}
+                            {renderIf('SIREN', prospect.companyData.siren)}
+                            {renderIf('SIRET', prospect.companyData.siret)}
+                          </List>
+                        </TabPanel>
+                      )}
+
+                      {/* Onglet Expérience */}
+                      {prospect.experience && prospect.experience.length > 0 && (
+                        <TabPanel value={rightTabValue} index={getTabIndex('experience')}>
+                          <Stack spacing={2}>
+                            {prospect.experience.map((exp, index) => (
+                              <Box
+                                key={index}
+                                sx={{
+                                  p: 2,
+                                  borderRadius: 2,
+                                  bgcolor: '#f5f5f7',
+                                  border: '1px solid #e0e0e0'
+                                }}
+                              >
+                                <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                                  {exp.title || 'Poste non spécifié'}
                                 </Typography>
-                              </Paper>
-                            </Box>
-                          );
-                        })}
-                      </Box>
+                                <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                                  {exp.company || 'Entreprise non spécifiée'}
+                                </Typography>
+                                {exp.duration && (
+                                  <Typography variant="caption" color="text.disabled">
+                                    {exp.duration}
+                                  </Typography>
+                                )}
+                              </Box>
+                            ))}
+                          </Stack>
+                        </TabPanel>
+                      )}
                     </Box>
                   </Paper>
                 </Grid>

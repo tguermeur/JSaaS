@@ -2112,7 +2112,7 @@ const EntrepriseDetail: React.FC = () => {
                         bgcolor: '#f9f9f9'
                       }
                     }}
-                    onClick={() => navigate(`/app/mission/${mission.numeroMission}`)}
+                    onClick={() => navigate(`/app/mission/${mission.id}`)}
                   >
                     <ListItemAvatar>
                       <Avatar sx={{ bgcolor: '#f5f5f7', color: '#1d1d1f' }}>

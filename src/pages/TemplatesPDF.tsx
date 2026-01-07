@@ -84,6 +84,7 @@ import { Document, Page } from 'react-pdf';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import pdfjs from '../utils/pdfWorker';
+import { PDFDocument, rgb } from 'pdf-lib';
 
 // Configuration du worker PDF.js
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -856,7 +857,9 @@ const TemplatesPDF: React.FC = () => {
   const [tagsDialogOpen, setTagsDialogOpen] = useState(false); // État pour le dialogue des balises
   const [renameDialogOpen, setRenameDialogOpen] = useState(false); // État pour le dialogue de renommage
   const [newTemplateName, setNewTemplateName] = useState<string>(''); // État pour le nouveau nom
-  const [previewMode, setPreviewMode] = useState<boolean>(false); // État pour le mode aperçu
+  const [previewDialogOpen, setPreviewDialogOpen] = useState(false); // État pour le dialogue d'aperçu
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null); // URL du PDF généré pour l'aperçu
+  const [generatingPreview, setGeneratingPreview] = useState(false); // État pour la génération de l'aperçu
   
   const [newTemplate, setNewTemplate] = useState<{
     name: string;
@@ -1722,9 +1725,7 @@ const TemplatesPDF: React.FC = () => {
           onMouseMove={handleVariableMouseMove}
         >
           {variable.type === 'raw' 
-            ? (previewMode 
-                ? replaceTagsWithExamples(variable.rawText || '') 
-                : replaceTags(variable.rawText || '', missionData, currentUser, {})) 
+            ? replaceTags(variable.rawText || '', missionData, currentUser, {})
             : variable.name}
           
           {/* Poignées de redimensionnement */}
@@ -2198,9 +2199,7 @@ const TemplatesPDF: React.FC = () => {
                     }}
                   >
                     {variable.type === 'raw' 
-            ? (previewMode 
-                ? replaceTagsWithExamples(variable.rawText || '') 
-                : replaceTags(variable.rawText || '', missionData, currentUser, {})) 
+            ? replaceTags(variable.rawText || '', missionData, currentUser, {})
             : variable.name}
                   </Box>
                 </Box>
@@ -2778,6 +2777,470 @@ const TemplatesPDF: React.FC = () => {
     }
   };
 
+  const handleGeneratePreview = async () => {
+    if (!selectedTemplate || !currentUser) {
+      setSnackbar({
+        open: true,
+        message: 'Veuillez sélectionner un template',
+        severity: 'error'
+      });
+      return;
+    }
+
+    try {
+      setGeneratingPreview(true);
+
+      // Récupérer le structureId de l'utilisateur
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const userData = userDoc.data();
+      
+      if (!userData?.structureId) {
+        throw new Error('Aucune structure associée à l\'utilisateur');
+      }
+
+      // Récupérer les données de la structure
+      const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
+      const structureData = structureDoc.exists() ? structureDoc.data() : null;
+
+      // Récupérer les données de contact si une mission est disponible
+      let contactData: any = null;
+      if (missionData?.companyId) {
+        try {
+          // Récupérer le contact par défaut de l'entreprise
+          const contactsQuery = query(
+            collection(db, 'contacts'),
+            where('companyId', '==', missionData.companyId),
+            where('isDefault', '==', true)
+          );
+          const contactsSnapshot = await getDocs(contactsQuery);
+          if (!contactsSnapshot.empty) {
+            contactData = contactsSnapshot.docs[0].data();
+          }
+        } catch (error) {
+          console.warn('Erreur lors de la récupération du contact:', error);
+        }
+      }
+
+      // Charger le PDF template
+      const pdfUrl = selectedTemplate.pdfUrl;
+      let finalPdfUrl;
+      if (pdfUrl.startsWith('http')) {
+        finalPdfUrl = pdfUrl;
+      } else {
+        const storageRef = ref(storage, pdfUrl);
+        finalPdfUrl = await getDownloadURL(storageRef);
+      }
+
+      const response = await fetch(finalPdfUrl);
+      const pdfBlob = await response.blob();
+      const pdfBytes = await pdfBlob.arrayBuffer();
+
+      // Charger le PDF dans PDFDocument
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const helveticaFont = await pdfDoc.embedFont('Helvetica');
+      const helveticaFontBold = await pdfDoc.embedFont('Helvetica-Bold');
+      const pages = pdfDoc.getPages();
+
+      // Fonction pour obtenir la valeur d'une variable
+      const getVariableValueForPreview = (variableId: string): string => {
+        // Si c'est la date de génération
+        if (variableId === 'generationDate') {
+          return new Date().toLocaleDateString('fr-FR');
+        }
+
+        // Si c'est la date de génération + 1 an
+        if (variableId === 'generationDatePlusOneYear') {
+          const today = new Date();
+          const oneYearLater = new Date(today);
+          oneYearLater.setDate(today.getDate() + 365);
+          return oneYearLater.toLocaleDateString('fr-FR');
+        }
+
+        // Gestion spéciale des dates de mission
+        if (variableId === 'missionDateDebut' && missionData?.startDate) {
+          const date = new Date(missionData.startDate);
+          return date.toLocaleDateString('fr-FR');
+        }
+        if (variableId === 'missionDateHeureDebut' && missionData?.startDate) {
+          const date = new Date(missionData.startDate);
+          const dateStr = date.toLocaleDateString('fr-FR');
+          const timeStr = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+          return `${dateStr} à ${timeStr}`;
+        }
+        if (variableId === 'missionDateFin' && missionData?.endDate) {
+          const date = new Date(missionData.endDate);
+          return date.toLocaleDateString('fr-FR');
+        }
+        if (variableId === 'missionDateHeureFin' && missionData?.endDate) {
+          const date = new Date(missionData.endDate);
+          const dateStr = date.toLocaleDateString('fr-FR');
+          const timeStr = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+          return `${dateStr} à ${timeStr}`;
+        }
+
+        // Calcul du prix total des heures travaillées HT
+        if (variableId === 'totalHoursHT' && missionData?.priceHT && missionData?.hours) {
+          const total = missionData.priceHT * missionData.hours;
+          return total.toFixed(2);
+        }
+
+        // Utiliser les données de mission si disponibles
+        if (missionData) {
+          const field = variableId.split('_')[1] || variableId;
+          if (missionData[field as keyof typeof missionData] !== undefined) {
+            const value = missionData[field as keyof typeof missionData];
+            if (value instanceof Date) {
+              return value.toLocaleDateString('fr-FR');
+            }
+            return value?.toString() || '';
+          }
+        }
+
+        // Utiliser les données utilisateur si disponibles
+        if (currentUser) {
+          const field = variableId.split('_')[1] || variableId;
+          if (currentUser[field as keyof typeof currentUser] !== undefined) {
+            const value = currentUser[field as keyof typeof currentUser];
+            if (value instanceof Date) {
+              return value.toLocaleDateString('fr-FR');
+            }
+            return value?.toString() || '';
+          }
+        }
+
+        // Utiliser les données de contact si disponibles
+        if (contactData && variableId.startsWith('contact_')) {
+          const field = variableId.replace('contact_', '');
+          if (field === 'fullName') {
+            const firstName = contactData.firstName || '';
+            const lastName = contactData.lastName || '';
+            return `${firstName} ${lastName}`.trim();
+          }
+          if (contactData[field as keyof typeof contactData] !== undefined) {
+            const value = contactData[field as keyof typeof contactData];
+            if (value instanceof Date) {
+              return value.toLocaleDateString('fr-FR');
+            }
+            return value?.toString() || '';
+          }
+        }
+
+        // Utiliser les données de structure si disponibles
+        if (structureData) {
+          // Gestion des champs de structure avec préfixe
+          if (variableId.startsWith('structure_')) {
+            const field = variableId.replace('structure_', '');
+            // Gestion spéciale pour structure_president_fullName
+            if (field === 'president_fullName' || field === 'president_nom_complet') {
+              // Essayer de récupérer le président du mandat le plus récent
+              if (structureData.presidents && Array.isArray(structureData.presidents) && structureData.presidents.length > 0) {
+                const latestPresident = structureData.presidents[structureData.presidents.length - 1];
+                if (latestPresident.firstName && latestPresident.lastName) {
+                  return `${latestPresident.firstName} ${latestPresident.lastName}`;
+                }
+              }
+            }
+            if (structureData[field as keyof typeof structureData] !== undefined) {
+              const value = structureData[field as keyof typeof structureData];
+              if (value instanceof Date) {
+                return value.toLocaleDateString('fr-FR');
+              }
+              return value?.toString() || '';
+            }
+          } else if (structureData[variableId as keyof typeof structureData] !== undefined) {
+            const value = structureData[variableId as keyof typeof structureData];
+            if (value instanceof Date) {
+              return value.toLocaleDateString('fr-FR');
+            }
+            return value?.toString() || '';
+          }
+        }
+
+        // Valeurs par défaut pour l'aperçu
+        const defaultValues: { [key: string]: string } = {
+          numeroMission: 'M2024-001',
+          chargeName: 'Jean Dupont',
+          missionDateDebut: new Date().toLocaleDateString('fr-FR'),
+          missionDateHeureDebut: `${new Date().toLocaleDateString('fr-FR')} à 09:00`,
+          missionDateFin: new Date().toLocaleDateString('fr-FR'),
+          missionDateHeureFin: `${new Date().toLocaleDateString('fr-FR')} à 17:00`,
+          location: 'Paris',
+          company: 'Entreprise SA',
+          missionType: 'Consulting',
+          priceHT: '25.00',
+          totalHoursHT: '1000.00',
+          missionDescription: 'Description détaillée de la mission',
+          title: 'Titre de la mission',
+          hours: '40',
+          studentCount: '4',
+          lastName: 'Dupont',
+          firstName: 'Jean',
+          email: 'jean.dupont@email.com',
+          ecole: 'École ABC',
+          phone: '06 12 34 56 78',
+          address: '123 rue Example',
+          city: 'Paris',
+          contact_fullName: 'Jean Dupont',
+          contact_firstName: 'Jean',
+          contact_lastName: 'Dupont',
+          contact_email: 'jean.dupont@email.com',
+          contact_phone: '06 12 34 56 78',
+          contact_position: 'Chef de projet',
+          contact_linkedin: 'https://www.linkedin.com/in/jean-dupont',
+          structure_name: structureData?.name || 'Ma Structure',
+          structure_siret: structureData?.nSiret || '12345678901234',
+          structure_address: structureData?.address || '123 rue Example',
+          structure_city: structureData?.city || 'Paris',
+          structure_postalCode: structureData?.postalCode || '75000',
+          structure_country: structureData?.country || 'France',
+          structure_phone: structureData?.phone || '01 23 45 67 89',
+          structure_email: structureData?.email || 'contact@structure.fr',
+          structure_website: structureData?.website || 'www.structure.fr',
+          structure_president_fullName: 'Jean Dupont',
+        };
+
+        return defaultValues[variableId] || '';
+      };
+
+      // Fonction pour nettoyer le texte des caractères non-encodables en WinAnsi
+      const cleanTextForPDF = (text: string): string => {
+        if (!text) return '';
+        // Remplacer les caractères Unicode problématiques par leurs équivalents ASCII
+        return text
+          .replace(/\u202F/g, ' ') // Espace insécable fine (0x202f) -> espace normal
+          .replace(/\u00A0/g, ' ') // Espace insécable (nbsp) -> espace normal
+          .replace(/\u2019/g, "'") // Apostrophe courbe -> apostrophe droite
+          .replace(/\u2018/g, "'") // Guillemet simple ouvrant -> apostrophe
+          .replace(/\u201C/g, '"') // Guillemet double ouvrant -> guillemet droit
+          .replace(/\u201D/g, '"') // Guillemet double fermant -> guillemet droit
+          .replace(/\u2013/g, '-') // Tiret cadratin -> tiret
+          .replace(/\u2014/g, '-') // Tiret cadratin long -> tiret
+          .replace(/\u2026/g, '...') // Points de suspension -> trois points
+          .replace(/[^\x00-\x7F]/g, (char) => {
+            // Pour les autres caractères non-ASCII, essayer de les convertir
+            // ou les remplacer par un caractère de remplacement
+            const charCode = char.charCodeAt(0);
+            // Caractères Latin-1 (0x00A0-0x00FF), les garder tels quels
+            if (charCode >= 0x00A0 && charCode <= 0x00FF) {
+              return char;
+            }
+            // Signe euro (€) - U+20AC (8364)
+            if (charCode === 0x20AC) {
+              return '€';
+            }
+            // Caractères accentués français courants (é, è, ê, ë, à, â, ç, etc.)
+            // Ces caractères sont dans la plage Latin-1, donc déjà gérés ci-dessus
+            // Pour les autres, remplacer par un espace
+            return ' ';
+          });
+      };
+
+      // Fonction pour diviser le texte en lignes selon la largeur max, en préservant les retours à la ligne
+      const splitTextToLines = (text: string, font: any, fontSize: number, maxWidth: number): string[] => {
+        if (!text) return [];
+        
+        // D'abord, diviser le texte par les retours à la ligne pour préserver les sauts de ligne existants
+        const paragraphs = text.split(/\r?\n/);
+        const lines: string[] = [];
+        
+        // Pour chaque paragraphe (ligne séparée par un retour à la ligne)
+        paragraphs.forEach((paragraph, paragraphIndex) => {
+          // Si ce n'est pas le premier paragraphe, ajouter une ligne vide pour le retour à la ligne
+          if (paragraphIndex > 0) {
+            lines.push('');
+          }
+          
+          // Ensuite, diviser chaque paragraphe en mots et créer des lignes selon la largeur
+          const words = paragraph.split(' ');
+          let currentLine = '';
+          
+          for (let i = 0; i < words.length; i++) {
+            const testLine = currentLine ? currentLine + ' ' + words[i] : words[i];
+            const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+            
+            if (testWidth > maxWidth && currentLine) {
+              lines.push(currentLine);
+              currentLine = words[i];
+            } else {
+              currentLine = testLine;
+            }
+          }
+          
+          if (currentLine) {
+            lines.push(currentLine);
+          }
+        });
+        
+        return lines;
+      };
+
+      // Appliquer les variables sur chaque page
+      selectedTemplate.variables.forEach(variable => {
+        const pageIndex = variable.position.page - 1;
+        if (pageIndex < 0 || pageIndex >= pages.length) return;
+
+        const page = pages[pageIndex];
+        const font = variable.isBold ? helveticaFontBold : helveticaFont;
+        const fontSize = variable.fontSize || 12;
+
+        // Obtenir le texte à afficher
+        let textToDisplay = '';
+        if (variable.type === 'raw' && variable.rawText) {
+          // Remplacer les balises dans le texte brut
+          let processedText = variable.rawText;
+          // Parcourir toutes les balises et les remplacer
+          VARIABLE_TAGS.forEach(({ tag, variableId }) => {
+            const value = getVariableValueForPreview(variableId);
+            // Utiliser une expression régulière globale pour remplacer toutes les occurrences
+            const regex = new RegExp(escapeRegExp(tag), 'g');
+            processedText = processedText.replace(regex, value || '');
+          });
+          // Vérifier s'il reste des balises non remplacées (format <xxx_yyy>)
+          const remainingTags = processedText.match(/<[^>]+>/g);
+          if (remainingTags) {
+            // Remplacer les balises restantes par une chaîne vide
+            remainingTags.forEach(tag => {
+              processedText = processedText.replace(new RegExp(escapeRegExp(tag), 'g'), '');
+            });
+          }
+          textToDisplay = processedText;
+        } else if (variable.variableId) {
+          textToDisplay = getVariableValueForPreview(variable.variableId);
+        } else {
+          textToDisplay = variable.name;
+        }
+
+        const lineHeightMultiplier = variable.lineHeight || 1.2;
+        const cleanedValue = cleanTextForPDF(textToDisplay);
+        const lines = splitTextToLines(cleanedValue.trim(), font, fontSize, variable.width);
+        
+        // Calculer la hauteur totale du texte
+        const lineHeight = fontSize * lineHeightMultiplier;
+        const totalTextHeight = lines.length * lineHeight;
+        
+        // Calculer la position Y de départ en fonction de l'alignement vertical
+        // Le système de coordonnées PDF a l'origine en bas à gauche
+        // Offset pour abaisser légèrement les balises (en pixels)
+        const pageHeight = 842;
+        const x = variable.position.x;
+        const y = variable.position.y;
+        const width = variable.width;
+        const height = variable.height;
+        const textAlign = variable.textAlign;
+        const verticalAlign = variable.verticalAlign;
+        
+        const verticalOffset = 4; // Ajustement pour corriger le décalage vertical
+        let startY: number;
+        
+        if (verticalAlign === 'top') {
+          // Le texte commence en haut de la zone (y + height dans le système PDF)
+          // On commence à partir du haut et on descend
+          startY = pageHeight - y - fontSize * 0.8 - verticalOffset;
+        } else if (verticalAlign === 'bottom') {
+          // Le texte est aligné en bas, on commence en bas de la zone
+          // y est le bas de la zone dans le système de coordonnées PDF
+          startY = pageHeight - y - height + fontSize * 0.8 + (totalTextHeight - lineHeight) - verticalOffset;
+        } else {
+          // 'middle' : centrer verticalement
+          const verticalCenter = pageHeight - y - (height / 2);
+          startY = verticalCenter + (totalTextHeight / 2) - lineHeight + (fontSize * 0.8) - verticalOffset;
+        }
+
+        // S'assurer que le texte ne dépasse pas les limites de la zone
+        const minY = pageHeight - y - height + fontSize * 0.5; // Bas de la zone avec marge
+        const maxY = pageHeight - y - fontSize * 0.2; // Haut de la zone avec marge
+        
+        // Si le texte dépasse, ajuster
+        if (startY > maxY) {
+          startY = maxY;
+        }
+        if (startY - (totalTextHeight - lineHeight) < minY) {
+          startY = minY + (totalTextHeight - lineHeight);
+        }
+
+        // Dessiner chaque ligne
+        let lineY = startY;
+        for (let i = 0; i < lines.length; i++) {
+          const line = cleanTextForPDF(lines[i]);
+          
+          // Si la ligne n'est pas vide, la dessiner
+          if (line && line.trim()) {
+            // Calculer la position X en fonction de l'alignement horizontal
+            let xLine = x;
+            const lineWidth = font.widthOfTextAtSize(line, fontSize);
+            
+            if (textAlign === 'center') {
+              xLine = x + (width - lineWidth) / 2;
+            } else if (textAlign === 'right') {
+              xLine = x + width - lineWidth;
+            } else {
+              // 'left' ou 'justify'
+              xLine = x;
+            }
+            
+            // S'assurer que le texte reste dans les limites horizontales
+            xLine = Math.max(x, Math.min(xLine, x + width - 1));
+            
+            try {
+              // Dessiner uniquement si la ligne est dans les limites verticales
+              if (lineY >= minY && lineY <= maxY) {
+                page.drawText(line, {
+                  x: xLine,
+                  y: lineY,
+                  size: fontSize,
+                  font: font,
+                  maxWidth: width
+                });
+              }
+            } catch (drawError) {
+              // Si l'erreur persiste, essayer avec un texte encore plus nettoyé
+              const fallbackLine = line.replace(/[^\x20-\x7E]/g, ' ');
+              if (lineY >= minY && lineY <= maxY && fallbackLine.trim()) {
+                try {
+                  page.drawText(fallbackLine, {
+                    x: xLine,
+                    y: lineY,
+                    size: fontSize,
+                    font: font,
+                    maxWidth: width
+                  });
+                } catch (fallbackError) {
+                  console.error(`Impossible de dessiner la ligne ${i}:`, fallbackError);
+                }
+              }
+            }
+          }
+          // Même si la ligne est vide, on descend quand même pour préserver l'espacement du retour à la ligne
+          
+          // Passer à la ligne suivante (descendre dans le système PDF)
+          lineY -= lineHeight;
+          
+          // Arrêter si on dépasse les limites
+          if (lineY < minY) {
+            break;
+          }
+        }
+      });
+
+      // Générer le PDF en bytes
+      const generatedPdfBytes = await pdfDoc.save();
+      const blob = new Blob([generatedPdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+
+      setPreviewUrl(url);
+      setPreviewDialogOpen(true);
+    } catch (error) {
+      console.error('Erreur lors de la génération de l\'aperçu:', error);
+      setSnackbar({
+        open: true,
+        message: `Erreur lors de la génération de l'aperçu: ${error instanceof Error ? error.message : 'Erreur inconnue'}`,
+        severity: 'error'
+      });
+    } finally {
+      setGeneratingPreview(false);
+    }
+  };
+
 return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: '#f5f5f5' }}>
         {/* HEADER */}
@@ -2843,14 +3306,16 @@ return (
                     {selectedTemplate && (
                         <>
                             <Divider orientation="vertical" flexItem variant="middle" />
-                            <Tooltip title={previewMode ? "Désactiver l'aperçu" : "Aperçu avec exemples"}>
-                                <IconButton
+                            <Tooltip title="Générer et afficher l'aperçu du document">
+                                <Button
+                                    variant="outlined"
                                     size="small"
-                                    onClick={() => setPreviewMode(!previewMode)}
-                                    color={previewMode ? "primary" : "default"}
+                                    onClick={handleGeneratePreview}
+                                    disabled={generatingPreview}
+                                    startIcon={generatingPreview ? <CircularProgress size={16} /> : <VisibilityIcon />}
                                 >
-                                    {previewMode ? <VisibilityOffIcon /> : <VisibilityIcon />}
-                                </IconButton>
+                                    {generatingPreview ? 'Génération...' : 'Aperçu PDF'}
+                                </Button>
                             </Tooltip>
                         </>
                     )}
@@ -3574,6 +4039,68 @@ return (
               </Box>
             );
           })}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={previewDialogOpen}
+        onClose={() => {
+          setPreviewDialogOpen(false);
+          if (previewUrl) {
+            URL.revokeObjectURL(previewUrl);
+            setPreviewUrl(null);
+          }
+        }}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            height: '90vh',
+            maxHeight: '90vh'
+          }
+        }}
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="h6">Aperçu du document</Typography>
+            <IconButton
+              size="small"
+              onClick={() => {
+                setPreviewDialogOpen(false);
+                if (previewUrl) {
+                  URL.revokeObjectURL(previewUrl);
+                  setPreviewUrl(null);
+                }
+              }}
+            >
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0, height: '100%', display: 'flex', flexDirection: 'column' }}>
+          <Alert 
+            severity="info" 
+            sx={{ m: 2, mb: 1 }}
+            icon={<InfoIcon />}
+          >
+            <Typography variant="body2">
+              <strong>Note :</strong> L'aperçu peut parfois être tronqué ou ne pas refléter exactement le rendu final. 
+              Pour un résultat précis, il est recommandé de tester directement avec les boutons de génération de documents.
+            </Typography>
+          </Alert>
+          {previewUrl && (
+            <Box sx={{ flex: 1, overflow: 'hidden' }}>
+              <iframe
+                src={previewUrl}
+                style={{ 
+                  width: '100%', 
+                  height: '100%', 
+                  border: 'none' 
+                }}
+                title="Document Preview"
+              />
+            </Box>
+          )}
         </DialogContent>
       </Dialog>
 

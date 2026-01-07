@@ -1,4 +1,4 @@
-# Guide de développement de l'extension JSaaS
+# Guide de développement de l'extension JS Connect
 
 ## 🚀 Scripts disponibles
 
@@ -57,7 +57,7 @@ public/extension/        # Fichiers compilés
 ### Pour les utilisateurs finaux
 1. Générez l'extension : `npm run build:extension-zip`
 2. Le fichier `public/extension/extension.zip` est prêt
-3. Les utilisateurs peuvent le télécharger via l'interface JSaaS
+3. Les utilisateurs peuvent le télécharger via l'interface JS Connect
 
 ### Mise à jour
 - Modifiez le code dans `src/extension/`

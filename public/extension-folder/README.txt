@@ -1,4 +1,4 @@
-# Extension JSaaS - Prêt à installer
+# Extension JS Connect - Prêt à installer
 
 ## Installation dans Chrome
 
@@ -11,9 +11,9 @@
 ## Utilisation
 
 - L'icône de l'extension apparaîtra dans votre barre d'outils
-- Cliquez dessus pour vous connecter à JSaaS
+- Cliquez dessus pour vous connecter à JS Connect
 - L'extension fonctionnera automatiquement sur LinkedIn
 
 ## Support
 
-Pour toute question, contactez le support JSaaS.
+Pour toute question, contactez le support JS Connect.

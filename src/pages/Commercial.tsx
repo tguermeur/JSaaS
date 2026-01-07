@@ -93,13 +93,17 @@ import {
   Block as BlockIcon,
   Loop as LoopIcon,
   CloudUpload as CloudUploadIcon,
-  Notifications as NotificationsIcon
+  Notifications as NotificationsIcon,
+  ChevronLeft as ChevronLeftIcon,
+  ChevronRight as ChevronRightIcon,
+  Info as InfoIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { getProspects, createProspect } from '../firebase/prospects';
 import { collection, query, where, getDocs, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, addDoc, Timestamp, orderBy } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useNavigate } from 'react-router-dom';
+import { downloadExtension } from '../api/extension';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 import { styled, alpha } from '@mui/material';
 import { fadeIn } from '../styles/animations';
@@ -132,6 +136,22 @@ const PIPELINE_STATUSES = [
   'abandon',
   'deja_client'
 ];
+
+// Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
+const generateMandats = (): string[] => {
+  const currentYear = new Date().getFullYear();
+  const startYear = 2022;
+  const mandats: string[] = [];
+  
+  for (let year = startYear; year <= currentYear; year++) {
+    const nextYear = year + 1;
+    mandats.push(`${year}-${nextYear}`);
+  }
+  
+  return mandats;
+};
+
+const AVAILABLE_MANDATS = generateMandats();
 
 const APPLE_COLORS = {
   primary: '#0071e3',
@@ -323,6 +343,9 @@ const Commercial: React.FC = (): JSX.Element => {
   const [objectiveTarget, setObjectiveTarget] = useState(20);
   const [isEditingObjective, setIsEditingObjective] = useState(false);
   const [tempObjective, setTempObjective] = useState("20");
+
+  // Mandat Filter State (for Stats view)
+  const [currentMandatIndex, setCurrentMandatIndex] = useState<number>(0);
 
   // Agenda State
   const [showFullAgenda, setShowFullAgenda] = useState(false);
@@ -805,14 +828,10 @@ const Commercial: React.FC = (): JSX.Element => {
   };
 
   const handleDownloadTemplate = () => {
-    const csvContent = "data:text/csv;charset=utf-8," 
-      + "Nom,Entreprise,Email,Telephone,Poste,Notes\n"
-      + "Jean Dupont,Société ABC,jean@abc.com,0601020304,Directeur Commercial,Intéressé par le pack premium\n";
-    
-    const encodedUri = encodeURI(csvContent);
+    // Télécharger le fichier template depuis le dossier public
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", "template_prospects.csv");
+    link.setAttribute("href", "/template-import-prospects.csv");
+    link.setAttribute("download", "template-import-prospects.csv");
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -835,25 +854,86 @@ const Commercial: React.FC = (): JSX.Element => {
           const BATCH_SIZE = 450; // Firestore limit is 500
 
           for (const row of results.data as any[]) {
-            if (!row.Nom && !row.Entreprise) continue; // Skip empty rows
+            if (!row.Nom && !row.Name && !row.Entreprise && !row.Company) continue; // Skip empty rows
 
             const newRef = doc(collection(db, 'prospects'));
             
             // Construire l'objet prospect en évitant les valeurs undefined
             const prospectData: any = {
               nom: (row.Nom || row.Name || '').trim(),
+              name: (row.Name || row.Nom || '').trim(),
               entreprise: (row.Entreprise || row.Company || '').trim() || undefined,
+              company: (row.Company || row.Entreprise || '').trim() || undefined,
               email: (row.Email || '').trim() || undefined,
-              telephone: (row.Telephone || row.Phone || '').trim() || undefined,
+              telephone: (row.Telephone || row.Phone || row.Tel || '').trim() || undefined,
               title: (row.Poste || row.Title || row.Position || row.Job || '').trim() || undefined,
+              about: (row.About || row['À propos'] || row.Description || '').trim() || undefined,
+              location: (row.Location || row.Localisation || row.Ville || '').trim() || undefined,
+              pays: (row.Pays || row.Country || '').trim() || undefined,
+              adresse: (row.Adresse || row.Address || '').trim() || undefined,
+              secteur: (row.Secteur || row.Sector || row.Industrie || '').trim() || undefined,
+              linkedinUrl: (row.LinkedIn || row.LinkedInUrl || row['URL LinkedIn'] || '').trim() || undefined,
+              photoUrl: (row.PhotoUrl || row.Photo || row.Avatar || '').trim() || undefined,
+              valeurPotentielle: row.ValeurPotentielle || row['Valeur Potentielle'] || row.Value ? parseFloat(row.ValeurPotentielle || row['Valeur Potentielle'] || row.Value) : undefined,
+              extractionMethod: (row.ExtractionMethod || row['Méthode Extraction'] || '').trim() || undefined,
               statut: 'non_qualifie',
               structureId: userData.structureId,
-              ownerId: currentUser.uid, // S'assurer que currentUser.uid est défini
+              ownerId: currentUser.uid,
+              userId: currentUser.uid,
               dateAjout: new Date().toISOString(),
-              createdAt: serverTimestamp(),
+              dateCreation: serverTimestamp(),
               updatedAt: serverTimestamp(),
-              source: 'Import Excel'
+              source: row.Source || 'Import Excel'
             };
+
+            // Traiter les données d'entreprise si présentes
+            const companyData: any = {};
+            if (row.RaisonSociale || row['Raison Sociale']) {
+              companyData.raisonSociale = (row.RaisonSociale || row['Raison Sociale']).trim();
+            }
+            if (row.CodeSecteur || row['Code Secteur'] || row.APE) {
+              companyData.secteur = (row.CodeSecteur || row['Code Secteur'] || row.APE).trim();
+            }
+            if (row.SiegeSocial || row['Siège Social'] || row.Siege) {
+              companyData.siegeSocial = (row.SiegeSocial || row['Siège Social'] || row.Siege).trim();
+            }
+            if (row.SIREN || row.Siren) {
+              companyData.siren = (row.SIREN || row.Siren).trim();
+            }
+            if (row.SIRET || row.Siret) {
+              companyData.siret = (row.SIRET || row.Siret).trim();
+            }
+            if (row.CompanySector || row['Secteur Activité'] || row['Secteur Entreprise']) {
+              companyData.companySector = (row.CompanySector || row['Secteur Activité'] || row['Secteur Entreprise']).trim();
+            }
+            
+            if (Object.keys(companyData).length > 0) {
+              prospectData.companyData = companyData;
+            }
+
+            // Traiter les expériences professionnelles si présentes
+            const experience: any[] = [];
+            let expIndex = 1;
+            while (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]) {
+              const exp: any = {};
+              if (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]) {
+                exp.title = (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]).trim();
+              }
+              if (row[`Experience${expIndex}Company`]) {
+                exp.company = row[`Experience${expIndex}Company`].trim();
+              }
+              if (row[`Experience${expIndex}Duration`] || row[`Experience${expIndex}Duree`]) {
+                exp.duration = (row[`Experience${expIndex}Duration`] || row[`Experience${expIndex}Duree`]).trim();
+              }
+              if (exp.title || exp.company) {
+                experience.push(exp);
+              }
+              expIndex++;
+            }
+            
+            if (experience.length > 0) {
+              prospectData.experience = experience;
+            }
             
             // Filtrer les valeurs undefined pour éviter l'erreur Firestore
             const cleanedData: any = {};
@@ -866,7 +946,7 @@ const Commercial: React.FC = (): JSX.Element => {
             });
             
             // Vérifier que les champs requis sont présents avant d'ajouter au batch
-            if (!cleanedData.nom || !cleanedData.structureId || !cleanedData.ownerId) {
+            if ((!cleanedData.nom && !cleanedData.name) || !cleanedData.structureId || !cleanedData.ownerId) {
               console.warn('Ligne ignorée - champs requis manquants:', row, cleanedData);
               continue;
             }
@@ -934,6 +1014,48 @@ const Commercial: React.FC = (): JSX.Element => {
       return a.displayName.localeCompare(b.displayName);
     });
   }, [structureMembers]);
+
+  // Grouper les membres par mandat pour le tri dans Stats
+  const groupMembersByMandat = useCallback(() => {
+    const grouped: { [mandat: string]: StructureMember[] } = {};
+    
+    assignableMembers.forEach(member => {
+      const mandat = member.mandat || 'Sans mandat';
+      if (!grouped[mandat]) {
+        grouped[mandat] = [];
+      }
+      grouped[mandat].push(member);
+    });
+
+    // Trier les mandats par ordre croissant (plus ancien en premier, plus récent en dernier)
+    const sortedMandats = Object.keys(grouped).sort((a, b) => {
+      if (a === 'Sans mandat') return 1;
+      if (b === 'Sans mandat') return -1;
+      return a.localeCompare(b); // Ordre croissant (ancien -> récent)
+    });
+
+    return { grouped, sortedMandats };
+  }, [assignableMembers]);
+
+  // Réinitialiser l'index du mandat quand les membres changent pour afficher le plus récent
+  useEffect(() => {
+    const { sortedMandats } = groupMembersByMandat();
+    if (sortedMandats.length > 0) {
+      // Exclure "Sans mandat" pour trouver le mandat le plus récent
+      const mandatsWithDates = sortedMandats.filter(m => m !== 'Sans mandat');
+      if (mandatsWithDates.length > 0) {
+        // Afficher le mandat le plus récent par défaut (dernier index des mandats avec dates)
+        const mostRecentIndex = sortedMandats.indexOf(mandatsWithDates[mandatsWithDates.length - 1]);
+        setCurrentMandatIndex(mostRecentIndex);
+      } else {
+        // Si seulement "Sans mandat" existe, l'afficher
+        const sansMandatIndex = sortedMandats.indexOf('Sans mandat');
+        setCurrentMandatIndex(sansMandatIndex >= 0 ? sansMandatIndex : 0);
+      }
+    } else {
+      setCurrentMandatIndex(0);
+    }
+  }, [groupMembersByMandat]);
 
   const stats = useMemo(() => {
     const total = prospects.length;
@@ -1442,8 +1564,20 @@ const Commercial: React.FC = (): JSX.Element => {
   };
 
   const renderStats = () => {
-    // Préparer les données en filtrant uniquement sur le pôle "dev"
-    const statsByMember = assignableMembers.map(member => {
+    const { grouped: mandatsGrouped, sortedMandats } = groupMembersByMandat();
+    const currentMandat = sortedMandats[currentMandatIndex] || sortedMandats[sortedMandats.length - 1] || '';
+    const mandatMembers = mandatsGrouped[currentMandat] || [];
+
+    const handlePreviousMandat = () => {
+      setCurrentMandatIndex(prev => Math.max(0, prev - 1));
+    };
+
+    const handleNextMandat = () => {
+      setCurrentMandatIndex(prev => Math.min(sortedMandats.length - 1, prev + 1));
+    };
+
+    // Préparer les données en filtrant uniquement sur le pôle "dev" et le mandat sélectionné
+    const statsByMember = mandatMembers.map(member => {
       const memberProspects = prospects.filter(p => p.ownerId === member.id);
       const total = memberProspects.length;
       
@@ -1470,13 +1604,66 @@ const Commercial: React.FC = (): JSX.Element => {
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 6 }}>
           <Typography variant="h6" fontWeight={700}>Performance par membre</Typography>
           
-          <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-            {PIPELINE_STATUSES.map(status => (
-              <Box key={status} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Box sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: getStatusColor(status) }} />
-                <Typography variant="caption" color="text.secondary">{getStatusLabel(status)}</Typography>
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Navigation par mandat */}
+            {sortedMandats.length > 1 && (
+              <Box sx={{ 
+                display: 'flex', 
+                alignItems: 'center',
+                gap: 1,
+                bgcolor: 'background.paper',
+                borderRadius: 2,
+                p: 0.5,
+                boxShadow: 1,
+                zIndex: 1
+              }}>
+                <IconButton
+                  onClick={handlePreviousMandat}
+                  disabled={currentMandatIndex === 0}
+                  size="small"
+                  sx={{
+                    '&:disabled': {
+                      opacity: 0.3
+                    }
+                  }}
+                >
+                  <ChevronLeftIcon />
+                </IconButton>
+                <Typography 
+                  variant="body2" 
+                  sx={{ 
+                    px: 2,
+                    color: 'text.secondary',
+                    fontSize: '0.875rem',
+                    minWidth: '80px',
+                    textAlign: 'center'
+                  }}
+                >
+                  {currentMandat}
+                </Typography>
+                <IconButton
+                  onClick={handleNextMandat}
+                  disabled={currentMandatIndex === sortedMandats.length - 1}
+                  size="small"
+                  sx={{
+                    '&:disabled': {
+                      opacity: 0.3
+                    }
+                  }}
+                >
+                  <ChevronRightIcon />
+                </IconButton>
               </Box>
-            ))}
+            )}
+            
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              {PIPELINE_STATUSES.map(status => (
+                <Box key={status} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Box sx={{ width: 12, height: 12, borderRadius: '50%', bgcolor: getStatusColor(status) }} />
+                  <Typography variant="caption" color="text.secondary">{getStatusLabel(status)}</Typography>
+                </Box>
+              ))}
+            </Box>
           </Box>
         </Box>
         
@@ -1782,6 +1969,78 @@ const Commercial: React.FC = (): JSX.Element => {
             </StyledButton>
             </>
           )}
+          <Tooltip
+            title={
+              <Box sx={{ p: 1 }}>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>
+                  Installation de l'extension Chrome
+                </Typography>
+                <Box component="ol" sx={{ m: 0, pl: 2.5, '& li': { mb: 1 } }}>
+                  <Typography component="li" variant="body2">
+                    Cliquez sur le bouton pour télécharger le fichier ZIP
+                  </Typography>
+                  <Typography component="li" variant="body2">
+                    Ouvrez Chrome et allez à <strong>chrome://extensions/</strong>
+                  </Typography>
+                  <Typography component="li" variant="body2">
+                    Activez le <strong>"Mode développeur"</strong> en haut à droite
+                  </Typography>
+                  <Typography component="li" variant="body2">
+                    Cliquez sur <strong>"Charger l'extension non empaquetée"</strong>
+                  </Typography>
+                  <Typography component="li" variant="body2">
+                    Sélectionnez le dossier extrait du ZIP téléchargé
+                  </Typography>
+                </Box>
+              </Box>
+            }
+            arrow
+            placement="bottom"
+            componentsProps={{
+              tooltip: {
+                sx: {
+                  bgcolor: '#1d1d1f',
+                  maxWidth: 400,
+                  fontSize: '0.875rem',
+                  '& .MuiTooltip-arrow': {
+                    color: '#1d1d1f'
+                  }
+                }
+              }
+            }}
+          >
+            <StyledButton 
+              startIcon={<ExtensionIcon />}
+              endIcon={<InfoIcon fontSize="small" />}
+              onClick={async () => {
+                try {
+                  const blob = await downloadExtension();
+                  const url = window.URL.createObjectURL(blob);
+                  const link = document.createElement('a');
+                  link.href = url;
+                  link.download = 'jsaas-extension.zip';
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                  window.URL.revokeObjectURL(url);
+                } catch (error) {
+                  console.error('Erreur lors du téléchargement de l\'extension:', error);
+                  alert('Erreur lors du téléchargement de l\'extension. Veuillez réessayer.');
+                }
+              }}
+              sx={{ 
+                color: APPLE_COLORS.primary, 
+                bgcolor: 'white',
+                border: `1px solid ${APPLE_COLORS.primary}`,
+                '&:hover': {
+                  bgcolor: 'rgba(0, 113, 227, 0.04)',
+                  borderColor: '#0077ed'
+                }
+              }}
+            >
+              Extension Chrome
+            </StyledButton>
+          </Tooltip>
           <StyledButton 
             startIcon={<UploadIcon />} 
             onClick={() => setIsImportDialogOpen(true)}
@@ -1921,7 +2180,7 @@ const Commercial: React.FC = (): JSX.Element => {
               Sélectionnez un fichier CSV
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Le fichier doit contenir les colonnes : Nom, Entreprise, Email, Telephone
+              Colonnes : Nom, Entreprise, Email, Telephone, Poste, Adresse, Secteur, Source
             </Typography>
             
             <Button

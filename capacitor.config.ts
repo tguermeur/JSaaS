@@ -2,14 +2,14 @@ import { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.jsconnect.jsaas',
-  appName: 'JSaaS',
+  appName: 'JS Connect',
   webDir: 'dist',
   server: {
     androidScheme: 'https',
     cleartext: true
   },
   ios: {
-    scheme: 'JSaaS',
+    scheme: 'JSConnect',
     contentInset: 'always'
   },
   plugins: {

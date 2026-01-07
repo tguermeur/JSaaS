@@ -1,7 +1,10 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 
-admin.initializeApp();
+// Initialiser Firebase Admin si ce n'est pas déjà fait
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
 
 export const api = functions.https.onRequest(async (req, res) => {
   console.log('Requête reçue:', {

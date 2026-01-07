@@ -21,7 +21,8 @@ import {
   Alert,
   Menu,
   TextField,
-  keyframes
+  keyframes,
+  Checkbox
 } from '@mui/material';
 import {
   KeyboardArrowDown as KeyboardArrowDownIcon,
@@ -89,6 +90,7 @@ interface Mission {
   etape?: 'Négociation' | 'Recrutement' | 'Date de mission' | 'Facturation' | 'Audit' | 'Archivé';
   chargeId?: string;
   mandat?: string; // Format: "2022-2023", "2023-2024", etc.
+  company?: string;
 }
 
 interface ExtendedUserData {
@@ -128,6 +130,18 @@ interface ExpenseNote {
   status: "En attente" | "Refusée" | "Validée";
 }
 
+interface InvoiceDocument {
+  id: string;
+  fileName: string;
+  fileUrl: string;
+  invoiceSentDate?: Date;
+  invoiceDueDate?: Date;
+  invoiceAmount?: number;
+  createdAt: Date;
+  createdByName?: string;
+  isInvoice: boolean;
+}
+
 interface Contract {
   mission: Mission;
   application: {
@@ -163,6 +177,7 @@ interface Contract {
   paymentProcessedBy?: string;
   createdByName?: string;
   cdmMandat?: string; // Mandat du chargé de mission
+  invoiceDocument?: InvoiceDocument; // Document de facture uploadé
 }
 
 interface ContractStatus {
@@ -730,6 +745,7 @@ const Row: React.FC<Row> = ({
 // Ajouter un type pour les filtres
 type ContractFilter = 'all' | 'pending' | 'generated';
 type PaymentFilter = 'all' | 'pending' | 'processed';
+type InvoiceTrackingFilter = 'all' | 'unpaid' | 'paid' | 'overdue' | 'upcoming';
 
 // Ajouter l'interface pour les filtres
 interface TableFilters {
@@ -748,6 +764,13 @@ type SortConfig = {
   direction: SortDirection;
 };
 
+// Types pour le suivi des factures
+type InvoiceTrackingSortColumn = 'numeroMission' | 'company' | 'amount' | 'sentDate' | 'dueDate' | 'daysRemaining' | 'status';
+type InvoiceTrackingSortConfig = {
+  column: InvoiceTrackingSortColumn | null;
+  direction: SortDirection;
+};
+
 const Tresorerie: React.FC = () => {
   const { currentUser, userData } = useAuth();
   const [contracts, setContracts] = useState<Contract[]>([]);
@@ -758,6 +781,7 @@ const Tresorerie: React.FC = () => {
   const { enqueueSnackbar } = useSnackbar();
   const [contractFilter, setContractFilter] = useState<ContractFilter>('all');
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
+  const [invoiceTrackingFilter, setInvoiceTrackingFilter] = useState<InvoiceTrackingFilter>('all');
   const [mandatFilter, setMandatFilter] = useState<string>('all');
   const [filters, setFilters] = useState<TableFilters>({
     numeroMission: '',
@@ -770,6 +794,8 @@ const Tresorerie: React.FC = () => {
   const [anchorEl, setAnchorEl] = useState<{ [key: string]: HTMLElement | null }>({});
   const [sort, setSort] = useState<SortConfig>({ column: null, direction: null });
   const [openRows, setOpenRows] = useState<{ [key: string]: boolean }>({});
+  const [selectedInvoices, setSelectedInvoices] = useState<Set<string>>(new Set());
+  const [invoiceTrackingSort, setInvoiceTrackingSort] = useState<InvoiceTrackingSortConfig>({ column: null, direction: null });
 
   const handleTogglePaymentStatus = async (contractId: string, currentStatus: boolean) => {
     if (!currentUser) return;
@@ -1218,6 +1244,97 @@ const Tresorerie: React.FC = () => {
     }));
   };
 
+  // Gestion des checkboxes pour le suivi des factures
+  const handleSelectAllInvoices = (invoices: Contract[]) => {
+    if (selectedInvoices.size === invoices.length) {
+      setSelectedInvoices(new Set());
+    } else {
+      setSelectedInvoices(new Set(invoices.map(c => c.mission.id)));
+    }
+  };
+
+  const handleSelectInvoice = (missionId: string) => {
+    const newSelected = new Set(selectedInvoices);
+    if (newSelected.has(missionId)) {
+      newSelected.delete(missionId);
+    } else {
+      newSelected.add(missionId);
+    }
+    setSelectedInvoices(newSelected);
+  };
+
+  // Gestion du tri pour le suivi des factures
+  const handleInvoiceTrackingSort = (column: InvoiceTrackingSortColumn) => {
+    setInvoiceTrackingSort(prev => {
+      if (prev.column === column) {
+        if (prev.direction === 'asc') return { column, direction: 'desc' };
+        if (prev.direction === 'desc') return { column: null, direction: null };
+        return { column, direction: 'asc' };
+      }
+      return { column, direction: 'asc' };
+    });
+  };
+
+  // Fonction pour trier les factures
+  const getSortedInvoices = (invoices: Contract[]) => {
+    if (!invoiceTrackingSort.column || !invoiceTrackingSort.direction) return invoices;
+
+    return [...invoices].sort((a, b) => {
+      let valueA: any;
+      let valueB: any;
+
+      switch (invoiceTrackingSort.column) {
+        case 'numeroMission':
+          valueA = a.mission.numeroMission;
+          valueB = b.mission.numeroMission;
+          break;
+        case 'company':
+          valueA = (a.mission as any).company || '';
+          valueB = (b.mission as any).company || '';
+          break;
+        case 'amount':
+          valueA = a.invoiceDocument?.invoiceAmount || 0;
+          valueB = b.invoiceDocument?.invoiceAmount || 0;
+          break;
+        case 'sentDate':
+          valueA = a.invoiceDocument?.invoiceSentDate?.getTime() || 0;
+          valueB = b.invoiceDocument?.invoiceSentDate?.getTime() || 0;
+          break;
+        case 'dueDate':
+          valueA = a.invoiceDocument?.invoiceDueDate?.getTime() || 0;
+          valueB = b.invoiceDocument?.invoiceDueDate?.getTime() || 0;
+          break;
+        case 'daysRemaining':
+          const getDaysRemaining = (contract: Contract) => {
+            if (!contract.invoiceDocument?.invoiceDueDate || contract.mission.invoiceStatus === 'paid') return 999999;
+            const dueDate = new Date(contract.invoiceDocument.invoiceDueDate);
+            const today = new Date();
+            return Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+          };
+          valueA = getDaysRemaining(a);
+          valueB = getDaysRemaining(b);
+          break;
+        case 'status':
+          const getStatusPriority = (status: string) => {
+            if (status === 'paid') return 3;
+            if (status === 'sent') return 2;
+            return 1;
+          };
+          valueA = getStatusPriority(a.mission.invoiceStatus || 'to_send');
+          valueB = getStatusPriority(b.mission.invoiceStatus || 'to_send');
+          break;
+        default:
+          return 0;
+      }
+
+      if (invoiceTrackingSort.direction === 'asc') {
+        return valueA > valueB ? 1 : valueA < valueB ? -1 : 0;
+      } else {
+        return valueA < valueB ? 1 : valueA > valueB ? -1 : 0;
+      }
+    });
+  };
+
   useEffect(() => {
     const fetchContracts = async () => {
       if (!currentUser) return;
@@ -1301,6 +1418,54 @@ const Tresorerie: React.FC = () => {
           );
 
           const applicationsSnapshot = await getDocs(applicationsQuery);
+          
+          // Si pas d'application acceptée, vérifier s'il y a une facture pour cette mission
+          if (applicationsSnapshot.empty) {
+            // Vérifier s'il y a une facture uploadée pour cette mission
+            const documentsRef = collection(db, 'generatedDocuments');
+            const documentsQuery = query(
+              documentsRef,
+              where('missionId', '==', mission.id),
+              where('category', '==', 'facturation')
+            );
+            const documentsSnapshot = await getDocs(documentsQuery);
+            
+            if (!documentsSnapshot.empty) {
+              // Il y a une facture, ajouter la mission sans application
+              const doc = documentsSnapshot.docs[0].data();
+              const invoiceDocument: InvoiceDocument = {
+                id: documentsSnapshot.docs[0].id,
+                fileName: doc.fileName,
+                fileUrl: doc.fileUrl,
+                invoiceSentDate: doc.invoiceSentDate?.toDate(),
+                invoiceDueDate: doc.invoiceDueDate?.toDate(),
+                invoiceAmount: doc.invoiceAmount,
+                createdAt: doc.createdAt?.toDate() || new Date(),
+                createdByName: doc.createdByName,
+                isInvoice: doc.isInvoice || true
+              };
+
+              contractsData.push({
+                mission,
+                application: {
+                  id: 'no-application',
+                  userEmail: 'N/A',
+                  userDisplayName: 'Pas d\'étudiant assigné',
+                  workingHours: []
+                },
+                totalHoursAssigned: 0,
+                status: { isContractGenerated: false },
+                createdByName: userData?.displayName || 'Utilisateur inconnu',
+                expenseNotes: [],
+                isPaymentProcessed: false,
+                paymentProcessedAt: null,
+                paymentProcessedBy: null,
+                cdmMandat: cdmMandat || mission.mandat,
+                invoiceDocument
+              });
+            }
+            continue; // Passer à la mission suivante
+          }
           
           for (const appDoc of applicationsSnapshot.docs) {
             const applicationData = appDoc.data();
@@ -1427,6 +1592,31 @@ const Tresorerie: React.FC = () => {
               };
             }) as ExpenseNote[];
 
+            // Récupérer la facture associée à cette mission
+            const documentsRef = collection(db, 'generatedDocuments');
+            const documentsQuery = query(
+              documentsRef,
+              where('missionId', '==', mission.id),
+              where('category', '==', 'facturation')
+            );
+            const documentsSnapshot = await getDocs(documentsQuery);
+            
+            let invoiceDocument: InvoiceDocument | undefined;
+            if (!documentsSnapshot.empty) {
+              const doc = documentsSnapshot.docs[0].data();
+              invoiceDocument = {
+                id: documentsSnapshot.docs[0].id,
+                fileName: doc.fileName,
+                fileUrl: doc.fileUrl,
+                invoiceSentDate: doc.invoiceSentDate?.toDate(),
+                invoiceDueDate: doc.invoiceDueDate?.toDate(),
+                invoiceAmount: doc.invoiceAmount,
+                createdAt: doc.createdAt?.toDate() || new Date(),
+                createdByName: doc.createdByName,
+                isInvoice: doc.isInvoice
+              };
+            }
+
             contractsData.push({
               mission,
               application,
@@ -1437,7 +1627,8 @@ const Tresorerie: React.FC = () => {
               isPaymentProcessed: contractSnapshot.empty ? false : contractSnapshot.docs[0].data().isPaymentProcessed || false,
               paymentProcessedAt: contractSnapshot.empty ? null : contractSnapshot.docs[0].data().paymentProcessedAt || null,
               paymentProcessedBy: contractSnapshot.empty ? null : contractSnapshot.docs[0].data().paymentProcessedBy || null,
-              cdmMandat: cdmMandat || mission.mandat
+              cdmMandat: cdmMandat || mission.mandat,
+              invoiceDocument
             });
           }
         }
@@ -1458,7 +1649,7 @@ const Tresorerie: React.FC = () => {
     };
 
     fetchContracts();
-  }, [currentUser]);
+  }, [currentUser?.uid]);
 
   if (loading) {
     return (
@@ -1524,6 +1715,11 @@ const Tresorerie: React.FC = () => {
           <Tab 
             icon={<ReceiptIcon />} 
             label="Factures à envoyer" 
+            sx={{ textTransform: 'none' }}
+          />
+          <Tab 
+            icon={<CheckCircleIcon />} 
+            label="Suivi des factures" 
             sx={{ textTransform: 'none' }}
           />
         </Tabs>
@@ -2306,14 +2502,16 @@ const Tresorerie: React.FC = () => {
                   <TableHead>
                     <TableRow>
                       <TableCell>Numéro de mission</TableCell>
-                      <TableCell>Date de fin de la mission</TableCell>
-                      <TableCell>Prix horaire HT</TableCell>
+                      <TableCell>Date de fin</TableCell>
+                      <TableCell>Prix HT</TableCell>
                       <TableCell>Total HT</TableCell>
                       <TableCell>TVA (20%)</TableCell>
-                      <TableCell>Notes de frais validées</TableCell>
-                      <TableCell>Total TTC</TableCell>
-                      <TableCell>Prix final</TableCell>
-                      <TableCell>Statut facture</TableCell>
+                      <TableCell>Notes de frais</TableCell>
+                      <TableCell>Prix final TTC</TableCell>
+                      <TableCell>Facture</TableCell>
+                      <TableCell>Date d'envoi</TableCell>
+                      <TableCell>Date d'échéance</TableCell>
+                      <TableCell>Statut</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -2339,6 +2537,12 @@ const Tresorerie: React.FC = () => {
                       sent: { label: 'Envoyé', color: 'info' },
                       paid: { label: 'Payé', color: 'success' }
                     };
+                    
+                    // Vérifier si la facture est en retard
+                    const isOverdue = contract.invoiceDocument?.invoiceDueDate && 
+                                     new Date(contract.invoiceDocument.invoiceDueDate) < new Date() &&
+                                     invoiceStatus !== 'paid';
+                    
                     const handleInvoiceStatusClick = async () => {
                       let nextStatus: 'to_send' | 'sent' | 'paid';
                       if (invoiceStatus === 'to_send') nextStatus = 'sent';
@@ -2350,10 +2554,8 @@ const Tresorerie: React.FC = () => {
                       
                       // Mettre à jour l'étape de la mission selon le statut de la facture
                       if (nextStatus === 'sent') {
-                        // Quand la facture est envoyée, passer à l'étape "Facturation"
                         updateData.etape = 'Facturation';
                       } else if (nextStatus === 'paid') {
-                        // Quand la facture est payée, passer à l'étape "Audit"
                         updateData.etape = 'Audit';
                       }
                       
@@ -2378,22 +2580,138 @@ const Tresorerie: React.FC = () => {
                         enqueueSnackbar('Facture payée - Mission passée à l\'étape Audit', { variant: 'success' });
                       }
                     };
+                    
                     return (
-                      <TableRow key={contract.mission.id}>
+                      <TableRow 
+                        key={contract.mission.id}
+                        sx={{
+                          backgroundColor: isOverdue ? 'rgba(255, 59, 48, 0.03)' : 'inherit',
+                          '&:hover': {
+                            backgroundColor: isOverdue ? 'rgba(255, 59, 48, 0.06)' : undefined
+                          }
+                        }}
+                      >
                         <TableCell>{contract.mission.numeroMission}</TableCell>
                         <TableCell>{formatDate(contract.mission.endDate)}</TableCell>
                         <TableCell>{priceHT.toFixed(2)}€</TableCell>
                         <TableCell>{totalHT.toFixed(2)}€</TableCell>
                         <TableCell>{tvaMontant.toFixed(2)}€</TableCell>
                         <TableCell>{validatedExpenses.toFixed(2)}€</TableCell>
-                        <TableCell>{totalTTC.toFixed(2)}€</TableCell>
-                        <TableCell sx={{ fontWeight: 'bold', color: '#34C759' }}>{finalPrice.toFixed(2)}€</TableCell>
+                        <TableCell>
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                            <Typography sx={{ fontWeight: 600, color: '#34C759', fontSize: '0.95rem' }}>
+                              {contract.invoiceDocument?.invoiceAmount 
+                                ? `${contract.invoiceDocument.invoiceAmount.toFixed(2)}€` 
+                                : `${finalPrice.toFixed(2)}€`}
+                            </Typography>
+                            {contract.invoiceDocument?.invoiceAmount && (
+                              <Chip
+                                label="Confirmé"
+                                size="small"
+                                sx={{
+                                  height: 18,
+                                  fontSize: '0.65rem',
+                                  backgroundColor: '#34C759',
+                                  color: 'white',
+                                  fontWeight: 600,
+                                  width: 'fit-content'
+                                }}
+                              />
+                            )}
+                            {!contract.invoiceDocument?.invoiceAmount && (
+                              <Typography sx={{ fontSize: '0.7rem', color: '#86868b', fontStyle: 'italic' }}>
+                                Calculé
+                              </Typography>
+                            )}
+                          </Box>
+                        </TableCell>
+                        <TableCell>
+                          {contract.invoiceDocument ? (
+                            <Tooltip title="Voir la facture">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => window.open(contract.invoiceDocument!.fileUrl, '_blank')}
+                                sx={{
+                                  textTransform: 'none',
+                                  borderRadius: '8px',
+                                  fontSize: '0.75rem',
+                                  borderColor: '#34C759',
+                                  color: '#34C759',
+                                  '&:hover': {
+                                    borderColor: '#34C759',
+                                    backgroundColor: 'rgba(52, 199, 89, 0.08)'
+                                  }
+                                }}
+                              >
+                                {contract.invoiceDocument.fileName.length > 20 
+                                  ? contract.invoiceDocument.fileName.substring(0, 20) + '...' 
+                                  : contract.invoiceDocument.fileName}
+                              </Button>
+                            </Tooltip>
+                          ) : (
+                            <Typography variant="body2" sx={{ color: '#86868b', fontStyle: 'italic' }}>
+                              Aucune facture
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {contract.invoiceDocument?.invoiceSentDate ? (
+                            <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                              {new Date(contract.invoiceDocument.invoiceSentDate).toLocaleDateString('fr-FR')}
+                            </Typography>
+                          ) : (
+                            <Typography variant="body2" sx={{ color: '#86868b' }}>
+                              -
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {contract.invoiceDocument?.invoiceDueDate ? (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Typography 
+                                variant="body2" 
+                                sx={{ 
+                                  fontSize: '0.875rem',
+                                  color: isOverdue ? '#FF3B30' : '#1d1d1f',
+                                  fontWeight: isOverdue ? 600 : 400
+                                }}
+                              >
+                                {new Date(contract.invoiceDocument.invoiceDueDate).toLocaleDateString('fr-FR')}
+                              </Typography>
+                              {isOverdue && (
+                                <Chip
+                                  label="En retard"
+                                  size="small"
+                                  sx={{
+                                    height: 20,
+                                    fontSize: '0.65rem',
+                                    backgroundColor: '#FF3B30',
+                                    color: 'white',
+                                    fontWeight: 600
+                                  }}
+                                />
+                              )}
+                            </Box>
+                          ) : (
+                            <Typography variant="body2" sx={{ color: '#86868b' }}>
+                              -
+                            </Typography>
+                          )}
+                        </TableCell>
                         <TableCell>
                           <Chip
                             label={statusMap[invoiceStatus].label}
                             color={statusMap[invoiceStatus].color as any}
                             onClick={handleInvoiceStatusClick}
-                            sx={{ cursor: 'pointer', fontWeight: 500, borderRadius: '8px' }}
+                            sx={{ 
+                              cursor: 'pointer', 
+                              fontWeight: 500, 
+                              borderRadius: '8px',
+                              '&:hover': {
+                                opacity: 0.8
+                              }
+                            }}
                           />
                         </TableCell>
                       </TableRow>
@@ -2403,6 +2721,899 @@ const Tresorerie: React.FC = () => {
               </Table>
             </TableContainer>
           </>
+        )}
+      </TabPanel>
+      <TabPanel value={tabValue} index={3}>
+        <Paper 
+          elevation={0}
+          sx={{ 
+            p: 2, 
+            mb: 2, 
+            mx: 2,
+            borderRadius: '12px',
+            backgroundColor: '#f8f9fa',
+            border: '1px solid #e5e5e7'
+          }}
+        >
+          <Box sx={{ 
+            display: 'flex', 
+            flexWrap: 'wrap',
+            gap: 2,
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
+              <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
+                Filtrer par :
+              </Typography>
+              <Chip
+                label="Toutes"
+                onClick={() => setInvoiceTrackingFilter('all')}
+                color={invoiceTrackingFilter === 'all' ? 'primary' : 'default'}
+                variant={invoiceTrackingFilter === 'all' ? 'filled' : 'outlined'}
+                sx={{
+                  borderRadius: '8px',
+                  '&.MuiChip-filled': {
+                    backgroundColor: '#007AFF',
+                  },
+                  '&.MuiChip-outlined': {
+                    borderColor: '#d2d2d7',
+                    color: '#1d1d1f',
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }
+                  }
+                }}
+              />
+              <Chip
+                label="À payer"
+                onClick={() => setInvoiceTrackingFilter('unpaid')}
+                color={invoiceTrackingFilter === 'unpaid' ? 'primary' : 'default'}
+                variant={invoiceTrackingFilter === 'unpaid' ? 'filled' : 'outlined'}
+                sx={{
+                  borderRadius: '8px',
+                  '&.MuiChip-filled': {
+                    backgroundColor: '#FF9500',
+                  },
+                  '&.MuiChip-outlined': {
+                    borderColor: '#d2d2d7',
+                    color: '#1d1d1f',
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }
+                  }
+                }}
+              />
+              <Chip
+                label="Payées"
+                onClick={() => setInvoiceTrackingFilter('paid')}
+                color={invoiceTrackingFilter === 'paid' ? 'primary' : 'default'}
+                variant={invoiceTrackingFilter === 'paid' ? 'filled' : 'outlined'}
+                sx={{
+                  borderRadius: '8px',
+                  '&.MuiChip-filled': {
+                    backgroundColor: '#34C759',
+                  },
+                  '&.MuiChip-outlined': {
+                    borderColor: '#d2d2d7',
+                    color: '#1d1d1f',
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }
+                  }
+                }}
+              />
+              <Chip
+                label="En retard"
+                onClick={() => setInvoiceTrackingFilter('overdue')}
+                color={invoiceTrackingFilter === 'overdue' ? 'primary' : 'default'}
+                variant={invoiceTrackingFilter === 'overdue' ? 'filled' : 'outlined'}
+                sx={{
+                  borderRadius: '8px',
+                  '&.MuiChip-filled': {
+                    backgroundColor: '#FF3B30',
+                  },
+                  '&.MuiChip-outlined': {
+                    borderColor: '#d2d2d7',
+                    color: '#1d1d1f',
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }
+                  }
+                }}
+              />
+              <Chip
+                label="Échéance proche"
+                onClick={() => setInvoiceTrackingFilter('upcoming')}
+                color={invoiceTrackingFilter === 'upcoming' ? 'primary' : 'default'}
+                variant={invoiceTrackingFilter === 'upcoming' ? 'filled' : 'outlined'}
+                sx={{
+                  borderRadius: '8px',
+                  '&.MuiChip-filled': {
+                    backgroundColor: '#FF9500',
+                  },
+                  '&.MuiChip-outlined': {
+                    borderColor: '#d2d2d7',
+                    color: '#1d1d1f',
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }
+                  }
+                }}
+              />
+            </Box>
+            <FormControl 
+              size="small" 
+              sx={{ 
+                minWidth: 150
+              }}
+            >
+              <InputLabel>Mandat</InputLabel>
+              <Select
+                value={mandatFilter}
+                label="Mandat"
+                onChange={(e) => setMandatFilter(e.target.value)}
+                sx={{
+                  borderRadius: '8px',
+                  backgroundColor: 'white',
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: '#d2d2d7',
+                  },
+                }}
+              >
+                <MenuItem value="all">Tous les mandats</MenuItem>
+                {AVAILABLE_MANDATS.map(mandat => (
+                  <MenuItem key={mandat} value={mandat}>
+                    {mandat}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+    </Paper>
+
+        {/* Statistiques des factures avec barre de progression */}
+        <Paper 
+          elevation={0}
+          sx={{ 
+            p: 3, 
+            mb: 3, 
+            mx: 2,
+            borderRadius: '16px',
+            backgroundColor: 'white',
+            border: '1px solid #e5e5e7'
+          }}
+        >
+          {(() => {
+            const allInvoices = contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName);
+            const totalInvoices = allInvoices.length;
+            const paidInvoices = allInvoices.filter(c => c.mission.invoiceStatus === 'paid');
+            const overdueInvoices = allInvoices.filter(c => {
+              const isOverdue = c.invoiceDocument?.invoiceDueDate && 
+                               new Date(c.invoiceDocument.invoiceDueDate) < new Date() &&
+                               c.mission.invoiceStatus !== 'paid';
+              return isOverdue;
+            });
+            const unpaidInvoices = allInvoices.filter(c => c.mission.invoiceStatus !== 'paid' && !overdueInvoices.find(inv => inv.mission.id === c.mission.id));
+
+            // Calculer les totaux
+            const totalAmount = allInvoices.reduce((sum, c) => sum + (c.invoiceDocument?.invoiceAmount || 0), 0);
+            const paidAmount = paidInvoices.reduce((sum, c) => sum + (c.invoiceDocument?.invoiceAmount || 0), 0);
+            const overdueAmount = overdueInvoices.reduce((sum, c) => sum + (c.invoiceDocument?.invoiceAmount || 0), 0);
+            const unpaidAmount = unpaidInvoices.reduce((sum, c) => sum + (c.invoiceDocument?.invoiceAmount || 0), 0);
+
+            // Calculer les pourcentages pour la barre
+            const paidPercentage = totalInvoices > 0 ? (paidInvoices.length / totalInvoices) * 100 : 0;
+            const unpaidPercentage = totalInvoices > 0 ? (unpaidInvoices.length / totalInvoices) * 100 : 0;
+            const overduePercentage = totalInvoices > 0 ? (overdueInvoices.length / totalInvoices) * 100 : 0;
+
+            return (
+              <>
+                {/* En-tête avec totaux */}
+                <Box sx={{ mb: 3 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f', mb: 1 }}>
+                    {totalAmount.toFixed(2)}€
+                  </Typography>
+                  <Typography variant="body2" sx={{ color: '#86868b' }}>
+                    pour {totalInvoices} {totalInvoices > 1 ? 'factures' : 'facture'}
+                  </Typography>
+                </Box>
+
+                {/* Barre de progression */}
+                <Box sx={{ mb: 2 }}>
+                  <Box sx={{ 
+                    display: 'flex', 
+                    height: 8, 
+                    borderRadius: '4px',
+                    overflow: 'hidden',
+                    backgroundColor: '#f5f5f7'
+                  }}>
+                    {paidPercentage > 0 && (
+                      <Box sx={{ 
+                        width: `${paidPercentage}%`, 
+                        backgroundColor: '#34C759',
+                        transition: 'width 0.3s ease'
+                      }} />
+                    )}
+                    {unpaidPercentage > 0 && (
+                      <Box sx={{ 
+                        width: `${unpaidPercentage}%`, 
+                        backgroundColor: '#FF9500',
+                        transition: 'width 0.3s ease'
+                      }} />
+                    )}
+                    {overduePercentage > 0 && (
+                      <Box sx={{ 
+                        width: `${overduePercentage}%`, 
+                        backgroundColor: '#FF3B30',
+                        transition: 'width 0.3s ease'
+                      }} />
+                    )}
+                  </Box>
+                </Box>
+
+                {/* Légende */}
+                <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: '#34C759' }} />
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                        {paidInvoices.length} Payée{paidInvoices.length > 1 ? 's' : ''}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: '#86868b' }}>
+                        {paidAmount.toFixed(2)}€
+                      </Typography>
+                    </Box>
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: '#FF9500' }} />
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                        {unpaidInvoices.length} À payer
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: '#86868b' }}>
+                        {unpaidAmount.toFixed(2)}€
+                      </Typography>
+                    </Box>
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: '#FF3B30' }} />
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                        {overdueInvoices.length} En retard
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: '#86868b' }}>
+                        {overdueAmount.toFixed(2)}€
+                      </Typography>
+                    </Box>
+                  </Box>
+                </Box>
+              </>
+            );
+          })()}
+        </Paper>
+
+        {selectedInvoices.size > 0 && (
+          <Paper 
+            elevation={0}
+            sx={{ 
+              p: 2, 
+              mb: 2, 
+              mx: 2,
+              borderRadius: '12px',
+              backgroundColor: 'rgba(0, 122, 255, 0.08)',
+              border: '1px solid #007AFF',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}
+          >
+            <Typography variant="body2" sx={{ color: '#007AFF', fontWeight: 600 }}>
+              {selectedInvoices.size} facture{selectedInvoices.size > 1 ? 's' : ''} sélectionnée{selectedInvoices.size > 1 ? 's' : ''}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ClearIcon />}
+                onClick={() => setSelectedInvoices(new Set())}
+                sx={{
+                  color: '#007AFF',
+                  borderColor: '#007AFF',
+                  borderRadius: '8px',
+                  textTransform: 'none',
+                  '&:hover': {
+                    backgroundColor: 'rgba(0, 122, 255, 0.08)',
+                    borderColor: '#007AFF'
+                  }
+                }}
+              >
+                Désélectionner tout
+              </Button>
+            </Box>
+          </Paper>
+        )}
+
+        <TableContainer sx={{ mx: 2, borderRadius: '12px', border: '1px solid #e5e5e7', overflowX: 'auto', width: 'auto' }}>
+          <Table 
+            sx={{ 
+              '& .MuiTableCell-root': { 
+                borderBottom: '1px solid #f5f5f7',
+                px: 0.5,
+                py: 0.5,
+                fontSize: '0.7rem'
+              },
+              '& .MuiTableCell-head': {
+                fontSize: '0.7rem'
+              },
+              width: '100%',
+              tableLayout: 'fixed'
+            }}
+          >
+            <TableHead sx={{ backgroundColor: '#f8f9fa' }}>
+              <TableRow>
+                <TableCell padding="checkbox" sx={{ width: '3%', minWidth: 40 }}>
+                  <Checkbox
+                    size="small"
+                    indeterminate={selectedInvoices.size > 0 && selectedInvoices.size < contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName).length}
+                    checked={contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName).length > 0 && selectedInvoices.size === contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName).length}
+                    onChange={() => handleSelectAllInvoices(contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName))}
+                    sx={{
+                      color: '#007AFF',
+                      '&.Mui-checked': {
+                        color: '#007AFF',
+                      },
+                      '&.MuiCheckbox-indeterminate': {
+                        color: '#007AFF',
+                      }
+                    }}
+                  />
+                </TableCell>
+                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '8%' }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 0.5, 
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      '&:hover .sort-icon': {
+                        opacity: invoiceTrackingSort.column === 'numeroMission' ? 1 : 0.5
+                      }
+                    }}
+                    onClick={() => handleInvoiceTrackingSort('numeroMission')}
+                  >
+                    Ref.
+                    <Box sx={{ 
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: invoiceTrackingSort.column === 'numeroMission' ? 1 : 0,
+                      transition: 'opacity 0.2s',
+                      color: '#007AFF'
+                    }} className="sort-icon">
+                      {invoiceTrackingSort.column === 'numeroMission' && (
+                        invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
+                        invoiceTrackingSort.direction === 'desc' ? <ArrowDownwardIcon fontSize="small" /> :
+                        <ImportExportIcon fontSize="small" />
+                      )}
+                      {invoiceTrackingSort.column !== 'numeroMission' && <ImportExportIcon fontSize="small" />}
+                    </Box>
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ 
+                  fontWeight: 600, 
+                  color: '#1d1d1f', 
+                  fontSize: '0.7rem', 
+                  whiteSpace: 'nowrap', 
+                  width: '12%',
+                  display: { xs: 'none', md: 'table-cell' }
+                }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 0.5, 
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      '&:hover .sort-icon': {
+                        opacity: invoiceTrackingSort.column === 'company' ? 1 : 0.5
+                      }
+                    }}
+                    onClick={() => handleInvoiceTrackingSort('company')}
+                  >
+                    Entreprise
+                    <Box sx={{ 
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: invoiceTrackingSort.column === 'company' ? 1 : 0,
+                      transition: 'opacity 0.2s',
+                      color: '#007AFF'
+                    }} className="sort-icon">
+                      {invoiceTrackingSort.column === 'company' && (
+                        invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
+                        invoiceTrackingSort.direction === 'desc' ? <ArrowDownwardIcon fontSize="small" /> :
+                        <ImportExportIcon fontSize="small" />
+                      )}
+                      {invoiceTrackingSort.column !== 'company' && <ImportExportIcon fontSize="small" />}
+                    </Box>
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '6%' }}>
+                  Doc.
+                </TableCell>
+                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 0.5, 
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      '&:hover .sort-icon': {
+                        opacity: invoiceTrackingSort.column === 'amount' ? 1 : 0.5
+                      }
+                    }}
+                    onClick={() => handleInvoiceTrackingSort('amount')}
+                  >
+                    Montant
+                    <Box sx={{ 
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: invoiceTrackingSort.column === 'amount' ? 1 : 0,
+                      transition: 'opacity 0.2s',
+                      color: '#007AFF'
+                    }} className="sort-icon">
+                      {invoiceTrackingSort.column === 'amount' && (
+                        invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
+                        invoiceTrackingSort.direction === 'desc' ? <ArrowDownwardIcon fontSize="small" /> :
+                        <ImportExportIcon fontSize="small" />
+                      )}
+                      {invoiceTrackingSort.column !== 'amount' && <ImportExportIcon fontSize="small" />}
+                    </Box>
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 0.5, 
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      '&:hover .sort-icon': {
+                        opacity: invoiceTrackingSort.column === 'sentDate' ? 1 : 0.5
+                      }
+                    }}
+                    onClick={() => handleInvoiceTrackingSort('sentDate')}
+                  >
+                    Envoi
+                    <Box sx={{ 
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: invoiceTrackingSort.column === 'sentDate' ? 1 : 0,
+                      transition: 'opacity 0.2s',
+                      color: '#007AFF'
+                    }} className="sort-icon">
+                      {invoiceTrackingSort.column === 'sentDate' && (
+                        invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
+                        invoiceTrackingSort.direction === 'desc' ? <ArrowDownwardIcon fontSize="small" /> :
+                        <ImportExportIcon fontSize="small" />
+                      )}
+                      {invoiceTrackingSort.column !== 'sentDate' && <ImportExportIcon fontSize="small" />}
+                    </Box>
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 0.5, 
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      '&:hover .sort-icon': {
+                        opacity: invoiceTrackingSort.column === 'dueDate' ? 1 : 0.5
+                      }
+                    }}
+                    onClick={() => handleInvoiceTrackingSort('dueDate')}
+                  >
+                    Échéance
+                    <Box sx={{ 
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: invoiceTrackingSort.column === 'dueDate' ? 1 : 0,
+                      transition: 'opacity 0.2s',
+                      color: '#007AFF'
+                    }} className="sort-icon">
+                      {invoiceTrackingSort.column === 'dueDate' && (
+                        invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
+                        invoiceTrackingSort.direction === 'desc' ? <ArrowDownwardIcon fontSize="small" /> :
+                        <ImportExportIcon fontSize="small" />
+                      )}
+                      {invoiceTrackingSort.column !== 'dueDate' && <ImportExportIcon fontSize="small" />}
+                    </Box>
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ 
+                  fontWeight: 600, 
+                  color: '#1d1d1f', 
+                  fontSize: '0.7rem', 
+                  whiteSpace: 'nowrap', 
+                  width: '6%',
+                  display: { xs: 'none', lg: 'table-cell' }
+                }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 0.5, 
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      '&:hover .sort-icon': {
+                        opacity: invoiceTrackingSort.column === 'daysRemaining' ? 1 : 0.5
+                      }
+                    }}
+                    onClick={() => handleInvoiceTrackingSort('daysRemaining')}
+                  >
+                    Délai
+                    <Box sx={{ 
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: invoiceTrackingSort.column === 'daysRemaining' ? 1 : 0,
+                      transition: 'opacity 0.2s',
+                      color: '#007AFF'
+                    }} className="sort-icon">
+                      {invoiceTrackingSort.column === 'daysRemaining' && (
+                        invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
+                        invoiceTrackingSort.direction === 'desc' ? <ArrowDownwardIcon fontSize="small" /> :
+                        <ImportExportIcon fontSize="small" />
+                      )}
+                      {invoiceTrackingSort.column !== 'daysRemaining' && <ImportExportIcon fontSize="small" />}
+                    </Box>
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 0.5, 
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      '&:hover .sort-icon': {
+                        opacity: invoiceTrackingSort.column === 'status' ? 1 : 0.5
+                      }
+                    }}
+                    onClick={() => handleInvoiceTrackingSort('status')}
+                  >
+                    Statut
+                    <Box sx={{ 
+                      display: 'flex',
+                      alignItems: 'center',
+                      opacity: invoiceTrackingSort.column === 'status' ? 1 : 0,
+                      transition: 'opacity 0.2s',
+                      color: '#007AFF'
+                    }} className="sort-icon">
+                      {invoiceTrackingSort.column === 'status' && (
+                        invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
+                        invoiceTrackingSort.direction === 'desc' ? <ArrowDownwardIcon fontSize="small" /> :
+                        <ImportExportIcon fontSize="small" />
+                      )}
+                      {invoiceTrackingSort.column !== 'status' && <ImportExportIcon fontSize="small" />}
+                    </Box>
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                  Actions
+                </TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {getSortedInvoices(contracts
+                .filter(contract => {
+                  // Filtrer uniquement les missions avec factures uploadées
+                  if (!contract.invoiceDocument || !contract.invoiceDocument.fileName) return false;
+
+                  // Filtre par mandat
+                  if (mandatFilter !== 'all') {
+                    const contractMandat = contract.cdmMandat || contract.mission.mandat;
+                    if (contractMandat !== mandatFilter) return false;
+                  }
+
+                  // Filtre par statut de suivi
+                  const isPaid = contract.mission.invoiceStatus === 'paid';
+                  const isOverdue = contract.invoiceDocument?.invoiceDueDate && 
+                                   new Date(contract.invoiceDocument.invoiceDueDate) < new Date() &&
+                                   !isPaid;
+                  const isUpcoming = (() => {
+                    if (!contract.invoiceDocument?.invoiceDueDate || isPaid) return false;
+                    const dueDate = new Date(contract.invoiceDocument.invoiceDueDate);
+                    const today = new Date();
+                    const daysUntilDue = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                    return daysUntilDue >= 0 && daysUntilDue <= 7;
+                  })();
+
+                  if (invoiceTrackingFilter === 'paid') return isPaid;
+                  if (invoiceTrackingFilter === 'unpaid') return !isPaid;
+                  if (invoiceTrackingFilter === 'overdue') return isOverdue;
+                  if (invoiceTrackingFilter === 'upcoming') return isUpcoming;
+                  
+                  return true;
+                }))
+                .map((contract) => {
+                  const isPaid = contract.mission.invoiceStatus === 'paid';
+                  const isOverdue = contract.invoiceDocument?.invoiceDueDate && 
+                                   new Date(contract.invoiceDocument.invoiceDueDate) < new Date() &&
+                                   !isPaid;
+                  
+                  const daysRemaining = (() => {
+                    if (!contract.invoiceDocument?.invoiceDueDate || isPaid) return null;
+                    const dueDate = new Date(contract.invoiceDocument.invoiceDueDate);
+                    const today = new Date();
+                    return Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                  })();
+
+                  const handleTogglePayment = async () => {
+                    const newStatus = isPaid ? 'sent' : 'paid';
+                    const missionRef = doc(db, 'missions', contract.mission.id);
+                    await updateDoc(missionRef, {
+                      invoiceStatus: newStatus,
+                      ...(newStatus === 'paid' && { etape: 'Audit' })
+                    });
+                    
+                    setContracts(prev => prev.map(c =>
+                      c.mission.id === contract.mission.id
+                        ? { 
+                            ...c, 
+                            mission: { 
+                              ...c.mission, 
+                              invoiceStatus: newStatus,
+                              ...(newStatus === 'paid' && { etape: 'Audit' as const })
+                            } 
+                          }
+                        : c
+                    ));
+                    
+                    enqueueSnackbar(
+                      isPaid ? 'Facture marquée comme non payée' : 'Facture marquée comme payée',
+                      { variant: 'success' }
+                    );
+                  };
+
+                  return (
+                    <TableRow 
+                      key={contract.mission.id}
+                      selected={selectedInvoices.has(contract.mission.id)}
+                      sx={{
+                        '&:hover': {
+                          backgroundColor: '#f8f9fa'
+                        }
+                      }}
+                    >
+                      {/* Checkbox */}
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          checked={selectedInvoices.has(contract.mission.id)}
+                          onChange={() => handleSelectInvoice(contract.mission.id)}
+                          sx={{
+                            color: '#007AFF',
+                            '&.Mui-checked': {
+                              color: '#007AFF',
+                            }
+                          }}
+                        />
+                      </TableCell>
+
+                      {/* Référence - Cliquable */}
+                      <TableCell>
+                        <Typography 
+                          variant="body2" 
+                          sx={{ 
+                            fontWeight: 600, 
+                            fontSize: '0.7rem',
+                            color: '#007AFF',
+                            cursor: 'pointer',
+                            textDecoration: 'none',
+                            whiteSpace: 'nowrap',
+                            '&:hover': {
+                              textDecoration: 'underline'
+                            }
+                          }}
+                          onClick={() => {
+                            // Navigate to mission or show details
+                            window.location.href = `/missions/${contract.mission.id}`;
+                          }}
+                        >
+                          {contract.mission.numeroMission}
+                        </Typography>
+                      </TableCell>
+
+                      {/* Entreprise */}
+                      <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>
+                        <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.7rem', color: '#1d1d1f', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {contract.mission.company || '-'}
+                        </Typography>
+                      </TableCell>
+
+                      {/* Facture */}
+                      <TableCell>
+                        <Button
+                          size="small"
+                          startIcon={<ReceiptIcon sx={{ fontSize: 10 }} />}
+                          onClick={() => window.open(contract.invoiceDocument!.fileUrl, '_blank')}
+                          sx={{
+                            textTransform: 'none',
+                            fontSize: '0.625rem',
+                            color: '#007AFF',
+                            fontWeight: 500,
+                            p: 0,
+                            minWidth: 'auto',
+                            '&:hover': {
+                              backgroundColor: 'rgba(0, 122, 255, 0.08)'
+                            }
+                          }}
+                        >
+                          PDF
+                        </Button>
+                      </TableCell>
+
+                      {/* Montant */}
+                      <TableCell>
+                        <Typography sx={{ fontWeight: 700, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
+                          {contract.invoiceDocument?.invoiceAmount 
+                            ? `${contract.invoiceDocument.invoiceAmount.toFixed(2)}€` 
+                            : '-'}
+                        </Typography>
+                      </TableCell>
+
+                      {/* Date d'envoi */}
+                      <TableCell>
+                        {contract.invoiceDocument?.invoiceSentDate ? (
+                          <Typography variant="body2" sx={{ color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
+                            {new Date(contract.invoiceDocument.invoiceSentDate).toLocaleDateString('fr-FR', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: '2-digit'
+                            })}
+                          </Typography>
+                        ) : (
+                          <Typography variant="body2" sx={{ color: '#86868b', fontSize: '0.7rem' }}>-</Typography>
+                        )}
+                      </TableCell>
+
+                      {/* Échéance */}
+                      <TableCell>
+                        {contract.invoiceDocument?.invoiceDueDate ? (
+                          <Typography 
+                            variant="body2"
+                            sx={{ 
+                              color: isOverdue ? '#FF3B30' : '#1d1d1f',
+                              fontWeight: isOverdue ? 600 : 400,
+                              fontSize: '0.7rem',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {new Date(contract.invoiceDocument.invoiceDueDate).toLocaleDateString('fr-FR', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: '2-digit'
+                            })}
+                          </Typography>
+                        ) : (
+                          <Typography variant="body2" sx={{ color: '#86868b', fontSize: '0.7rem' }}>-</Typography>
+                        )}
+                      </TableCell>
+
+                      {/* Délai restant */}
+                      <TableCell sx={{ display: { xs: 'none', lg: 'table-cell' } }}>
+                        {daysRemaining !== null ? (
+                          <Typography 
+                            variant="body2"
+                            sx={{ 
+                              color: daysRemaining < 0 ? '#FF3B30' : 
+                                     daysRemaining <= 7 ? '#FF9500' : 
+                                     '#1d1d1f',
+                              fontWeight: 600,
+                              fontSize: '0.7rem',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {daysRemaining < 0 
+                              ? `${Math.abs(daysRemaining)}j` 
+                              : daysRemaining === 0 
+                              ? "Auj." 
+                              : `${daysRemaining}j`}
+                          </Typography>
+                        ) : (
+                          <Typography variant="body2" sx={{ color: '#86868b', fontSize: '0.7rem' }}>-</Typography>
+                        )}
+                      </TableCell>
+
+                      {/* Statut de paiement */}
+                      <TableCell>
+                        <Chip
+                          label={isPaid ? 'Payée' : isOverdue ? 'Retard' : 'À payer'}
+                          size="small"
+                          sx={{
+                            height: 16,
+                            fontSize: '0.563rem',
+                            backgroundColor: isPaid ? 'rgba(52, 199, 89, 0.1)' : 
+                                           isOverdue ? 'rgba(255, 59, 48, 0.1)' :
+                                           'rgba(255, 149, 0, 0.1)',
+                            color: isPaid ? '#34C759' : isOverdue ? '#FF3B30' : '#FF9500',
+                            border: `1px solid ${isPaid ? '#34C759' : isOverdue ? '#FF3B30' : '#FF9500'}`,
+                            fontWeight: 600,
+                            borderRadius: '3px',
+                            '& .MuiChip-label': {
+                              px: 0.5,
+                              py: 0
+                            }
+                          }}
+                        />
+                      </TableCell>
+
+                      {/* Actions */}
+                      <TableCell>
+                        <Button
+                          size="small"
+                          variant={isPaid ? 'outlined' : 'contained'}
+                          onClick={handleTogglePayment}
+                          sx={{
+                            textTransform: 'none',
+                            borderRadius: '3px',
+                            fontSize: '0.563rem',
+                            fontWeight: 600,
+                            px: 0.75,
+                            py: 0.125,
+                            minWidth: 'auto',
+                            ...(isPaid ? {
+                              borderColor: '#d2d2d7',
+                              color: '#1d1d1f',
+                              '&:hover': {
+                                borderColor: '#FF3B30',
+                                color: '#FF3B30',
+                                backgroundColor: 'rgba(255, 59, 48, 0.05)'
+                              }
+                            } : {
+                              backgroundColor: '#34C759',
+                              color: 'white',
+                              boxShadow: 'none',
+                              '&:hover': {
+                                backgroundColor: '#2fb350',
+                                boxShadow: 'none'
+                              }
+                            })
+                          }}
+                        >
+                          {isPaid ? 'Annuler' : 'Payée'}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+            </TableBody>
+          </Table>
+        </TableContainer>
+
+        {contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName).length === 0 && (
+          <Paper 
+            sx={{ 
+              p: 4, 
+              textAlign: 'center',
+              bgcolor: 'white',
+              borderRadius: '1.2rem',
+              border: '1px solid #e5e5e7',
+              m: 2
+            }}
+          >
+            <CheckCircleIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
+            <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
+              Aucune facture à suivre
+            </Typography>
+            <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
+              Les factures uploadées apparaîtront ici avec leur suivi.
+            </Typography>
+          </Paper>
         )}
       </TabPanel>
     </Paper>

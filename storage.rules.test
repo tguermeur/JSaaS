@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // RÈGLES DE TEST ULTRA-PERMISSIVES
+    // ATTENTION : À REMPLACER PAR DES RÈGLES SÉCURISÉES APRÈS DEBUG
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

@@ -32,13 +32,13 @@ import { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.jsconnect.jsaas',
-  appName: 'JSaaS',
+  appName: 'JS Connect',
   webDir: 'dist',
   server: {
     androidScheme: 'https'
   },
   ios: {
-    scheme: 'JSaaS'
+    scheme: 'JSConnect'
   }
 };
 
@@ -71,7 +71,7 @@ npm run ios:setup
 ### Étape 2 : Configuration iOS
 ```bash
 # Installer les dépendances iOS
-cd JSaaSiOS
+cd JSConnectiOS
 npx pod-install
 
 # Lancer sur simulateur
@@ -85,7 +85,7 @@ npm run ios:run
 2. Certificates, Identifiers & Profiles → Identifiers
 3. "+" → App IDs → App
 4. Remplir :
-   - Description : JSaaS - Plateforme SaaS
+   - Description : JS Connect - Plateforme SaaS
    - Bundle ID : `com.jsconnect.jsaas`
    - Capabilities : Push Notifications, Associated Domains
 
@@ -151,9 +151,9 @@ pod install Firebase/Auth Firebase/Firestore Firebase/Storage
 Ajouter dans `Info.plist` :
 ```xml
 <key>NSCameraUsageDescription</key>
-<string>JSaaS a besoin d'accéder à la caméra pour scanner les QR codes</string>
+<string>JS Connect a besoin d'accéder à la caméra pour scanner les QR codes</string>
 <key>NSPhotoLibraryUsageDescription</key>
-<string>JSaaS a besoin d'accéder à vos photos pour importer des documents</string>
+<string>JS Connect a besoin d'accéder à vos photos pour importer des documents</string>
 ```
 
 ## 🚨 Problèmes courants

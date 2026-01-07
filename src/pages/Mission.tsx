@@ -831,7 +831,7 @@ const Mission: React.FC = () => {
 
       setCreateDialogOpen(false);
       
-      navigate(`/app/mission/${formData.number}`);
+      navigate(`/app/mission/${docRef.id}`);
 
       setSnackbar({
         open: true,
@@ -849,7 +849,7 @@ const Mission: React.FC = () => {
   };
 
   const handleCardClick = (mission: MissionData) => {
-    navigate(`/app/mission/${mission.numeroMission}`);
+    navigate(`/app/mission/${mission.id}`);
   };
 
   const handleOpenCreateDialog = async () => {

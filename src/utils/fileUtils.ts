@@ -19,3 +19,4 @@ export const getFileTypeFromMime = (mimeType: string): string => {
   return 'file';
 };
 
+

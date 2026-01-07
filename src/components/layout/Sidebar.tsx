@@ -411,7 +411,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       section: 'personal',
     },
     {
-      text: 'Mon Profil & Documents',
+      text: 'Mon Profil',
       icon: <PersonIcon />,
       iconSidebarIcon: <PersonIcon />,
       path: '/app/profile',

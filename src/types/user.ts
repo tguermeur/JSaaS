@@ -22,6 +22,7 @@ export interface UserData {
   address?: string;
   socialSecurityNumber?: string;
   phone?: string;
+  linkedinUrl?: string;
   profileCompletion?: number;
   updatedAt?: Date;
   subscriptionStatus?: 'active' | 'canceled' | 'past_due' | 'unpaid' | 'incomplete' | 'incomplete_expired' | 'trialing' | null;
@@ -35,6 +36,12 @@ export interface UserData {
   // Opt-in pour recevoir les documents par voie électronique
   acceptsElectronicDocuments?: boolean;
   acceptsElectronicDocumentsDate?: Date; // Date à laquelle l'étudiant a accepté
+  // Authentification à deux facteurs (2FA)
+  twoFactorEnabled?: boolean;
+  twoFactorSecret?: string; // Secret TOTP (stocké de manière sécurisée)
+  twoFactorEnabledAt?: Date; // Date d'activation de la 2FA
+  // Appareils sécurisés (trusted devices)
+  secureDevices?: SecureDevice[];
   // Champs spécifiques aux entreprises
   companyName?: string;
   position?: string; // Poste occupé
@@ -50,6 +57,9 @@ export interface UserData {
   trialStartDate?: Date;
   trialEndDate?: Date;
   hasActiveTrial?: boolean;
+  // Changelog
+  lastSeenChangelogVersion?: string;
+  lastSeenChangelogDate?: Date;
 }
 
 export interface ExtendedUser extends User {
@@ -73,4 +83,13 @@ export interface ExtendedUser extends User {
   subscriptionPaidAt?: Date;
   subscriptionExpiresAt?: Date;
   lastSubscriptionUpdate?: Date;
-} 
+}
+
+export interface SecureDevice {
+  deviceId: string;
+  deviceName: string;
+  userAgent: string;
+  platform: string;
+  lastUsed: Date | any; // Peut être un Timestamp Firestore
+  addedAt: Date | any; // Peut être un Timestamp Firestore
+}

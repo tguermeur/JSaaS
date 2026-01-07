@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { 
   Box, 
   Typography, 
@@ -154,8 +154,12 @@ export default function Dashboard(): JSX.Element {
   // Utiliser l'animation du compteur
   const animatedRevenue = useCountAnimation(statistics.totalRevenue);
 
+  // Stabiliser les valeurs importantes de userData pour éviter les re-renders
+  // Utiliser useMemo pour ne recréer ces valeurs que si elles changent vraiment
+  const userStructureId = useMemo(() => userData?.structureId, [userData?.structureId]);
+  const userStatus = useMemo(() => userData?.status, [userData?.status]);
+  
   // Déterminer le rôle de l'utilisateur
-  const userStatus = userData?.status;
   const isEntreprise = userStatus === 'entreprise';
   const isEtudiant = userStatus === 'etudiant';
   const isJuniorEntreprise = ['admin_structure', 'admin', 'membre', 'superadmin'].includes(userStatus || '');
@@ -461,7 +465,7 @@ export default function Dashboard(): JSX.Element {
 
     // Appeler fetchMissions au chargement
     fetchMissions();
-  }, [currentUser]);
+  }, [currentUser?.uid]); // Utiliser uniquement uid pour éviter les re-renders inutiles
 
   useEffect(() => {
     const fetchData = async () => {
@@ -697,21 +701,21 @@ export default function Dashboard(): JSX.Element {
     };
 
     // Ne pas appeler fetchData pour les entreprises
-    if (!userData || isEntreprise) {
+    if (!userStructureId || isEntreprise) {
       return;
     }
     
     fetchData();
-  }, [currentUser, userData, isEntreprise]);
+  }, [currentUser?.uid, userStructureId, isEntreprise]); // Utiliser les valeurs stabilisées
 
   // Charger les documents récents
   useEffect(() => {
     const fetchRecentDocuments = async () => {
-      if (!currentUser || !userData?.structureId) return;
+      if (!currentUser || !userStructureId) return;
       if (isEntreprise) return;
 
       try {
-        const structureId = userData.structureId;
+        const structureId = userStructureId;
         const docsRef = collection(db, 'structures', structureId, 'documents');
         const docsQuery = query(
           docsRef,
@@ -735,9 +739,9 @@ export default function Dashboard(): JSX.Element {
 
           // Vérifier l'accès aux documents restreints
           const canAccess = !data.isRestricted || 
-            userData.status === 'superadmin' || 
-            userData.status === 'admin' ||
-            (data.allowedRoles && data.allowedRoles.includes(userData.status));
+            userStatus === 'superadmin' || 
+            userStatus === 'admin' ||
+            (data.allowedRoles && data.allowedRoles.includes(userStatus));
 
           if (canAccess) {
             docsList.push({
@@ -756,7 +760,7 @@ export default function Dashboard(): JSX.Element {
     };
 
     fetchRecentDocuments();
-  }, [currentUser, userData, isEntreprise]);
+  }, [currentUser?.uid, userStructureId, userStatus, isEntreprise]); // Utiliser les valeurs stabilisées
 
   useEffect(() => {
     const fetchConnectedUsers = async () => {
@@ -796,19 +800,24 @@ export default function Dashboard(): JSX.Element {
 
         const users = usersSnapshot.docs.map(doc => {
           const data = doc.data();
-          const lastConnection = data.lastLogin ? new Date(data.lastLogin.toDate()) : new Date(0);
+          // Utiliser lastActivity si disponible, sinon fallback sur lastLogin
+          const lastActivityTimestamp = data.lastActivity || data.lastLogin;
+          const lastActivity = lastActivityTimestamp 
+            ? (lastActivityTimestamp.toDate ? new Date(lastActivityTimestamp.toDate()) : new Date(lastActivityTimestamp))
+            : new Date(0);
+          
           return {
             id: doc.id,
             firstName: data.firstName || '',
             lastName: data.lastName || '',
-            lastConnection,
-            isOnline: lastConnection > threeMinutesAgo,
+            lastConnection: lastActivity, // Utilise lastActivity maintenant
+            isOnline: lastActivity > threeMinutesAgo,
             role: data.role || 'membre',
             photoURL: data.photoURL || ''
           };
         });
 
-        // Trier par date de dernière connexion (les plus récentes d'abord)
+        // Trier par date de dernière activité (les plus récentes d'abord)
         users.sort((a, b) => b.lastConnection.getTime() - a.lastConnection.getTime());
 
         // Prendre les 3 premiers
@@ -819,7 +828,7 @@ export default function Dashboard(): JSX.Element {
     };
 
     // Ne pas appeler fetchConnectedUsers pour les entreprises
-    if (!userData || isEntreprise) {
+    if (!userStructureId || isEntreprise) {
       return;
     }
     
@@ -828,7 +837,7 @@ export default function Dashboard(): JSX.Element {
     const interval = setInterval(fetchConnectedUsers, 30000);
 
     return () => clearInterval(interval);
-  }, [currentUser, userData, isEntreprise]);
+  }, [currentUser?.uid, userStructureId, isEntreprise]); // Utiliser les valeurs stabilisées
 
   // Fonction pour obtenir les initiales si pas de photo
   const getInitials = () => {
@@ -866,7 +875,7 @@ export default function Dashboard(): JSX.Element {
     // Vérifier si c'est une mission ou un événement personnalisé
     const mission = missions.find(m => m.id === eventId);
     if (mission) {
-      navigate(`/app/mission/${mission.numeroMission}`);
+      navigate(`/app/mission/${mission.id}`);
       return;
     }
     
@@ -1284,8 +1293,8 @@ export default function Dashboard(): JSX.Element {
                           }
                         }}
                         onClick={() => {
-                          if (mission.numeroMission && mission.numeroMission !== '') {
-                            navigate(`/app/mission/${mission.numeroMission}`);
+                          if (mission.id) {
+                            navigate(`/app/mission/${mission.id}`);
                           }
                         }}
                       >
@@ -1835,7 +1844,7 @@ export default function Dashboard(): JSX.Element {
                     color: '#1d1d1f'
                   }}
                 >
-                  Dernières connexions
+                  Dernières activités
                 </Typography>
                 
                 {connectedUsers.map((user) => (
@@ -1902,7 +1911,7 @@ export default function Dashboard(): JSX.Element {
                           fontSize: '0.75rem'
                         }}
                       >
-                        {user.isOnline ? 'En ligne' : `Dernière connexion: ${user.lastConnection.toLocaleString('fr-FR', {
+                        {user.isOnline ? 'En ligne' : `Dernière activité: ${user.lastConnection.toLocaleString('fr-FR', {
                           day: '2-digit',
                           month: '2-digit',
                           year: 'numeric',

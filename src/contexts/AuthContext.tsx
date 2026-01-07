@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { auth, db } from '../firebase/config';
 import { onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth';
 import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
@@ -34,6 +34,7 @@ export function AuthProvider({ children }) {
   const [userData, setUserData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const previousUserDataRef = useRef<any>(null);
 
   const logoutUser = async () => {
     try {
@@ -57,9 +58,16 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let unsubscribeSnapshot: (() => void) | null = null;
     let lastLoginUpdated = false; // Ajout du flag pour éviter la boucle
+    let currentAuthUserUid: string | null = null;
 
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      console.log("Auth state changed:", user);
+      console.log("Auth state changed:", user?.uid);
+      
+      // Réinitialiser le flag si l'utilisateur change
+      if (user?.uid !== currentAuthUserUid) {
+        lastLoginUpdated = false;
+        currentAuthUserUid = user?.uid || null;
+      }
       
       // Nettoyer le listener précédent s'il existe
       if (unsubscribeSnapshot) {
@@ -72,13 +80,11 @@ export function AuthProvider({ children }) {
           
           // Utiliser onSnapshot pour écouter les changements en temps réel
           unsubscribeSnapshot = onSnapshot(userDocRef, async (userDocSnap) => {
-            console.log("User data from Firestore:", userDocSnap.data());
-            
             if (userDocSnap.exists()) {
-              const userData = userDocSnap.data();
+              const newUserData = userDocSnap.data();
               
               // Mettre à jour la dernière activité seulement si c'est un nouveau login
-              if (!userData.lastLogin && !lastLoginUpdated) {
+              if (!newUserData.lastLogin && !lastLoginUpdated) {
                 lastLoginUpdated = true;
                 await updateDoc(userDocRef, {
                   lastLogin: serverTimestamp(),
@@ -86,34 +92,102 @@ export function AuthProvider({ children }) {
                 });
               }
 
-              // Créer un objet utilisateur étendu avec toutes les données
-              const extendedUser = {
-                ...user,
-                displayName: userData.displayName || user.displayName,
-                role: userData.role,
-                phone: userData.phone,
-                address: userData.address,
-                status: userData.status,
-                cvUrl: userData.cvUrl,
-                photoURL: userData.photoURL,
-                isOnline: userData.isOnline,
-                lastLogin: userData.lastLogin,
-                createdAt: userData.createdAt,
-                updatedAt: userData.updatedAt,
-                structureId: userData.structureId
-              };
+          // Comparer uniquement les champs importants pour l'UI (exclure TOUS les timestamps)
+          const previousData = previousUserDataRef.current;
+          
+          // Extraire uniquement les champs qui affectent l'UI
+          const extractImportantFields = (data: any) => ({
+            displayName: data.displayName,
+            role: data.role,
+            phone: data.phone,
+            address: data.address,
+            status: data.status,
+            cvUrl: data.cvUrl,
+            photoURL: data.photoURL,
+            isOnline: data.isOnline,
+            structureId: data.structureId,
+            email: data.email
+          });
+          
+          const newImportantFields = extractImportantFields(newUserData);
+          
+          // Si c'est la première fois, toujours mettre à jour
+          if (!previousData) {
+            const extendedUser = {
+              ...user,
+              displayName: newUserData.displayName || user.displayName,
+              role: newUserData.role,
+              phone: newUserData.phone,
+              address: newUserData.address,
+              status: newUserData.status,
+              cvUrl: newUserData.cvUrl,
+              photoURL: newUserData.photoURL,
+              isOnline: newUserData.isOnline,
+              lastLogin: newUserData.lastLogin,
+              createdAt: newUserData.createdAt,
+              updatedAt: newUserData.updatedAt,
+              structureId: newUserData.structureId
+            };
 
-              // Mettre à jour le profil Firebase Auth si nécessaire
-              if (userData.displayName && userData.displayName !== user.displayName) {
-                await updateProfile(user, { displayName: userData.displayName });
+            setCurrentUser(extendedUser);
+            setUserData(newUserData);
+            // Stocker uniquement les champs importants pour la comparaison
+            previousUserDataRef.current = newImportantFields;
+            setLoading(false);
+            return;
+          }
+
+          // Comparer uniquement les champs importants (tous les timestamps sont exclus)
+          const hasSignificantChange = 
+            JSON.stringify(previousData) !== JSON.stringify(newImportantFields);
+
+          // Ne mettre à jour l'état que si les données importantes ont changé
+          if (hasSignificantChange) {
+            console.log("Changement significatif détecté dans les données utilisateur", {
+              previous: previousData,
+              new: newImportantFields
+            });
+            // Créer un objet utilisateur étendu avec toutes les données
+            const extendedUser = {
+              ...user,
+              displayName: newUserData.displayName || user.displayName,
+              role: newUserData.role,
+              phone: newUserData.phone,
+              address: newUserData.address,
+              status: newUserData.status,
+              cvUrl: newUserData.cvUrl,
+              photoURL: newUserData.photoURL,
+              isOnline: newUserData.isOnline,
+              lastLogin: newUserData.lastLogin,
+              createdAt: newUserData.createdAt,
+              updatedAt: newUserData.updatedAt,
+              structureId: newUserData.structureId
+            };
+
+            // Mettre à jour le profil Firebase Auth si nécessaire
+            // On ajoute une vérification stricte pour éviter les boucles infinies
+            if (newUserData.displayName && 
+                newUserData.displayName !== user.displayName) {
+              console.log(`Mise à jour du displayName: "${user.displayName}" -> "${newUserData.displayName}"`);
+              // Ne pas attendre cette promesse pour éviter de bloquer ou de créer des boucles synchrones
+              updateProfile(user, { displayName: newUserData.displayName })
+                .catch(err => console.error("Erreur updateProfile:", err));
+            }
+
+            setCurrentUser(extendedUser);
+            setUserData(newUserData);
+            // Stocker uniquement les champs importants pour la prochaine comparaison
+            previousUserDataRef.current = newImportantFields;
+          } else {
+                // Pas de changement significatif - juste lastActivity qui a changé
+                // Ne pas mettre à jour l'état pour éviter les re-renders inutiles
+                console.log("Changement ignoré (lastActivity uniquement)");
               }
-
-              setCurrentUser(extendedUser);
-              setUserData(userData);
             } else {
               // Document inexistant : on ne fait rien ici pour éviter la boucle infinie
               console.warn('Document utilisateur inexistant dans Firestore. Il doit être créé lors de l\'inscription ou du login.');
-              setCurrentUser(user);
+              // On s'assure que currentUser est mis à jour même si pas de doc Firestore
+              setCurrentUser(user as ExtendedUser);
             }
             setLoading(false);
           }, (error: any) => {
@@ -149,7 +223,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   // Fonction pour mettre à jour la dernière activité
-  const updateLastActivity = async () => {
+  const updateLastActivity = useCallback(async () => {
     if (!currentUser) return;
     
     try {
@@ -160,13 +234,14 @@ export function AuthProvider({ children }) {
         await updateDoc(userDocRef, {
           lastActivity: serverTimestamp()
         });
+        // Le onSnapshot détectera ce changement mais l'ignorera car seul lastActivity a changé
       } else {
         console.warn("Document utilisateur non trouvé lors de la mise à jour de l'activité");
       }
     } catch (error) {
       console.error("Erreur lors de la mise à jour de l'activité:", error);
     }
-  };
+  }, [currentUser]);
 
   // Fonction de connexion améliorée
   const login = async (email: string, password: string) => {

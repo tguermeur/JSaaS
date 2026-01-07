@@ -71,7 +71,7 @@ interface UserDetails {
   address: string;
   socialSecurityNumber: string;
   phone: string;
-  status: 'Étudiant' | 'Membre' | 'Admin' | 'Superadmin';
+  status?: 'Étudiant' | 'Membre' | 'Admin' | 'Superadmin';
   photoURL?: string;
   dossierValidated?: boolean;
   dossierValidationDate?: string;
@@ -171,6 +171,43 @@ const HumanResources = () => {
         }
         break;
     }
+  };
+
+  // Fonction pour formater les statuts en français avec majuscules
+  const getStatusLabel = (status: string | undefined | null): string => {
+    if (!status || status.trim() === '') return 'NON DÉFINI';
+    
+    const statusMap: { [key: string]: string } = {
+      'Étudiant': 'ÉTUDIANT',
+      'Membre': 'MEMBRE',
+      'Admin': 'ADMINISTRATEUR',
+      'Superadmin': 'SUPER ADMINISTRATEUR',
+      'Student': 'ÉTUDIANT',
+      'Member': 'MEMBRE',
+      'member': 'MEMBRE',
+      'Administrator': 'ADMINISTRATEUR',
+      'SuperAdmin': 'SUPER ADMINISTRATEUR'
+    };
+    const normalizedStatus = status.trim();
+    const label = statusMap[normalizedStatus] || statusMap[normalizedStatus.toLowerCase()] || normalizedStatus.toUpperCase();
+    return label;
+  };
+
+  // Fonction pour obtenir la couleur du statut
+  const getStatusColor = (status: string | undefined | null): 'primary' | 'secondary' | 'success' | 'warning' | 'error' | 'info' | 'default' => {
+    if (!status) return 'default';
+    
+    const normalizedStatus = status.toLowerCase();
+    if (normalizedStatus.includes('étudiant') || normalizedStatus.includes('student')) {
+      return 'primary';
+    } else if (normalizedStatus.includes('membre') || normalizedStatus.includes('member')) {
+      return 'success';
+    } else if (normalizedStatus.includes('admin') || normalizedStatus.includes('administrator')) {
+      return 'info';
+    } else if (normalizedStatus.includes('super')) {
+      return 'error';
+    }
+    return 'default';
   };
 
   // Définir la fonction isProfileComplete au début du composant
@@ -312,7 +349,7 @@ const HumanResources = () => {
       (user.email?.toLowerCase().includes(searchQuery.toLowerCase()) || false);
     
     // Filtre par statut (sélection multiple)
-    const matchesStatus = statusFilters.length === 0 || statusFilters.includes(user.status);
+    const matchesStatus = statusFilters.length === 0 || (user.status && statusFilters.includes(user.status));
     
     // Filtre par complétion (sélection multiple)
     const isComplete = isProfileComplete(user);
@@ -1074,7 +1111,8 @@ const HumanResources = () => {
       maxWidth: '100%',
       margin: '0',
       height: '100%',
-      p: 0
+      p: 0,
+      pb: 2
     }}>
       <Box sx={{ 
         display: 'flex', 
@@ -1088,7 +1126,7 @@ const HumanResources = () => {
           overflow: 'hidden',
           height: '100%',
           flexShrink: 0,
-          mb: 8
+          mb: 2
         }}>
           <Box sx={{ p: 2, borderBottom: '1px solid #f0f0f0' }}>
             <TextField
@@ -1140,13 +1178,13 @@ const HumanResources = () => {
                     if (selected.length === 0) return 'Statut';
                     if (selected.length === 1) {
                       const value = selected[0];
-                      switch(value) {
-                        case 'Étudiant': return 'Étudiants';
-                        case 'Membre': return 'Membres';
-                        case 'Admin': return 'Admins';
-                        case 'Superadmin': return 'Superadmins';
-                        default: return value;
-                      }
+                      const label = getStatusLabel(value);
+                      // Mettre au pluriel pour l'affichage
+                      if (label === 'Étudiant') return 'Étudiants';
+                      if (label === 'Membre') return 'Membres';
+                      if (label === 'Administrateur') return 'Administrateurs';
+                      if (label === 'Super administrateur') return 'Super administrateurs';
+                      return label;
                     }
                     return `${selected.length} statuts`;
                   }}
@@ -1207,7 +1245,7 @@ const HumanResources = () => {
                         size="small"
                       />
                     </ListItemIcon>
-                    <ListItemText primary="Admins" />
+                    <ListItemText primary="Administrateurs" />
                   </MenuItem>
                   <MenuItem value="Superadmin">
                     <ListItemIcon>
@@ -1219,7 +1257,7 @@ const HumanResources = () => {
                         size="small"
                       />
                     </ListItemIcon>
-                    <ListItemText primary="Superadmins" />
+                    <ListItemText primary="Super administrateurs" />
                   </MenuItem>
                 </Select>
               </FormControl>
@@ -1382,7 +1420,7 @@ const HumanResources = () => {
             p: 0,
             height: 'calc(100% - 72px)',
             overflowY: 'auto',
-            pb: 8
+            pb: 2
           }}>
             {filteredUsers.map((user) => (
               <ListItem
@@ -1413,9 +1451,14 @@ const HumanResources = () => {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <Typography variant="body1" component="span">{user.firstName} {user.lastName}</Typography>
                       <Chip 
-                        label={user.status} 
+                        label={getStatusLabel(user.status)} 
                         size="small"
-                        color={user.status === 'Étudiant' ? 'primary' : 'default'}
+                        color={getStatusColor(user.status)}
+                        sx={{ 
+                          fontSize: '0.7rem',
+                          height: '20px',
+                          fontWeight: 500
+                        }}
                       />
                     </Box>
                   }
@@ -1444,7 +1487,7 @@ const HumanResources = () => {
           overflow: 'hidden',
           height: '100%',
           minWidth: 0,
-          mb: 8,
+          mb: 2,
           display: 'flex',
           flexDirection: 'column'
         }}>
@@ -1467,13 +1510,12 @@ const HumanResources = () => {
                       <Typography variant="h6">{`${selectedUser.firstName} ${selectedUser.lastName}`}</Typography>
                       <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
                         <Chip 
-                          label={selectedUser.status} 
+                          label={getStatusLabel(selectedUser.status)} 
                           size="small"
+                          color={getStatusColor(selectedUser.status)}
                           sx={{ 
-                            backgroundColor: selectedUser.status === 'Superadmin' ? '#e65100' : 
-                                          selectedUser.status === 'Admin' ? '#1976d2' :
-                                          selectedUser.status === 'Membre' ? '#2e7d32' : '#0288d1',
-                            color: 'white'
+                            fontWeight: 500,
+                            fontSize: '0.75rem'
                           }}
                         />
                         <Chip 
@@ -1551,7 +1593,7 @@ const HumanResources = () => {
                 </Tabs>
               </Box>
 
-              <Box sx={{ p: 3, flex: 1, overflowY: 'auto', minHeight: 0 }}>
+              <Box sx={{ p: 3, pb: 2, flex: 1, overflowY: 'auto', minHeight: 0 }}>
                 {currentTab === 0 && (
                   <Box>
                     <Typography variant="subtitle2" sx={{ mb: 2 }}>Informations personnelles</Typography>

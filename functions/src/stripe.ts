@@ -21,6 +21,24 @@ const functionConfig = {
   allowUnauthenticated: false, // Changer à false car nous vérifions l'auth
 };
 
+// Helper pour les logs de debug (sécurisé pour Cloud Run)
+function debugLog(location: string, message: string, data: any, hypothesisId: string) {
+  try {
+    if (typeof fetch !== 'undefined' && typeof window === 'undefined') {
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ location, message, data, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId })
+      }).catch(() => {});
+    }
+  } catch (e) {
+    // Ignorer les erreurs de fetch dans Cloud Run
+  }
+}
+
+// #region agent log
+debugLog('stripe.ts:24', 'Before Stripe key check', { hasEnvKey: !!process.env.STRIPE_SECRET_KEY }, 'A');
+// #endregion
 // Initialiser Stripe avec la clé secrète depuis les variables d'environnement ou la configuration Firebase
 console.log('Variables d\'environnement chargées:', {
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY ? 'DÉFINIE' : 'NON DÉFINIE',
@@ -28,22 +46,66 @@ console.log('Variables d\'environnement chargées:', {
 });
 console.log('Chemin du fichier .env:', path.resolve(__dirname, '../.env'));
 
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY || functions.config().stripe?.secret_key;
-if (!stripeSecretKey) {
-  throw new Error('STRIPE_SECRET_KEY n\'est pas configurée');
+// #region agent log
+debugLog('stripe.ts:34', 'Before getting Stripe key', { hasEnvKey: !!process.env.STRIPE_SECRET_KEY }, 'A');
+// #endregion
+// Récupérer la clé Stripe de manière robuste (ne pas lancer d'erreur au chargement du module)
+// Dans Cloud Run v2, functions.config() n'est pas disponible au chargement du module
+// On utilise uniquement process.env au chargement
+let stripeSecretKey: string | undefined = process.env.STRIPE_SECRET_KEY;
+// #region agent log
+debugLog('stripe.ts:42', 'Stripe key check result', { hasStripeKey: !!stripeSecretKey, fromEnv: !!process.env.STRIPE_SECRET_KEY }, 'A');
+// #endregion
+
+// Fonction helper pour obtenir l'instance Stripe (lazy initialization)
+function getStripeInstance(): Stripe {
+  if (!stripeSecretKey) {
+    // Essayer de récupérer la clé une dernière fois au moment de l'utilisation
+    // Essayer d'abord process.env, puis functions.config() si disponible
+    stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+    
+    if (!stripeSecretKey) {
+      try {
+        // Dans Firebase Functions v2, functions.config() peut ne pas être disponible
+        // On essaie seulement si process.env n'a pas fonctionné
+        const config = functions.config();
+        stripeSecretKey = config?.stripe?.secret_key;
+      } catch (error) {
+        // functions.config() n'est pas disponible, ignorer
+      }
+    }
+    
+    if (!stripeSecretKey) {
+      throw new Error('STRIPE_SECRET_KEY n\'est pas configurée. Veuillez la définir dans les variables d\'environnement ou la configuration Firebase.');
+    }
+  }
+  
+  return new Stripe(stripeSecretKey, {
+    apiVersion: '2023-10-16',
+  });
 }
 
-// Vérifier si nous sommes en mode test
-const isTestMode = stripeSecretKey.startsWith('sk_test_');
-console.log('Mode Stripe:', isTestMode ? 'TEST' : 'PRODUCTION');
-console.log('Clé Stripe (début):', stripeSecretKey.substring(0, 10) + '...');
-
-const stripe = new Stripe(stripeSecretKey, {
-  apiVersion: '2023-10-16',
-});
+// Logs initiaux si la clé est disponible
+if (stripeSecretKey) {
+  const isTestMode = stripeSecretKey.startsWith('sk_test_');
+  console.log('Mode Stripe:', isTestMode ? 'TEST' : 'PRODUCTION');
+  console.log('Clé Stripe (début):', stripeSecretKey.substring(0, 10) + '...');
+} else {
+  console.warn('STRIPE_SECRET_KEY non configurée au chargement du module. Elle sera vérifiée lors de l\'utilisation.');
+}
 
 // Configuration des URLs
-const FRONTEND_URL = process.env.FRONTEND_URL || functions.config().app?.frontend_url || 'http://localhost:5173';
+// Dans Cloud Run v2, utiliser uniquement process.env au chargement
+let FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+// Essayer functions.config() seulement si process.env n'a pas fonctionné (dans la fonction si nécessaire)
+try {
+  if (!process.env.FRONTEND_URL) {
+    const config = functions.config();
+    FRONTEND_URL = config?.app?.frontend_url || FRONTEND_URL;
+  }
+} catch (error) {
+  // functions.config() n'est pas disponible, utiliser la valeur par défaut
+}
 const SUCCESS_URL = `${FRONTEND_URL}/settings/billing?success=true`;
 const CANCEL_URL = `${FRONTEND_URL}/settings/billing?canceled=true`;
 
@@ -62,9 +124,10 @@ interface CancelSubscriptionData {
 export const getStripeProducts = onCall(functionConfig, async (request) => {
   try {
     console.log('getStripeProducts - Début de la fonction');
+    const stripeInstance = getStripeInstance();
     
     // Récupérer tous les produits actifs avec leurs prix récurrents
-    const products = await stripe.products.list({
+    const products = await stripeInstance.products.list({
       active: true,
       expand: ['data.default_price'],
     });
@@ -72,7 +135,7 @@ export const getStripeProducts = onCall(functionConfig, async (request) => {
     console.log('getStripeProducts - Premier produit brut:', JSON.stringify(products.data[0], null, 2));
 
     // Récupérer tous les prix récurrents
-    const prices = await stripe.prices.list({
+    const prices = await getStripeInstance().prices.list({
       active: true,
       type: 'recurring',
       expand: ['data.product'],
@@ -155,7 +218,7 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
     let customerId = structureData.exists ? structureData.data()?.customerId : null;
 
     if (!customerId) {
-      const customer = await stripe.customers.create({
+      const customer = await getStripeInstance().customers.create({
         metadata: {
           structureId: structureId,
           firebaseUID: userId
@@ -172,7 +235,7 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
     }
 
     // Créer une session de paiement avec essai gratuit de 30 jours
-    const session = await stripe.checkout.sessions.create({
+    const session = await getStripeInstance().checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
       line_items: [
@@ -216,7 +279,7 @@ export const cancelSubscription = onCall(functionConfig, async (request) => {
     }
 
     // Annuler l'abonnement
-    await stripe.subscriptions.cancel(subscriptionId);
+    await getStripeInstance().subscriptions.cancel(subscriptionId);
 
     // Mettre à jour le statut dans Firestore
     const db = admin.firestore();
@@ -261,7 +324,7 @@ export const createSubscription = functions.https.onCall(async (request) => {
 
     if (!customerId) {
       console.log('Stripe Functions - Création d\'un nouveau client Stripe');
-      const customer = await stripe.customers.create({
+      const customer = await getStripeInstance().customers.create({
         email: request.auth.token.email,
         metadata: {
           firebaseUID: userId
@@ -279,7 +342,7 @@ export const createSubscription = functions.https.onCall(async (request) => {
 
     // Créer la session de paiement avec essai gratuit de 30 jours
     console.log('Stripe Functions - Création de la session de paiement');
-    const session = await stripe.checkout.sessions.create({
+    const session = await getStripeInstance().checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
       line_items: [
@@ -329,7 +392,7 @@ export const handleStripeWebhook = functions.https.onRequest(async (req, res) =>
   let event;
 
   try {
-    event = stripe.webhooks.constructEvent(req.rawBody, sig, endpointSecret);
+    event = getStripeInstance().webhooks.constructEvent(req.rawBody, sig, endpointSecret);
     console.log('Stripe Functions - Événement Stripe reçu:', event.type);
   } catch (err: any) {
     console.error('Stripe Functions - Erreur de signature webhook:', err.message);
@@ -417,7 +480,7 @@ export const getStripeCustomers = onCall(functionConfig, async (request) => {
     console.log('Début de getStripeCustomers');
     
     // Récupérer les abonnements sans expansion
-    const subscriptions = await stripe.subscriptions.list({
+    const subscriptions = await getStripeInstance().subscriptions.list({
       limit: 100,
       status: 'all'
     });
@@ -427,10 +490,10 @@ export const getStripeCustomers = onCall(functionConfig, async (request) => {
     // Récupérer les clients associés
     const customers = await Promise.all(
       subscriptions.data.map(async (subscription) => {
-        const customerResponse = await stripe.customers.retrieve(subscription.customer as string);
+        const customerResponse = await getStripeInstance().customers.retrieve(subscription.customer as string);
         const customer = customerResponse as Stripe.Customer;
-        const price = await stripe.prices.retrieve(subscription.items.data[0].price.id);
-        const product = await stripe.products.retrieve(price.product as string);
+        const price = await getStripeInstance().prices.retrieve(subscription.items.data[0].price.id);
+        const product = await getStripeInstance().products.retrieve(price.product as string);
 
         return {
           id: customer.id,
@@ -441,7 +504,7 @@ export const getStripeCustomers = onCall(functionConfig, async (request) => {
           productName: product.name,
           currentPeriodEnd: subscription.current_period_end * 1000,
           cancelAtPeriodEnd: subscription.cancel_at_period_end,
-          environment: isTestMode ? 'test' : 'production'
+          environment: (stripeSecretKey?.startsWith('sk_test_') || false) ? 'test' : 'production'
         };
       })
     );
@@ -483,7 +546,7 @@ export const cancelStripeSubscription = onCall(functionConfig, async (request) =
     console.log('Annulation d\'abonnement pour la structure avec email:', email);
 
     // Rechercher le client par email
-    const customers = await stripe.customers.list({ email });
+    const customers = await getStripeInstance().customers.list({ email });
     const customer = customers.data[0];
 
     if (!customer) {
@@ -496,7 +559,7 @@ export const cancelStripeSubscription = onCall(functionConfig, async (request) =
     console.log('Client Stripe trouvé:', customer.id);
 
     // Récupérer les abonnements du client
-    const subscriptions = await stripe.subscriptions.list({
+    const subscriptions = await getStripeInstance().subscriptions.list({
       customer: customer.id,
       limit: 1,
       status: 'all', // Rechercher tous les statuts d'abonnement
@@ -517,7 +580,7 @@ export const cancelStripeSubscription = onCall(functionConfig, async (request) =
     console.log('Abonnement trouvé:', subscription.id);
 
     // Annuler l'abonnement à la fin de la période
-    const canceledSubscription = await stripe.subscriptions.update(subscription.id, {
+    const canceledSubscription = await getStripeInstance().subscriptions.update(subscription.id, {
       cancel_at_period_end: true,
     });
 
@@ -580,7 +643,7 @@ export const fetchPaymentHistory = onCall(functionConfig, async (request) => {
     console.log('fetchPaymentHistory - Recherche du client Stripe pour l\'email:', email);
 
     // Rechercher le client par email
-    const customers = await stripe.customers.list({ email });
+    const customers = await getStripeInstance().customers.list({ email });
     console.log('fetchPaymentHistory - Nombre de clients trouvés:', customers.data.length);
     
     const customer = customers.data[0];
@@ -594,7 +657,7 @@ export const fetchPaymentHistory = onCall(functionConfig, async (request) => {
 
     // Récupérer les charges (qui contiennent les reçus)
     console.log('fetchPaymentHistory - Récupération des charges...');
-    const charges = await stripe.charges.list({
+    const charges = await getStripeInstance().charges.list({
       customer: customer.id,
       limit: 50, // Augmenter à 50 pour plus d'historique
     });
@@ -849,7 +912,7 @@ export const handleCotisationWebhook = functions.https.onRequest(async (req, res
   let event: Stripe.Event;
 
   try {
-    event = stripe.webhooks.constructEvent(req.rawBody, sig, endpointSecret);
+    event = getStripeInstance().webhooks.constructEvent(req.rawBody, sig, endpointSecret);
   } catch (err) {
     console.error('Erreur de signature webhook:', err);
     res.status(400).send(`Webhook Error: ${err instanceof Error ? err.message : 'Erreur inconnue'}`);

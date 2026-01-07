@@ -1,5 +1,5 @@
 import { httpsCallable } from 'firebase/functions';
-import { functions } from '../firebase/config';
+import { getFirebaseFunctions } from '../firebase/config';
 
 export interface CotisationSessionData {
   userId: string;
@@ -42,7 +42,9 @@ export interface StructureCotisationsResult {
  */
 export const createCotisationSession = async (data: CotisationSessionData): Promise<CotisationSessionResult> => {
   try {
-    const createCotisationSessionFunction = httpsCallable(functions, 'createCotisationSession');
+    const functionsInstance = await getFirebaseFunctions();
+    if (!functionsInstance) throw new Error("Functions non disponible");
+    const createCotisationSessionFunction = httpsCallable(functionsInstance, 'createCotisationSession');
     const result = await createCotisationSessionFunction(data);
     
     return result.data as CotisationSessionResult;
@@ -57,7 +59,9 @@ export const createCotisationSession = async (data: CotisationSessionData): Prom
  */
 export const getStructureCotisations = async (structureId: string): Promise<Cotisation[]> => {
   try {
-    const getStructureCotisationsFunction = httpsCallable(functions, 'getStructureCotisations');
+    const functionsInstance = await getFirebaseFunctions();
+    if (!functionsInstance) throw new Error("Functions non disponible");
+    const getStructureCotisationsFunction = httpsCallable(functionsInstance, 'getStructureCotisations');
     const result = await getStructureCotisationsFunction({ structureId });
     
     const { cotisations } = result.data as StructureCotisationsResult;

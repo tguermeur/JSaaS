@@ -284,8 +284,6 @@ const Entreprises: React.FC = () => {
 
       try {
         setLoading(true);
-        console.log("Début de la récupération des entreprises");
-        console.log("UID de l'utilisateur:", currentUser.uid);
         
         // Récupérer d'abord les données de l'utilisateur
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
@@ -296,17 +294,18 @@ const Entreprises: React.FC = () => {
         }
 
         const userData = userDoc.data();
-        console.log("Données utilisateur récupérées:", userData);
-
         const userStructureId = userData?.structureId;
-        console.log("StructureId de l'utilisateur:", userStructureId);
+        
+        if (!userStructureId) {
+          console.error("StructureId non trouvé pour l'utilisateur");
+          setLoading(false);
+          return;
+        }
 
         // Récupérer les entreprises de la structure
         const companiesRef = collection(db, 'companies');
         const companiesQuery = query(companiesRef, where('structureId', '==', userStructureId));
         const companiesSnapshot = await getDocs(companiesQuery);
-        
-        console.log("Nombre total d'entreprises trouvées:", companiesSnapshot.docs.length);
         
         // Récupérer toutes les missions pour toutes les entreprises
         const missionsRef = collection(db, 'missions');
@@ -326,13 +325,6 @@ const Entreprises: React.FC = () => {
           const companyMissions = missionsByCompany[doc.id] || [];
           const totalRevenue = companyMissions.reduce((total, mission) => total + (Number(mission.totalTTC) || 0), 0);
           
-          console.log("Entreprise trouvée:", {
-            id: doc.id,
-            name: data.name,
-            structureId: data.structureId,
-            userStructureId,
-            match: data.structureId === userStructureId
-          });
           return {
             id: doc.id,
             name: data.name,
@@ -353,12 +345,6 @@ const Entreprises: React.FC = () => {
           } as Company;
         });
 
-        console.log("Résultats finaux:", {
-          totalEntreprises: companiesSnapshot.docs.length,
-          entreprisesFiltrées: companiesData.length,
-          userStructureId
-        });
-
         setCompanies(companiesData);
       } catch (error) {
         console.error('Erreur lors du chargement des entreprises:', error);
@@ -373,7 +359,7 @@ const Entreprises: React.FC = () => {
     };
 
     fetchCompanies();
-  }, [currentUser]);
+  }, [currentUser?.uid]);
 
   const handleOpenDialog = () => {
     setOpenDialog(true);

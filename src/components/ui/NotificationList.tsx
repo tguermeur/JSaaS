@@ -129,9 +129,13 @@ const NotificationList: React.FC<NotificationListProps> = ({
             break;
           case 'mission_update':
             if (notification.metadata.missionId) {
-              navigate(`/app/mission/${notification.metadata.missionNumber || notification.metadata.missionId}`);
+              navigate(`/app/mission/${notification.metadata.missionId}`);
+            } else if (notification.metadata.missionNumber) {
+              // Fallback: si on a seulement le numéro, on doit chercher l'ID
+              // Pour l'instant, on redirige vers la liste des missions
+              navigate('/app/mission');
             } else {
-              navigate('/app/missions');
+              navigate('/app/mission');
             }
             break;
           case 'user_update':

@@ -18,7 +18,7 @@ try {
   console.log('✅ Fichiers copiés avec succès');
 
   // 2. Créer un fichier README dans le dossier
-  const readmeContent = `# Extension JSaaS - Prêt à installer
+  const readmeContent = `# Extension JS Connect - Prêt à installer
 
 ## Installation dans Chrome
 
@@ -31,12 +31,12 @@ try {
 ## Utilisation
 
 - L'icône de l'extension apparaîtra dans votre barre d'outils
-- Cliquez dessus pour vous connecter à JSaaS
+- Cliquez dessus pour vous connecter à JS Connect
 - L'extension fonctionnera automatiquement sur LinkedIn
 
 ## Support
 
-Pour toute question, contactez le support JSaaS.
+Pour toute question, contactez le support JS Connect.
 `;
 
   fs.writeFileSync(path.join(destDir, 'README.txt'), readmeContent);

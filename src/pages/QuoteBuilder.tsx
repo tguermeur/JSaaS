@@ -1291,12 +1291,14 @@ const QuotePDF = ({ mission, structure, quoteData, logoPreview, convertedStructu
 };
 
 const QuoteBuilder: React.FC = () => {
-  const { missionNumber, etudeNumber } = useParams<{ missionNumber?: string; etudeNumber?: string }>();
+  const { missionId, missionNumber, etudeNumber } = useParams<{ missionId?: string; missionNumber?: string; etudeNumber?: string }>();
   const navigate = useNavigate();
   const { currentUser } = useAuth();
   
   // Déterminer le type de document et le numéro
-  const documentNumber = missionNumber || etudeNumber;
+  // missionId a la priorité sur missionNumber pour la rétrocompatibilité
+  const documentId = missionId || missionNumber;
+  const documentNumber = documentId || etudeNumber;
   const isEtude = !!etudeNumber;
   
   // Récupérer les informations de contact depuis l'URL
@@ -1867,33 +1869,61 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           const defaultTitle = `PC-${documentNumber}`;
           setDocumentTitle(defaultTitle);
         } else {
-        // Récupérer les données de la mission par numeroMission
-        const missionsQuery = query(
-          collection(db, 'missions'),
-            where('numeroMission', '==', documentNumber)
-        );
-        const missionsSnapshot = await getDocs(missionsQuery);
-        
-        if (missionsSnapshot.empty) {
-            console.error('Mission not found with number:', documentNumber);
-          setLoading(false);
-          return;
-        }
-        
-        const missionDoc = missionsSnapshot.docs[0];
-          documentData = missionDoc.data();
-          collectionName = 'missions';
+        // Si missionId est fourni, chercher directement par ID
+        if (missionId) {
+          try {
+            const missionDoc = await getDoc(doc(db, 'missions', missionId));
+            if (missionDoc.exists()) {
+              documentData = missionDoc.data();
+              collectionName = 'missions';
+              
+              missionData = {
+                id: missionDoc.id,
+                ...documentData
+              } as Mission;
+              setMission(missionData);
+              
+              const defaultTitle = `PC-${missionData.numeroMission || documentNumber}`;
+              setDocumentTitle(defaultTitle);
+            } else {
+              console.error('Mission not found with ID:', missionId);
+              setLoading(false);
+              return;
+            }
+          } catch (error) {
+            console.error('Error fetching mission by ID:', error);
+            setLoading(false);
+            return;
+          }
+        } else {
+          // Récupérer les données de la mission par numeroMission (rétrocompatibilité)
+          const missionsQuery = query(
+            collection(db, 'missions'),
+              where('numeroMission', '==', documentNumber)
+          );
+          const missionsSnapshot = await getDocs(missionsQuery);
           
-          // Créer missionData avec l'ID du document Firestore
-          missionData = {
-            id: missionDoc.id,
-            ...documentData
-          } as Mission;
-          setMission(missionData);
+          if (missionsSnapshot.empty) {
+              console.error('Mission not found with number:', documentNumber);
+            setLoading(false);
+            return;
+          }
           
-          // Définir le titre par défaut du document
-          const defaultTitle = `PC-${documentNumber}`;
-          setDocumentTitle(defaultTitle);
+          const missionDoc = missionsSnapshot.docs[0];
+            documentData = missionDoc.data();
+            collectionName = 'missions';
+            
+            // Créer missionData avec l'ID du document Firestore
+            missionData = {
+              id: missionDoc.id,
+              ...documentData
+            } as Mission;
+            setMission(missionData);
+            
+            // Définir le titre par défaut du document
+            const defaultTitle = `PC-${documentNumber}`;
+            setDocumentTitle(defaultTitle);
+          }
         }
         
         console.log('Mission data loaded:', missionData);

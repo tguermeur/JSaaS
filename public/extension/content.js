@@ -1,163 +1,202 @@
-console.log('Content script JSaaS LinkedIn chargé');
+console.log('Content script JS Connect LinkedIn chargé');
 
-// Vérifier si nous sommes sur une page de profil LinkedIn
-function isLinkedInProfilePage() {
-  return window.location.href.includes('linkedin.com/in/');
-}
-
-// Fonction pour extraire les données du profil LinkedIn
-function extractProfileData() {
-  try {
-    if (!isLinkedInProfilePage()) {
-      console.log('Pas sur une page de profil LinkedIn');
-      return null;
-    }
-
-    // Récupérer l'URL du profil
-    const profileUrl = window.location.href;
-    
-    // Récupérer le nom - plusieurs sélecteurs possibles
-    const nameElement = document.querySelector('h1.text-heading-xlarge') || 
-                       document.querySelector('h1.break-words') ||
-                       document.querySelector('h1.t-24');
-    const name = nameElement ? nameElement.textContent.trim() : '';
-    
-    // Récupérer la photo de profil
-    const photoElement = document.querySelector('img.presence-entity__image') ||
-                        document.querySelector('img.pv-top-card-profile-picture__image') ||
-                        document.querySelector('.profile-photo-edit__preview') ||
-                        document.querySelector('.pv-top-card__photo') ||
-                        document.querySelector('.pv-top-card__photo img') ||
-                        document.querySelector('.profile-picture img');
-
-    // Ajouter des logs pour le débogage
-    console.log('Element photo trouvé:', photoElement);
-    
-    let photoUrl = '';
-    if (photoElement) {
-        photoUrl = photoElement.getAttribute('src') || photoElement.getAttribute('data-delayed-url') || photoElement.getAttribute('data-ghost-url');
-        console.log('URL de la photo trouvée:', photoUrl);
-    }
-    
-    // Récupérer le titre - plusieurs sélecteurs possibles
-    const titleElement = document.querySelector('.text-body-medium') || 
-                        document.querySelector('.text-body-medium.break-words') ||
-                        document.querySelector('.pv-text-details__left-panel-item-text');
-    const title = titleElement ? titleElement.textContent.trim() : '';
-    
-    // Récupérer la localisation - plusieurs sélecteurs possibles
-    const locationElement = document.querySelector('.text-body-small') || 
-                          document.querySelector('.pv-text-details__left-panel-item-text') ||
-                          document.querySelector('.pv-top-card-section__location');
-    const location = locationElement ? locationElement.textContent.trim() : '';
-
-    // Fonction pour nettoyer le nom de l'entreprise
-    function cleanCompanyName(name) {
-      if (!name) return '';
-      
-      // Supprimer ", visuel" et autres suffixes similaires
-      name = name.replace(/,\s*visuel\.?$/i, '')
-                 .replace(/,\s*logo\.?$/i, '')
-                 .replace(/\s*\([^)]*\)\s*$/g, '') // Supprime les parenthèses à la fin
-                 .replace(/\s*-\s*[^-]*$/, '')    // Supprime tout ce qui suit un tiret à la fin
-                 .trim();
-      
-      return name;
-    }
-
-    // Récupérer l'entreprise depuis les logos en haut du profil
-    let company = '';
-    
-    // Méthode 1: Chercher dans les images des entreprises en haut
-    const companyLogos = document.querySelectorAll('img[data-test-id="profile-topcard-current-company-logo"]');
-    if (companyLogos.length > 0) {
-        const altText = companyLogos[0].getAttribute('alt');
-        if (altText) {
-            company = cleanCompanyName(altText.replace(' Logo', '').trim());
-        }
-    }
-
-    // Méthode 2: Chercher dans les liens d'entreprise en haut
-    if (!company) {
-        const companyLinks = document.querySelectorAll('a[data-field="experience_company_logo"], a[href*="/company/"]');
-        if (companyLinks.length > 0) {
-            const link = companyLinks[0];
-            company = link.getAttribute('aria-label') || link.textContent || '';
-            company = cleanCompanyName(company.replace(' Logo', '').trim());
-        }
-    }
-
-    // Méthode 3: Chercher dans la section d'expérience actuelle
-    if (!company) {
-        const experienceSection = document.querySelector('section.experience-section');
-        if (experienceSection) {
-            const currentPosition = experienceSection.querySelector('li:first-child');
-            if (currentPosition) {
-                const companyNameElement = currentPosition.querySelector('p.pv-entity__secondary-title') || 
-                                        currentPosition.querySelector('.pv-entity__company-summary-info h3') ||
-                                        currentPosition.querySelector('[data-field="experience_company_logo"]');
-                
-                if (companyNameElement) {
-                    company = cleanCompanyName(companyNameElement.textContent.trim());
-                }
-            }
-        }
-    }
-
-    // Méthode 4: Chercher dans les éléments avec le nom de l'entreprise
-    if (!company) {
-        const possibleCompanyElements = Array.from(document.querySelectorAll('span, div, p'))
-            .filter(el => {
-                const text = el.textContent.trim();
-                // Éviter les dates et autres formats non désirés
-                const isDate = /^(jan|fév|mar|avr|mai|juin|juil|aoû|sep|oct|nov|déc|[0-9])/i.test(text);
-                const hasYear = /20[0-9]{2}/.test(text);
-                const isDuration = /ans|mois|aujourd'hui/i.test(text);
-                return text && !isDate && !hasYear && !isDuration && text.length > 1;
-            });
-
-        for (const element of possibleCompanyElements) {
-            const text = element.textContent.trim();
-            if (text.includes('·')) {
-                const parts = text.split('·');
-                if (parts[0] && !parts[0].includes('20') && !parts[0].toLowerCase().includes('aujourd')) {
-                    company = cleanCompanyName(parts[0].trim());
-                    break;
-                }
-            }
-        }
-    }
-
-    console.log('Entreprise trouvée:', company);
-
-    const data = {
-      linkedinUrl: profileUrl,
-      name: name,
-      title: title,
-      location: location,
-      company: company,
-      photoUrl: photoUrl,
-      source: 'linkedin',
-      statut: 'nouveau'
-    };
-
-    console.log('Données extraites:', data);
-    return data;
-  } catch (error) {
-    console.error('Erreur lors de l\'extraction des données:', error);
-    return null;
+/**
+ * Normalise une URL LinkedIn
+ */
+function normalizeLinkedInUrl(url) {
+  const match = url.match(/linkedin\.com\/in\/([^\/\?]+)/);
+  if (match) {
+    return `https://www.linkedin.com/in/${match[1]}/`;
   }
+  return url;
 }
 
-// Écouter les messages du popup
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('Message reçu dans le content script:', request);
+/**
+ * Extrait l'URL de la photo de profil LinkedIn depuis le DOM
+ */
+function extractProfilePhotoUrl() {
+  // Méthode 1: Photo de profil principale (grande)
+  const mainPhoto = document.querySelector('img.pv-top-card-profile-picture__image--show');
+  if (mainPhoto?.src && mainPhoto.src.includes('media.licdn.com')) {
+    return mainPhoto.src;
+  }
   
+  // Méthode 2: Photo dans le header du profil
+  const headerPhoto = document.querySelector('.pv-top-card__photo img');
+  if (headerPhoto?.src && headerPhoto.src.includes('media.licdn.com')) {
+    return headerPhoto.src;
+  }
+  
+  // Méthode 3: Photo avec attribut data-ghost-url
+  const ghostPhoto = document.querySelector('img[data-ghost-url*="media.licdn.com"]');
+  if (ghostPhoto?.src && ghostPhoto.src.includes('media.licdn.com')) {
+    return ghostPhoto.src;
+  }
+  
+  // Méthode 4: Chercher dans les images avec classe profile
+  const profileImages = document.querySelectorAll('img[class*="profile"]');
+  for (const img of profileImages) {
+    if (img.src && img.src.includes('media.licdn.com') && !img.src.includes('company-logo')) {
+      // Vérifier que c'est une photo de personne (pas un logo)
+      const isLargeEnough = img.width >= 100 || img.height >= 100 || img.src.includes('/profile-displayphoto-shrink_');
+      if (isLargeEnough) {
+        return img.src;
+      }
+    }
+  }
+  
+  // Méthode 5: Chercher toutes les images LinkedIn avec profile-displayphoto
+  const allImages = document.querySelectorAll('img[src*="media.licdn.com"]');
+  for (const img of allImages) {
+    if (img.src.includes('/profile-displayphoto-shrink_') || img.src.includes('/profile-displaybackgroundimage-shrink_')) {
+      // C'est probablement une photo de profil
+      if (img.src.includes('/profile-displayphoto-shrink_')) {
+        return img.src;
+      }
+    }
+  }
+  
+  // Méthode 6: Dernière tentative - première grande image LinkedIn
+  for (const img of allImages) {
+    if (!img.src.includes('company-logo') && !img.src.includes('background') && (img.width >= 80 || img.height >= 80)) {
+      return img.src;
+    }
+  }
+  
+  return '';
+}
+
+/**
+ * Crée des données minimales depuis l'URL (fallback si l'IA échoue)
+ */
+function createMinimalProfileData(url) {
+  const profileUrl = normalizeLinkedInUrl(url);
+  const urlMatch = profileUrl.match(/\/in\/([^\/\?]+)/);
+  let fallbackName = 'Profil LinkedIn';
+  
+  if (urlMatch && urlMatch[1]) {
+    const urlName = urlMatch[1]
+      .replace(/[^a-zA-ZÀ-ÿ\s-]/g, ' ')
+      .replace(/-/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' ');
+    if (urlName && urlName.length > 1) {
+      fallbackName = urlName;
+    }
+  }
+  
+  // Extraire la photo de profil depuis le DOM
+  const photoUrl = extractProfilePhotoUrl();
+  console.log('Content script - Photo de profil extraite:', photoUrl ? 'Oui' : 'Non');
+  
+  return {
+      linkedinUrl: profileUrl,
+    name: fallbackName,
+    title: '',
+    location: '',
+    company: '',
+    photoUrl: photoUrl, // Photo extraite du DOM
+      source: 'linkedin',
+    statut: 'nouveau',
+    extractionMethod: 'fallback'
+  };
+}
+
+// ============================================
+// LISTENER DE MESSAGES
+// ============================================
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getProfileData') {
-    const profileData = extractProfileData();
-    
-    if (profileData) {
-      sendResponse({ success: true, data: profileData });
+    (async () => {
+      try {
+        // Attendre un peu pour s'assurer que le DOM est chargé
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        const currentUrl = window.location.href;
+        console.log('Content script - URL actuelle:', currentUrl);
+        
+        // Vérification permissive : si on est sur LinkedIn, on peut toujours essayer l'IA
+        const isLinkedIn = currentUrl.includes('linkedin.com');
+        const hasProfilePath = currentUrl.includes('/in/');
+        
+        // Si on n'est pas sur LinkedIn du tout, alors erreur
+        if (!isLinkedIn) {
+          sendResponse({ 
+            success: false, 
+            error: 'Impossible d\'extraire les données du profil. Assurez-vous d\'être sur une page de profil LinkedIn.' 
+          });
+          return;
+        }
+        
+        // Si on est sur LinkedIn mais pas sur /in/, on peut quand même essayer l'IA
+        // L'IA analysera le screenshot et déterminera si c'est un profil
+        let profileUrl = currentUrl;
+        if (hasProfilePath) {
+          profileUrl = normalizeLinkedInUrl(currentUrl);
+        } else {
+          // URL de tracking ou autre, on garde l'URL actuelle
+          // L'IA pourra extraire l'URL depuis le screenshot
+          console.log('Content script - URL ne contient pas /in/, mais on est sur LinkedIn, on essaie quand même avec l\'IA');
+        }
+        
+        // Vérifier le cache seulement si on a une URL de profil valide
+        if (hasProfilePath) {
+          const cacheKey = `profile_${btoa(profileUrl).replace(/[^a-zA-Z0-9]/g, '_')}`;
+          
+          try {
+            const cached = await new Promise((resolve) => {
+              chrome.storage.local.get([cacheKey], (result) => {
+                if (result[cacheKey]) {
+                  const cached = result[cacheKey];
+                  const cacheAge = Date.now() - cached.timestamp;
+                  const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 jours
+                  
+                  if (cacheAge < maxAge) {
+                    resolve(cached.data);
+                  } else {
+                    chrome.storage.local.remove([cacheKey]);
+                    resolve(null);
+                  }
+                } else {
+                  resolve(null);
+                }
+              });
+            });
+            
+            if (cached) {
+              console.log('Content script - Données trouvées dans le cache');
+              sendResponse({ success: true, data: cached, fromCache: true });
+              return;
+            }
+  } catch (error) {
+            console.warn('Content script - Erreur lors de la vérification du cache:', error);
+          }
+        }
+        
+        // Pas de cache ou URL non standard, créer des données minimales et utiliser l'IA
+        const minimalData = createMinimalProfileData(profileUrl);
+        console.log('Content script - Pas de cache, utilisation de l\'IA');
+        sendResponse({ 
+          success: true, 
+          data: minimalData, 
+          needsAI: true,
+          fromCache: false
+        });
+      } catch (error) {
+        console.error('Content script - Erreur:', error);
+        // Même en cas d'erreur, si on est sur LinkedIn, on essaie l'IA
+        const currentUrl = window.location.href;
+        if (currentUrl.includes('linkedin.com')) {
+          const minimalData = createMinimalProfileData(currentUrl);
+          sendResponse({ 
+            success: true, 
+            data: minimalData, 
+            needsAI: true,
+            fromCache: false
+          });
     } else {
       sendResponse({ 
         success: false, 
@@ -165,5 +204,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     }
   }
+    })();
+    
   return true; // Nécessaire pour la communication asynchrone
+  }
+  
+  return true;
 }); 

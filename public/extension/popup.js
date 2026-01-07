@@ -36,6 +36,126 @@ const initialLoading = document.getElementById('initialLoading');
 // Variable pour suivre si un prospect a déjà été ajouté
 let prospectAdded = false;
 
+// URL de la Cloud Function qui appelle Gemini côté serveur (clé API secrète)
+const GEMINI_EXTRACT_URL = 'https://us-central1-jsaas-dd2f7.cloudfunctions.net/api/gemini/extract-profile';
+
+/**
+ * Valide qu'une URL de photo LinkedIn est correcte et non corrompue
+ * L'IA peut halluciner des URLs avec des paramètres répétés
+ */
+function isValidLinkedInPhotoUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  
+  // Doit commencer par le CDN LinkedIn
+  if (!url.startsWith('https://media.licdn.com/')) return false;
+  
+  // Vérifier que l'URL n'est pas trop longue (les URLs corrompues ont souvent des paramètres répétés)
+  if (url.length > 500) return false;
+  
+  // Vérifier qu'il n'y a pas de patterns répétés (signe d'hallucination)
+  const repeatedPattern = /(\d{4}_){5,}/; // Pattern comme "6478_6478_6478_6478_6478_"
+  if (repeatedPattern.test(url)) return false;
+  
+  // Vérifier que le paramètre 't=' n'est pas anormalement long
+  const tParamMatch = url.match(/[?&]t=([^&]*)/);
+  if (tParamMatch && tParamMatch[1].length > 100) return false;
+  
+  return true;
+}
+
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function execInTab(tabId, func, args = []) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func,
+    args
+  });
+  return results?.[0]?.result;
+}
+
+async function captureVisibleTabBase64() {
+  const dataUrl = await new Promise((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(
+      null,
+      { format: 'png', quality: 90 },
+      (url) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(url);
+      }
+    );
+  });
+  return String(dataUrl).split(',')[1];
+}
+
+async function captureTopAndExperience(tabId) {
+  // Sauvegarder la position actuelle
+  const initialScrollY = await execInTab(tabId, () => window.scrollY);
+
+  // Capture en haut de la page
+  await execInTab(tabId, () => window.scrollTo(0, 0));
+  await sleep(800);
+  const top = await captureVisibleTabBase64();
+
+  // Scroll vers la section Expérience (CRUCIAL pour éviter l'école)
+  const foundExperience = await execInTab(tabId, () => {
+    const spans = Array.from(document.querySelectorAll('span[aria-hidden="true"]'));
+    const exp = spans.find(s => (s.textContent || '').trim() === 'Expérience' || (s.textContent || '').trim() === 'Experience');
+    if (exp) {
+      const container = exp.closest('section') || exp.closest('div');
+      (container || exp).scrollIntoView({ block: 'start', behavior: 'instant' });
+      return true;
+    }
+    // fallback: ancre id experience
+    const byId = document.querySelector('#experience');
+    if (byId) {
+      byId.scrollIntoView({ block: 'start', behavior: 'instant' });
+      return true;
+    }
+    return false;
+  });
+
+  await sleep(foundExperience ? 1200 : 500);
+  const experience = await captureVisibleTabBase64();
+
+  // Restaurer le scroll
+  if (typeof initialScrollY === 'number') {
+    await execInTab(tabId, (y) => window.scrollTo(0, y), [initialScrollY]);
+  }
+
+  return { top, experience, foundExperience };
+}
+
+async function callGeminiExtractionServer(linkedinUrl, imagesBase64) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Utilisateur non connecté');
+
+  const idToken = await user.getIdToken(true);
+
+  const resp = await fetch(GEMINI_EXTRACT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${idToken}`
+    },
+    body: JSON.stringify({
+      linkedinUrl,
+      images: imagesBase64
+    })
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`Erreur serveur Gemini (${resp.status}): ${text || resp.statusText}`);
+  }
+
+  const json = await resp.json();
+  if (!json?.success) throw new Error(json?.error || 'Extraction IA serveur échouée');
+  return json.data;
+}
+
 // Fonction pour formater la date
 function formatDate(timestamp) {
   if (!timestamp) return '';
@@ -308,13 +428,50 @@ saveButton.addEventListener('click', async () => {
       });
       console.log('Content script injecté avec succès');
 
-      // Attendre un peu pour s'assurer que le script est bien chargé
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Attendre un peu pour s'assurer que le script est bien chargé et que le listener est prêt
+      await new Promise(resolve => setTimeout(resolve, 1500));
 
       // Récupération des données du profil LinkedIn
       console.log('Envoi du message au content script...');
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'getProfileData' });
-      console.log('Réponse reçue:', response);
+      
+      // Vérifier que la page est bien chargée en vérifiant la présence d'éléments clés
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            return document.querySelector('h1') !== null;
+          }
+        });
+      } catch (e) {
+        console.warn('Impossible de vérifier le chargement de la page:', e);
+      }
+      
+      let response;
+      try {
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'getProfileData' });
+        console.log('Réponse reçue:', response);
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'popup.js:390',message:'Response received from content script',data:{response:response,hasResponse:!!response,success:response?.success,error:response?.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})}).catch(()=>{});
+        // #endregion
+      } catch (error) {
+        console.error('Erreur lors de l\'envoi du message au content script:', error);
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'popup.js:397',message:'Error sending message to content script',data:{error:error.message,errorStack:error.stack,tabId:tab.id,tabUrl:tab.url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'P'})}).catch(()=>{});
+        // #endregion
+        
+        // Réessayer une fois après un court délai
+        await new Promise(resolve => setTimeout(resolve, 500));
+        try {
+          response = await chrome.tabs.sendMessage(tab.id, { action: 'getProfileData' });
+          console.log('Réponse reçue (2e tentative):', response);
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'popup.js:405',message:'Response received from content script (retry)',data:{response:response,hasResponse:!!response,success:response?.success},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})}).catch(()=>{});
+          // #endregion
+        } catch (retryError) {
+          console.error('Erreur lors de la 2e tentative:', retryError);
+          throw new Error('Impossible de communiquer avec le content script. Veuillez recharger la page LinkedIn et réessayer.');
+        }
+      }
 
       if (!response) {
         throw new Error('Aucune réponse reçue du content script');
@@ -324,24 +481,72 @@ saveButton.addEventListener('click', async () => {
         throw new Error(response.error || 'Erreur lors de l\'extraction des données');
       }
 
+      let profileData = response.data;
+      
+      // Sauvegarder la photo extraite du DOM (plus fiable que l'IA pour les URLs)
+      const domPhotoUrl = response.data?.photoUrl || '';
+
+      // TOUJOURS utiliser l'IA (extraction DOM supprimée)
+      if (response.fromCache) {
+        // Données depuis le cache, utiliser directement
+        console.log('Données récupérées depuis le cache');
+      } else if (response.needsAI || !response.fromCache) {
+        // Pas de cache, utiliser l'IA CÔTÉ SERVEUR (clé API secrète)
+        console.log('Extraction IA serveur en cours...');
+        showStatus('Extraction IA en cours...', 'info', 20000);
+
+        // Capturer 2 screenshots: haut + section Expérience (sinon l'IA confond avec Formation)
+        const { top, experience, foundExperience } = await captureTopAndExperience(tab.id);
+        if (!foundExperience) {
+          console.warn('Section Expérience non détectée, on continue quand même');
+        }
+
+        const extracted = await callGeminiExtractionServer(tab.url, [top, experience]);
+        profileData = extracted;
+        
+        // TOUJOURS utiliser la photo extraite du DOM (l'IA ne peut pas extraire les URLs d'images correctement)
+        // L'IA hallucine souvent des URLs corrompues avec des paramètres répétés
+        if (domPhotoUrl && isValidLinkedInPhotoUrl(domPhotoUrl)) {
+          profileData.photoUrl = domPhotoUrl;
+          console.log('Photo de profil récupérée depuis le DOM:', domPhotoUrl);
+        } else {
+          // Si pas de photo DOM valide, vider le champ (éviter les URLs corrompues de l'IA)
+          profileData.photoUrl = '';
+          console.log('Pas de photo de profil valide trouvée');
+        }
+
+        // Sauvegarder dans le cache
+        if (profileData?.linkedinUrl) {
+          const cacheKey = `profile_${btoa(profileData.linkedinUrl).replace(/[^a-zA-Z0-9]/g, '_')}`;
+          chrome.storage.local.set({
+            [cacheKey]: {
+              data: profileData,
+              timestamp: Date.now()
+            }
+          });
+        }
+      }
+
       // Récupérer les informations de l'utilisateur
       const userDoc = await db.collection('users').doc(user.uid).get();
       if (!userDoc.exists) {
         throw new Error('Informations utilisateur non trouvées');
       }
 
-      // Vérifier que les données essentielles sont présentes
-      if (!response.data.name || !response.data.company) {
-        console.error('Données manquantes:', response.data);
-        throw new Error('Certaines données du profil n\'ont pas pu être extraites');
+      // Vérifier que les données essentielles sont présentes (au moins l'URL et le nom)
+      if (!profileData.linkedinUrl || !profileData.name) {
+        console.error('Données manquantes:', profileData);
+        throw new Error('Impossible d\'extraire les données essentielles du profil (nom ou URL manquants)');
       }
 
-      // Envoi des données à Firebase
+      // Envoi des données à Firebase avec assignation automatique à l'utilisateur qui ajoute
       await db.collection('prospects').add({
-        ...response.data,
+        ...profileData,
         userId: user.uid,
+        ownerId: user.uid, // Assigner automatiquement le prospect à l'utilisateur qui l'ajoute
         structureId: userDoc.data().structureId,
-        dateCreation: firebase.firestore.FieldValue.serverTimestamp()
+        dateCreation: firebase.firestore.FieldValue.serverTimestamp(),
+        dateAjout: new Date().toISOString()
       });
 
       showSuccessAnimation();

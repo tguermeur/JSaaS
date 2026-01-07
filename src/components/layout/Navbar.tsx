@@ -37,7 +37,13 @@ import {
   AddPhotoAlternate as AddPhotoAlternateIcon,
   Search as SearchIcon,
   Business as BusinessIcon,
-  Notifications as NotificationsIcon
+  Notifications as NotificationsIcon,
+  PostAdd as PostAddIcon,
+  UploadFile as UploadFileIcon,
+  Description as DescriptionIcon,
+  History as HistoryIcon,
+  Schedule as ScheduleIcon,
+  Info as InfoIcon
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -46,9 +52,11 @@ import { addReport } from '../../services/reportService';
 import { uploadErrorImage } from '../../firebase/storage';
 import { doc, getDoc, collection, query as firestoreQuery, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import { db } from '../../firebase/config';
+import { getUserRecentActivity } from '../../services/userActivityService';
 import NotificationBadge from '../ui/NotificationBadge';
 import NotificationList from '../ui/NotificationList';
 import { useSnackbar } from 'notistack';
+import { useChangelog } from '../../contexts/ChangelogContext';
 
 const StyledAppBar = styled(AppBar)(({ theme }) => ({
   backgroundColor: '#ffffff',
@@ -75,6 +83,7 @@ interface SearchResult {
   subtitle: string;
   avatar?: string;
   icon: React.ReactNode;
+  url?: string;
 }
 
 interface SearchResults {
@@ -105,6 +114,7 @@ const Navbar: React.FC<NavbarProps> = () => {
     markAllAsRead 
   } = useNotifications();
   const { enqueueSnackbar } = useSnackbar();
+  const { openChangelog } = useChangelog();
 
   // États pour le menu utilisateur
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
@@ -126,10 +136,12 @@ const Navbar: React.FC<NavbarProps> = () => {
     users: [],
     companies: []
   });
-  const [favoriteResults, setFavoriteResults] = useState<SearchResults>({
+  const [recentData, setRecentData] = useState<{
+    missions: SearchResult[];
+    documents: SearchResult[];
+  }>({
     missions: [],
-    users: [],
-    companies: []
+    documents: []
   });
 
   // États pour les notifications
@@ -279,48 +291,51 @@ const Navbar: React.FC<NavbarProps> = () => {
     }
   };
 
-  // Fonction pour récupérer les missions favorites
-  const fetchFavoriteMissions = async () => {
+  const fetchRecentData = async () => {
     if (!currentUser) return;
     
     try {
-      // Récupérer d'abord les IDs des missions favorites de l'utilisateur
-      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-      const userData = userDoc.data();
-      const favoriteMissionIds = userData?.favoriteMissions || [];
+      const activities = await getUserRecentActivity(currentUser.uid);
+      
+      const recentMissions = activities
+        .filter(item => item.type === 'mission')
+        .slice(0, 3)
+        .map(item => ({
+          id: item.id,
+          type: 'mission' as const,
+          title: item.title,
+          subtitle: item.subtitle || '',
+          icon: <HistoryIcon fontSize="small" />
+        }));
 
-      if (favoriteMissionIds.length === 0) return;
+      const recentDocuments = activities
+        .filter(item => item.type === 'document')
+        .slice(0, 3)
+        .map(item => ({
+          id: item.id,
+          type: 'mission' as const, // On utilise le type 'mission' pour la compatibilité, mais on gère l'URL spécifiquement
+          title: item.title,
+          subtitle: item.subtitle || '',
+          icon: <DescriptionIcon fontSize="small" />,
+          url: item.url
+        }));
 
-      // Récupérer les détails de chaque mission favorite
-      const missionsPromises = favoriteMissionIds.map(async (missionId: string) => {
-        const missionDoc = await getDoc(doc(db, 'missions', missionId));
-        if (missionDoc.exists()) {
-          const data = missionDoc.data();
-          return {
-            id: missionDoc.id,
-            type: 'mission' as const,
-            title: data.numeroMission || '',
-            subtitle: `${data.company || 'Sans entreprise'} - ${data.location || 'Sans localisation'}`,
-            icon: <BusinessIcon fontSize="small" />
-          };
-        }
-        return null;
+      setRecentData({
+        missions: recentMissions,
+        documents: recentDocuments
       });
 
-      const missions = (await Promise.all(missionsPromises)).filter((mission): mission is SearchResult => mission !== null);
-      setFavoriteResults(prev => ({
-        ...prev,
-        missions
-      }));
     } catch (error) {
-      console.error('Erreur lors de la récupération des favoris:', error);
+      console.error('Erreur lors de la récupération des données récentes:', error);
     }
   };
 
-  // Effet pour charger les favoris au montage du composant
+  // Charger les données récentes au focus ou au montage si besoin
   useEffect(() => {
-    fetchFavoriteMissions();
-  }, [currentUser]);
+    if (searchOpen && !searchQuery) {
+      fetchRecentData();
+    }
+  }, [searchOpen, searchQuery, currentUser]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -528,9 +543,9 @@ const Navbar: React.FC<NavbarProps> = () => {
         (notification.type === 'mission_note' || notification.type === 'mission_update') &&
         notification.metadata
       ) {
-        const missionNumber = notification.metadata.missionNumber;
-        if (missionNumber) {
-          navigate(`/app/mission/${missionNumber}`);
+        const missionId = notification.metadata.missionId || notification.metadata.missionNumber;
+        if (missionId) {
+          navigate(`/app/mission/${missionId}`);
           return;
         }
       }
@@ -553,7 +568,7 @@ const Navbar: React.FC<NavbarProps> = () => {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
           <Avatar
             src="/images/logo.png"
-            alt="Logo JSaaS"
+            alt="Logo JS Connect"
             variant="rounded"
             sx={{
               width: 56,
@@ -587,10 +602,11 @@ const Navbar: React.FC<NavbarProps> = () => {
             <TextField
               fullWidth
               size="small"
-              placeholder="Rechercher une mission, un utilisateur ou une entreprise..."
+              placeholder="Rechercher une mission, un document..."
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}
               onFocus={() => setSearchOpen(true)}
+              onClick={() => setSearchOpen(true)}
               sx={{
                 backgroundColor: '#f5f5f7',
                 borderRadius: '8px',
@@ -621,7 +637,7 @@ const Navbar: React.FC<NavbarProps> = () => {
               }}
             />
             
-            {searchOpen && (searchResults.missions.length > 0 || searchResults.users.length > 0 || searchResults.companies.length > 0) && (
+            {searchOpen && (
               <Paper 
                 elevation={3} 
                 sx={{ 
@@ -629,26 +645,136 @@ const Navbar: React.FC<NavbarProps> = () => {
                   zIndex: 1000, 
                   width: '100%', 
                   mt: 1,
-                  borderRadius: '8px',
-                  overflow: 'hidden'
+                  borderRadius: '12px',
+                  overflow: 'hidden',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+                  border: '1px solid rgba(0,0,0,0.08)'
                 }}
               >
-                <List sx={{ p: 0, maxHeight: 400, overflow: 'auto' }}>
-                  {!searchQuery.trim() && (
-                    <ListItem sx={{ 
-                      bgcolor: 'rgba(0,0,0,0.02)',
-                      py: 1,
-                      '&:hover': { bgcolor: 'rgba(0,0,0,0.02)' }
-                    }}>
-                      <ListItemText
-                        primary={
-                          <Typography variant="subtitle2" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
-                            Missions favorites
-                          </Typography>
-                        }
-                      />
-                    </ListItem>
-                  )}
+                <List sx={{ p: 0, maxHeight: 600, overflow: 'auto' }}>
+                  
+                  {/* Si pas de recherche, afficher le menu type "Spotlight" */}
+                  {!searchQuery.trim() ? (
+                    <>
+                      {/* Section Actions Rapides */}
+                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: '1px solid #f0f0f0' }}>
+                        <Typography variant="xs" sx={{ fontWeight: 600, color: '#86868b', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          Actions rapides
+                        </Typography>
+                      </ListItem>
+                      
+                      <ListItem 
+                        button 
+                        onClick={() => { navigate('/app/mission'); setSearchOpen(false); }}
+                        sx={{ py: 1.5, px: 2, '&:hover': { bgcolor: '#f5f9ff' } }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 40 }}>
+                          <PostAddIcon sx={{ color: '#0071e3' }} />
+                        </ListItemIcon>
+                        <ListItemText 
+                          primary="Créer une nouvelle mission"
+                          primaryTypographyProps={{ variant: 'body2', fontWeight: 500 }}
+                        />
+                      </ListItem>
+
+                      <ListItem 
+                        button 
+                        onClick={() => { navigate('/app/documents'); setSearchOpen(false); }}
+                        sx={{ py: 1.5, px: 2, '&:hover': { bgcolor: '#f5f9ff' } }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 40 }}>
+                          <UploadFileIcon sx={{ color: '#0071e3' }} />
+                        </ListItemIcon>
+                        <ListItemText 
+                          primary="Uploader un nouveau document"
+                          primaryTypographyProps={{ variant: 'body2', fontWeight: 500 }}
+                        />
+                      </ListItem>
+
+                      <Divider sx={{ my: 0 }} />
+
+                      {/* Section Missions Récentes */}
+                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: '1px solid #f0f0f0', borderTop: '1px solid #f0f0f0' }}>
+                        <Typography variant="xs" sx={{ fontWeight: 600, color: '#86868b', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          Missions récentes
+                        </Typography>
+                      </ListItem>
+
+                      {recentData.missions.length > 0 ? (
+                        recentData.missions.map((mission, index) => (
+                          <ListItem
+                            key={`recent-mission-${index}`}
+                            button
+                            onClick={() => handleResultClick(mission)}
+                            sx={{ py: 1, px: 2 }}
+                          >
+                            <ListItemIcon sx={{ minWidth: 40 }}>
+                              <HistoryIcon fontSize="small" sx={{ color: '#666' }} />
+                            </ListItemIcon>
+                            <ListItemText
+                              primary={mission.title}
+                              secondary={mission.subtitle}
+                              primaryTypographyProps={{ variant: 'body2', fontWeight: 500 }}
+                              secondaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
+                            />
+                          </ListItem>
+                        ))
+                      ) : (
+                        <ListItem sx={{ py: 2 }}>
+                          <ListItemText 
+                            secondary="Aucune mission récente" 
+                            secondaryTypographyProps={{ align: 'center', fontSize: '0.875rem' }}
+                          />
+                        </ListItem>
+                      )}
+
+                      <Divider sx={{ my: 0 }} />
+
+                      {/* Section Documents Récents */}
+                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: '1px solid #f0f0f0', borderTop: '1px solid #f0f0f0' }}>
+                        <Typography variant="xs" sx={{ fontWeight: 600, color: '#86868b', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          Fichiers récents
+                        </Typography>
+                      </ListItem>
+
+                      {recentData.documents.length > 0 ? (
+                        recentData.documents.map((doc, index) => (
+                          <ListItem
+                            key={`recent-doc-${index}`}
+                            button
+                            onClick={() => {
+                              if (doc.url) {
+                                window.open(doc.url, '_blank');
+                              } else {
+                                navigate('/app/documents');
+                              }
+                              setSearchOpen(false);
+                            }}
+                            sx={{ py: 1, px: 2 }}
+                          >
+                            <ListItemIcon sx={{ minWidth: 40 }}>
+                              <DescriptionIcon fontSize="small" sx={{ color: '#666' }} />
+                            </ListItemIcon>
+                            <ListItemText
+                              primary={doc.title}
+                              secondary={doc.subtitle}
+                              primaryTypographyProps={{ variant: 'body2', fontWeight: 500 }}
+                              secondaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
+                            />
+                          </ListItem>
+                        ))
+                      ) : (
+                        <ListItem sx={{ py: 2 }}>
+                          <ListItemText 
+                            secondary="Aucun document récent" 
+                            secondaryTypographyProps={{ align: 'center', fontSize: '0.875rem' }}
+                          />
+                        </ListItem>
+                      )}
+                    </>
+                  ) : (
+                    /* Affichage des résultats de recherche classique */
+                    <>
                   
                   {/* Section Entreprises */}
                   {searchResults.companies.length > 0 && (
@@ -778,6 +904,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                       ))}
                     </>
                   )}
+                    </>
+                  )}
                 </List>
               </Paper>
             )}
@@ -802,6 +930,23 @@ const Navbar: React.FC<NavbarProps> = () => {
             sx={{ color: '#86868b' }}
           >
             <LightbulbIcon fontSize="small" />
+          </IconButton>
+
+          {/* Bouton des nouveautés */}
+          <IconButton
+            onClick={openChangelog}
+            size="small"
+            sx={{ 
+              color: '#86868b',
+              transition: 'all 0.2s ease',
+              '&:hover': {
+                color: '#667eea',
+                transform: 'scale(1.1)'
+              }
+            }}
+            title="Voir les nouveautés"
+          >
+            <InfoIcon fontSize="small" />
           </IconButton>
 
           {/* Bouton de notifications */}

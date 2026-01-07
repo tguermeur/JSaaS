@@ -1,39 +1,53 @@
 import sharp from 'sharp';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
 
 const sizes = [16, 32, 48, 128];
 const extensionDir = 'src/extension';
+const publicExtensionDir = 'public/extension';
+const publicExtensionFolderDir = 'public/extension-folder';
+const distExtensionDir = 'dist/extension';
+const distExtensionFolderDir = 'dist/extension-folder';
+const logoPath = 'dist/images/logo.png';
 
-// Créer le dossier s'il n'existe pas
-if (!existsSync(extensionDir)) {
-  mkdirSync(extensionDir, { recursive: true });
-}
-
-// SVG template pour l'icône
-const svgTemplate = `
-<svg width="{size}" height="{size}" xmlns="http://www.w3.org/2000/svg">
-  <rect width="100%" height="100%" fill="#0071e3"/>
-  <text x="50%" y="40%" font-family="Arial" font-weight="bold" font-size="{fontSize}" fill="white" text-anchor="middle">JS</text>
-  <text x="50%" y="70%" font-family="Arial" font-weight="bold" font-size="{fontSize}" fill="white" text-anchor="middle">aaS</text>
-</svg>
-`;
+// Créer les dossiers s'ils n'existent pas
+const dirs = [extensionDir, publicExtensionDir, publicExtensionFolderDir, distExtensionDir, distExtensionFolderDir];
+dirs.forEach(dir => {
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+});
 
 async function generateIcon(size) {
-  const fontSize = size * 0.4;
-  const svg = svgTemplate
-    .replace(/{size}/g, size)
-    .replace(/{fontSize}/g, fontSize);
+  try {
+    // Vérifier si le logo existe
+    if (!existsSync(logoPath)) {
+      throw new Error(`Logo non trouvé: ${logoPath}`);
+    }
 
-  const buffer = await sharp(Buffer.from(svg))
-    .png()
-    .toBuffer();
+    // Redimensionner le logo à la taille souhaitée
+    const buffer = await sharp(logoPath)
+      .resize(size, size, {
+        fit: 'contain',
+        background: { r: 255, g: 255, b: 255, alpha: 0 }
+      })
+      .png()
+      .toBuffer();
 
-  writeFileSync(join(extensionDir, `icon${size}.png`), buffer);
-  console.log(`Icône ${size}x${size} générée`);
+    // Sauvegarder dans tous les dossiers d'extension
+    const targetDirs = [extensionDir, publicExtensionDir, publicExtensionFolderDir, distExtensionDir, distExtensionFolderDir];
+    targetDirs.forEach(dir => {
+      writeFileSync(join(dir, `icon${size}.png`), buffer);
+    });
+    
+    console.log(`Icône ${size}x${size} générée depuis ${logoPath} et copiée dans tous les dossiers`);
+  } catch (error) {
+    console.error(`Erreur lors de la génération de l'icône ${size}x${size}:`, error);
+    throw error;
+  }
 }
 
 // Générer toutes les tailles d'icônes
 Promise.all(sizes.map(generateIcon))
-  .then(() => console.log('Toutes les icônes ont été générées avec succès'))
+  .then(() => console.log('Toutes les icônes ont été générées avec succès depuis le logo'))
   .catch(error => console.error('Erreur lors de la génération des icônes:', error)); 

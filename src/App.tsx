@@ -5,6 +5,7 @@ import { ThemeProvider } from '@mui/material';
 import { CssBaseline, CircularProgress, Box } from '@mui/material';
 import { AuthProvider } from './contexts/AuthContext';
 import { NotificationProvider } from './contexts/NotificationContext';
+import { ChangelogProvider } from './contexts/ChangelogContext';
 import PrivateRoute from './components/guards/PrivateRoute';
 import SuperAdminRoute from './components/guards/SuperAdminRoute';
 import Layout from './components/layout/Layout';
@@ -12,6 +13,7 @@ import AuthLayout from './components/layout/AuthLayout';
 import theme from './theme';
 import { MissionProvider } from './contexts/MissionContext';
 import { checkFirebaseConfig } from './firebase/auth';
+import { useActivityTracker } from './hooks/useActivityTracker';
 import TemplatesPDF from './pages/TemplatesPDF';
 import DocumentGenerator from './pages/DocumentGenerator';
 import TagLibrary from './pages/TagLibrary';
@@ -67,6 +69,12 @@ import CotisationCancel from './pages/CotisationCancel';
 import Documents from './pages/Documents';
 
 
+// Composant wrapper pour le suivi d'activité
+function ActivityTrackerWrapper({ children }: { children: React.ReactNode }) {
+  useActivityTracker();
+  return <>{children}</>;
+}
+
 function App(): JSX.Element {
   useEffect(() => {
     // Vérifier la configuration Firebase
@@ -77,8 +85,10 @@ function App(): JSX.Element {
     <ThemeProvider theme={theme}>
       <SnackbarProvider maxSnack={3}>
         <AuthProvider>
-          <NotificationProvider>
-            <MissionProvider>
+          <ChangelogProvider>
+            <ActivityTrackerWrapper>
+              <NotificationProvider>
+                <MissionProvider>
               <Suspense fallback={
                 <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
                   <CircularProgress />
@@ -134,12 +144,12 @@ function App(): JSX.Element {
                           </ProtectedRoute>
                         </RequireRole>
                       } />
-                      <Route path="mission/:missionNumber" element={
+                      <Route path="mission/:missionId" element={
                         <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin', 'entreprise', 'etudiant']}>
                           <MissionDetails />
                         </RequireRole>
                       } />
-                      <Route path="mission/:missionNumber/quote" element={
+                      <Route path="mission/:missionId/quote" element={
                         <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
                           <QuoteBuilder />
                         </RequireRole>
@@ -289,8 +299,10 @@ function App(): JSX.Element {
                   </Routes>
                 </Box>
               </Suspense>
-            </MissionProvider>
-          </NotificationProvider>
+              </MissionProvider>
+            </NotificationProvider>
+            </ActivityTrackerWrapper>
+          </ChangelogProvider>
         </AuthProvider>
       </SnackbarProvider>
     </ThemeProvider>

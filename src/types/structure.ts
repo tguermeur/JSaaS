@@ -15,6 +15,8 @@ export interface Structure {
   email?: string;
   website?: string;
   logo?: string;
+  // Configuration des factures
+  paymentTermsDays?: number;  // Nombre de jours pour l'échéance des factures (défaut: 30)
   // Configuration des cotisations
   cotisationsEnabled?: boolean;
   cotisationAmount?: number;

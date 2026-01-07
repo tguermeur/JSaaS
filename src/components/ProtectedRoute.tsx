@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { Box, Typography, CircularProgress } from '@mui/material';
 import { doc, getDoc } from 'firebase/firestore';
@@ -20,27 +20,35 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   requiredPermission,
   requiresStructureAccess
 }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, userData: contextUserData } = useAuth();
   const location = useLocation();
   const [loading, setLoading] = useState(true);
   const [hasAccess, setHasAccess] = useState(false);
 
+  // Utiliser userData du contexte si disponible, sinon récupérer depuis Firestore
+  const userData = useMemo(() => contextUserData, [contextUserData?.uid, contextUserData?.status, contextUserData?.structureId]);
+  const userId = useMemo(() => currentUser?.uid, [currentUser?.uid]);
+  const userStatus = useMemo(() => userData?.status, [userData?.status]);
+
   useEffect(() => {
     const checkAccess = async () => {
-      if (!currentUser) {
+      if (!currentUser || !userId) {
         setHasAccess(false);
         setLoading(false);
         return;
       }
 
       try {
-        // Récupérer les données de l'utilisateur
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        const userData = userDoc.data();
-        const userStatus = userData?.status;
+        // Utiliser userData du contexte si disponible, sinon récupérer depuis Firestore
+        let finalUserData = userData;
+        if (!finalUserData) {
+          const userDoc = await getDoc(doc(db, 'users', userId));
+          finalUserData = userDoc.data();
+        }
+        const finalUserStatus = finalUserData?.status || userStatus;
 
         // Si l'utilisateur est superadmin, il a toujours accès
-        if (userStatus === 'superadmin') {
+        if (finalUserStatus === 'superadmin') {
           setHasAccess(true);
           setLoading(false);
           return;
@@ -49,20 +57,20 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
         // Vérifier l'accès basé sur le type de contenu (ancien système)
         if (requiresStructureAccess !== undefined) {
           if (requiresStructureAccess) {
-            setHasAccess(canAccessStructureContent(userStatus));
+            setHasAccess(canAccessStructureContent(finalUserStatus));
           } else {
-            setHasAccess(canAccessStudentContent(userStatus) || canAccessStructureContent(userStatus));
+            setHasAccess(canAccessStudentContent(finalUserStatus) || canAccessStructureContent(finalUserStatus));
           }
           setLoading(false);
           return;
         }
 
         // Vérifier l'accès basé sur les permissions (nouveau système)
-        if (requiredPermission && userData?.structureId) {
+        if (requiredPermission && finalUserData?.structureId) {
           const permissionsRef = doc(
             db, 
             'structures', 
-            userData.structureId, 
+            finalUserData.structureId, 
             'permissions', 
             requiredPermission.accessType === 'read' 
               ? `${requiredPermission.pageId}_read` 
@@ -79,22 +87,11 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
           }
 
           // Vérifier si l'utilisateur a accès
-          const hasRoleAccess = permissions.allowedRoles?.includes(userStatus as UserStatus);
-          const hasPoleAccess = userData.poles?.some(pole => 
+          const hasRoleAccess = permissions.allowedRoles?.includes(finalUserStatus as UserStatus);
+          const hasPoleAccess = finalUserData.poles?.some(pole => 
             permissions.allowedPoles?.includes(pole.poleId)
           );
-          const hasMemberAccess = permissions.allowedMembers?.includes(currentUser.uid);
-
-          console.log('DEBUG PERMISSIONS');
-          console.log('userStatus:', userStatus);
-          console.log('allowedRoles:', permissions.allowedRoles);
-          console.log('userData.poles:', userData.poles);
-          console.log('allowedPoles:', permissions.allowedPoles);
-          console.log('hasRoleAccess:', hasRoleAccess);
-          console.log('hasPoleAccess:', hasPoleAccess);
-          console.log('hasMemberAccess:', hasMemberAccess);
-          console.log('requiredPermission:', requiredPermission);
-          console.log('userData:', userData);
+          const hasMemberAccess = permissions.allowedMembers?.includes(userId);
 
           // Nouvelle logique : les rôles dominent sur les pôles
           setHasAccess(hasRoleAccess || hasPoleAccess || hasMemberAccess);
@@ -110,7 +107,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     };
 
     checkAccess();
-  }, [currentUser, requiredPermission, requiresStructureAccess]);
+  }, [userId, userStatus, userData?.structureId, userData?.poles, requiredPermission, requiresStructureAccess, currentUser]);
 
   if (loading) {
     return (

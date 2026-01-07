@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "JSaaS LinkedIn Extension",
+  "name": "JS Connect LinkedIn Extension",
   "version": "1.0",
-  "description": "Extension pour ajouter des prospects LinkedIn à JSaaS",
+  "description": "Extension pour ajouter des prospects LinkedIn à JS Connect",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
@@ -15,7 +15,8 @@
     "tabs"
   ],
   "host_permissions": [
-    "https://*.linkedin.com/*"
+    "https://*.linkedin.com/*",
+    "https://us-central1-jsaas-dd2f7.cloudfunctions.net/*"
   ],
   "oauth2": {
     "client_id": "VOTRE_CLIENT_ID.apps.googleusercontent.com",

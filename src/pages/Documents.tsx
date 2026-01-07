@@ -1119,6 +1119,16 @@ const Documents: React.FC = () => {
       });
       return;
     }
+
+    if (currentUser) {
+      trackUserActivity(currentUser.uid, 'document', {
+        id: document.id,
+        title: document.name,
+        subtitle: 'Documents',
+        url: document.url
+      });
+    }
+
     setPreviewDocument(document);
     setPreviewDialogOpen(true);
   };

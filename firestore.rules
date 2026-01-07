@@ -107,7 +107,7 @@ service cloud.firestore {
       // Règle spécifique pour les requêtes de liste
       // Permettre toutes les requêtes de liste pour les utilisateurs authentifiés
       // allow read filtrera les résultats
-      allow list: if isAuthenticated();
+      // allow list: if isAuthenticated();
       
       // Création : superadmin, membres de la structure, ou entreprise pour ses propres missions
       allow create: if isAuthenticated() && (

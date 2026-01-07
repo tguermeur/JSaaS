@@ -18,17 +18,49 @@ Cette fonctionnalité permet d'importer en masse des prospects depuis un fichier
 
 ### 2. Mapping des colonnes
 Le système détecte automatiquement les colonnes et propose un mapping. Vous pouvez ajuster manuellement :
-- **Nom** : nom, name, prénom, firstname
-- **Entreprise** : entreprise, company, société, organisation
-- **Email** : email, mail, courriel
-- **Téléphone** : telephone, phone, tel, mobile
+
+#### Informations de base
+- **Nom** : nom, name
+- **Entreprise** : entreprise, company
+- **Email** : email
+- **Téléphone** : telephone, phone, tel
 - **Poste** : poste, title, position, job
-- **Adresse** : adresse, address, rue, street
-- **Secteur** : secteur, sector, industrie, domaine
-- **Source** : source, origine, provenance
-- **Notes** : notes, commentaire, description
-- **URL LinkedIn** : linkedin, profile, url
-- **Statut** : statut, status, état, phase
+- **À propos** : about, description
+- **URL LinkedIn** : linkedin, linkedinUrl
+- **Photo** : photoUrl, photo, avatar
+- **Statut** : statut (par défaut: non_qualifie)
+- **Source** : source (par défaut: Import Excel)
+
+#### Localisation
+- **Localisation** : location, localisation, ville
+- **Pays** : pays, country
+- **Adresse** : adresse, address
+
+#### Secteur d'activité
+- **Secteur** : secteur, sector, industrie
+  - Exemples : Technologies de l'information, Banque et finance, Conseil en stratégie, Santé, Commerce, Industrie, etc.
+
+#### Données entreprise
+- **Raison sociale** : raisonSociale, raison sociale
+- **Code secteur** : codeSecteur, code secteur, ape
+- **Siège social** : siegeSocial, siège social, siege
+- **SIREN** : siren
+- **SIRET** : siret
+- **Secteur d'activité** : companySector, secteur activité
+
+#### Données commerciales
+- **Valeur potentielle** : valeurPotentielle, valeur potentielle, value
+- **Méthode d'extraction** : extractionMethod, méthode extraction
+
+#### Expériences professionnelles
+Pour ajouter plusieurs expériences, utilisez les colonnes numérotées :
+- **Experience1Title** : Titre du premier poste
+- **Experience1Company** : Entreprise du premier poste
+- **Experience1Duration** : Durée du premier poste
+- **Experience2Title** : Titre du deuxième poste
+- **Experience2Company** : Entreprise du deuxième poste
+- **Experience2Duration** : Durée du deuxième poste
+- etc.
 
 ### 3. Validation des données
 Le système valide automatiquement :
@@ -51,11 +83,27 @@ Les statuts suivants sont acceptés (avec variations) :
 - **Abandon** : abandon
 - **Déjà client** : deja_client, déjà client, client
 
+## Exemples de secteurs valides
+
+Voici quelques exemples de secteurs que vous pouvez utiliser :
+- **Technologies** : Technologies de l'information, Logiciels, SaaS, Cloud computing, Cybersécurité
+- **Finance** : Banque et finance, Assurance, Gestion d'actifs, Fintech
+- **Conseil** : Conseil en stratégie, Conseil en management, Audit, Conseil IT
+- **Industrie** : Industrie manufacturière, Agroalimentaire, Pharmaceutique, Chimie
+- **Santé** : Santé et médical, Biotechnologie, Dispositifs médicaux
+- **Commerce** : Commerce de détail, E-commerce, Distribution, Grande distribution
+- **Services** : Services professionnels, Ressources humaines, Marketing, Communication
+- **Immobilier** : Immobilier commercial, Immobilier résidentiel, Promotion immobilière
+- **Énergie** : Énergie et environnement, Énergies renouvelables, Pétrole et gaz
+- **Transport** : Transport et logistique, Aérien, Maritime, Ferroviaire
+- **Éducation** : Éducation et formation, E-learning, Formation professionnelle
+- **Médias** : Médias et divertissement, Publicité, Production audiovisuelle
+
 ## Modèle CSV
 
 Le fichier modèle contient les colonnes suivantes :
 ```csv
-nom,entreprise,email,telephone,poste,adresse,secteur,source,notes,linkedinUrl,statut
+nom,entreprise,email,telephone,poste,adresse,secteur,source,linkedinUrl,statut,location,pays,about,photoUrl,valeurPotentielle,extractionMethod,raisonSociale,codeSecteur,siegeSocial,siren,siret,companySector,experience1Title,experience1Company,experience1Duration,experience2Title,experience2Company,experience2Duration
 ```
 
 ## Conseils d'utilisation
