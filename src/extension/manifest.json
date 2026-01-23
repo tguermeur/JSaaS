@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "JS Connect LinkedIn Extension",
+  "name": "JSConnect",
   "version": "1.0",
-  "description": "Extension pour ajouter des prospects LinkedIn à JS Connect",
+  "description": "Extension pour ajouter des prospects LinkedIn à JSConnect",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

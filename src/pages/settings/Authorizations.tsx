@@ -52,7 +52,8 @@ import {
   BusinessCenter as BusinessCenterIcon,
   Work as WorkIcon,
   Assessment as AssessmentIcon,
-  AttachMoney as AttachMoneyIcon
+  AttachMoney as AttachMoneyIcon,
+  Lock as LockIcon
 } from '@mui/icons-material';
 import { 
   canAccessPage, 
@@ -64,13 +65,16 @@ import { collection, query, where, getDocs, doc, getDoc, setDoc } from 'firebase
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 
-// Définition des pôles depuis Organization.tsx
-const POLES = [
+// Pôles par défaut
+const DEFAULT_POLES = [
   { id: 'com', name: 'Communication' },
   { id: 'dev', name: 'Développement commercial' },
   { id: 'tre', name: 'Trésorerie' },
   { id: 'rh', name: 'Ressources humaines' },
-  { id: 'aq', name: 'Audit / Qualité' }
+  { id: 'aq', name: 'Audit / Qualité' },
+  { id: 'pre', name: 'Président' },
+  { id: 'sec', name: 'Secrétaire général' },
+  { id: 'vice', name: 'Vice-président' }
 ];
 
 interface StructureMember {
@@ -99,6 +103,7 @@ interface Page {
   name: string;
   icon: React.ReactNode;
   access: PageAccess[];
+  requiresTwoFactor?: boolean;
 }
 
 interface PagePermissionWithReadAccess {
@@ -202,6 +207,15 @@ const Authorizations: React.FC = () => {
       access: [
         { id: '1', name: 'Admin', role: 'Administration', icon: <AdminIcon />, color: theme.palette.error.main }
       ]
+    },
+    {
+      id: 'encrypted-data',
+      name: 'Données cryptées',
+      icon: <LockIcon />,
+      access: [
+        { id: '1', name: 'Admin', role: 'Accès sécurisé', icon: <AdminIcon />, color: theme.palette.warning.main }
+      ],
+      requiresTwoFactor: true
     }
   ];
   
@@ -215,6 +229,7 @@ const Authorizations: React.FC = () => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [isMember, setIsMember] = useState(false);
+  const [poles, setPoles] = useState<typeof DEFAULT_POLES>(DEFAULT_POLES);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
@@ -278,6 +293,14 @@ const Authorizations: React.FC = () => {
       const userData = userDocSnap.data();
 
       if (!userData?.structureId) return;
+
+      // Charger les pôles depuis Firestore
+      const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
+      if (structureDoc.exists()) {
+        const structureData = structureDoc.data();
+        const savedPoles = structureData.poles || DEFAULT_POLES;
+        setPoles(savedPoles);
+      }
 
       const usersRef = collection(db, 'users');
       const q = query(usersRef, where('structureId', '==', userData.structureId));
@@ -371,7 +394,7 @@ const Authorizations: React.FC = () => {
     member.email.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const filteredPoles = POLES.filter(pole =>
+  const filteredPoles = poles.filter(pole =>
     pole.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -593,7 +616,7 @@ const Authorizations: React.FC = () => {
 
     // Ajouter les pôles
     permissions.allowedPoles.forEach(poleId => {
-      const pole = POLES.find(p => p.id === poleId);
+      const pole = poles.find(p => p.id === poleId);
       if (pole) {
         let poleIcon;
         switch (pole.id) {
@@ -716,7 +739,7 @@ const Authorizations: React.FC = () => {
           : ['member' as UserStatus, 'admin' as UserStatus]; // Si on sélectionne, on ajoute member + admin
         const newPoles = editingPage.allowedRoles.includes(role)
           ? [] // Si on désélectionne, on retire tout
-          : POLES.map(pole => pole.id); // Si on sélectionne, on ajoute tous les pôles
+          : poles.map(pole => pole.id); // Si on sélectionne, on ajoute tous les pôles
         setEditingPage({ 
           ...editingPage, 
           allowedRoles: newRoles,
@@ -748,7 +771,7 @@ const Authorizations: React.FC = () => {
           : ['member' as UserStatus, 'admin' as UserStatus]; // Si on sélectionne, on ajoute member + admin
         const newPoles = editingPage.readAccess.allowedRoles.includes(role)
           ? [] // Si on désélectionne, on retire tout
-          : POLES.map(pole => pole.id); // Si on sélectionne, on ajoute tous les pôles
+          : poles.map(pole => pole.id); // Si on sélectionne, on ajoute tous les pôles
         setEditingPage({
           ...editingPage,
           readAccess: { 
@@ -887,6 +910,19 @@ const Authorizations: React.FC = () => {
                           <Typography variant="subtitle1" sx={{ fontWeight: 500, fontSize: '1.1rem' }}>
                             {page.name}
                           </Typography>
+                          {page.requiresTwoFactor && (
+                            <Typography 
+                              variant="caption" 
+                              sx={{ 
+                                color: theme.palette.warning.main,
+                                fontStyle: 'italic',
+                                display: 'block',
+                                mt: 0.5
+                              }}
+                            >
+                              ⚠️ Accès nécessitant une validation 2FA
+                            </Typography>
+                          )}
                         </Box>
                       </Box>
                     </TableCell>

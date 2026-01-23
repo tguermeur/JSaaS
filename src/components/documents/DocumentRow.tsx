@@ -20,6 +20,7 @@ import {
   Visibility as VisibilityIcon,
   Lock as LockIcon,
   Edit as EditIcon,
+  PushPin as PushPinIcon,
 } from '@mui/icons-material';
 import { Document } from '../../types/document';
 import { formatFileSize } from '../../utils/fileUtils';
@@ -30,6 +31,7 @@ interface DocumentRowProps {
   onDownload: (document: Document) => void;
   onDelete: (document: Document) => void;
   onRename?: (document: Document) => void;
+  onPin?: (document: Document) => void;
   canDelete?: boolean;
   canRename?: boolean;
 }
@@ -40,6 +42,7 @@ const DocumentRow: React.FC<DocumentRowProps> = ({
   onDownload,
   onDelete,
   onRename,
+  onPin,
   canDelete = true,
   canRename = true,
 }) => {
@@ -99,25 +102,53 @@ const DocumentRow: React.FC<DocumentRowProps> = ({
               <Typography variant="body2" sx={{ fontWeight: 500 }}>
                 {document.name}
               </Typography>
-              {document.isRestricted && (
-                <Chip
-                  icon={<LockIcon sx={{ fontSize: 12 }} />}
-                  label="Restreint"
-                  size="small"
-                  sx={{
-                    height: 18,
-                    fontSize: '0.65rem',
-                    mt: 0.5,
-                  }}
-                />
-              )}
+              <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5, flexWrap: 'wrap' }}>
+                {document.isRestricted && (
+                  <Chip
+                    icon={<LockIcon sx={{ fontSize: 12 }} />}
+                    label="Restreint"
+                    size="small"
+                    sx={{
+                      height: 18,
+                      fontSize: '0.65rem',
+                    }}
+                  />
+                )}
+                {document.isPersonalDocument && (
+                  <Chip
+                    icon={<LockIcon sx={{ fontSize: 12, color: '#ffffff' }} />}
+                    label="Personnel (crypté)"
+                    size="small"
+                    sx={{
+                      height: 18,
+                      fontSize: '0.65rem',
+                      backgroundColor: '#007AFF',
+                      color: '#ffffff',
+                      '& .MuiChip-icon': {
+                        color: '#ffffff',
+                      },
+                    }}
+                  />
+                )}
+                {document.isPinned && (
+                  <Chip
+                    icon={<PushPinIcon sx={{ fontSize: 12, color: '#ffffff' }} />}
+                    label="Épinglé"
+                    size="small"
+                    sx={{
+                      height: 18,
+                      fontSize: '0.65rem',
+                      backgroundColor: '#FF9500',
+                      color: '#ffffff',
+                      '& .MuiChip-icon': {
+                        color: '#ffffff',
+                      },
+                    }}
+                  />
+                )}
+              </Box>
             </Box>
           </Box>
-        </TableCell>
-        <TableCell>
-          <Typography variant="body2" color="text.secondary">
-            {formatFileSize(document.size)}
-          </Typography>
         </TableCell>
         <TableCell>
           <Typography variant="body2" color="text.secondary">
@@ -171,6 +202,17 @@ const DocumentRow: React.FC<DocumentRowProps> = ({
           >
             <EditIcon sx={{ mr: 1, fontSize: 20 }} />
             Renommer
+          </MenuItem>
+        )}
+        {onPin && (
+          <MenuItem
+            onClick={() => {
+              handleMenuClose();
+              onPin(document);
+            }}
+          >
+            <PushPinIcon sx={{ mr: 1, fontSize: 20, color: document.isPinned ? '#FF9500' : undefined }} />
+            {document.isPinned ? 'Désépingler' : 'Épingler'}
           </MenuItem>
         )}
         {canDelete && (

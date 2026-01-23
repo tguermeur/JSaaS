@@ -20,6 +20,8 @@ export interface Document {
   missionNumber?: string; // Numéro de la mission associée
   missionTitle?: string; // Titre de la mission associée
   color?: string; // Couleur personnalisée du dossier ou tag du document
+  isPersonalDocument?: boolean; // Indique si c'est un document personnel (depuis le profil utilisateur)
+  isPinned?: boolean; // Indique si le document est épinglé
 }
 
 export interface Folder {
@@ -34,6 +36,8 @@ export interface Folder {
   isRestricted: boolean;
   allowedRoles?: string[]; // ['admin', 'member', etc.]
   color?: string; // Couleur personnalisée du dossier
+  isPersonalFolder?: boolean; // Indique si c'est un dossier personnel (pour les documents du profil utilisateur)
+  isPinned?: boolean; // Indique si le dossier est épinglé
 }
 
 export type ViewMode = 'grid' | 'list';

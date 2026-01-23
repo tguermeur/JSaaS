@@ -9,32 +9,55 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Chip,
-  IconButton,
-  Button
+  Chip
 } from '@mui/material';
-import { Visibility as VisibilityIcon } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
 import { Mission } from '../../types/mission';
 
 interface MissionsListProps {
-  missions: Mission[];
+  missions: (Mission & { applicationStatus?: string })[];
+  isStudent?: boolean;
 }
 
-const MissionsList: React.FC<MissionsListProps> = ({ missions }) => {
-  const navigate = useNavigate();
-
-  const getStatusColor = (etape: string): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" => {
-    switch (etape) {
-      case 'brouillon': return 'default';
-      case 'publication': return 'info';
-      case 'selection': return 'warning';
-      case 'contractualisation': return 'primary';
-      case 'suivi': return 'success';
-      case 'cloture': return 'secondary';
-      case 'archive': return 'default';
-      default: return 'default';
+const MissionsList: React.FC<MissionsListProps> = ({ missions, isStudent = false }) => {
+  const getStatusColor = (status: string): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" => {
+    if (isStudent) {
+      // Pour les étudiants, statuts de candidature
+      switch (status?.toLowerCase()) {
+        case 'accepté':
+        case 'acceptee':
+        case 'acceptée':
+          return 'success';
+        case 'refusé':
+        case 'refusee':
+        case 'refusée':
+          return 'error';
+        case 'en attente':
+          return 'warning';
+        case 'postulé':
+          return 'info';
+        default:
+          return 'default';
+      }
+    } else {
+      // Pour les autres (admin, entreprise), statuts de mission
+      switch (status) {
+        case 'brouillon': return 'default';
+        case 'publication': return 'info';
+        case 'selection': return 'warning';
+        case 'contractualisation': return 'primary';
+        case 'suivi': return 'success';
+        case 'cloture': return 'secondary';
+        case 'archive': return 'default';
+        default: return 'default';
+      }
     }
+  };
+
+  const getStatusLabel = (mission: Mission & { applicationStatus?: string }) => {
+    if (isStudent && mission.applicationStatus) {
+      return mission.applicationStatus === 'En attente' ? 'Postulé' : mission.applicationStatus;
+    }
+    return mission.etape || 'N/A';
   };
 
   if (missions.length === 0) {
@@ -53,45 +76,47 @@ const MissionsList: React.FC<MissionsListProps> = ({ missions }) => {
         <TableHead>
           <TableRow>
             <TableCell>Mission</TableCell>
-            <TableCell>Entreprise</TableCell>
-            <TableCell>Dates</TableCell>
+            {!isStudent && <TableCell>Entreprise</TableCell>}
+            {!isStudent && <TableCell>Dates</TableCell>}
             <TableCell>Statut</TableCell>
-            <TableCell align="right">Actions</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
           {missions.map((mission) => (
-            <TableRow key={mission.id} hover>
+            <TableRow key={mission.id}>
               <TableCell>
                 <Typography variant="subtitle2" fontWeight="bold">
                   {mission.title}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {mission.numeroMission}
-                </Typography>
+                {mission.numeroMission && (
+                  <Typography variant="caption" color="text.secondary">
+                    {mission.numeroMission}
+                  </Typography>
+                )}
               </TableCell>
-              <TableCell>{mission.company}</TableCell>
-              <TableCell>
-                <Typography variant="body2">
-                  {new Date(mission.startDate).toLocaleDateString()} - {new Date(mission.endDate).toLocaleDateString()}
-                </Typography>
-              </TableCell>
+              {!isStudent && (
+                <>
+                  <TableCell>{mission.company || 'N/A'}</TableCell>
+                  <TableCell>
+                    {mission.startDate && mission.endDate ? (
+                      <Typography variant="body2">
+                        {new Date(mission.startDate).toLocaleDateString()} - {new Date(mission.endDate).toLocaleDateString()}
+                      </Typography>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        N/A
+                      </Typography>
+                    )}
+                  </TableCell>
+                </>
+              )}
               <TableCell>
                 <Chip 
-                  label={mission.etape} 
-                  color={getStatusColor(mission.etape)} 
+                  label={getStatusLabel(mission)} 
+                  color={getStatusColor(getStatusLabel(mission))} 
                   size="small" 
                   variant="outlined"
                 />
-              </TableCell>
-              <TableCell align="right">
-                <IconButton 
-                  size="small" 
-                  color="primary"
-                  onClick={() => navigate(`/missions/${mission.id}`)}
-                >
-                  <VisibilityIcon />
-                </IconButton>
               </TableCell>
             </TableRow>
           ))}

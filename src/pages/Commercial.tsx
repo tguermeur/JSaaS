@@ -99,9 +99,10 @@ import {
   Info as InfoIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
-import { getProspects, createProspect } from '../firebase/prospects';
+import { getProspects, createProspect, deleteProspect } from '../firebase/prospects';
 import { collection, query, where, getDocs, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, addDoc, Timestamp, orderBy } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import { getStructureTokens, StructureTokens } from '../services/tokenService';
 import { useNavigate } from 'react-router-dom';
 import { downloadExtension } from '../api/extension';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
@@ -324,6 +325,9 @@ const Commercial: React.FC = (): JSX.Element => {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   
+  // Delete Dialog
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  
   // Events (Salon Mode)
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [newEvent, setNewEvent] = useState({
@@ -377,6 +381,10 @@ const Commercial: React.FC = (): JSX.Element => {
     notes: '',
     ownerId: userData?.uid
   });
+
+  // Tokens State
+  const [structureTokens, setStructureTokens] = useState<StructureTokens | null>(null);
+  const [tokensLoading, setTokensLoading] = useState(false);
 
   // Effect to update ownerId when userData is loaded
   useEffect(() => {
@@ -433,6 +441,20 @@ const Commercial: React.FC = (): JSX.Element => {
       setStructureMembers(members as StructureMember[]);
     } catch (error) {
       console.error(error);
+    }
+  }, [userData?.structureId]);
+
+  const fetchStructureTokens = useCallback(async () => {
+    if (!userData?.structureId) return;
+    try {
+      setTokensLoading(true);
+      const tokens = await getStructureTokens(userData.structureId);
+      console.log(`[Commercial] Tokens récupérés pour structure ${userData.structureId}:`, tokens);
+      setStructureTokens(tokens);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des tokens:', error);
+    } finally {
+      setTokensLoading(false);
     }
   }, [userData?.structureId]);
 
@@ -529,13 +551,18 @@ const Commercial: React.FC = (): JSX.Element => {
       fetchProspects();
       fetchStructureMembers();
       fetchCalendarEvents();
+      fetchStructureTokens();
     }
-  }, [fetchProspects, fetchStructureMembers, fetchCalendarEvents, userData]);
+  }, [fetchProspects, fetchStructureMembers, fetchCalendarEvents, fetchStructureTokens, userData]);
 
   // --- ACTIONS HANDLERS ---
 
   const handleCreateProspect = async () => {
     try {
+      console.log('[Commercial] handleCreateProspect appelé');
+      console.log('[Commercial] userData:', userData);
+      console.log('[Commercial] structureTokens avant création:', structureTokens);
+      
       const prospectData = {
         ...newProspectData,
         statut: 'non_qualifie',
@@ -547,9 +574,21 @@ const Commercial: React.FC = (): JSX.Element => {
         updatedAt: serverTimestamp()
       };
       
+      console.log('[Commercial] Données du prospect à créer:', prospectData);
+      
       await createProspect(prospectData as any);
+      console.log('[Commercial] Prospect créé avec succès');
+      
       setIsCreateDialogOpen(false);
-      fetchProspects();
+      
+      // Attendre un peu pour que Firestore se synchronise
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      console.log('[Commercial] Rafraîchissement des données...');
+      await fetchProspects();
+      // Rafraîchir les tokens après création
+      await fetchStructureTokens();
+      console.log('[Commercial] structureTokens après rafraîchissement:', structureTokens);
       setNewProspectData({
         nom: '',
         entreprise: '',
@@ -560,8 +599,16 @@ const Commercial: React.FC = (): JSX.Element => {
         notes: '',
         ownerId: userData?.uid
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erreur création prospect:', error);
+      // Message d'erreur plus clair pour les erreurs de quota
+      let errorMessage = error.message || 'Erreur lors de la création du prospect';
+      if (error.message && (error.message.includes('token') || error.message.includes('Quota') || error.message.includes('quota'))) {
+        errorMessage = `❌ Quota mensuel de tokens atteint. Impossible d'ajouter un prospect. Vous pourrez créer de nouveaux prospects le mois prochain.`;
+      }
+      setError(errorMessage);
+      // Afficher l'erreur pendant 8 secondes pour les erreurs de quota
+      setTimeout(() => setError(null), errorMessage.includes('Quota') ? 8000 : 5000);
     }
   };
 
@@ -821,6 +868,41 @@ const Commercial: React.FC = (): JSX.Element => {
     }
   };
 
+  const handleDeleteSelectedProspects = async () => {
+    if (selectedProspects.length === 0) return;
+
+    try {
+      // Supprimer chaque prospect (deleteProspect supprime aussi les événements associés)
+      for (const prospectId of selectedProspects) {
+        await deleteProspect(prospectId);
+      }
+
+      // Mettre à jour l'état local
+      setProspects(prev => prev.filter(p => !selectedProspects.includes(p.id)));
+      
+      // Mettre à jour les colonnes du pipeline
+      const newPipelineColumns: Record<string, Prospect[]> = {};
+      PIPELINE_STATUSES.forEach(status => {
+        newPipelineColumns[status] = prospects
+          .filter(p => !selectedProspects.includes(p.id))
+          .filter(p => validateStatus(p.statut) === status);
+      });
+      setPipelineColumns(newPipelineColumns);
+
+      // Recharger les événements pour supprimer ceux qui étaient liés
+      await fetchCalendarEvents();
+
+      setSelectedProspects([]);
+      setIsDeleteDialogOpen(false);
+      
+      alert(`${selectedProspects.length} prospect(s) supprimé(s) avec succès. Les tâches associées ont également été supprimées.`);
+    } catch (error) {
+      console.error("Erreur suppression:", error);
+      setError("Erreur lors de la suppression des prospects");
+      setTimeout(() => setError(null), 5000);
+    }
+  };
+
   const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setImportFile(e.target.files[0]);
@@ -843,134 +925,171 @@ const Commercial: React.FC = (): JSX.Element => {
       return;
     }
 
+    // Vérifier les tokens avant l'import
+    if (structureTokens && structureTokens.tokensRemaining === 0) {
+      setError(`❌ Quota mensuel de tokens atteint. Impossible d'importer des prospects. Vous avez utilisé tous vos ${structureTokens.tokensTotal} tokens ce mois-ci. Vous pourrez importer de nouveaux prospects le mois prochain.`);
+      setIsImportDialogOpen(false);
+      setTimeout(() => setError(null), 8000);
+      return;
+    }
+
     setImporting(true);
     Papa.parse(importFile, {
       header: true,
       skipEmptyLines: true,
       complete: async (results) => {
         try {
-          const batch = writeBatch(db);
-          let count = 0;
-          const BATCH_SIZE = 450; // Firestore limit is 500
-
-          for (const row of results.data as any[]) {
-            if (!row.Nom && !row.Name && !row.Entreprise && !row.Company) continue; // Skip empty rows
-
-            const newRef = doc(collection(db, 'prospects'));
-            
-            // Construire l'objet prospect en évitant les valeurs undefined
-            const prospectData: any = {
-              nom: (row.Nom || row.Name || '').trim(),
-              name: (row.Name || row.Nom || '').trim(),
-              entreprise: (row.Entreprise || row.Company || '').trim() || undefined,
-              company: (row.Company || row.Entreprise || '').trim() || undefined,
-              email: (row.Email || '').trim() || undefined,
-              telephone: (row.Telephone || row.Phone || row.Tel || '').trim() || undefined,
-              title: (row.Poste || row.Title || row.Position || row.Job || '').trim() || undefined,
-              about: (row.About || row['À propos'] || row.Description || '').trim() || undefined,
-              location: (row.Location || row.Localisation || row.Ville || '').trim() || undefined,
-              pays: (row.Pays || row.Country || '').trim() || undefined,
-              adresse: (row.Adresse || row.Address || '').trim() || undefined,
-              secteur: (row.Secteur || row.Sector || row.Industrie || '').trim() || undefined,
-              linkedinUrl: (row.LinkedIn || row.LinkedInUrl || row['URL LinkedIn'] || '').trim() || undefined,
-              photoUrl: (row.PhotoUrl || row.Photo || row.Avatar || '').trim() || undefined,
-              valeurPotentielle: row.ValeurPotentielle || row['Valeur Potentielle'] || row.Value ? parseFloat(row.ValeurPotentielle || row['Valeur Potentielle'] || row.Value) : undefined,
-              extractionMethod: (row.ExtractionMethod || row['Méthode Extraction'] || '').trim() || undefined,
-              statut: 'non_qualifie',
-              structureId: userData.structureId,
-              ownerId: currentUser.uid,
-              userId: currentUser.uid,
-              dateAjout: new Date().toISOString(),
-              dateCreation: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-              source: row.Source || 'Import Excel'
-            };
-
-            // Traiter les données d'entreprise si présentes
-            const companyData: any = {};
-            if (row.RaisonSociale || row['Raison Sociale']) {
-              companyData.raisonSociale = (row.RaisonSociale || row['Raison Sociale']).trim();
-            }
-            if (row.CodeSecteur || row['Code Secteur'] || row.APE) {
-              companyData.secteur = (row.CodeSecteur || row['Code Secteur'] || row.APE).trim();
-            }
-            if (row.SiegeSocial || row['Siège Social'] || row.Siege) {
-              companyData.siegeSocial = (row.SiegeSocial || row['Siège Social'] || row.Siege).trim();
-            }
-            if (row.SIREN || row.Siren) {
-              companyData.siren = (row.SIREN || row.Siren).trim();
-            }
-            if (row.SIRET || row.Siret) {
-              companyData.siret = (row.SIRET || row.Siret).trim();
-            }
-            if (row.CompanySector || row['Secteur Activité'] || row['Secteur Entreprise']) {
-              companyData.companySector = (row.CompanySector || row['Secteur Activité'] || row['Secteur Entreprise']).trim();
-            }
-            
-            if (Object.keys(companyData).length > 0) {
-              prospectData.companyData = companyData;
-            }
-
-            // Traiter les expériences professionnelles si présentes
-            const experience: any[] = [];
-            let expIndex = 1;
-            while (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]) {
-              const exp: any = {};
-              if (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]) {
-                exp.title = (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]).trim();
-              }
-              if (row[`Experience${expIndex}Company`]) {
-                exp.company = row[`Experience${expIndex}Company`].trim();
-              }
-              if (row[`Experience${expIndex}Duration`] || row[`Experience${expIndex}Duree`]) {
-                exp.duration = (row[`Experience${expIndex}Duration`] || row[`Experience${expIndex}Duree`]).trim();
-              }
-              if (exp.title || exp.company) {
-                experience.push(exp);
-              }
-              expIndex++;
-            }
-            
-            if (experience.length > 0) {
-              prospectData.experience = experience;
-            }
-            
-            // Filtrer les valeurs undefined pour éviter l'erreur Firestore
-            const cleanedData: any = {};
-            Object.keys(prospectData).forEach(key => {
-              const value = prospectData[key];
-              // Ne pas inclure les valeurs undefined
-              if (value !== undefined) {
-                cleanedData[key] = value;
-              }
-            });
-            
-            // Vérifier que les champs requis sont présents avant d'ajouter au batch
-            if ((!cleanedData.nom && !cleanedData.name) || !cleanedData.structureId || !cleanedData.ownerId) {
-              console.warn('Ligne ignorée - champs requis manquants:', row, cleanedData);
-              continue;
-            }
-            
-            batch.set(newRef, cleanedData);
-
-            count++;
-            if (count % BATCH_SIZE === 0) {
-              await batch.commit();
-              // Reset batch not really possible comfortably in loop without re-instantiating, 
-              // but for simple use case we assume < 500 or just one batch. 
-              // Real impl would handle multiple batches.
-            }
+          // Compter les prospects valides
+          const validRows = (results.data as any[]).filter(row => 
+            (row.Nom || row.Name || row.Entreprise || row.Company)
+          );
+          
+          // Vérifier si assez de tokens
+          if (structureTokens && structureTokens.tokensRemaining < validRows.length) {
+            alert(`Pas assez de tokens. Vous avez ${structureTokens.tokensRemaining} tokens restants mais ${validRows.length} prospects à importer.`);
+            setImporting(false);
+            return;
           }
 
-          if (count % BATCH_SIZE !== 0) {
-            await batch.commit();
+          let count = 0;
+          let errorCount = 0;
+
+          // Utiliser createProspect pour chaque prospect (gère automatiquement les tokens)
+          for (const row of validRows) {
+            try {
+              const prospectData: any = {
+                nom: (row.Nom || row.Name || '').trim(),
+                name: (row.Name || row.Nom || '').trim(),
+                entreprise: (row.Entreprise || row.Company || '').trim() || undefined,
+                company: (row.Company || row.Entreprise || '').trim() || undefined,
+                email: (row.Email || '').trim() || undefined,
+                telephone: (row.Telephone || row.Phone || row.Tel || '').trim() || undefined,
+                title: (row.Poste || row.Title || row.Position || row.Job || '').trim() || undefined,
+                about: (row.About || row['À propos'] || row.Description || '').trim() || undefined,
+                location: (row.Location || row.Localisation || row.Ville || '').trim() || undefined,
+                pays: (row.Pays || row.Country || '').trim() || undefined,
+                adresse: (row.Adresse || row.Address || '').trim() || undefined,
+                secteur: (row.Secteur || row.Sector || row.Industrie || '').trim() || undefined,
+                linkedinUrl: (row.LinkedIn || row.LinkedInUrl || row['URL LinkedIn'] || '').trim() || undefined,
+                photoUrl: (row.PhotoUrl || row.Photo || row.Avatar || '').trim() || undefined,
+                valeurPotentielle: row.ValeurPotentielle || row['Valeur Potentielle'] || row.Value ? parseFloat(row.ValeurPotentielle || row['Valeur Potentielle'] || row.Value) : undefined,
+                extractionMethod: (row.ExtractionMethod || row['Méthode Extraction'] || '').trim() || undefined,
+                statut: 'non_qualifie',
+                structureId: userData.structureId,
+                ownerId: currentUser.uid,
+                userId: currentUser.uid,
+                dateAjout: new Date().toISOString(),
+                source: row.Source || 'Import Excel'
+              };
+
+              // Traiter les données d'entreprise si présentes
+              const companyData: any = {};
+              if (row.RaisonSociale || row['Raison Sociale']) {
+                companyData.raisonSociale = (row.RaisonSociale || row['Raison Sociale']).trim();
+              }
+              if (row.CodeSecteur || row['Code Secteur'] || row.APE) {
+                companyData.secteur = (row.CodeSecteur || row['Code Secteur'] || row.APE).trim();
+              }
+              if (row.SiegeSocial || row['Siège Social'] || row.Siege) {
+                companyData.siegeSocial = (row.SiegeSocial || row['Siège Social'] || row.Siege).trim();
+              }
+              if (row.SIREN || row.Siren) {
+                companyData.siren = (row.SIREN || row.Siren).trim();
+              }
+              if (row.SIRET || row.Siret) {
+                companyData.siret = (row.SIRET || row.Siret).trim();
+              }
+              if (row.CompanySector || row['Secteur Activité'] || row['Secteur Entreprise']) {
+                companyData.companySector = (row.CompanySector || row['Secteur Activité'] || row['Secteur Entreprise']).trim();
+              }
+              
+              if (Object.keys(companyData).length > 0) {
+                prospectData.companyData = companyData;
+              }
+
+              // Traiter les expériences professionnelles si présentes
+              const experience: any[] = [];
+              let expIndex = 1;
+              while (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]) {
+                const exp: any = {};
+                if (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]) {
+                  exp.title = (row[`Experience${expIndex}Title`] || row[`Experience${expIndex}`]).trim();
+                }
+                if (row[`Experience${expIndex}Company`]) {
+                  exp.company = row[`Experience${expIndex}Company`].trim();
+                }
+                if (row[`Experience${expIndex}Duration`] || row[`Experience${expIndex}Duree`]) {
+                  exp.duration = (row[`Experience${expIndex}Duration`] || row[`Experience${expIndex}Duree`]).trim();
+                }
+                if (exp.title || exp.company) {
+                  experience.push(exp);
+                }
+                expIndex++;
+              }
+              
+              if (experience.length > 0) {
+                prospectData.experience = experience;
+              }
+
+              // Filtrer les valeurs undefined
+              const cleanedData: any = {};
+              Object.keys(prospectData).forEach(key => {
+                const value = prospectData[key];
+                if (value !== undefined) {
+                  cleanedData[key] = value;
+                }
+              });
+
+              // Vérifier que les champs requis sont présents
+              if ((!cleanedData.nom && !cleanedData.name) || !cleanedData.structureId || !cleanedData.ownerId) {
+                console.warn('Ligne ignorée - champs requis manquants:', row);
+                errorCount++;
+                continue;
+              }
+
+              // Utiliser createProspect qui gère automatiquement les tokens
+              try {
+                await createProspect(cleanedData);
+                count++;
+                console.log(`[Import] Prospect ${count} créé avec succès`);
+              } catch (createError: any) {
+                console.error(`[Import] Erreur lors de la création du prospect ${count + 1}:`, createError);
+                errorCount++;
+                // Si erreur de tokens, arrêter l'import
+                if (createError.message && (createError.message.includes('token') || createError.message.includes('Quota'))) {
+                  alert(`Import interrompu : ${createError.message}. ${count} prospect(s) importé(s) avec succès.`);
+                  break;
+                }
+                // Pour les autres erreurs, continuer avec le suivant
+                throw createError;
+              }
+            } catch (error: any) {
+              console.error('Erreur lors de l\'import d\'un prospect:', error);
+              errorCount++;
+              // Si erreur de tokens, arrêter l'import
+              if (error.message && (error.message.includes('token') || error.message.includes('Quota'))) {
+                alert(`Import interrompu : ${error.message}. ${count} prospect(s) importé(s) avec succès.`);
+                break;
+              }
+            }
           }
 
           setImporting(false);
           setIsImportDialogOpen(false);
           setImportFile(null);
-    fetchProspects();
-          alert(`${count} prospects importés avec succès !`);
+          
+          // Attendre un peu pour que Firestore se synchronise
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          fetchProspects();
+          // Rafraîchir les tokens après l'import (avec un petit délai pour la synchronisation)
+          await fetchStructureTokens();
+          
+          if (errorCount > 0) {
+            alert(`${count} prospect(s) importé(s) avec succès. ${errorCount} erreur(s) rencontrée(s).`);
+          } else {
+            alert(`${count} prospect(s) importé(s) avec succès !`);
+          }
         } catch (error) {
           console.error("Erreur import:", error);
           setImporting(false);
@@ -1391,6 +1510,137 @@ const Commercial: React.FC = (): JSX.Element => {
 
     return (
       <Stack spacing={3} sx={{ pb: 4 }}>
+        {/* Tokens Display Card */}
+        {structureTokens && (
+          <Tooltip
+            title={
+              <Box sx={{ p: 1.5 }}>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+                  Quota mensuel de prospects
+                </Typography>
+                <Typography variant="body2" sx={{ mb: 1.5, lineHeight: 1.6 }}>
+                  Votre structure dispose de <strong>100 tokens par mois</strong> pour créer ou importer des prospects.
+                </Typography>
+                <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 0.5 } }}>
+                  <Typography component="li" variant="body2">
+                    <strong>1 token = 1 prospect</strong> créé ou importé
+                  </Typography>
+                  <Typography component="li" variant="body2">
+                    Les tokens se réinitialisent automatiquement chaque mois
+                  </Typography>
+                  <Typography component="li" variant="body2">
+                    Utilisés ce mois : <strong>{structureTokens.tokensTotal - structureTokens.tokensRemaining}/{structureTokens.tokensTotal}</strong>
+                  </Typography>
+                </Box>
+              </Box>
+            }
+            arrow
+            placement="left"
+            componentsProps={{
+              tooltip: {
+                sx: {
+                  bgcolor: '#1d1d1f',
+                  maxWidth: 320,
+                  fontSize: '0.875rem',
+                  '& .MuiTooltip-arrow': {
+                    color: '#1d1d1f'
+                  }
+                }
+              }
+            }}
+          >
+            <StyledCard 
+              sx={{ 
+                p: 2.5, 
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                '&:hover': {
+                  transform: 'translateY(-2px)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)'
+                }
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                  <Box sx={{ 
+                    width: 40, 
+                    height: 40, 
+                    borderRadius: '10px', 
+                    bgcolor: structureTokens.tokensRemaining > 20 
+                      ? `${APPLE_COLORS.success}20` 
+                      : structureTokens.tokensRemaining > 10 
+                        ? '#fff4e5' 
+                        : '#ffebee',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}>
+                    <RocketIcon sx={{ 
+                      fontSize: 22, 
+                      color: structureTokens.tokensRemaining > 20 
+                        ? APPLE_COLORS.success 
+                        : structureTokens.tokensRemaining > 10 
+                          ? '#ff9f0a' 
+                          : APPLE_COLORS.error 
+                    }} />
+                  </Box>
+                  <Box>
+                    <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#1d1d1f' }}>
+                      Quota mensuel
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                      Tokens restants
+                    </Typography>
+                  </Box>
+                </Box>
+                <Box sx={{ textAlign: 'right' }}>
+                  <Typography 
+                    variant="h5" 
+                    fontWeight={800}
+                    sx={{ 
+                      color: structureTokens.tokensRemaining > 20 
+                        ? APPLE_COLORS.success 
+                        : structureTokens.tokensRemaining > 10 
+                          ? '#ff9f0a' 
+                          : APPLE_COLORS.error,
+                      lineHeight: 1
+                    }}
+                  >
+                    {structureTokens.tokensRemaining}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                    / {structureTokens.tokensTotal}
+                  </Typography>
+                </Box>
+              </Box>
+              <LinearProgress 
+                variant="determinate" 
+                value={(structureTokens.tokensRemaining / structureTokens.tokensTotal) * 100}
+                sx={{
+                  width: '100%',
+                  height: 8,
+                  borderRadius: 4,
+                  bgcolor: '#f0f0f0',
+                  '& .MuiLinearProgress-bar': {
+                    bgcolor: structureTokens.tokensRemaining > 20 
+                      ? APPLE_COLORS.success 
+                      : structureTokens.tokensRemaining > 10 
+                        ? '#ff9f0a' 
+                        : APPLE_COLORS.error,
+                    borderRadius: 4
+                  }
+                }}
+              />
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                  {structureTokens.tokensTotal - structureTokens.tokensRemaining} utilisés
+                </Typography>
+                <InfoIcon sx={{ fontSize: 14, color: 'text.secondary', opacity: 0.6 }} />
+              </Box>
+            </StyledCard>
+          </Tooltip>
+        )}
+
         {/* Agenda Card */}
         <StyledCard sx={{ p: 3 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
@@ -1934,6 +2184,7 @@ const Commercial: React.FC = (): JSX.Element => {
             Gérez vos opportunités et suivez vos performances.
           </Typography>
         </Box>
+        
         <Box sx={{ display: 'flex', gap: 2 }}>
           {selectedProspects.length > 0 && (
             <>
@@ -1973,7 +2224,7 @@ const Commercial: React.FC = (): JSX.Element => {
             title={
               <Box sx={{ p: 1 }}>
                 <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>
-                  Installation de l'extension Chrome
+                  Installation de l'extension JSConnect
                 </Typography>
                 <Box component="ol" sx={{ m: 0, pl: 2.5, '& li': { mb: 1 } }}>
                   <Typography component="li" variant="body2">
@@ -2018,7 +2269,7 @@ const Commercial: React.FC = (): JSX.Element => {
                   const url = window.URL.createObjectURL(blob);
                   const link = document.createElement('a');
                   link.href = url;
-                  link.download = 'jsaas-extension.zip';
+                  link.download = 'jsconnect-extension.zip';
                   document.body.appendChild(link);
                   link.click();
                   document.body.removeChild(link);
@@ -2038,7 +2289,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 }
               }}
             >
-              Extension Chrome
+              Extension JSConnect
             </StyledButton>
           </Tooltip>
           <StyledButton 
@@ -2052,12 +2303,45 @@ const Commercial: React.FC = (): JSX.Element => {
             variant="contained" 
             startIcon={<AddIcon />} 
             onClick={() => setIsCreateDialogOpen(true)}
-            sx={{ bgcolor: APPLE_COLORS.primary, color: 'white', '&:hover': { bgcolor: '#0077ed' } }}
+            disabled={structureTokens !== null && structureTokens.tokensRemaining === 0}
+            sx={{ 
+              bgcolor: APPLE_COLORS.primary, 
+              color: 'white', 
+              '&:hover': { bgcolor: '#0077ed' },
+              '&:disabled': {
+                bgcolor: '#e5e5ea',
+                color: '#86868b'
+              }
+            }}
           >
             Nouveau Dossier
+            {structureTokens !== null && structureTokens.tokensRemaining === 0 && (
+              <Chip 
+                label="Quota atteint" 
+                size="small" 
+                sx={{ 
+                  ml: 1, 
+                  height: 20, 
+                  fontSize: '0.7rem',
+                  bgcolor: APPLE_COLORS.error,
+                  color: 'white'
+                }} 
+              />
+            )}
           </StyledButton>
         </Box>
       </Box>
+
+      {/* Error Alert */}
+      {error && (
+        <Alert 
+          severity="error" 
+          onClose={() => setError(null)}
+          sx={{ mb: 3, borderRadius: '12px' }}
+        >
+          {error}
+        </Alert>
+      )}
 
       {/* KPI Section (Always Visible) */}
       {renderKPIs()}
@@ -2244,6 +2528,34 @@ const Commercial: React.FC = (): JSX.Element => {
       >
         <DialogTitle sx={{ fontWeight: 700 }}>Nouveau Dossier Prospect</DialogTitle>
         <DialogContent>
+          {structureTokens && structureTokens.tokensRemaining === 0 && (
+            <Alert 
+              severity="error" 
+              sx={{ 
+                mb: 2, 
+                borderRadius: '12px',
+                backgroundColor: '#ffebee',
+                border: '2px solid #ff3b30',
+                '& .MuiAlert-icon': {
+                  color: '#ff3b30'
+                }
+              }}
+              icon={<BlockIcon />}
+            >
+              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+                Quota mensuel de tokens atteint
+              </Typography>
+              <Typography variant="body2">
+                Vous avez utilisé tous vos {structureTokens.tokensTotal} tokens ce mois-ci. 
+                <strong> Impossible d'ajouter un prospect.</strong> Vous pourrez créer de nouveaux prospects le mois prochain.
+              </Typography>
+            </Alert>
+          )}
+          {structureTokens && structureTokens.tokensRemaining > 0 && structureTokens.tokensRemaining <= 10 && (
+            <Alert severity="info" sx={{ mb: 2, borderRadius: '12px' }}>
+              Attention : Il vous reste {structureTokens.tokensRemaining} token{structureTokens.tokensRemaining > 1 ? 's' : ''} ce mois-ci.
+            </Alert>
+          )}
           <Stack spacing={2} sx={{ mt: 1 }}>
             <StyledTextField 
               label="Nom du contact" 
@@ -2300,8 +2612,22 @@ const Commercial: React.FC = (): JSX.Element => {
         </DialogContent>
         <DialogActions sx={{ p: 3 }}>
           <Button onClick={() => setIsCreateDialogOpen(false)} sx={{ color: 'text.secondary' }}>Annuler</Button>
-          <StyledButton variant="contained" onClick={handleCreateProspect} sx={{ bgcolor: APPLE_COLORS.primary }}>
-            Créer le dossier
+          <StyledButton 
+            variant="contained" 
+            onClick={handleCreateProspect}
+            disabled={structureTokens !== null && structureTokens.tokensRemaining === 0}
+            sx={{ 
+              bgcolor: APPLE_COLORS.primary,
+              '&:disabled': {
+                bgcolor: '#e5e5ea',
+                color: '#86868b'
+              }
+            }}
+          >
+            {structureTokens && structureTokens.tokensRemaining === 0 
+              ? 'Quota mensuel atteint' 
+              : `Créer le dossier${structureTokens && structureTokens.tokensRemaining > 0 ? ' (1 token)' : ''}`
+            }
           </StyledButton>
         </DialogActions>
       </Dialog>
@@ -3388,6 +3714,51 @@ const Commercial: React.FC = (): JSX.Element => {
           </Box>
         </Box>
       </Popover>
+
+      {/* Dialog: Confirmation de suppression */}
+      <Dialog
+        open={isDeleteDialogOpen}
+        onClose={() => setIsDeleteDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '16px' } }}
+      >
+        <DialogTitle sx={{ fontWeight: 700, color: APPLE_COLORS.error }}>
+          Confirmer la suppression
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2, borderRadius: '12px' }}>
+            Cette action est irréversible.
+          </Alert>
+          <Typography variant="body1" sx={{ mb: 1 }}>
+            Êtes-vous sûr de vouloir supprimer <strong>{selectedProspects.length}</strong> prospect(s) ?
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Les tâches et événements de calendrier associés (comme les relances) seront également supprimés.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ p: 3 }}>
+          <Button 
+            onClick={() => setIsDeleteDialogOpen(false)} 
+            sx={{ color: 'text.secondary' }}
+          >
+            Annuler
+          </Button>
+          <StyledButton 
+            variant="contained" 
+            onClick={handleDeleteSelectedProspects}
+            startIcon={<DeleteIcon />}
+            sx={{ 
+              bgcolor: APPLE_COLORS.error,
+              '&:hover': {
+                bgcolor: '#d32f2f'
+              }
+            }}
+          >
+            Supprimer {selectedProspects.length} prospect(s)
+          </StyledButton>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

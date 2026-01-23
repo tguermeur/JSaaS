@@ -1,17 +1,80 @@
-// Configuration Firebase
+// Configuration Firebase - injectée automatiquement au build time
+// Les valeurs seront remplacées par le script de build depuis les variables d'environnement
 const firebaseConfig = {
-  apiKey: "AIzaSyCW55pfTJwuRosEx9Sxs-LELEWv1RiS3iI",
-  authDomain: "jsaas-dd2f7.firebaseapp.com",
-  projectId: "jsaas-dd2f7",
-  storageBucket: "jsaas-dd2f7.firebasestorage.app",
-  messagingSenderId: "1028151005055",
-  appId: "1:1028151005055:web:66a22fecbffcea812c944a"
+  apiKey: "__FIREBASE_API_KEY__",
+  authDomain: "__FIREBASE_AUTH_DOMAIN__",
+  projectId: "__FIREBASE_PROJECT_ID__",
+  storageBucket: "__FIREBASE_STORAGE_BUCKET__",
+  messagingSenderId: "__FIREBASE_MESSAGING_SENDER_ID__",
+  appId: "__FIREBASE_APP_ID__"
 };
 
-// Initialisation de Firebase
-const app = firebase.initializeApp(firebaseConfig);
-const auth = firebase.auth();
-const db = firebase.firestore(app);
+// Initialisation immédiate de Firebase avec la configuration injectée au build
+let app = null;
+let auth = null;
+let db = null;
+let firebaseInitialized = false;
+
+function initializeFirebase() {
+  try {
+    // Validation que la configuration a été correctement injectée au build
+    if (firebaseConfig.apiKey.startsWith('__') || !firebaseConfig.apiKey) {
+      const errorMsg = 'Configuration Firebase non injectée. ' +
+        'L\'extension a été téléchargée sans la configuration Firebase. ' +
+        'Veuillez télécharger à nouveau l\'extension depuis l\'application après que l\'administrateur ait reconstruit l\'extension.';
+      throw new Error(errorMsg);
+    }
+    
+    // Initialisation de Firebase
+    app = firebase.initializeApp(firebaseConfig);
+    auth = firebase.auth();
+    db = firebase.firestore(app);
+    firebaseInitialized = true;
+    
+    console.log('Firebase initialisé avec succès');
+    setupAuthListeners();
+    return true;
+  } catch (error) {
+    console.error('Erreur lors de l\'initialisation de Firebase:', error);
+    showFirebaseConfigError(error.message);
+    firebaseInitialized = false;
+    return false;
+  }
+}
+
+// Fonction pour afficher une erreur de configuration Firebase
+function showFirebaseConfigError(message) {
+  const errorDiv = document.getElementById('error');
+  if (errorDiv) {
+    errorDiv.innerHTML = `
+      <strong>Erreur de configuration Firebase</strong><br>
+      ${message}<br><br>
+      <strong>Solution :</strong><br>
+      1. Supprimez l'extension actuelle de Chrome<br>
+      2. Téléchargez à nouveau l'extension depuis l'application<br>
+      3. Si le problème persiste, contactez l'administrateur
+    `;
+    errorDiv.style.display = 'block';
+    errorDiv.style.opacity = '1';
+    errorDiv.style.padding = '12px';
+    errorDiv.style.borderRadius = '8px';
+    errorDiv.style.backgroundColor = '#ffebee';
+    errorDiv.style.color = '#c62828';
+    errorDiv.style.fontSize = '13px';
+    errorDiv.style.lineHeight = '1.6';
+  }
+  
+  // Masquer le formulaire de connexion si Firebase n'est pas configuré
+  const loginForm = document.getElementById('loginForm');
+  if (loginForm) {
+    loginForm.style.display = 'none';
+  }
+  
+  console.error('Configuration Firebase requise:', message);
+}
+
+// Initialiser Firebase immédiatement au chargement
+initializeFirebase();
 
 // Éléments du DOM
 const loginForm = document.getElementById('loginForm');
@@ -32,6 +95,10 @@ const addDate = document.getElementById('addDate');
 const addedBy = document.getElementById('addedBy');
 const addedByEmail = document.getElementById('addedByEmail');
 const initialLoading = document.getElementById('initialLoading');
+const tokenStatus = document.getElementById('tokenStatus');
+const tokenCount = document.getElementById('tokenCount');
+const tokenProgressBar = document.getElementById('tokenProgressBar');
+const tokenProgressFill = document.getElementById('tokenProgressFill');
 
 // Variable pour suivre si un prospect a déjà été ajouté
 let prospectAdded = false;
@@ -129,6 +196,10 @@ async function captureTopAndExperience(tabId) {
 }
 
 async function callGeminiExtractionServer(linkedinUrl, imagesBase64) {
+  if (!firebaseInitialized || !auth) {
+    throw new Error('Firebase n\'est pas initialisé');
+  }
+  
   const user = auth.currentUser;
   if (!user) throw new Error('Utilisateur non connecté');
 
@@ -167,6 +238,275 @@ function formatDate(timestamp) {
     hour: '2-digit',
     minute: '2-digit'
   }).format(date);
+}
+
+// Constantes pour le système de tokens
+const TOKENS_PER_MONTH = 100;
+const TOKEN_COST_PER_PROSPECT = 1;
+
+/**
+ * Consomme un token pour créer un prospect (version extension avec Firebase compat)
+ */
+async function consumeTokenForExtension(structureId) {
+  console.log(`[Extension consumeToken] DÉBUT - Structure ID: ${structureId}`);
+  
+  if (!structureId) {
+    console.error('[Extension consumeToken] Structure ID manquant');
+    return { success: false, tokensRemaining: 0, error: 'Structure ID requis' };
+  }
+
+  try {
+    const tokensRef = db.collection('structureTokens').doc(structureId);
+    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+    
+    // Utiliser une transaction pour garantir la cohérence
+    try {
+      return await db.runTransaction(async (transaction) => {
+      console.log('[Extension consumeToken] Transaction démarrée');
+      const tokensDoc = await transaction.get(tokensRef);
+      console.log('[Extension consumeToken] Document récupéré, existe:', tokensDoc.exists);
+      
+      if (!tokensDoc.exists) {
+        // Créer le document avec les tokens initiaux
+        const newTokens = {
+          structureId,
+          tokensRemaining: TOKENS_PER_MONTH - TOKEN_COST_PER_PROSPECT,
+          tokensTotal: TOKENS_PER_MONTH,
+          lastResetDate: currentMonth,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        transaction.set(tokensRef, newTokens);
+        console.log(`[Extension consumeToken] Document créé avec ${newTokens.tokensRemaining} tokens`);
+        return { success: true, tokensRemaining: newTokens.tokensRemaining };
+      }
+
+      const data = tokensDoc.data();
+      console.log('[Extension consumeToken] Données actuelles:', data);
+      
+      // Vérifier si on doit réinitialiser (nouveau mois)
+      let tokensRemaining = data.tokensRemaining || TOKENS_PER_MONTH;
+      let lastResetDate = data.lastResetDate || currentMonth;
+      
+      if (data.lastResetDate !== currentMonth) {
+        // Nouveau mois, réinitialiser
+        console.log(`[Extension consumeToken] Nouveau mois détecté, réinitialisation`);
+        tokensRemaining = TOKENS_PER_MONTH;
+        lastResetDate = currentMonth;
+      }
+
+      // Vérifier si assez de tokens
+      if (tokensRemaining < TOKEN_COST_PER_PROSPECT) {
+        console.log(`[Extension consumeToken] Pas assez de tokens: ${tokensRemaining} < ${TOKEN_COST_PER_PROSPECT}`);
+        return { 
+          success: false, 
+          tokensRemaining, 
+          error: `Quota mensuel atteint. Vous avez utilisé ${(data.tokensTotal || TOKENS_PER_MONTH) - tokensRemaining}/${data.tokensTotal || TOKENS_PER_MONTH} tokens ce mois-ci.` 
+        };
+      }
+
+      // Consommer le token
+      const newTokensRemaining = tokensRemaining - TOKEN_COST_PER_PROSPECT;
+      console.log(`[Extension consumeToken] Consommation: ${tokensRemaining} -> ${newTokensRemaining}`);
+      transaction.update(tokensRef, {
+        tokensRemaining: newTokensRemaining,
+        tokensTotal: lastResetDate !== data.lastResetDate ? TOKENS_PER_MONTH : (data.tokensTotal || TOKENS_PER_MONTH),
+        lastResetDate,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+
+      console.log(`[Extension consumeToken] Token consommé: ${tokensRemaining} -> ${newTokensRemaining} pour structure ${structureId}`);
+      return { success: true, tokensRemaining: newTokensRemaining };
+      });
+    } catch (transactionError) {
+      // Fallback si la transaction échoue (peut-être à cause des règles de sécurité)
+      console.warn('[Extension consumeToken] Transaction échouée, utilisation du fallback:', transactionError);
+      
+      // Fallback: utiliser get + update
+      const tokensDoc = await tokensRef.get();
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      
+      if (!tokensDoc.exists) {
+        const newTokens = {
+          structureId,
+          tokensRemaining: TOKENS_PER_MONTH - TOKEN_COST_PER_PROSPECT,
+          tokensTotal: TOKENS_PER_MONTH,
+          lastResetDate: currentMonth,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        await tokensRef.set(newTokens);
+        return { success: true, tokensRemaining: newTokens.tokensRemaining };
+      }
+
+      const data = tokensDoc.data();
+      let tokensRemaining = data.tokensRemaining || TOKENS_PER_MONTH;
+      let lastResetDate = data.lastResetDate || currentMonth;
+      
+      if (data.lastResetDate !== currentMonth) {
+        tokensRemaining = TOKENS_PER_MONTH;
+        lastResetDate = currentMonth;
+      }
+
+      if (tokensRemaining < TOKEN_COST_PER_PROSPECT) {
+        return { 
+          success: false, 
+          tokensRemaining, 
+          error: `Quota mensuel atteint. Vous avez utilisé ${(data.tokensTotal || TOKENS_PER_MONTH) - tokensRemaining}/${data.tokensTotal || TOKENS_PER_MONTH} tokens ce mois-ci.` 
+        };
+      }
+
+      const newTokensRemaining = tokensRemaining - TOKEN_COST_PER_PROSPECT;
+      await tokensRef.update({
+        tokensRemaining: newTokensRemaining,
+        tokensTotal: lastResetDate !== data.lastResetDate ? TOKENS_PER_MONTH : (data.tokensTotal || TOKENS_PER_MONTH),
+        lastResetDate,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+
+      return { success: true, tokensRemaining: newTokensRemaining };
+    }
+  } catch (error) {
+    console.error('[Extension consumeToken] Erreur lors de la consommation du token:', error);
+    console.error('[Extension consumeToken] Détails de l\'erreur:', {
+      message: error?.message,
+      code: error?.code,
+      structureId
+    });
+    
+    return { 
+      success: false, 
+      tokensRemaining: 0, 
+      error: error?.message || 'Erreur lors de la vérification des tokens' 
+    };
+  }
+}
+
+/**
+ * Récupère les tokens de la structure
+ */
+async function getStructureTokensForExtension(structureId) {
+  if (!structureId) return null;
+
+  try {
+    const tokensRef = db.collection('structureTokens').doc(structureId);
+    const tokensDoc = await tokensRef.get();
+    
+    if (tokensDoc.exists) {
+      const data = tokensDoc.data();
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      
+      // Vérifier si on doit réinitialiser (nouveau mois)
+      let tokensRemaining = data.tokensRemaining || TOKENS_PER_MONTH;
+      let tokensTotal = data.tokensTotal || TOKENS_PER_MONTH;
+      
+      if (data.lastResetDate !== currentMonth) {
+        // Nouveau mois, réinitialiser
+        tokensRemaining = TOKENS_PER_MONTH;
+        tokensTotal = TOKENS_PER_MONTH;
+      }
+      
+      return {
+        tokensRemaining,
+        tokensTotal,
+        lastResetDate: data.lastResetDate || currentMonth
+      };
+    } else {
+      // Document n'existe pas, créer avec les tokens initiaux
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      const newTokens = {
+        structureId,
+        tokensRemaining: TOKENS_PER_MONTH,
+        tokensTotal: TOKENS_PER_MONTH,
+        lastResetDate: currentMonth,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      await tokensRef.set(newTokens);
+      return {
+        tokensRemaining: TOKENS_PER_MONTH,
+        tokensTotal: TOKENS_PER_MONTH,
+        lastResetDate: currentMonth
+      };
+    }
+  } catch (error) {
+    console.error('[Extension getStructureTokens] Erreur:', error);
+    return null;
+  }
+}
+
+/**
+ * Met à jour l'affichage des tokens dans l'extension
+ */
+function updateTokenDisplay(tokens) {
+  if (!tokens || !tokenStatus || !tokenCount || !tokenProgressFill) return;
+  
+  const { tokensRemaining, tokensTotal } = tokens;
+  const percentage = (tokensRemaining / tokensTotal) * 100;
+  
+  // Afficher le statut
+  tokenStatus.style.display = 'block';
+  tokenCount.textContent = `${tokensRemaining} / ${tokensTotal}`;
+  
+  // Mettre à jour la barre de progression
+  tokenProgressFill.style.width = `${percentage}%`;
+  
+  // Changer la couleur selon le nombre de tokens restants
+  if (tokensRemaining === 0) {
+    tokenProgressFill.style.background = '#ff3b30'; // Rouge
+    tokenStatus.style.backgroundColor = '#ffebee';
+    tokenStatus.style.border = '1px solid #ff3b30';
+    tokenStatus.style.color = '#c62828';
+  } else if (tokensRemaining <= 10) {
+    tokenProgressFill.style.background = '#ff9f0a'; // Orange
+    tokenStatus.style.backgroundColor = '#fff4e5';
+    tokenStatus.style.border = '1px solid #ff9f0a';
+    tokenStatus.style.color = '#b8860b';
+  } else {
+    tokenProgressFill.style.background = '#34c759'; // Vert
+    tokenStatus.style.backgroundColor = '#eafbf1';
+    tokenStatus.style.border = '1px solid #34c759';
+    tokenStatus.style.color = '#2e7d32';
+  }
+  
+  // Désactiver le bouton si pas de tokens
+  if (tokensRemaining === 0) {
+    saveButton.disabled = true;
+    saveButton.style.background = '#e5e5ea';
+    saveButton.style.color = '#86868b';
+    saveButton.textContent = 'Quota mensuel atteint';
+  }
+}
+
+/**
+ * Restaure un token (en cas d'erreur lors de la création du prospect)
+ */
+async function restoreTokenForExtension(structureId) {
+  if (!structureId) return;
+
+  try {
+    const tokensRef = db.collection('structureTokens').doc(structureId);
+    const tokensDoc = await tokensRef.get();
+    
+    if (tokensDoc.exists) {
+      const data = tokensDoc.data();
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      
+      // Vérifier si on doit réinitialiser
+      let tokensRemaining = data.tokensRemaining || TOKENS_PER_MONTH;
+      if (data.lastResetDate !== currentMonth) {
+        tokensRemaining = TOKENS_PER_MONTH;
+      }
+
+      await tokensRef.update({
+        tokensRemaining: Math.min(tokensRemaining + TOKEN_COST_PER_PROSPECT, TOKENS_PER_MONTH),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      console.log('[Extension restoreToken] Token restauré');
+    }
+  } catch (error) {
+    console.error('[Extension restoreToken] Erreur lors de la restauration du token:', error);
+  }
 }
 
 // Fonction pour vérifier si le prospect existe déjà
@@ -221,10 +561,34 @@ async function checkProspectExists(linkedinUrl, userId) {
 
 // Fonction pour vérifier le prospect actuel
 async function checkCurrentProspect() {
+  if (!firebaseInitialized || !auth || !db) return;
+  
   const user = auth.currentUser;
   if (!user) return;
 
   try {
+    // Récupérer les tokens de la structure
+    const userDoc = await db.collection('users').doc(user.uid).get();
+    if (userDoc.exists) {
+      const structureId = userDoc.data().structureId;
+      if (structureId) {
+        const tokens = await getStructureTokensForExtension(structureId);
+        if (tokens) {
+          updateTokenDisplay(tokens);
+          
+          // Si pas de tokens, désactiver le bouton et arrêter ici
+          if (tokens.tokensRemaining === 0) {
+            saveButton.disabled = true;
+            saveButton.style.background = '#e5e5ea';
+            saveButton.style.color = '#86868b';
+            saveButton.textContent = 'Quota mensuel atteint';
+            prospectInfo.style.display = 'none';
+            return;
+          }
+        }
+      }
+    }
+    
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab.url.includes('linkedin.com/in/')) {
       saveButton.textContent = 'Allez sur un profil LinkedIn';
@@ -316,6 +680,13 @@ function hideInitialLoading() {
   });
 }
 
+// Fonction pour configurer les listeners d'authentification (appelée après l'initialisation de Firebase)
+function setupAuthListeners() {
+  if (!auth) {
+    console.error('Firebase Auth n\'est pas initialisé');
+    return;
+  }
+
 // Gestion de l'état d'authentification
 auth.onAuthStateChanged(async (user) => {
   if (user) {
@@ -360,9 +731,15 @@ auth.onAuthStateChanged(async (user) => {
     saveButton.style.display = 'none';
   }
 });
+} // Fin de setupAuthListeners
 
 // Gestionnaire de connexion
 loginButton.addEventListener('click', async () => {
+  if (!firebaseInitialized || !auth) {
+    showStatus('Firebase n\'est pas initialisé. Veuillez recharger l\'extension.', 'error', 3000);
+    return;
+  }
+  
   const email = emailInput.value;
   const password = passwordInput.value;
 
@@ -394,6 +771,11 @@ logoutButton.addEventListener('click', async () => {
 
 // Gestion du clic sur le bouton d'ajout de prospect
 saveButton.addEventListener('click', async () => {
+  if (!firebaseInitialized || !auth || !db) {
+    showStatus('Firebase n\'est pas initialisé. Veuillez recharger l\'extension.', 'error', 3000);
+    return;
+  }
+  
   const user = auth.currentUser;
   
   if (!user) {
@@ -450,23 +832,14 @@ saveButton.addEventListener('click', async () => {
       try {
         response = await chrome.tabs.sendMessage(tab.id, { action: 'getProfileData' });
         console.log('Réponse reçue:', response);
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'popup.js:390',message:'Response received from content script',data:{response:response,hasResponse:!!response,success:response?.success,error:response?.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})}).catch(()=>{});
-        // #endregion
       } catch (error) {
         console.error('Erreur lors de l\'envoi du message au content script:', error);
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'popup.js:397',message:'Error sending message to content script',data:{error:error.message,errorStack:error.stack,tabId:tab.id,tabUrl:tab.url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'P'})}).catch(()=>{});
-        // #endregion
         
         // Réessayer une fois après un court délai
         await new Promise(resolve => setTimeout(resolve, 500));
         try {
           response = await chrome.tabs.sendMessage(tab.id, { action: 'getProfileData' });
           console.log('Réponse reçue (2e tentative):', response);
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'popup.js:405',message:'Response received from content script (retry)',data:{response:response,hasResponse:!!response,success:response?.success},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'I'})}).catch(()=>{});
-          // #endregion
         } catch (retryError) {
           console.error('Erreur lors de la 2e tentative:', retryError);
           throw new Error('Impossible de communiquer avec le content script. Veuillez recharger la page LinkedIn et réessayer.');
@@ -539,20 +912,56 @@ saveButton.addEventListener('click', async () => {
         throw new Error('Impossible d\'extraire les données essentielles du profil (nom ou URL manquants)');
       }
 
+      const structureId = userDoc.data().structureId;
+      if (!structureId) {
+        throw new Error('Structure ID non trouvé pour l\'utilisateur');
+      }
+
+      // Consommer un token avant d'ajouter le prospect
+      console.log('[Extension] Consommation d\'un token pour structure:', structureId);
+      const tokenResult = await consumeTokenForExtension(structureId);
+      
+      if (!tokenResult.success) {
+        const errorMsg = tokenResult.error || 'Quota mensuel de tokens atteint';
+        console.error('[Extension] Échec consommation token:', errorMsg);
+        throw new Error(errorMsg);
+      }
+      
+      console.log('[Extension] Token consommé avec succès. Tokens restants:', tokenResult.tokensRemaining);
+
       // Envoi des données à Firebase avec assignation automatique à l'utilisateur qui ajoute
-      await db.collection('prospects').add({
-        ...profileData,
-        userId: user.uid,
-        ownerId: user.uid, // Assigner automatiquement le prospect à l'utilisateur qui l'ajoute
-        structureId: userDoc.data().structureId,
-        dateCreation: firebase.firestore.FieldValue.serverTimestamp(),
-        dateAjout: new Date().toISOString()
-      });
+      try {
+        await db.collection('prospects').add({
+          ...profileData,
+          userId: user.uid,
+          ownerId: user.uid, // Assigner automatiquement le prospect à l'utilisateur qui l'ajoute
+          structureId: structureId,
+          dateCreation: firebase.firestore.FieldValue.serverTimestamp(),
+          dateAjout: new Date().toISOString()
+        });
+      } catch (addError) {
+        // En cas d'erreur, restaurer le token
+        console.error('[Extension] Erreur lors de l\'ajout du prospect, restauration du token...');
+        await restoreTokenForExtension(structureId);
+        throw addError;
+      }
 
       showSuccessAnimation();
       prospectAdded = true;
       saveButton.textContent = 'Prospect ajouté';
       saveButton.style.background = 'var(--success-color)';
+      
+      // Rafraîchir l'affichage des tokens après l'ajout
+      const userDocAfter = await db.collection('users').doc(user.uid).get();
+      if (userDocAfter.exists) {
+        const structureIdAfter = userDocAfter.data().structureId;
+        if (structureIdAfter) {
+          const tokensAfter = await getStructureTokensForExtension(structureIdAfter);
+          if (tokensAfter) {
+            updateTokenDisplay(tokensAfter);
+          }
+        }
+      }
     } catch (error) {
       console.error('Erreur lors de l\'injection ou de l\'exécution du content script:', error);
       if (error.message.includes('Cannot access contents of url "chrome-extension://')) {
@@ -582,9 +991,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 // Vérifier le prospect actuel à l'ouverture de la popup
 document.addEventListener('DOMContentLoaded', () => {
-  if (auth.currentUser) {
-    checkCurrentProspect();
-  }
+  // Attendre que Firebase soit initialisé avant de vérifier le prospect
+  const checkWhenReady = () => {
+    if (firebaseInitialized && auth && auth.currentUser) {
+      checkCurrentProspect();
+    } else if (!firebaseInitialized) {
+      // Réessayer après un court délai si Firebase n'est pas encore initialisé
+      setTimeout(checkWhenReady, 100);
+    }
+  };
+  checkWhenReady();
 });
 
 console.log("Extension popup chargée !"); 

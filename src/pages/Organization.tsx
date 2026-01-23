@@ -15,6 +15,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   Avatar,
   Chip,
   IconButton,
@@ -300,6 +301,32 @@ const generateMandats = (): string[] => {
 
 const AVAILABLE_MANDATS = generateMandats();
 
+// Fonction utilitaire pour convertir createdAt en Date
+const toDate = (createdAt: any): Date => {
+  if (!createdAt) return new Date();
+  
+  // Si c'est déjà une Date
+  if (createdAt instanceof Date) {
+    return createdAt;
+  }
+  
+  // Si c'est un Timestamp Firestore (avec méthode toDate)
+  if (createdAt && typeof createdAt.toDate === 'function') {
+    return createdAt.toDate();
+  }
+  
+  // Si c'est une string (ISO ou autre)
+  if (typeof createdAt === 'string') {
+    const date = new Date(createdAt);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+  }
+  
+  // Par défaut, retourner une nouvelle Date
+  return new Date();
+};
+
 // Styles pour les cartes de l'organigramme
 const StyledMemberCard = styled(Paper)(({ theme }) => ({
   padding: theme.spacing(2),
@@ -315,6 +342,7 @@ const StyledMemberCard = styled(Paper)(({ theme }) => ({
 const Organization = () => {
   const { currentUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
+  const [structureId, setStructureId] = useState<string | null>(null);
   const [organization, setOrganization] = useState<OrganizationInfo>({
     name: 'Structure non détectée',
     logo: '',
@@ -344,7 +372,7 @@ const Organization = () => {
   const [members, setMembers] = useState<User[]>([]);
   const [openPoleDialog, setOpenPoleDialog] = useState(false);
   const [selectedUserForPole, setSelectedUserForPole] = useState<User | null>(null);
-  const [selectedPoles, setSelectedPoles] = useState<string[]>([]);
+  const [selectedPoles, setSelectedPoles] = useState<Record<string, boolean>>({});
   const [isResponsable, setIsResponsable] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState(0);
   const [openAddMemberDialog, setOpenAddMemberDialog] = useState(false);
@@ -364,7 +392,7 @@ const Organization = () => {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string>('');
   // Nouveaux états pour la gestion des pôles
-  const [poles, setPoles] = useState<typeof POLES>(POLES);
+  const [poles, setPoles] = useState<Array<{ id: string; name: string }>>(POLES);
   const [openManagePolesDialog, setOpenManagePolesDialog] = useState(false);
   const [newPoleName, setNewPoleName] = useState('');
   const [editingPoleId, setEditingPoleId] = useState<string | null>(null);
@@ -388,6 +416,11 @@ const Organization = () => {
   const [memberToRemove, setMemberToRemove] = useState<User | null>(null);
 
   const [editingUserPoles, setEditingUserPoles] = useState<User | null>(null);
+  
+  // États pour le tri du tableau
+  type SortableField = 'displayName' | 'status' | 'mandat' | 'poles';
+  const [orderBy, setOrderBy] = useState<SortableField>('displayName');
+  const [order, setOrder] = useState<'asc' | 'desc'>('asc');
 
   const navigate = useNavigate();
 
@@ -439,11 +472,19 @@ const Organization = () => {
             .map(doc => ({
               id: doc.id,
               ...doc.data(),
-              createdAt: doc.data().createdAt?.toDate()
+              createdAt: toDate(doc.data().createdAt)
             } as User))
             .filter(user => user.status === 'member' || user.status === 'admin');
 
           setMembers(membersData);
+          
+          // Recharger les pôles depuis Firestore
+          const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
+          if (structureDoc.exists()) {
+            const structureData = structureDoc.data();
+            const savedPoles = structureData.poles || POLES;
+            setPoles(savedPoles);
+          }
         }
       }
 
@@ -462,7 +503,7 @@ const Organization = () => {
   // Fonction pour réinitialiser le formulaire
   const resetAddMemberForm = () => {
     setSelectedUserId('');
-    setSelectedPoles([]);
+    setSelectedPoles({});
     setIsResponsable({});
     setNewMemberData({});
     setSelectedMandat('');
@@ -499,6 +540,7 @@ const Organization = () => {
         }
 
         console.log('StructureId trouvé:', userData.structureId);
+        setStructureId(userData.structureId);
 
         // Vérifier si la structure existe directement
         const structureRef = doc(db, 'structures', userData.structureId);
@@ -525,6 +567,12 @@ const Organization = () => {
 
         const structureData = structureDoc.data();
         console.log('Données structure:', structureData);
+
+        // Charger les pôles depuis Firestore, ou utiliser les pôles par défaut
+        const savedPoles = structureData.poles || POLES;
+        console.log('[Organization] Pôles chargés depuis Firestore:', savedPoles);
+        console.log('[Organization] Structure data poles:', structureData.poles);
+        setPoles(savedPoles);
 
         setOrganization({
           name: structureData.nom || 'Structure non détectée',
@@ -556,7 +604,7 @@ const Organization = () => {
           .map(doc => ({
             id: doc.id,
             ...doc.data(),
-            createdAt: doc.data().createdAt?.toDate()
+            createdAt: toDate(doc.data().createdAt)
           } as User))
           .filter(user => user.status === 'member' || user.status === 'admin');
 
@@ -871,6 +919,7 @@ const Organization = () => {
     if (!selectedUserForPole) return;
 
     try {
+      // Convertir l'objet selectedPoles en tableau de pôles
       const userPoles = Object.entries(selectedPoles)
         .filter(([_, isSelected]) => isSelected)
         .map(([poleId]) => ({
@@ -950,6 +999,7 @@ const Organization = () => {
         }
       }
 
+      // Convertir l'objet selectedPoles en tableau de pôles
       const selectedPolesList = Object.entries(selectedPoles)
         .filter(([_, isSelected]) => isSelected)
         .map(([poleId]) => ({
@@ -979,7 +1029,7 @@ const Organization = () => {
       
       // Réinitialiser les sélections
       setSelectedUserId('');
-      setSelectedPoles([]);
+      setSelectedPoles({});
       setIsResponsable({});
       setSelectedMandat('');
       setNewMemberData({});
@@ -1001,7 +1051,7 @@ const Organization = () => {
             .map(doc => ({
               id: doc.id,
               ...doc.data(),
-              createdAt: doc.data().createdAt?.toDate()
+              createdAt: toDate(doc.data().createdAt)
             } as User))
             .filter(user => user.status === 'member' || user.status === 'admin');
 
@@ -1173,7 +1223,9 @@ const Organization = () => {
                   Sélection des pôles
                 </Typography>
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  {POLES.map((pole) => (
+                  {(() => {
+                    console.log('[Organization] Pôles dans le sélecteur d\'ajout membre:', poles);
+                    return poles.map((pole) => (
                     <Paper 
                       key={pole.id} 
                       variant="outlined" 
@@ -1257,7 +1309,8 @@ const Organization = () => {
                         )}
                       </Box>
                     </Paper>
-                  ))}
+                  ));
+                  })()}
                 </Box>
               </>
             )}
@@ -1371,7 +1424,7 @@ const Organization = () => {
   };
 
   // Fonction pour ajouter un nouveau pôle
-  const handleAddPole = () => {
+  const handleAddPole = async () => {
     if (!newPoleName.trim()) {
       setSnackbar({
         open: true,
@@ -1391,21 +1444,57 @@ const Organization = () => {
       return;
     }
 
+    if (!structureId) {
+      setSnackbar({
+        open: true,
+        message: 'Erreur: Structure non trouvée',
+        severity: 'error'
+      });
+      return;
+    }
+
     // Générer un ID unique pour le nouveau pôle
-    const newId = newPoleName.substring(0, 3).toLowerCase();
+    // Utiliser les 3 premières lettres + timestamp pour garantir l'unicité
+    const baseId = newPoleName.substring(0, 3).toLowerCase().replace(/\s+/g, '');
+    const newId = `${baseId}_${Date.now()}`;
     
     // Ajouter le nouveau pôle
-    const newPole = { id: newId, name: newPoleName };
-    setPoles([...poles, newPole]);
+    const newPole = { id: newId, name: newPoleName.trim() };
+    const updatedPoles = [...poles, newPole];
     
-    // Réinitialiser le champ
-    setNewPoleName('');
+    console.log('[Organization] Nouveau pôle à ajouter:', newPole);
+    console.log('[Organization] Liste complète des pôles après ajout:', updatedPoles);
     
-    setSnackbar({
-      open: true,
-      message: 'Pôle ajouté avec succès',
-      severity: 'success'
-    });
+    // Sauvegarder dans Firestore
+    try {
+      await updateDoc(doc(db, 'structures', structureId), {
+        poles: updatedPoles
+      });
+      
+      // Mettre à jour l'état local pour refléter immédiatement les changements
+      setPoles(updatedPoles);
+      
+      console.log('[Organization] État poles mis à jour:', updatedPoles);
+      console.log('[Organization] Nombre de pôles maintenant:', updatedPoles.length);
+        
+      // Réinitialiser le champ
+      setNewPoleName('');
+      
+      setSnackbar({
+        open: true,
+        message: 'Pôle ajouté avec succès',
+        severity: 'success'
+      });
+      } catch (error) {
+      console.error('Erreur lors de la sauvegarde du pôle:', error);
+      // Annuler l'ajout en cas d'erreur
+      setPoles(poles);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de la sauvegarde du pôle',
+        severity: 'error'
+      });
+    }
   };
 
   // Fonction pour commencer l'édition d'un pôle
@@ -1415,7 +1504,7 @@ const Organization = () => {
   };
 
   // Fonction pour sauvegarder les modifications d'un pôle
-  const handleSaveEditPole = () => {
+  const handleSaveEditPole = async () => {
     if (!editingPoleId || !editingPoleName.trim()) {
       setSnackbar({
         open: true,
@@ -1438,22 +1527,51 @@ const Organization = () => {
       return;
     }
 
+    if (!structureId) {
+      setSnackbar({
+        open: true,
+        message: 'Erreur: Structure non trouvée',
+        severity: 'error'
+      });
+      return;
+    }
+
     // Mettre à jour le pôle
-    setPoles(poles.map(pole => 
+    const updatedPoles = poles.map(pole => 
       pole.id === editingPoleId 
         ? { ...pole, name: editingPoleName } 
         : pole
-    ));
+    );
+    setPoles(updatedPoles);
     
-    // Réinitialiser les champs d'édition
-    setEditingPoleId(null);
-    setEditingPoleName('');
-    
-    setSnackbar({
-      open: true,
-      message: 'Pôle modifié avec succès',
-      severity: 'success'
-    });
+      // Sauvegarder dans Firestore
+      try {
+        await updateDoc(doc(db, 'structures', structureId), {
+          poles: updatedPoles
+        });
+        
+        // Mettre à jour l'état local pour refléter immédiatement les changements
+        setPoles(updatedPoles);
+        
+        // Réinitialiser les champs d'édition
+        setEditingPoleId(null);
+        setEditingPoleName('');
+        
+        setSnackbar({
+          open: true,
+          message: 'Pôle modifié avec succès',
+          severity: 'success'
+        });
+      } catch (error) {
+      console.error('Erreur lors de la sauvegarde du pôle:', error);
+      // Annuler la modification en cas d'erreur
+      setPoles(poles);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de la sauvegarde du pôle',
+        severity: 'error'
+      });
+    }
   };
 
   // Fonction pour annuler l'édition d'un pôle
@@ -1463,7 +1581,7 @@ const Organization = () => {
   };
 
   // Fonction pour supprimer un pôle
-  const handleDeletePole = (poleId: string) => {
+  const handleDeletePole = async (poleId: string) => {
     // Vérifier si le pôle est utilisé par des membres
     const isPoleUsed = members.some(member => 
       member.poles?.some(pole => pole.poleId === poleId)
@@ -1477,15 +1595,44 @@ const Organization = () => {
       });
       return;
     }
+
+    if (!structureId) {
+      setSnackbar({
+        open: true,
+        message: 'Erreur: Structure non trouvée',
+        severity: 'error'
+      });
+      return;
+    }
     
     // Supprimer le pôle
-    setPoles(poles.filter(pole => pole.id !== poleId));
+    const updatedPoles = poles.filter(pole => pole.id !== poleId);
+    setPoles(updatedPoles);
     
-    setSnackbar({
-      open: true,
-      message: 'Pôle supprimé avec succès',
-      severity: 'success'
-    });
+    // Sauvegarder dans Firestore
+    try {
+      await updateDoc(doc(db, 'structures', structureId), {
+        poles: updatedPoles
+      });
+      
+      // Mettre à jour l'état local pour refléter immédiatement les changements
+      setPoles(updatedPoles);
+      
+      setSnackbar({
+        open: true,
+        message: 'Pôle supprimé avec succès',
+        severity: 'success'
+      });
+    } catch (error) {
+      console.error('Erreur lors de la suppression du pôle:', error);
+      // Annuler la suppression en cas d'erreur
+      setPoles(poles);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de la suppression du pôle',
+        severity: 'error'
+      });
+    }
   };
 
   useEffect(() => {
@@ -1620,7 +1767,12 @@ const Organization = () => {
 
   const handleStartEditPoles = (user: User) => {
     setEditingUserPoles(user);
-    setSelectedPoles(user.poles?.map(pole => pole.poleId) || []);
+    // Convertir le tableau de pôles en objet Record<string, boolean>
+    const polesObj: Record<string, boolean> = {};
+    user.poles?.forEach(pole => {
+      polesObj[pole.poleId] = true;
+    });
+    setSelectedPoles(polesObj);
     setSelectedMandat(user.mandat || '');
   };
 
@@ -1629,7 +1781,7 @@ const Organization = () => {
 
     try {
       // Validation : vérifier qu'il ne peut y avoir qu'un seul président par mandat
-      const hasPresidentPole = selectedPoles.includes('pre');
+      const hasPresidentPole = selectedPoles['pre'] || false;
       const hasPresidentBureauRole = editingUserPoles.bureauRole === 'president';
       const selectedMandatValue = selectedMandat || null;
 
@@ -1656,13 +1808,16 @@ const Organization = () => {
       setEditPolesDialogError('');
 
       const userRef = doc(db, 'users', editingUserPoles.id);
-      const updatedPoles = selectedPoles.map(poleId => ({
-        poleId,
-        // Ne pas permettre isResponsable pour les pôles pre, sec, vice
-        isResponsable: ['pre', 'sec', 'vice'].includes(poleId) 
-          ? false 
-          : (editingUserPoles.poles?.find(p => p.poleId === poleId)?.isResponsable || false)
-      }));
+      // Convertir l'objet selectedPoles en tableau de pôles
+      const updatedPoles = Object.entries(selectedPoles)
+        .filter(([_, isSelected]) => isSelected)
+        .map(([poleId]) => ({
+          poleId,
+          // Ne pas permettre isResponsable pour les pôles pre, sec, vice
+          isResponsable: ['pre', 'sec', 'vice'].includes(poleId) 
+            ? false 
+            : (editingUserPoles.poles?.find(p => p.poleId === poleId)?.isResponsable || false)
+        }));
 
       await updateDoc(userRef, {
         poles: updatedPoles,
@@ -1684,7 +1839,7 @@ const Organization = () => {
 
       // Fermer le dialogue
       setEditingUserPoles(null);
-      setSelectedPoles([]);
+      setSelectedPoles({});
       setSelectedMandat('');
     } catch (error) {
       console.error('Erreur lors de la mise à jour des pôles:', error);
@@ -1698,7 +1853,7 @@ const Organization = () => {
 
   const handleCancelEditPoles = () => {
     setEditingUserPoles(null);
-    setSelectedPoles([]);
+    setSelectedPoles({});
     setSelectedMandat('');
     setEditPolesDialogError('');
   };
@@ -1723,6 +1878,52 @@ const Organization = () => {
   const isMemberSelected = (memberId: string) => selectedMembers.includes(memberId);
   const isAllMembersSelected = members.length > 0 && selectedMembers.length === members.length;
   const isSomeMembersSelected = selectedMembers.length > 0 && selectedMembers.length < members.length;
+
+  // Fonction pour gérer le tri
+  const handleRequestSort = (property: SortableField) => {
+    const isAsc = orderBy === property && order === 'asc';
+    setOrder(isAsc ? 'desc' : 'asc');
+    setOrderBy(property);
+  };
+
+  // Fonction pour trier les membres
+  const getSortedMembers = (): User[] => {
+    return [...members].sort((a, b) => {
+      let aValue: any;
+      let bValue: any;
+
+      switch (orderBy) {
+        case 'displayName':
+          aValue = (a.displayName || '').toLowerCase();
+          bValue = (b.displayName || '').toLowerCase();
+          break;
+        case 'status':
+          aValue = a.status || '';
+          bValue = b.status || '';
+          break;
+        case 'mandat':
+          aValue = a.mandat || '';
+          bValue = b.mandat || '';
+          break;
+        case 'poles':
+          // Trier par nombre de pôles
+          aValue = a.poles?.length || 0;
+          bValue = b.poles?.length || 0;
+          break;
+        default:
+          aValue = a[orderBy];
+          bValue = b[orderBy];
+      }
+
+      if (aValue < bValue) {
+        return order === 'asc' ? -1 : 1;
+      }
+      if (aValue > bValue) {
+        return order === 'asc' ? 1 : -1;
+      }
+      return 0;
+    });
+  };
 
   // Grouper les membres par mandat
   const groupMembersByMandat = () => {
@@ -2623,98 +2824,113 @@ const Organization = () => {
 
                             {/* Deuxième ligne : Autres pôles */}
                             <Grid container spacing={4} justifyContent="center">
-                              {POLES.filter(pole => 
-                                !['pre', 'vice', 'sec'].includes(pole.id)
-                              ).map((pole) => (
-                                <Grid item key={pole.id}>
-                                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                                    <Paper
-                                      sx={{
-                                        bgcolor: 'primary.main',
-                                        color: 'primary.contrastText',
-                                        p: 1.5,
-                                        px: 3,
-                                        borderRadius: 2,
-                                        textAlign: 'center',
-                                        position: 'relative',
-                                        '&::after': {
-                                          content: '""',
-                                          position: 'absolute',
-                                          bottom: -20,
-                                          left: '50%',
-                                          width: 2,
-                                          height: 20,
-                                          bgcolor: 'divider'
-                                        }
-                                      }}
-                                    >
-                                      <Typography variant="subtitle1">{pole.name}</Typography>
-                                    </Paper>
+                              {(() => {
+                                const filteredPoles = poles.filter(pole => 
+                                  !['pre', 'vice', 'sec'].includes(pole.id)
+                                );
+                                console.log('[Organization] Pôles à afficher dans l\'organigramme:', filteredPoles);
+                                console.log('[Organization] Total des pôles:', poles.length);
+                                return filteredPoles;
+                              })().map((pole) => {
+                                const poleMembers = mandatMembers
+                                  .filter(member => {
+                                    // Vérifier si le membre appartient à ce pôle
+                                    return member.poles?.some(p => p.poleId === pole.id) || false;
+                                  })
+                                  .sort((a, b) => {
+                                    const aIsResponsable = a.poles?.find(p => p.poleId === pole.id)?.isResponsable;
+                                    const bIsResponsable = b.poles?.find(p => p.poleId === pole.id)?.isResponsable;
+                                    return bIsResponsable ? 1 : aIsResponsable ? -1 : 0;
+                                  });
+                                
+                                return (
+                                  <Grid item key={pole.id}>
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                                      <Paper
+                                        sx={{
+                                          bgcolor: 'primary.main',
+                                          color: 'primary.contrastText',
+                                          p: 1.5,
+                                          px: 3,
+                                          borderRadius: 2,
+                                          textAlign: 'center',
+                                          position: 'relative',
+                                          '&::after': {
+                                            content: '""',
+                                            position: 'absolute',
+                                            bottom: -20,
+                                            left: '50%',
+                                            width: 2,
+                                            height: 20,
+                                            bgcolor: 'divider'
+                                          }
+                                        }}
+                                      >
+                                        <Typography variant="subtitle1">{pole.name}</Typography>
+                                      </Paper>
 
-                                    <Box sx={{ 
-                                      display: 'flex', 
-                                      flexDirection: 'column', 
-                                      gap: 1,
-                                      minHeight: 'auto'
-                                    }}>
-                                      {mandatMembers
-                                        .filter(member => {
-                                          // Vérifier si le membre appartient à ce pôle
-                                          return member.poles?.some(p => p.poleId === pole.id) || false;
-                                        })
-                                        .sort((a, b) => {
-                                          const aIsResponsable = a.poles?.find(p => p.poleId === pole.id)?.isResponsable;
-                                          const bIsResponsable = b.poles?.find(p => p.poleId === pole.id)?.isResponsable;
-                                          return bIsResponsable ? 1 : aIsResponsable ? -1 : 0;
-                                        })
-                                        .map((member, index) => {
-                                          const isResponsable = member.poles?.find(p => p.poleId === pole.id)?.isResponsable;
-                                          return (
-                                            <Box
-                                              key={member.id}
-                                              sx={{
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: 2,
-                                                p: 1,
-                                                '&:hover': {
-                                                  bgcolor: 'action.hover',
-                                                  borderRadius: 1,
-                                                },
-                                                ...(isResponsable && {
-                                                  borderBottom: '1px solid',
-                                                  borderColor: 'divider',
-                                                  mb: 1,
-                                                  pb: 1
-                                                })
-                                              }}
-                                            >
-                                              <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                                {member.displayName?.[0]}
-                                              </Avatar>
-                                              <Box sx={{ flexGrow: 1 }}>
-                                                <Typography 
-                                                  variant="body2" 
-                                                  sx={{ 
-                                                    fontWeight: isResponsable ? 'bold' : 'normal',
-                                                    color: isResponsable ? 'primary.main' : 'inherit'
-                                                  }}
-                                                >
-                                                  {member.displayName}
-                                                </Typography>
-                                                {isResponsable && (
-                                                  <Typography variant="caption" color="primary" sx={{ fontWeight: 'bold' }}>
-                                                    Responsable
+                                      <Box sx={{ 
+                                        display: 'flex', 
+                                        flexDirection: 'column', 
+                                        gap: 1,
+                                        minHeight: 'auto',
+                                        minWidth: '200px'
+                                      }}>
+                                        {poleMembers.length === 0 ? (
+                                          <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', p: 1, textAlign: 'center' }}>
+                                            Aucun membre
+                                          </Typography>
+                                        ) : (
+                                          poleMembers.map((member, index) => {
+                                            const isResponsable = member.poles?.find(p => p.poleId === pole.id)?.isResponsable;
+                                            return (
+                                              <Box
+                                                key={member.id}
+                                                sx={{
+                                                  display: 'flex',
+                                                  alignItems: 'center',
+                                                  gap: 2,
+                                                  p: 1,
+                                                  '&:hover': {
+                                                    bgcolor: 'action.hover',
+                                                    borderRadius: 1,
+                                                  },
+                                                  ...(isResponsable && {
+                                                    borderBottom: '1px solid',
+                                                    borderColor: 'divider',
+                                                    mb: 1,
+                                                    pb: 1
+                                                  })
+                                                }}
+                                              >
+                                                <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
+                                                  {member.displayName?.[0]}
+                                                </Avatar>
+                                                <Box sx={{ flexGrow: 1 }}>
+                                                  <Typography 
+                                                    variant="body2" 
+                                                    sx={{ 
+                                                      fontWeight: isResponsable ? 'bold' : 'normal',
+                                                      color: isResponsable ? 'primary.main' : 'inherit'
+                                                    }}
+                                                  >
+                                                    {member.displayName}
                                                   </Typography>
-                                                )}
+                                                  {isResponsable && (
+                                                    <Typography variant="caption" color="primary" sx={{ fontWeight: 'bold' }}>
+                                                      Responsable
+                                                    </Typography>
+                                                  )}
+                                                </Box>
                                               </Box>
-                                            </Box>
-                                          );
-                                        })}
+                                            );
+                                          })
+                                        )}
+                                      </Box>
                                     </Box>
-                                  </Box>
-                                </Grid>
-                              ))}
+                                  </Grid>
+                                );
+                              })}
                             </Grid>
                       </Box>
                     )}
@@ -2792,15 +3008,47 @@ const Organization = () => {
                               color="primary"
                             />
                           </TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Membre</TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Rôle</TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Mandat</TableCell>
-                          <TableCell sx={{ fontWeight: 600 }}>Pôles</TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>
+                            <TableSortLabel
+                              active={orderBy === 'displayName'}
+                              direction={orderBy === 'displayName' ? order : 'asc'}
+                              onClick={() => handleRequestSort('displayName')}
+                            >
+                              Membre
+                            </TableSortLabel>
+                          </TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>
+                            <TableSortLabel
+                              active={orderBy === 'status'}
+                              direction={orderBy === 'status' ? order : 'asc'}
+                              onClick={() => handleRequestSort('status')}
+                            >
+                              Rôle
+                            </TableSortLabel>
+                          </TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>
+                            <TableSortLabel
+                              active={orderBy === 'mandat'}
+                              direction={orderBy === 'mandat' ? order : 'asc'}
+                              onClick={() => handleRequestSort('mandat')}
+                            >
+                              Mandat
+                            </TableSortLabel>
+                          </TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>
+                            <TableSortLabel
+                              active={orderBy === 'poles'}
+                              direction={orderBy === 'poles' ? order : 'asc'}
+                              onClick={() => handleRequestSort('poles')}
+                            >
+                              Pôles
+                            </TableSortLabel>
+                          </TableCell>
                           <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {members.map((member) => (
+                        {getSortedMembers().map((member) => (
                           <StyledTableRow key={member.id} selected={isMemberSelected(member.id)}>
                             <TableCell padding="checkbox">
                               <Checkbox
@@ -2845,7 +3093,7 @@ const Organization = () => {
                             <TableCell>
                               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
                                 {member.poles?.map((pole) => {
-                                  const poleInfo = POLES.find(p => p.id === pole.poleId);
+                                  const poleInfo = poles.find(p => p.id === pole.poleId);
                                   return (
                                     <StyledChip 
                                       key={pole.poleId} 
@@ -3062,7 +3310,7 @@ const Organization = () => {
                           Sélection des pôles
                         </Typography>
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                          {POLES.map((pole) => (
+                          {poles.map((pole) => (
                             <Paper 
                               key={pole.id} 
                               variant="outlined" 
@@ -3543,7 +3791,9 @@ const Organization = () => {
               Sélection des pôles
             </Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {POLES.map((pole) => (
+            {(() => {
+              console.log('[Organization] Pôles dans le sélecteur d\'édition pôles:', poles);
+              return poles.map((pole) => (
               <Paper 
                 key={pole.id} 
                 variant="outlined" 
@@ -3561,7 +3811,7 @@ const Organization = () => {
                   <FormControlLabel
                     control={
                       <Checkbox
-                        checked={selectedPoles.includes(pole.id)}
+                        checked={selectedPoles[pole.id] || false}
                         onChange={(e) => {
                           // Validation : empêcher la sélection du pôle "pre" si un président existe déjà pour le mandat
                           if (pole.id === 'pre' && e.target.checked) {
@@ -3587,9 +3837,11 @@ const Organization = () => {
                           }
                           
                           if (e.target.checked) {
-                            setSelectedPoles([...selectedPoles, pole.id]);
+                            setSelectedPoles({ ...selectedPoles, [pole.id]: true });
                           } else {
-                            setSelectedPoles(selectedPoles.filter(id => id !== pole.id));
+                            const newSelectedPoles = { ...selectedPoles };
+                            delete newSelectedPoles[pole.id];
+                            setSelectedPoles(newSelectedPoles);
                           }
                         }}
                         sx={{
@@ -3605,7 +3857,7 @@ const Organization = () => {
                       </Typography>
                     }
                   />
-                  {selectedPoles.includes(pole.id) && !['pre', 'sec', 'vice'].includes(pole.id) && (
+                  {selectedPoles[pole.id] && !['pre', 'sec', 'vice'].includes(pole.id) && (
                     <FormControlLabel
                       control={
                         <Checkbox
@@ -3638,7 +3890,8 @@ const Organization = () => {
                   )}
                 </Box>
               </Paper>
-            ))}
+            ));
+            })()}
             </Box>
           </Box>
         </DialogContent>

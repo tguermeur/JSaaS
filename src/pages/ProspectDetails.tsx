@@ -70,6 +70,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { doc, getDoc, updateDoc, deleteDoc, serverTimestamp, collection, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
+import { deleteProspect } from '../firebase/prospects';
 import Navbar from '../components/layout/Navbar';
 import Sidebar from '../components/layout/Sidebar';
 import { DateTimePicker } from '@mui/x-date-pickers/DateTimePicker';
@@ -581,7 +582,8 @@ const ProspectDetails: React.FC = () => {
         return;
       }
 
-      await deleteDoc(doc(db, 'prospects', id));
+      // Utiliser deleteProspect qui supprime aussi les événements associés
+      await deleteProspect(id);
       navigate('/app/commercial');
     } catch (err) {
       console.error('Erreur lors de la suppression du prospect:', err);

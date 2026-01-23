@@ -629,7 +629,7 @@ const SecurityTab: React.FC<SecurityTabProps> = ({ userData, onUpdate }) => {
               </Typography>
               <Typography variant="body2" color="text.secondary">
               Ajoutez une couche de sécurité supplémentaire en activant l'authentification à deux facteurs. 
-              Vous devrez entrer un code unique à chaque connexion depuis une application comme Google Authenticator.
+              Vous devrez entrer un code unique à chaque connexion depuis une application comme Microsoft Authenticator.
             </Typography>
             <Chip 
               label={twoFactorEnabled ? 'Activé' : 'Désactivé'} 
@@ -680,7 +680,7 @@ const SecurityTab: React.FC<SecurityTabProps> = ({ userData, onUpdate }) => {
               {/* Instructions et Code à droite */}
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography variant="body2" color="text.secondary" paragraph>
-                  Scannez ce QR code depuis une application d'authentification à deux facteurs comme Google Authenticator et entrez le code de vérification à 6 chiffres.
+                  Scannez ce QR code depuis une application d'authentification à deux facteurs comme Microsoft Authenticator et entrez le code de vérification à 6 chiffres.
                 </Typography>
 
                 {/* Champs de code de vérification */}
@@ -796,7 +796,7 @@ const SecurityTab: React.FC<SecurityTabProps> = ({ userData, onUpdate }) => {
           {twoFactorStep === 'generate' ? (
             <Box sx={{ textAlign: 'center', py: 2 }}>
               <Typography variant="body2" color="text.secondary" paragraph>
-                Scannez ce QR code avec votre application d'authentification (Google Authenticator, Authy, etc.)
+                Scannez ce QR code avec votre application d'authentification (Microsoft Authenticator, Authy, etc.)
               </Typography>
               {twoFactorOTPAuthUrl && (
                 <Box sx={{ my: 3, display: 'flex', justifyContent: 'center' }}>

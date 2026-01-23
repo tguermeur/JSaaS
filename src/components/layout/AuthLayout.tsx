@@ -14,10 +14,11 @@ export default function AuthLayout(): JSX.Element {
         component="main" 
         sx={{ 
           flexGrow: 1, 
-          pb: 10,
+          pb: { xs: 8, sm: 10 },
           display: 'flex',
           justifyContent: 'center',
-          alignItems: 'center'
+          alignItems: 'center',
+          px: { xs: 1, sm: 2 }
         }}
       >
         <Outlet />

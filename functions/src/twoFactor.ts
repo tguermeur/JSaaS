@@ -1,15 +1,38 @@
 // Helper pour les logs de debug (sécurisé pour Cloud Run)
+// SÉCURITÉ: Désactivé en production pour éviter l'exposition d'informations sensibles
 function debugLog(location: string, message: string, data: any, hypothesisId: string) {
+  // Ne pas logger en production ou si l'émulateur n'est pas actif
+  // Vérifier explicitement que l'émulateur est actif
+  const isEmulator = process.env.FUNCTIONS_EMULATOR === 'true' || 
+                      process.env.FIREBASE_FUNCTIONS_EMULATOR === 'true' ||
+                      process.env.GCLOUD_PROJECT?.includes('demo');
+  
+  // Ne rien faire si on n'est pas dans l'émulateur
+  if (!isEmulator || process.env.NODE_ENV === 'production') {
+    return;
+  }
+  
+  // Ne rien faire si fetch n'est pas disponible (Cloud Run)
+  if (typeof fetch === 'undefined') {
+    return;
+  }
+  
+  // Ne rien faire si window est défini (navigateur)
+  if (typeof window !== 'undefined') {
+    return;
+  }
+  
+  // Seulement en développement local avec émulateur actif
   try {
-    if (typeof fetch !== 'undefined' && typeof window === 'undefined') {
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ location, message, data, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId })
-      }).catch(() => {});
-    }
+    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location, message, data, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId })
+    }).catch(() => {
+      // Ignorer silencieusement les erreurs de connexion
+    });
   } catch (e) {
-    // Ignorer les erreurs de fetch dans Cloud Run
+    // Ignorer toutes les erreurs de fetch dans Cloud Run
   }
 }
 
@@ -18,22 +41,18 @@ debugLog('twoFactor.ts:1', 'twoFactor module loading', {}, 'E');
 // #endregion
 import { onCall } from 'firebase-functions/v2/https';
 import * as admin from 'firebase-admin';
-// #region agent log
-debugLog('twoFactor.ts:4', 'Before importing speakeasy', {}, 'E');
-// #endregion
 import * as speakeasy from 'speakeasy';
-// #region agent log
-debugLog('twoFactor.ts:6', 'After importing speakeasy', { hasSpeakeasy: typeof speakeasy !== 'undefined', hasGenerateSecret: typeof speakeasy?.generateSecret === 'function' }, 'E');
-// #endregion
+import { decrypt } from './encryption';
 
-// Configuration des fonctions
+// Configuration des fonctions avec ressources minimales pour respecter le quota CPU
 const functionConfig = {
   memory: '256MiB' as const,
   timeoutSeconds: 300,
   region: 'us-central1',
   minInstances: 0,
-  maxInstances: 10,
-  concurrency: 80
+  maxInstances: 1, // Réduit au minimum pour respecter le quota CPU
+  concurrency: 20, // Réduit au minimum
+  secrets: ['ENCRYPTION_KEY'], // Nécessaire pour déchiffrer twoFactorSecret
 };
 
 /**
@@ -84,6 +103,66 @@ export const generateTwoFactorSecret = onCall(functionConfig, async (request) =>
 });
 
 /**
+ * Fonction utilitaire pour vérifier un code 2FA (sans Cloud Function)
+ * Utilisée pour vérifier la 2FA avant d'accéder aux données cryptées
+ */
+export async function verifyTwoFactorCodeForAccess(
+  uid: string,
+  code: string
+): Promise<boolean> {
+  try {
+    if (!code || code.length !== 6) {
+      return false;
+    }
+
+    const userDoc = await admin.firestore()
+      .collection('users')
+      .doc(uid)
+      .get();
+
+    if (!userDoc.exists) {
+      return false;
+    }
+
+    const userData = userDoc.data();
+    
+    // Vérifier que la 2FA est activée
+    if (!userData?.twoFactorEnabled) {
+      return false;
+    }
+
+    let secret = userData?.twoFactorSecret;
+
+    if (!secret) {
+      return false;
+    }
+
+    // Déchiffrer le secret si nécessaire
+    if (typeof secret === 'string' && secret.startsWith('ENC:')) {
+      try {
+        secret = await decrypt(secret);
+      } catch (decryptError: any) {
+        console.error('Erreur lors du déchiffrement du secret 2FA:', decryptError);
+        return false;
+      }
+    }
+
+    // Vérifier le code TOTP
+    const verified = speakeasy.totp.verify({
+      secret: secret,
+      encoding: 'base32',
+      token: code,
+      window: 2
+    });
+
+    return verified;
+  } catch (error) {
+    console.error('[verifyTwoFactorCodeForAccess] Erreur:', error);
+    return false;
+  }
+}
+
+/**
  * Vérifie le code TOTP et active la 2FA si valide
  */
 export const verifyAndEnableTwoFactor = onCall(functionConfig, async (request) => {
@@ -112,10 +191,20 @@ export const verifyAndEnableTwoFactor = onCall(functionConfig, async (request) =
     }
 
     const userData = userDoc.data();
-    const secret = userData?.twoFactorSecret;
+    let secret = userData?.twoFactorSecret;
 
     if (!secret) {
       throw new Error('Aucun secret 2FA trouvé. Veuillez générer un nouveau secret.');
+    }
+
+    // Déchiffrer le secret si il est chiffré (format ENC:...)
+    if (typeof secret === 'string' && secret.startsWith('ENC:')) {
+      try {
+        secret = await decrypt(secret);
+      } catch (decryptError: any) {
+        console.error('Erreur lors du déchiffrement du secret 2FA:', decryptError);
+        throw new Error('Erreur lors du déchiffrement du secret 2FA');
+      }
     }
 
     // Vérifier le code TOTP
@@ -191,20 +280,59 @@ export const verifyTwoFactorCode = onCall(functionConfig, async (request) => {
     }
 
     const userData = userDoc.data();
-    const secret = userData?.twoFactorSecret;
+    let secret = userData?.twoFactorSecret;
 
     // #region agent log
-    console.log('[verifyTwoFactorCode] User data retrieved', { hasSecret: !!secret, hasSecureDevices: !!userData?.secureDevices, secureDevicesCount: userData?.secureDevices?.length || 0 });
-    debugLog('verifyTwoFactorCode:4', 'User data retrieved', { hasSecret: !!secret, hasSecureDevices: !!userData?.secureDevices, secureDevicesCount: userData?.secureDevices?.length || 0 }, 'B');
+    console.log('[verifyTwoFactorCode] User data retrieved', { hasSecret: !!secret, isEncrypted: secret?.startsWith?.('ENC:'), hasSecureDevices: !!userData?.secureDevices, secureDevicesCount: userData?.secureDevices?.length || 0 });
+    debugLog('verifyTwoFactorCode:4', 'User data retrieved', { hasSecret: !!secret, isEncrypted: secret?.startsWith?.('ENC:'), hasSecureDevices: !!userData?.secureDevices, secureDevicesCount: userData?.secureDevices?.length || 0 }, 'B');
     // #endregion
 
     if (!secret) {
       throw new Error('2FA non configurée');
     }
 
+    // Déchiffrer le secret si il est chiffré (format ENC:...)
+    if (typeof secret === 'string' && secret.startsWith('ENC:')) {
+      try {
+        console.log('[verifyTwoFactorCode] Secret is encrypted, decrypting...');
+        secret = await decrypt(secret);
+        console.log('[verifyTwoFactorCode] Secret decrypted successfully, length:', secret?.length);
+        
+        // Vérifier que le secret déchiffré est valide
+        if (!secret || secret.trim().length === 0) {
+          throw new Error('Secret déchiffré vide');
+        }
+      } catch (decryptError: any) {
+        console.error('[verifyTwoFactorCode] Error decrypting secret:', {
+          error: decryptError.message,
+          stack: decryptError.stack,
+          name: decryptError.name,
+          code: decryptError.code,
+          hasEncryptionKey: !!process.env.ENCRYPTION_KEY
+        });
+        
+        // Si la clé de chiffrement n'est pas configurée, c'est une erreur critique
+        if (decryptError.message?.includes('ENCRYPTION_KEY') || 
+            decryptError.message?.includes('non définie') ||
+            decryptError.message?.includes('impossible de récupérer')) {
+          throw new Error('Configuration de chiffrement manquante. Contactez l\'administrateur.');
+        }
+        
+        // Autre erreur de déchiffrement - ne pas continuer car le secret est invalide
+        throw new Error(`Erreur lors du déchiffrement du secret 2FA: ${decryptError.message}`);
+      }
+    } else {
+      console.log('[verifyTwoFactorCode] Secret is not encrypted, using as-is, length:', secret?.length);
+    }
+    
+    // Vérifier que le secret est valide avant de l'utiliser
+    if (!secret || typeof secret !== 'string' || secret.trim().length === 0) {
+      throw new Error('Secret 2FA invalide ou vide');
+    }
+
     // #region agent log
-    console.log('[verifyTwoFactorCode] Verifying TOTP code', { secretLength: secret.length, code });
-    debugLog('verifyTwoFactorCode:5', 'Verifying TOTP code', { secretLength: secret.length, code }, 'C');
+    console.log('[verifyTwoFactorCode] Verifying TOTP code', { secretLength: secret?.length, code });
+    debugLog('verifyTwoFactorCode:5', 'Verifying TOTP code', { secretLength: secret?.length, code }, 'C');
     // #endregion
 
     // Vérifier le code TOTP
@@ -322,12 +450,26 @@ export const verifyTwoFactorCode = onCall(functionConfig, async (request) => {
     return { success: true };
   } catch (error: any) {
     // #region agent log
-    console.error('[verifyTwoFactorCode] Error caught', { errorMessage: error.message, errorStack: error.stack, errorName: error.name, errorCode: error.code });
+    console.error('[verifyTwoFactorCode] Error caught', { 
+      errorMessage: error.message, 
+      errorStack: error.stack, 
+      errorName: error.name, 
+      errorCode: error.code,
+      errorString: String(error)
+    });
     debugLog('verifyTwoFactorCode:13', 'Error caught', { errorMessage: error.message, errorStack: error.stack, errorName: error.name }, 'A');
     // #endregion
     
     console.error('Erreur vérification code 2FA:', error);
-    throw new Error(error.message || 'Code invalide');
+    
+    // Propager l'erreur avec un message clair
+    // Si c'est déjà une Error avec un message, la retourner telle quelle
+    if (error instanceof Error) {
+      throw error;
+    }
+    
+    // Sinon, créer une nouvelle Error avec le message disponible
+    throw new Error(error.message || error.toString() || 'Code invalide');
   }
 });
 

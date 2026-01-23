@@ -147,7 +147,7 @@ const AuditMissionDetails: React.FC = () => {
   const [generatedDocuments, setGeneratedDocuments] = useState<GeneratedDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
   const [userNames, setUserNames] = useState<{ [key: string]: string }>({});
   const [uploadingDoc, setUploadingDoc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -186,13 +186,52 @@ const AuditMissionDetails: React.FC = () => {
     if (!missionId) return;
 
     try {
-      const documentsQuery = query(
-        collection(db, 'generatedDocuments'),
-        where('missionId', '==', missionId),
-        orderBy('createdAt', 'desc')
-      );
-
-      const snapshot = await getDocs(documentsQuery);
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:188',message:'Before fetchGeneratedDocuments query',data:{missionId,currentUserId:currentUser?.uid,userStructureId:userData?.structureId,userStatus:userData?.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
+      
+      if (!userData?.structureId) {
+        console.warn('StructureId non disponible pour filtrer les documents');
+        setGeneratedDocuments([]);
+        return;
+      }
+      
+      // Filtrer par missionId ET structureId pour respecter les règles de sécurité Firestore
+      // Essayer d'abord avec orderBy, puis sans si l'index composite n'existe pas
+      let snapshot;
+      try {
+        const documentsQuery = query(
+          collection(db, 'generatedDocuments'),
+          where('missionId', '==', missionId),
+          where('structureId', '==', userData.structureId),
+          orderBy('createdAt', 'desc')
+        );
+        snapshot = await getDocs(documentsQuery);
+      } catch (error: any) {
+        // Si l'index composite n'existe pas, essayer sans orderBy
+        if (error?.code === 'failed-precondition' || error?.message?.includes('index')) {
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:207',message:'Index composite manquant, essai sans orderBy',data:{error:error.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+          const documentsQueryWithoutOrder = query(
+            collection(db, 'generatedDocuments'),
+            where('missionId', '==', missionId),
+            where('structureId', '==', userData.structureId)
+          );
+          snapshot = await getDocs(documentsQueryWithoutOrder);
+          // Trier manuellement par createdAt
+          snapshot.docs.sort((a, b) => {
+            const dateA = a.data().createdAt?.toDate?.() || new Date(0);
+            const dateB = b.data().createdAt?.toDate?.() || new Date(0);
+            return dateB.getTime() - dateA.getTime();
+          });
+        } else {
+          throw error;
+        }
+      }
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:195',message:'After getDocs call',data:{docCount:snapshot.docs.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       const documents = snapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -216,6 +255,9 @@ const AuditMissionDetails: React.FC = () => {
         await fetchUserNames(userIds);
       }
     } catch (error) {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:218',message:'Error in fetchGeneratedDocuments',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       console.error('Erreur lors de la récupération des documents générés:', error);
       setError('Erreur lors de la récupération des documents générés');
     }
@@ -224,9 +266,18 @@ const AuditMissionDetails: React.FC = () => {
   // Fonction pour récupérer les informations des utilisateurs
   const fetchUserNames = async (userIds: string[]) => {
     try {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:225',message:'Before fetchUserNames',data:{userIds,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       const uniqueIds = [...new Set(userIds)];
       const userPromises = uniqueIds.map(async (userId) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:229',message:'Before getDoc for user',data:{userId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         const userDoc = await getDoc(doc(db, 'users', userId));
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:230',message:'After getDoc for user',data:{userId,exists:userDoc.exists()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         if (userDoc.exists()) {
           const userData = userDoc.data();
           return { id: userId, name: userData.displayName || 'Utilisateur inconnu' };
@@ -242,6 +293,9 @@ const AuditMissionDetails: React.FC = () => {
 
       setUserNames(userNamesMap);
     } catch (error) {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:245',message:'Error in fetchUserNames',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       console.error('Erreur lors de la récupération des noms d\'utilisateurs:', error);
     }
   };
@@ -249,8 +303,25 @@ const AuditMissionDetails: React.FC = () => {
   // Fonction pour récupérer les utilisateurs disponibles pour le tagging
   const fetchAvailableUsers = async () => {
     try {
-      const usersQuery = query(collection(db, 'users'));
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:271',message:'Before fetchAvailableUsers',data:{currentUserId:currentUser?.uid,userStructureId:userData?.structureId,userStatus:userData?.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
+      
+      if (!userData?.structureId) {
+        console.warn('StructureId non disponible pour filtrer les utilisateurs');
+        setAvailableUsers([]);
+        return;
+      }
+      
+      // Filtrer les utilisateurs par structureId pour respecter les règles de sécurité
+      const usersQuery = query(
+        collection(db, 'users'),
+        where('structureId', '==', userData.structureId)
+      );
       const usersSnapshot = await getDocs(usersQuery);
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:280',message:'After getDocs for users',data:{userCount:usersSnapshot.docs.length,structureId:userData.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       const users = usersSnapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -265,6 +336,9 @@ const AuditMissionDetails: React.FC = () => {
       });
       setAvailableUsers(users);
     } catch (error) {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:288',message:'Error in fetchAvailableUsers',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       console.error('Erreur lors de la récupération des utilisateurs:', error);
     }
   };
@@ -1009,6 +1083,9 @@ const AuditMissionDetails: React.FC = () => {
     if (!missionId || !missionNotes.trim()) return;
 
     try {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1082',message:'Before handleSaveMissionNote',data:{missionId,currentUserId:currentUser?.uid,userDataStatus:userData?.status,userDataStructureId:userData?.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       const noteData = {
         content: missionNotes.trim(),
         missionId,
@@ -1021,8 +1098,13 @@ const AuditMissionDetails: React.FC = () => {
         isReply: false,
         replyToNoteId: ''
       };
-
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1099',message:'Before addDoc',data:{noteData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       const docRef = await addDoc(collection(db, 'notes'), noteData);
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1100',message:'After addDoc success',data:{docId:docRef.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       
       const newNote = {
         id: docRef.id,
@@ -1062,6 +1144,9 @@ const AuditMissionDetails: React.FC = () => {
 
       enqueueSnackbar('Note ajoutée avec succès', { variant: 'success' });
     } catch (error) {
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1138',message:'Error in handleSaveMissionNote',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined,missionId,currentUserId:currentUser?.uid,userDataStatus:userData?.status,userDataStructureId:userData?.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       console.error('Erreur lors de l\'ajout de la note:', error);
       enqueueSnackbar('Erreur lors de l\'ajout de la note', { variant: 'error' });
     }

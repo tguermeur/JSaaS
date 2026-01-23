@@ -380,8 +380,8 @@ const AvailableMissions: React.FC = () => {
           }
 
           const recruitmentTasksSnapshot = await getDocs(recruitmentTasksQuery);
-          const recruitmentTasksList = await Promise.all(recruitmentTasksSnapshot.docs.map(async (doc) => {
-            const data = doc.data();
+          const recruitmentTasksList = await Promise.all(recruitmentTasksSnapshot.docs.map(async (taskDoc) => {
+            const data = taskDoc.data();
             
             // Récupérer le numéro d'étude si etudeId existe
             let numeroEtude = null;
@@ -399,7 +399,7 @@ const AvailableMissions: React.FC = () => {
             }
 
             return {
-              id: doc.id,
+              id: taskDoc.id,
               title: data.title || '',
               description: data.description || '',
               remuneration: data.remuneration || 0,

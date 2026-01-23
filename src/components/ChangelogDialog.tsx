@@ -205,7 +205,7 @@ const ChangelogDialog: React.FC<ChangelogDialogProps> = ({ open, onClose }) => {
                       <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
                         <PhoneIcon sx={{ fontSize: 20, color: 'primary.main', mt: 0.2 }} />
                         <Typography variant="body2">
-                          <strong>Google Authenticator</strong> : Protection avec codes temporaires
+                          <strong>Microsoft Authenticator</strong> : Protection avec codes temporaires
                         </Typography>
                       </Box>
                       

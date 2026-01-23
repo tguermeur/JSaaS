@@ -1,86 +1,35 @@
-import fs from 'fs-extra';
-import path from 'path';
-import { fileURLToPath } from 'url';
+/**
+ * Script pour corriger les fichiers d'extension
+ * Ce script devrait utiliser des placeholders plutôt que des clés en dur
+ * 
+ * NOTE: Les clés doivent être injectées au build time, pas en dur ici
+ */
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Ce script devrait être mis à jour pour utiliser les placeholders
+// ou charger depuis les variables d'environnement
 
-const extensionDir = path.join(__dirname, '../public/extension');
+const fs = require('fs');
+const path = require('path');
 
-console.log('🔧 Correction automatique de l\'extension...');
-
-try {
-  // 1. Corriger config.js
-  console.log('📝 Correction de config.js...');
-  const configContent = `// Configuration Firebase pour l'extension
+// Charger depuis les variables d'environnement
 const firebaseConfig = {
-  apiKey: "AIzaSyCW55pfTJwuRosEx9Sxs-LELEWv1RiS3iI",
-  authDomain: "jsaas-dd2f7.firebaseapp.com",
-  projectId: "jsaas-dd2f7",
-  storageBucket: "jsaas-dd2f7.appspot.com",
-  messagingSenderId: "1028151005055",
-  appId: "1:1028151005055:web:66a22fecbffcea812c944a"
+  apiKey: process.env.VITE_FIREBASE_API_KEY || '__FIREBASE_API_KEY__',
+  authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN || '__FIREBASE_AUTH_DOMAIN__',
+  projectId: process.env.VITE_FIREBASE_PROJECT_ID || '__FIREBASE_PROJECT_ID__',
+  storageBucket: process.env.VITE_FIREBASE_STORAGE_BUCKET || '__FIREBASE_STORAGE_BUCKET__',
+  messagingSenderId: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '__FIREBASE_MESSAGING_SENDER_ID__',
+  appId: process.env.VITE_FIREBASE_APP_ID || '__FIREBASE_APP_ID__'
 };
 
-// URL de l'application
-const APP_URL = "http://localhost:3007"; // Ou votre URL de production
+console.log('⚠️  Ce script utilise des placeholders ou des variables d\'environnement');
+console.log('⚠️  Les clés ne doivent PAS être en dur dans le code');
 
-// Export pour l'extension (pas de modules ES6)
-window.firebaseConfig = firebaseConfig;
-window.APP_URL = APP_URL;`;
-
-  fs.writeFileSync(path.join(extensionDir, 'config.js'), configContent);
-
-  // 2. Corriger popup.html
-  console.log('📝 Correction de popup.html...');
-  let popupHtml = fs.readFileSync(path.join(extensionDir, 'popup.html'), 'utf8');
-  
-  // S'assurer que config.js est chargé en premier
-  if (!popupHtml.includes('<script src="config.js"></script>')) {
-    popupHtml = popupHtml.replace(
-      '<script src="firebase/firebase-app.js"></script>',
-      '<script src="config.js"></script>\n  <script src="firebase/firebase-app.js"></script>'
-    );
-  }
-  
-  fs.writeFileSync(path.join(extensionDir, 'popup.html'), popupHtml);
-
-  // 3. Utiliser le fichier popup-fixed.js s'il existe
-  console.log('📝 Correction de popup.js...');
-  const popupFixedPath = path.join(extensionDir, 'popup-fixed.js');
-  const popupPath = path.join(extensionDir, 'popup.js');
-  
-  if (fs.existsSync(popupFixedPath)) {
-    fs.copySync(popupFixedPath, popupPath);
-    console.log('✅ Utilisation de popup-fixed.js');
-  } else {
-    console.log('⚠️ popup-fixed.js non trouvé, popup.js non modifié');
-  }
-
-  console.log('✅ Extension corrigée avec succès !');
-  console.log('💡 Vous pouvez maintenant régénérer l\'extension avec: npm run build:extension-all');
-
-} catch (error) {
-  console.error('❌ Erreur lors de la correction de l\'extension:', error);
-  process.exit(1);
+// Exemple de remplacement (utiliser uniquement avec variables d'environnement)
+if (process.env.VITE_FIREBASE_API_KEY && !process.env.VITE_FIREBASE_API_KEY.startsWith('__')) {
+  console.log('Configuration Firebase chargée depuis les variables d\'environnement');
+} else {
+  console.log('⚠️  Variables d\'environnement non définies. Utilisation de placeholders.');
+  console.log('⚠️  Définissez les variables VITE_FIREBASE_* dans votre .env');
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+module.exports = { firebaseConfig };

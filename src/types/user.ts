@@ -12,6 +12,15 @@ export interface UserData {
   structureId?: string; // Optionnel pour entreprises
   ecole?: string; // Optionnel pour entreprises
   cvUrl?: string; // URL du CV (optionnel)
+  // Documents d'identité sécurisés (chiffrés)
+  identityCardUrl?: string; // Carte d'identité (complet - recto + verso)
+  identityCardRectoUrl?: string; // Carte d'identité - Recto uniquement
+  identityCardVersoUrl?: string; // Carte d'identité - Verso uniquement
+  ribUrl?: string; // RIB
+  schoolCertificateUrl?: string; // Certificat de scolarité
+  healthCardUrl?: string; // Carte Vitale
+  // Documents personnalisés (max 3)
+  customDocuments?: CustomDocument[];
   photoURL?: string;
   program?: string; // Optionnel pour entreprises et structures
   birthPlace?: string;
@@ -92,4 +101,11 @@ export interface SecureDevice {
   platform: string;
   lastUsed: Date | any; // Peut être un Timestamp Firestore
   addedAt: Date | any; // Peut être un Timestamp Firestore
+}
+
+export interface CustomDocument {
+  id: string; // ID unique du document
+  name: string; // Nom/label du document (ex: "Permis de conduire", "Diplôme", etc.)
+  url: string; // URL du document chiffré dans Storage
+  uploadedAt: Date | any; // Date d'upload
 }

@@ -1,38 +1,83 @@
-import { onCall } from 'firebase-functions/v2/https';
+import { onCall, onRequest } from 'firebase-functions/v2/https';
 import * as admin from 'firebase-admin';
 import Stripe from 'stripe';
 import * as functions from 'firebase-functions';
 import { StripeProduct } from './types';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import * as express from 'express';
 
 // Charger les variables d'environnement depuis le fichier .env
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // Configuration des fonctions
+// SÉCURITÉ: cors: true permet toutes les origines au niveau Firebase v2
+// Le CORS est géré par le middleware Express dans index.ts avec une whitelist stricte
 const functionConfig = {
   memory: '256MiB' as const,
   timeoutSeconds: 300,
-  cors: true, // Permettre toutes les origines
+  cors: true, // Nécessaire pour Firebase v2, mais CORS réellement géré par Express avec whitelist
   region: 'us-central1',
   minInstances: 0,
-  maxInstances: 10,
-  concurrency: 80,
+  maxInstances: 1, // Réduit au minimum pour respecter le quota CPU
+  concurrency: 20, // Réduit au minimum
   allowUnauthenticated: false, // Changer à false car nous vérifions l'auth
 };
 
+// Configuration avec moins d'instances pour économiser le quota CPU
+const lowResourceConfig = {
+  ...functionConfig,
+  maxInstances: 1,
+  concurrency: 20,
+};
+
+// Configuration pour les webhooks (peuvent avoir besoin de plus de ressources mais on réduit quand même)
+const webhookConfig = {
+  memory: '256MiB' as const,
+  timeoutSeconds: 300,
+  cors: true,
+  region: 'us-central1',
+  minInstances: 0,
+  maxInstances: 1, // Réduit pour quota CPU
+  concurrency: 10, // Réduit pour webhooks
+  allowUnauthenticated: true, // Les webhooks Stripe n'ont pas d'auth Firebase
+};
+
 // Helper pour les logs de debug (sécurisé pour Cloud Run)
+// SÉCURITÉ: Désactivé en production pour éviter l'exposition d'informations sensibles
 function debugLog(location: string, message: string, data: any, hypothesisId: string) {
+  // Ne pas logger en production ou si l'émulateur n'est pas actif
+  // Vérifier explicitement que l'émulateur est actif
+  const isEmulator = process.env.FUNCTIONS_EMULATOR === 'true' || 
+                      process.env.FIREBASE_FUNCTIONS_EMULATOR === 'true' ||
+                      process.env.GCLOUD_PROJECT?.includes('demo');
+  
+  // Ne rien faire si on n'est pas dans l'émulateur
+  if (!isEmulator || process.env.NODE_ENV === 'production') {
+    return;
+  }
+  
+  // Ne rien faire si fetch n'est pas disponible (Cloud Run)
+  if (typeof fetch === 'undefined') {
+    return;
+  }
+  
+  // Ne rien faire si window est défini (navigateur)
+  if (typeof window !== 'undefined') {
+    return;
+  }
+  
+  // Seulement en développement local avec émulateur actif
   try {
-    if (typeof fetch !== 'undefined' && typeof window === 'undefined') {
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ location, message, data, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId })
-      }).catch(() => {});
-    }
+    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location, message, data, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId })
+    }).catch(() => {
+      // Ignorer silencieusement les erreurs de connexion
+    });
   } catch (e) {
-    // Ignorer les erreurs de fetch dans Cloud Run
+    // Ignorer toutes les erreurs de fetch dans Cloud Run
   }
 }
 
@@ -265,7 +310,8 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
 });
 
 // Fonction pour annuler un abonnement
-export const cancelSubscription = onCall(functionConfig, async (request) => {
+// Utilise lowResourceConfig pour éviter le quota CPU
+export const cancelSubscription = onCall(lowResourceConfig, async (request) => {
   try {
     // Vérifier l'authentification
     if (!request.auth) {
@@ -299,15 +345,13 @@ interface SubscriptionData {
   priceId: string;
 }
 
-export const createSubscription = functions.https.onCall(async (request) => {
+// Converti en v2 avec lowResourceConfig pour économiser le quota CPU
+export const createSubscription = onCall(lowResourceConfig, async (request) => {
   console.log('Stripe Functions - Début de createSubscription');
   
   if (!request.auth) {
     console.log('Stripe Functions - Erreur: utilisateur non authentifié');
-    throw new functions.https.HttpsError(
-      'unauthenticated',
-      'Vous devez être connecté pour créer un abonnement'
-    );
+    throw new Error('Vous devez être connecté pour créer un abonnement');
   }
 
   try {
@@ -364,17 +408,28 @@ export const createSubscription = functions.https.onCall(async (request) => {
     console.log('Stripe Functions - Session créée:', session.id);
 
     return { sessionId: session.id };
-  } catch (error) {
+  } catch (error: any) {
     console.error('Stripe Functions - Erreur lors de la création de l\'abonnement:', error);
-    throw new functions.https.HttpsError(
-      'internal',
-      'Une erreur est survenue lors de la création de l\'abonnement'
-    );
+    throw new Error(error.message || 'Une erreur est survenue lors de la création de l\'abonnement');
   }
 });
 
-export const handleStripeWebhook = functions.https.onRequest(async (req, res) => {
-  const sig = req.headers['stripe-signature'];
+// Configuration webhook avec application Express séparée pour le body brut
+const webhookConfigWithRaw = {
+  ...webhookConfig,
+  // Pas besoin de cors pour les webhooks Stripe (ils viennent de Stripe directement)
+};
+
+// Application Express pour webhook Stripe (body brut)
+const stripeWebhookApp = express();
+stripeWebhookApp.use(express.raw({ type: 'application/json', limit: '10mb' }));
+
+// Converti en v2 avec application Express pour gérer le body brut
+export const handleStripeWebhook = onRequest(webhookConfigWithRaw, stripeWebhookApp);
+
+// Route handler pour le webhook Stripe
+stripeWebhookApp.post('*', async (req, res) => {
+  const sig = req.headers['stripe-signature'] as string | undefined;
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!endpointSecret) {
@@ -392,7 +447,9 @@ export const handleStripeWebhook = functions.https.onRequest(async (req, res) =>
   let event;
 
   try {
-    event = getStripeInstance().webhooks.constructEvent(req.rawBody, sig, endpointSecret);
+    // Avec express.raw(), req.body est un Buffer
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body || ''), 'utf8');
+    event = getStripeInstance().webhooks.constructEvent(body, sig, endpointSecret);
     console.log('Stripe Functions - Événement Stripe reçu:', event.type);
   } catch (err: any) {
     console.error('Stripe Functions - Erreur de signature webhook:', err.message);
@@ -467,7 +524,7 @@ export const handleStripeWebhook = functions.https.onRequest(async (req, res) =>
 
 
 // Fonction pour récupérer la liste des clients Stripe
-export const getStripeCustomers = onCall(functionConfig, async (request) => {
+export const getStripeCustomers = onCall(lowResourceConfig, async (request) => {
   // Vérification de l'authentification
   if (!request.auth?.uid) {
     throw new functions.https.HttpsError(
@@ -614,7 +671,8 @@ export const cancelStripeSubscription = onCall(functionConfig, async (request) =
 });
 
 // Fonction pour récupérer l'historique des paiements Stripe (nouvelle version)
-export const fetchPaymentHistory = onCall(functionConfig, async (request) => {
+// Utilise lowResourceConfig pour éviter le quota CPU
+export const fetchPaymentHistory = onCall(lowResourceConfig, async (request) => {
   try {
     console.log('fetchPaymentHistory - Début de la fonction');
     console.log('fetchPaymentHistory - Utilisateur authentifié:', request.auth?.uid);
@@ -721,7 +779,8 @@ interface CreateCotisationSessionData {
 }
 
 // Fonction pour créer une session de paiement de cotisation
-export const createCotisationSession = onCall(functionConfig, async (request) => {
+// Utilise lowResourceConfig pour éviter le quota CPU
+export const createCotisationSession = onCall(lowResourceConfig, async (request) => {
   try {
     // Vérifier l'authentification
     if (!request.auth) {
@@ -898,9 +957,17 @@ export const getStructureCotisations = onCall(functionConfig, async (request) =>
   }
 }); 
 
+// Application Express pour webhook cotisation (body brut)
+const cotisationWebhookApp = express();
+cotisationWebhookApp.use(express.raw({ type: 'application/json', limit: '10mb' }));
+
 // Webhook pour gérer les événements de paiement de cotisations
-export const handleCotisationWebhook = functions.https.onRequest(async (req, res) => {
-  const sig = req.headers['stripe-signature'];
+// Converti en v2 avec application Express pour gérer le body brut
+export const handleCotisationWebhook = onRequest(webhookConfigWithRaw, cotisationWebhookApp);
+
+// Route handler pour le webhook de cotisation
+cotisationWebhookApp.post('*', async (req, res) => {
+  const sig = req.headers['stripe-signature'] as string | undefined;
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!sig || !endpointSecret) {
@@ -912,7 +979,9 @@ export const handleCotisationWebhook = functions.https.onRequest(async (req, res
   let event: Stripe.Event;
 
   try {
-    event = getStripeInstance().webhooks.constructEvent(req.rawBody, sig, endpointSecret);
+    // Avec express.raw(), req.body est un Buffer
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body || ''), 'utf8');
+    event = getStripeInstance().webhooks.constructEvent(body, sig, endpointSecret);
   } catch (err) {
     console.error('Erreur de signature webhook:', err);
     res.status(400).send(`Webhook Error: ${err instanceof Error ? err.message : 'Erreur inconnue'}`);

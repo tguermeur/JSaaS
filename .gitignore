@@ -95,6 +95,11 @@ firebase.config.js
 # Extension build
 *.zip
 
+# Extension build directories (contiennent les clés injectées au build)
+public/extension/
+public/extension-folder/
+dist/extension/
+
 # Backup files
 *.backup
 

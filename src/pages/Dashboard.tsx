@@ -31,7 +31,10 @@ import {
   Group as GroupIcon,
   Add as AddIcon,
   Description as DescriptionIcon,
-  ArrowForward as ArrowForwardIcon
+  ArrowForward as ArrowForwardIcon,
+  Business as BusinessIcon,
+  PersonAdd as PersonAddIcon,
+  Folder as FolderIcon
 } from '@mui/icons-material';
 import EnterpriseMissionForm from '../components/missions/EnterpriseMissionForm';
 import { useAuth } from '../contexts/AuthContext';
@@ -39,7 +42,7 @@ import { useNavigate } from 'react-router-dom';
 import { logoutUser } from '../firebase/auth';
 import { collection, query, where, getDocs, addDoc, Timestamp, getDoc, doc, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Document } from '../types/document';
+import { Document, Folder } from '../types/document';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -150,6 +153,30 @@ export default function Dashboard(): JSX.Element {
   const [enterpriseMissionDialogOpen, setEnterpriseMissionDialogOpen] = useState(false);
   const [enterpriseMissionTab, setEnterpriseMissionTab] = useState(0);
   const [recentDocuments, setRecentDocuments] = useState<Document[]>([]);
+  const [pinnedDocuments, setPinnedDocuments] = useState<Document[]>([]);
+  const [pinnedFolders, setPinnedFolders] = useState<Folder[]>([]);
+  const [recentUsers, setRecentUsers] = useState<Array<{
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    createdAt: Date;
+    photoURL?: string;
+  }>>([]);
+  const [ongoingMissions, setOngoingMissions] = useState<Array<{
+    id: string;
+    numeroMission: string;
+    chargeName: string;
+    company: string;
+  }>>([]);
+  const [lastCompany, setLastCompany] = useState<{
+    id: string;
+    name: string;
+    logo?: string;
+    createdAt: Date;
+    createdBy?: string;
+    createdByName?: string;
+  } | null>(null);
 
   // Utiliser l'animation du compteur
   const animatedRevenue = useCountAnimation(statistics.totalRevenue);
@@ -391,10 +418,11 @@ export default function Dashboard(): JSX.Element {
         );
         const allMissionsSnapshot = await getDocs(allMissionsQuery);
 
+        // Compter toutes les missions non archivées (pas seulement celles avec date de fin future)
         const activeMissions = allMissionsSnapshot.docs.filter(doc => {
           const mission = doc.data();
-          const endDate = new Date(mission.endDate);
-          return endDate >= new Date();
+          // Exclure uniquement les missions archivées
+          return mission.isArchived !== true;
         }).length;
 
         // Transformer les missions pour le calendrier
@@ -477,33 +505,37 @@ export default function Dashboard(): JSX.Element {
       }
 
       try {
-        console.log('Email de l\'utilisateur connecté:', currentUser.email);
-        
-        // Récupérer les données de l'utilisateur pour obtenir son structureId
-        const userDoc = await getDocs(query(collection(db, 'users'), where('email', '==', currentUser.email)));
-        if (userDoc.empty) {
-          console.error('Aucun utilisateur trouvé avec cet email');
+        // Utiliser directement userData du contexte au lieu de faire une requête
+        if (!userData) {
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:480',message:'No userData in context',data:{currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
           return;
         }
         
-        const userDocData = userDoc.docs[0].data();
-        const userStatus = userDocData.status;
+        const userStatus = userData.status;
         
         // Double vérification pour les entreprises
         if (userStatus === 'entreprise') {
           return;
         }
         
-        const userStructureId = userDocData.structureId;
+        const userStructureId = userData.structureId;
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:497',message:'Using userData from context',data:{currentUserId:currentUser?.uid,userStatus,userStructureId,hasStructureId:!!userStructureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         
         // Vérifier que structureId existe avant de continuer
         if (!userStructureId) {
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:500',message:'No structureId found',data:{currentUserId:currentUser?.uid,userStatus},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
           console.error('Aucun structureId trouvé pour cet utilisateur');
           return;
         }
 
         console.log('Structure ID de l\'utilisateur:', userStructureId);
-        console.log('Données complètes de l\'utilisateur:', userDocData);
+        console.log('Données complètes de l\'utilisateur:', userData);
 
         // Vérifier d'abord si la collection users existe
         const usersRef = collection(db, 'users');
@@ -546,10 +578,11 @@ export default function Dashboard(): JSX.Element {
         );
         const allMissionsSnapshot = await getDocs(allMissionsQuery);
 
+        // Compter toutes les missions non archivées (pas seulement celles avec date de fin future)
         const activeMissions = allMissionsSnapshot.docs.filter(doc => {
           const mission = doc.data();
-          const endDate = new Date(mission.endDate);
-          return endDate >= new Date();
+          // Exclure uniquement les missions archivées
+          return mission.isArchived !== true;
         }).length;
 
         // Transformer les missions pour le calendrier
@@ -696,6 +729,9 @@ export default function Dashboard(): JSX.Element {
         // Ajouter les événements de relance aux événements du calendrier
         setCalendarEvents([...eventsList, ...relanceEvents]);
       } catch (error) {
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:524',message:'Error in fetchData',data:{errorCode:error?.code,errorMessage:error?.message,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
         console.error("Erreur lors du chargement des données:", error);
       }
     };
@@ -706,7 +742,7 @@ export default function Dashboard(): JSX.Element {
     }
     
     fetchData();
-  }, [currentUser?.uid, userStructureId, isEntreprise]); // Utiliser les valeurs stabilisées
+  }, [currentUser?.uid, userData, userStructureId, isEntreprise]); // Utiliser les valeurs stabilisées
 
   // Charger les documents récents
   useEffect(() => {
@@ -717,22 +753,55 @@ export default function Dashboard(): JSX.Element {
       try {
         const structureId = userStructureId;
         const docsRef = collection(db, 'structures', structureId, 'documents');
-        const docsQuery = query(
-          docsRef,
-          orderBy('createdAt', 'desc'),
-          limit(5)
-        );
-        const docsSnapshot = await getDocs(docsQuery);
+        
+        // Essayer avec orderBy et filtre parentFolderId, sinon récupérer tous et trier manuellement
+        let docsSnapshot;
+        try {
+          // Essayer d'abord avec le filtre parentFolderId === null
+          try {
+            const docsQuery = query(
+              docsRef,
+              where('parentFolderId', '==', null),
+              orderBy('createdAt', 'desc'),
+              limit(10)
+            );
+            docsSnapshot = await getDocs(docsQuery);
+          } catch (parentFolderError: any) {
+            // Si l'index parentFolderId n'existe pas, essayer sans ce filtre
+            console.log('Index parentFolderId non disponible, récupération sans filtre');
+            const docsQuery = query(
+              docsRef,
+              orderBy('createdAt', 'desc'),
+              limit(20)
+            );
+            docsSnapshot = await getDocs(docsQuery);
+          }
+        } catch (orderByError: any) {
+          // Si l'index createdAt n'existe pas, récupérer tous les documents et trier
+          console.log('Index createdAt non disponible, récupération de tous les documents');
+          docsSnapshot = await getDocs(docsRef);
+        }
 
         const docsList: Document[] = [];
         for (const docSnap of docsSnapshot.docs) {
           const data = docSnap.data();
+          
+          // Exclure les documents liés aux missions
+          if (data.missionId) continue;
+          
+          // Pour le dossier racine, vérifier que parentFolderId est bien null/undefined
+          if (data.parentFolderId !== null && data.parentFolderId !== undefined) {
+            continue;
+          }
+          
           // Récupérer le nom de l'utilisateur
           let uploadedByName = '';
           try {
-            const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
-            const userDocData = userDoc.data();
-            uploadedByName = userDocData?.displayName || userDocData?.firstName + ' ' + userDocData?.lastName || 'Inconnu';
+            if (data.uploadedBy) {
+              const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
+              const userDocData = userDoc.data();
+              uploadedByName = userDocData?.displayName || (userDocData?.firstName && userDocData?.lastName ? `${userDocData.firstName} ${userDocData.lastName}` : 'Inconnu');
+            }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
           }
@@ -743,7 +812,7 @@ export default function Dashboard(): JSX.Element {
             userStatus === 'admin' ||
             (data.allowedRoles && data.allowedRoles.includes(userStatus));
 
-          if (canAccess) {
+          if (canAccess && data.name) {
             docsList.push({
               id: docSnap.id,
               ...data,
@@ -753,14 +822,464 @@ export default function Dashboard(): JSX.Element {
           }
         }
 
-        setRecentDocuments(docsList);
+        // Trier par date si on n'a pas utilisé orderBy
+        docsList.sort((a, b) => {
+          const aDate = a.createdAt && (a.createdAt as any).toDate 
+            ? (a.createdAt as any).toDate() 
+            : new Date(a.createdAt as Date || 0);
+          const bDate = b.createdAt && (b.createdAt as any).toDate 
+            ? (b.createdAt as any).toDate() 
+            : new Date(b.createdAt as Date || 0);
+          return bDate.getTime() - aDate.getTime();
+        });
+
+        console.log('Documents récents trouvés:', docsList.length);
+        console.log('Documents:', docsList.map(d => ({ id: d.id, name: d.name, createdAt: d.createdAt })));
+        
+        // Trier à nouveau par date pour être sûr
+        const sortedDocs = docsList.sort((a, b) => {
+          const aDate = a.createdAt && (a.createdAt as any).toDate 
+            ? (a.createdAt as any).toDate() 
+            : new Date(a.createdAt as Date || 0);
+          const bDate = b.createdAt && (b.createdAt as any).toDate 
+            ? (b.createdAt as any).toDate() 
+            : new Date(b.createdAt as Date || 0);
+          return bDate.getTime() - aDate.getTime();
+        });
+        
+        setRecentDocuments(sortedDocs.slice(0, 5));
       } catch (error) {
         console.error('Erreur lors du chargement des documents récents:', error);
       }
     };
 
     fetchRecentDocuments();
-  }, [currentUser?.uid, userStructureId, userStatus, isEntreprise]); // Utiliser les valeurs stabilisées
+  }, [currentUser?.uid, userStructureId, userStatus, isEntreprise]);
+
+  // Charger les dossiers épinglés
+  useEffect(() => {
+    const fetchPinnedFolders = async () => {
+      if (!currentUser || !userStructureId) return;
+      if (isEntreprise) return;
+
+      try {
+        const structureId = userStructureId;
+        const foldersRef = collection(db, 'structures', structureId, 'folders');
+        
+        // Récupérer les dossiers épinglés
+        let foldersSnapshot;
+        try {
+          const foldersQuery = query(
+            foldersRef,
+            where('isPinned', '==', true),
+            where('parentFolderId', '==', null)
+          );
+          foldersSnapshot = await getDocs(foldersQuery);
+        } catch (error: any) {
+          // Si l'index n'existe pas, récupérer tous les dossiers et filtrer
+          console.log('Index isPinned non disponible, récupération de tous les dossiers');
+          const allFoldersQuery = query(
+            foldersRef,
+            where('parentFolderId', '==', null)
+          );
+          foldersSnapshot = await getDocs(allFoldersQuery);
+        }
+
+        const foldersList: Folder[] = [];
+        for (const folderSnap of foldersSnapshot.docs) {
+          const data = folderSnap.data();
+          
+          // Filtrer les dossiers épinglés (si l'index n'existe pas)
+          if (!data.isPinned) continue;
+          
+          // Vérifier l'accès aux dossiers restreints
+          const canAccess = !data.isRestricted || 
+            userStatus === 'superadmin' || 
+            userStatus === 'admin' ||
+            (data.allowedRoles && data.allowedRoles.includes(userStatus));
+
+          if (canAccess && data.name) {
+            foldersList.push({
+              id: folderSnap.id,
+              ...data,
+              createdAt: data.createdAt,
+            } as Folder);
+          }
+        }
+
+        setPinnedFolders(foldersList);
+      } catch (error) {
+        console.error('Erreur lors du chargement des dossiers épinglés:', error);
+      }
+    };
+
+    fetchPinnedFolders();
+  }, [currentUser?.uid, userStructureId, userStatus, isEntreprise]);
+
+  // Charger les documents épinglés
+  useEffect(() => {
+    const fetchPinnedDocuments = async () => {
+      if (!currentUser || !userStructureId) return;
+      if (isEntreprise) return;
+
+      try {
+        const structureId = userStructureId;
+        const docsList: Document[] = [];
+        
+        // 1. Charger les documents épinglés depuis structures/{structureId}/documents
+        const docsRef = collection(db, 'structures', structureId, 'documents');
+        let docsSnapshot;
+        try {
+          const docsQuery = query(
+            docsRef,
+            where('isPinned', '==', true),
+            where('parentFolderId', '==', null),
+            orderBy('createdAt', 'desc'),
+            limit(10)
+          );
+          docsSnapshot = await getDocs(docsQuery);
+        } catch (error: any) {
+          // Si l'index n'existe pas, récupérer tous les documents et filtrer
+          console.log('Index isPinned non disponible, récupération de tous les documents');
+          const allDocsQuery = query(
+            docsRef,
+            where('parentFolderId', '==', null)
+          );
+          docsSnapshot = await getDocs(allDocsQuery);
+        }
+
+        for (const docSnap of docsSnapshot.docs) {
+          const data = docSnap.data();
+          
+          // Filtrer les documents épinglés (si l'index n'existe pas)
+          if (!data.isPinned) continue;
+          
+          // Exclure les documents liés aux missions (on les charge depuis generatedDocuments)
+          if (data.missionId) continue;
+          
+          // Récupérer le nom de l'utilisateur
+          let uploadedByName = '';
+          try {
+            if (data.uploadedBy) {
+              const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
+              const userDocData = userDoc.data();
+              uploadedByName = userDocData?.displayName || (userDocData?.firstName && userDocData?.lastName ? `${userDocData.firstName} ${userDocData.lastName}` : 'Inconnu');
+            }
+          } catch (e) {
+            console.error('Erreur lors de la récupération du nom utilisateur:', e);
+          }
+
+          // Vérifier l'accès aux documents restreints
+          const canAccess = !data.isRestricted || 
+            userStatus === 'superadmin' || 
+            userStatus === 'admin' ||
+            (data.allowedRoles && data.allowedRoles.includes(userStatus));
+
+          if (canAccess && data.name) {
+            docsList.push({
+              id: docSnap.id,
+              ...data,
+              uploadedByName,
+              createdAt: data.createdAt,
+            } as Document);
+          }
+        }
+
+        // 2. Charger les documents épinglés depuis generatedDocuments
+        try {
+          const generatedDocsRef = collection(db, 'generatedDocuments');
+          let generatedDocsSnapshot;
+          try {
+            const generatedDocsQuery = query(
+              generatedDocsRef,
+              where('isPinned', '==', true),
+              where('structureId', '==', structureId),
+              orderBy('createdAt', 'desc'),
+              limit(10)
+            );
+            generatedDocsSnapshot = await getDocs(generatedDocsQuery);
+          } catch (error: any) {
+            // Si l'index n'existe pas, récupérer tous les documents et filtrer
+            console.log('Index isPinned non disponible pour generatedDocuments, récupération de tous les documents');
+            const allGeneratedDocsQuery = query(
+              generatedDocsRef,
+              where('structureId', '==', structureId)
+            );
+            generatedDocsSnapshot = await getDocs(allGeneratedDocsQuery);
+          }
+
+          for (const docSnap of generatedDocsSnapshot.docs) {
+            const data = docSnap.data();
+            
+            // Filtrer les documents épinglés (si l'index n'existe pas)
+            if (!data.isPinned) continue;
+            
+            // Récupérer le nom de l'utilisateur
+            let uploadedByName = '';
+            try {
+              if (data.createdBy) {
+                const userDoc = await getDoc(doc(db, 'users', data.createdBy));
+                const userDocData = userDoc.data();
+                uploadedByName = userDocData?.displayName || (userDocData?.firstName && userDocData?.lastName ? `${userDocData.firstName} ${userDocData.lastName}` : 'Inconnu');
+              }
+            } catch (e) {
+              console.error('Erreur lors de la récupération du nom utilisateur:', e);
+            }
+
+            // Ajouter le document généré à la liste
+            docsList.push({
+              id: docSnap.id,
+              name: data.fileName || 'Document sans nom',
+              size: data.fileSize || 0,
+              type: data.fileName?.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream',
+              url: data.fileUrl || '',
+              storagePath: data.fileUrl || '',
+              parentFolderId: null,
+              uploadedBy: data.createdBy || '',
+              uploadedByName,
+              createdAt: data.createdAt || new Date(),
+              updatedAt: data.updatedAt,
+              structureId: data.structureId || structureId,
+              isRestricted: false,
+              missionId: data.missionId,
+              missionNumber: data.missionNumber,
+              missionTitle: data.missionTitle,
+              isPinned: true,
+            } as Document);
+          }
+        } catch (error) {
+          console.error('Erreur lors du chargement des documents générés épinglés:', error);
+        }
+
+        // Trier par date
+        docsList.sort((a, b) => {
+          const aDate = a.createdAt && (a.createdAt as any).toDate 
+            ? (a.createdAt as any).toDate() 
+            : new Date(a.createdAt as Date || 0);
+          const bDate = b.createdAt && (b.createdAt as any).toDate 
+            ? (b.createdAt as any).toDate() 
+            : new Date(b.createdAt as Date || 0);
+          return bDate.getTime() - aDate.getTime();
+        });
+
+        setPinnedDocuments(docsList);
+      } catch (error) {
+        console.error('Erreur lors du chargement des documents épinglés:', error);
+      }
+    };
+
+    fetchPinnedDocuments();
+  }, [currentUser?.uid, userStructureId, userStatus, isEntreprise]);
+
+  // Charger les derniers utilisateurs inscrits
+  useEffect(() => {
+    const fetchRecentUsers = async () => {
+      if (!currentUser || !userStructureId) return;
+      if (isEntreprise) return;
+
+      try {
+        const usersRef = collection(db, 'users');
+        const usersQuery = query(
+          usersRef,
+          where('structureId', '==', userStructureId),
+          orderBy('createdAt', 'desc'),
+          limit(10)
+        );
+        const usersSnapshot = await getDocs(usersQuery);
+
+        const usersList = usersSnapshot.docs
+          .map(docSnap => {
+            const data = docSnap.data();
+            return {
+              id: docSnap.id,
+              firstName: data.firstName || '',
+              lastName: data.lastName || '',
+              email: data.email || '',
+              createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0),
+              photoURL: data.photoURL || ''
+            };
+          })
+          .filter(user => user.firstName && user.lastName); // Filtrer les utilisateurs sans noms
+
+        setRecentUsers(usersList);
+      } catch (error: any) {
+        // Si l'index n'existe pas, récupérer tous les utilisateurs et trier
+        if (error.code === 'failed-precondition') {
+          try {
+            const usersRef = collection(db, 'users');
+            const usersQuery = query(
+              usersRef,
+              where('structureId', '==', userStructureId)
+            );
+            const usersSnapshot = await getDocs(usersQuery);
+
+            const usersList = usersSnapshot.docs
+              .map(docSnap => {
+                const data = docSnap.data();
+                return {
+                  id: docSnap.id,
+                  firstName: data.firstName || '',
+                  lastName: data.lastName || '',
+                  email: data.email || '',
+                  createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0),
+                  photoURL: data.photoURL || ''
+                };
+              })
+              .filter(user => user.firstName && user.lastName) // Filtrer les utilisateurs sans noms
+              .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+              .slice(0, 10);
+
+            setRecentUsers(usersList);
+          } catch (fallbackError) {
+            console.error('Erreur lors du chargement des utilisateurs récents:', fallbackError);
+          }
+        } else {
+          console.error('Erreur lors du chargement des utilisateurs récents:', error);
+        }
+      }
+    };
+
+    fetchRecentUsers();
+  }, [currentUser?.uid, userStructureId, isEntreprise]);
+
+  // Charger les missions en cours (non auditées)
+  useEffect(() => {
+    const fetchOngoingMissions = async () => {
+      if (!currentUser || !userStructureId) return;
+      if (isEntreprise) return;
+
+      try {
+        const missionsRef = collection(db, 'missions');
+        const missionsQuery = query(
+          missionsRef,
+          where('structureId', '==', userStructureId)
+        );
+        const missionsSnapshot = await getDocs(missionsQuery);
+
+        const ongoingList = missionsSnapshot.docs
+          .map(docSnap => {
+            const data = docSnap.data();
+            // Exclure les missions archivées
+            if (data.isArchived === true) {
+              return null;
+            }
+            // Inclure toutes les missions non archivées (pas seulement les non auditées)
+            return {
+              id: docSnap.id,
+              numeroMission: data.numeroMission || '',
+              chargeName: data.chargeName || 'Non assigné',
+              company: data.company || ''
+            };
+          })
+          .filter((mission): mission is { id: string; numeroMission: string; chargeName: string; company: string } => mission !== null);
+
+        setOngoingMissions(ongoingList);
+        
+        // Mettre à jour les statistiques avec le nombre réel de missions en cours (non archivées)
+        setStatistics(prev => ({
+          ...prev,
+          activeMissions: ongoingList.length
+        }));
+      } catch (error) {
+        console.error('Erreur lors du chargement des missions en cours:', error);
+      }
+    };
+
+    fetchOngoingMissions();
+  }, [currentUser?.uid, userStructureId, isEntreprise]);
+
+  // Charger la dernière entreprise
+  useEffect(() => {
+    const fetchLastCompany = async () => {
+      if (!currentUser || !userStructureId) return;
+      if (isEntreprise) return;
+
+      try {
+        const companiesRef = collection(db, 'companies');
+        const companiesQuery = query(
+          companiesRef,
+          where('structureId', '==', userStructureId),
+          orderBy('createdAt', 'desc'),
+          limit(1)
+        );
+        const companiesSnapshot = await getDocs(companiesQuery);
+
+        if (!companiesSnapshot.empty) {
+          const companyDoc = companiesSnapshot.docs[0];
+          const data = companyDoc.data();
+          
+          // Récupérer le nom du créateur
+          let createdByName = '';
+          if (data.createdBy) {
+            try {
+              const creatorDoc = await getDoc(doc(db, 'users', data.createdBy));
+              const creatorData = creatorDoc.data();
+              createdByName = creatorData?.displayName || (creatorData?.firstName && creatorData?.lastName ? `${creatorData.firstName} ${creatorData.lastName}` : 'Inconnu');
+            } catch (e) {
+              console.error('Erreur lors de la récupération du créateur:', e);
+            }
+          }
+          
+          setLastCompany({
+            id: companyDoc.id,
+            name: data.name || '',
+            logo: data.logo || '',
+            createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0),
+            createdBy: data.createdBy || '',
+            createdByName
+          });
+        }
+      } catch (error: any) {
+        // Si l'index n'existe pas, récupérer toutes les entreprises et trier
+        if (error.code === 'failed-precondition') {
+          try {
+            const companiesRef = collection(db, 'companies');
+            const companiesQuery = query(
+              companiesRef,
+              where('structureId', '==', userStructureId)
+            );
+            const companiesSnapshot = await getDocs(companiesQuery);
+
+            if (!companiesSnapshot.empty) {
+              const companiesList = companiesSnapshot.docs.map(docSnap => {
+                const data = docSnap.data();
+                return {
+                  id: docSnap.id,
+                  name: data.name || '',
+                  createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0)
+                };
+              }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+              if (companiesList.length > 0) {
+                const company = companiesList[0];
+                // Récupérer le nom du créateur
+                let createdByName = '';
+                if (company.createdBy) {
+                  try {
+                    const creatorDoc = await getDoc(doc(db, 'users', company.createdBy));
+                    const creatorData = creatorDoc.data();
+                    createdByName = creatorData?.displayName || (creatorData?.firstName && creatorData?.lastName ? `${creatorData.firstName} ${creatorData.lastName}` : 'Inconnu');
+                  } catch (e) {
+                    console.error('Erreur lors de la récupération du créateur:', e);
+                  }
+                }
+                setLastCompany({
+                  ...company,
+                  createdByName
+                });
+              }
+            }
+          } catch (fallbackError) {
+            console.error('Erreur lors du chargement de la dernière entreprise:', fallbackError);
+          }
+        } else {
+          console.error('Erreur lors du chargement de la dernière entreprise:', error);
+        }
+      }
+    };
+
+    fetchLastCompany();
+  }, [currentUser?.uid, userStructureId, isEntreprise]);
 
   useEffect(() => {
     const fetchConnectedUsers = async () => {
@@ -772,28 +1291,47 @@ export default function Dashboard(): JSX.Element {
       }
 
       try {
-        const userDoc = await getDocs(query(collection(db, 'users'), where('email', '==', currentUser.email)));
-        if (userDoc.empty) return;
-
-        const userDocData = userDoc.docs[0].data();
-        const userStatus = userDocData.status;
+        // Utiliser directement userData du contexte au lieu de faire une requête
+        if (!userData) {
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:780',message:'No userData in context - fetchConnectedUsers',data:{currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+          return;
+        }
+        
+        const userStatus = userData.status;
         
         // Double vérification pour les entreprises
         if (userStatus === 'entreprise') {
           return;
         }
         
-        const userStructureId = userDocData.structureId;
+        const userStructureId = userData.structureId;
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:792',message:'Using userData from context - fetchConnectedUsers',data:{currentUserId:currentUser?.uid,userStatus,userStructureId,hasStructureId:!!userStructureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         
         // Vérifier que structureId existe avant de continuer
         if (!userStructureId) {
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:795',message:'No structureId found - fetchConnectedUsers',data:{currentUserId:currentUser?.uid,userStatus},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
           return;
         }
 
         // Récupérer tous les utilisateurs de la structure
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:793',message:'Before users query - fetchConnectedUsers',data:{currentUserId:currentUser?.uid,userStructureId,userStatus},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         const usersRef = collection(db, 'users');
         const usersQuery = query(usersRef, where('structureId', '==', userStructureId));
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:796',message:'Executing users query - fetchConnectedUsers',data:{queryType:'getDocs',structureId:userStructureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
         const usersSnapshot = await getDocs(usersQuery);
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:798',message:'After users query - fetchConnectedUsers',data:{success:true,docCount:usersSnapshot.docs.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
 
         const now = new Date();
         const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
@@ -823,6 +1361,9 @@ export default function Dashboard(): JSX.Element {
         // Prendre les 3 premiers
         setConnectedUsers(users.slice(0, 3));
       } catch (error) {
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:614',message:'Error in fetchConnectedUsers',data:{errorCode:error?.code,errorMessage:error?.message,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
         console.error("Erreur lors du chargement des utilisateurs connectés:", error);
       }
     };
@@ -837,7 +1378,7 @@ export default function Dashboard(): JSX.Element {
     const interval = setInterval(fetchConnectedUsers, 30000);
 
     return () => clearInterval(interval);
-  }, [currentUser?.uid, userStructureId, isEntreprise]); // Utiliser les valeurs stabilisées
+  }, [currentUser?.uid, userData, userStructureId, isEntreprise]); // Utiliser les valeurs stabilisées
 
   // Fonction pour obtenir les initiales si pas de photo
   const getInitials = () => {
@@ -990,6 +1531,79 @@ export default function Dashboard(): JSX.Element {
     // Utiliser le numéro de mission pour choisir une couleur de manière cohérente
     const index = numeroMission.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % colors.length;
     return colors[index];
+  };
+
+  // Fonction pour générer un camembert SVG
+  const generatePieChart = (data: Array<{ label: string; value: number; color: string }>, size: number = 120) => {
+    const total = data.reduce((sum, item) => sum + item.value, 0);
+    if (total === 0) return null;
+
+    let currentAngle = -90; // Commencer en haut
+    const radius = size / 2 - 10;
+    const center = size / 2;
+    const paths: JSX.Element[] = [];
+
+    data.forEach((item, index) => {
+      const percentage = item.value / total;
+      const angle = percentage * 360;
+      const startAngle = currentAngle;
+      const endAngle = currentAngle + angle;
+
+      const startX = center + radius * Math.cos((startAngle * Math.PI) / 180);
+      const startY = center + radius * Math.sin((startAngle * Math.PI) / 180);
+      const endX = center + radius * Math.cos((endAngle * Math.PI) / 180);
+      const endY = center + radius * Math.sin((endAngle * Math.PI) / 180);
+
+      const largeArcFlag = angle > 180 ? 1 : 0;
+
+      const pathData = [
+        `M ${center} ${center}`,
+        `L ${startX} ${startY}`,
+        `A ${radius} ${radius} 0 ${largeArcFlag} 1 ${endX} ${endY}`,
+        'Z'
+      ].join(' ');
+
+      paths.push(
+        <path
+          key={index}
+          d={pathData}
+          fill={item.color}
+          stroke="#fff"
+          strokeWidth="2"
+          style={{
+            transition: 'all 0.3s ease',
+            cursor: 'pointer',
+            transformOrigin: `${center}px ${center}px`
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = 'scale(1.1)';
+            e.currentTarget.style.filter = 'brightness(1.2)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'scale(1)';
+            e.currentTarget.style.filter = 'brightness(1)';
+          }}
+        />
+      );
+
+      currentAngle += angle;
+    });
+
+    return (
+      <Box
+        sx={{
+          display: 'inline-block',
+          transition: 'transform 0.3s ease',
+          '&:hover': {
+            transform: 'scale(1.05)'
+          }
+        }}
+      >
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          {paths}
+        </svg>
+      </Box>
+    );
   };
 
   // Dashboard simplifié pour les Entreprises
@@ -1416,39 +2030,52 @@ export default function Dashboard(): JSX.Element {
 
   // Dashboard complet pour les Juniors (comportement par défaut)
   return (
-    <Container maxWidth="lg">
-      <Box sx={{ py: 4 }}>
-        {/* Statistiques */}
-        <Grid container spacing={3} sx={{ mb: 4 }}>
+    <Container maxWidth="xl">
+      <Box sx={{ py: 2 }}>
+        {/* Statistiques - Design Apple épuré */}
+        <Grid container spacing={1.5} sx={{ mb: 1.5 }}>
           <Grid item xs={12} sm={6} md={3}>
             <Card 
               elevation={0}
               sx={{
-                borderRadius: '12px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                height: '100%'
+                borderRadius: '20px',
+                boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                height: '100%',
+                background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                border: '1px solid rgba(0, 0, 0, 0.04)',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                  border: '1px solid rgba(0, 122, 255, 0.2)'
+                }
               }}
             >
-              <CardContent>
-                <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                  <Avatar 
-                    sx={{ 
-                      bgcolor: '#007AFF20',
-                      color: '#007AFF',
-                      mr: 2
+              <CardContent sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <Box
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: '10px',
+                      bgcolor: '#007AFF15',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      mr: 1.5
                     }}
                   >
-                    <AttachMoneyIcon />
-                  </Avatar>
-                  <Typography variant="h6" sx={{ fontWeight: 500 }}>
+                    <AttachMoneyIcon sx={{ color: '#007AFF', fontSize: 18 }} />
+                  </Box>
+                  <Typography variant="body2" sx={{ fontWeight: 500, color: '#86868b', fontSize: '0.75rem' }}>
                     Chiffre d'affaires
                   </Typography>
                 </Box>
-                <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+                <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.25, color: '#1d1d1f', fontSize: '1.5rem' }}>
                   {animatedRevenue.toLocaleString('fr-FR')} €
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Total des revenus TTC (factures payées)
+                <Typography variant="caption" sx={{ color: '#86868b', fontSize: '0.7rem' }}>
+                  Revenus TTC
                 </Typography>
               </CardContent>
             </Card>
@@ -1458,31 +2085,44 @@ export default function Dashboard(): JSX.Element {
             <Card 
               elevation={0}
               sx={{
-                borderRadius: '12px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                height: '100%'
+                borderRadius: '20px',
+                boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                height: '100%',
+                background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                border: '1px solid rgba(0, 0, 0, 0.04)',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                  border: '1px solid rgba(0, 122, 255, 0.2)'
+                }
               }}
             >
-              <CardContent>
-                <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                  <Avatar 
-                    sx={{ 
-                      bgcolor: '#34C75920',
-                      color: '#34C759',
-                      mr: 2
+              <CardContent sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <Box
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: '10px',
+                      bgcolor: '#34C75915',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      mr: 1.5
                     }}
                   >
-                    <AssignmentIcon />
-                  </Avatar>
-                  <Typography variant="h6" sx={{ fontWeight: 500 }}>
+                    <AssignmentIcon sx={{ color: '#34C759', fontSize: 18 }} />
+                  </Box>
+                  <Typography variant="body2" sx={{ fontWeight: 500, color: '#86868b', fontSize: '0.75rem' }}>
                     Missions totales
                   </Typography>
                 </Box>
-                <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+                <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.25, color: '#1d1d1f', fontSize: '1.5rem' }}>
                   {statistics.totalMissions}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Nombre total de missions
+                <Typography variant="caption" sx={{ color: '#86868b', fontSize: '0.7rem' }}>
+                  Total missions
                 </Typography>
               </CardContent>
             </Card>
@@ -1492,31 +2132,44 @@ export default function Dashboard(): JSX.Element {
             <Card 
               elevation={0}
               sx={{
-                borderRadius: '12px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                height: '100%'
+                borderRadius: '20px',
+                boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                height: '100%',
+                background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                border: '1px solid rgba(0, 0, 0, 0.04)',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                  border: '1px solid rgba(0, 122, 255, 0.2)'
+                }
               }}
             >
-              <CardContent>
-                <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                  <Avatar 
-                    sx={{ 
-                      bgcolor: '#FF950020',
-                      color: '#FF9500',
-                      mr: 2
+              <CardContent sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <Box
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: '10px',
+                      bgcolor: '#FF950015',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      mr: 1.5
                     }}
                   >
-                    <WorkIcon />
-                  </Avatar>
-                  <Typography variant="h6" sx={{ fontWeight: 500 }}>
+                    <WorkIcon sx={{ color: '#FF9500', fontSize: 18 }} />
+                  </Box>
+                  <Typography variant="body2" sx={{ fontWeight: 500, color: '#86868b', fontSize: '0.75rem' }}>
                     Missions en cours
                   </Typography>
                 </Box>
-                <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+                <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.25, color: '#1d1d1f', fontSize: '1.5rem' }}>
                   {statistics.activeMissions}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Missions actives
+                <Typography variant="caption" sx={{ color: '#86868b', fontSize: '0.7rem' }}>
+                  Actives
                 </Typography>
               </CardContent>
             </Card>
@@ -1526,61 +2179,84 @@ export default function Dashboard(): JSX.Element {
             <Card 
               elevation={0}
               sx={{
-                borderRadius: '12px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                height: '100%'
+                borderRadius: '20px',
+                boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                height: '100%',
+                background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                border: '1px solid rgba(0, 0, 0, 0.04)',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                  border: '1px solid rgba(0, 122, 255, 0.2)'
+                }
               }}
             >
-              <CardContent>
-                <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                  <Avatar 
-                    sx={{ 
-                      bgcolor: '#5856D620',
-                      color: '#5856D6',
-                      mr: 2
+              <CardContent sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <Box
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: '10px',
+                      bgcolor: '#5856D615',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      mr: 1.5
                     }}
                   >
-                    <GroupIcon />
-                  </Avatar>
-                  <Typography variant="h6" sx={{ fontWeight: 500 }}>
+                    <GroupIcon sx={{ color: '#5856D6', fontSize: 18 }} />
+                  </Box>
+                  <Typography variant="body2" sx={{ fontWeight: 500, color: '#86868b', fontSize: '0.75rem' }}>
                     Utilisateurs
                   </Typography>
                 </Box>
-                <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+                <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.25, color: '#1d1d1f', fontSize: '1.5rem' }}>
                   {statistics.totalStudents}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Utilisateurs inscrits dans la structure
+                <Typography variant="caption" sx={{ color: '#86868b', fontSize: '0.7rem' }}>
+                  Inscrits
                 </Typography>
               </CardContent>
             </Card>
           </Grid>
         </Grid>
 
-        <Grid container spacing={3}>
-          <Grid item xs={12} md={8}>
+        <Grid container spacing={1.5}>
+          {/* Calendrier réduit */}
+          <Grid item xs={12} md={5}>
             <Card 
               elevation={0}
               sx={{
-                borderRadius: '24px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                height: '100%',
-                overflow: 'hidden'
+                borderRadius: '20px',
+                boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                height: '575px',
+                maxHeight: '575px',
+                background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                border: '1px solid rgba(0, 0, 0, 0.04)',
+                overflow: 'hidden',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                '&:hover': {
+                  transform: 'translateY(-4px)',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                  border: '1px solid rgba(0, 122, 255, 0.2)'
+                }
               }}
             >
-              <CardContent sx={{ p: '24px !important' }}>
+              <CardContent sx={{ p: '16px !important', pb: '5px !important' }}>
                 <Box sx={{ 
                   display: 'flex', 
                   justifyContent: 'space-between', 
                   alignItems: 'center',
-                  mb: 3 
+                  mb: 1.5 
                 }}>
                   <Typography variant="h6" sx={{ 
                     fontWeight: 600,
                     color: '#1d1d1f',
-                    fontSize: '1.25rem'
+                    fontSize: '1rem'
                   }}>
-                    Calendrier des missions
+                    Calendrier
                   </Typography>
                   <Button
                     onClick={() => {
@@ -1594,9 +2270,9 @@ export default function Dashboard(): JSX.Element {
                       setOpenEventDialog(true);
                     }}
                     sx={{
-                      minWidth: '40px',
-                      width: '40px',
-                      height: '40px',
+                      minWidth: '32px',
+                      width: '32px',
+                      height: '32px',
                       borderRadius: '50%',
                       backgroundColor: '#007AFF',
                       color: '#fff',
@@ -1605,7 +2281,7 @@ export default function Dashboard(): JSX.Element {
                         backgroundColor: '#0051D5',
                       },
                       '& .MuiSvgIcon-root': {
-                        fontSize: '1.5rem'
+                        fontSize: '1.2rem'
                       }
                     }}
                   >
@@ -1618,10 +2294,10 @@ export default function Dashboard(): JSX.Element {
                   },
                   // Style de l'en-tête du calendrier
                   '.fc-toolbar': {
-                    mb: 2,
+                    mb: 1,
                   },
                   '.fc-toolbar-title': { 
-                    fontSize: '1.1rem',
+                    fontSize: '0.95rem',
                     fontWeight: 600,
                     color: '#1d1d1f',
                     textTransform: 'capitalize'
@@ -1629,13 +2305,14 @@ export default function Dashboard(): JSX.Element {
                   // Style des boutons de navigation
                   '.fc-button': {
                     textTransform: 'capitalize',
-                    borderRadius: '12px',
+                    borderRadius: '8px',
                     boxShadow: 'none',
                     border: 'none',
                     backgroundColor: '#f5f5f7',
                     color: '#1d1d1f',
                     fontWeight: 500,
-                    padding: '8px 16px',
+                    padding: '4px 12px',
+                    fontSize: '0.75rem',
                     '&:hover': {
                       backgroundColor: '#e5e5ea',
                     },
@@ -1651,14 +2328,14 @@ export default function Dashboard(): JSX.Element {
                   '.fc-col-header': {
                     'th': {
                       borderWidth: 0,
-                      padding: '12px 0',
+                      padding: '6px 0',
                     },
                     '.fc-col-header-cell-cushion': {
                       color: '#86868b',
                       fontWeight: 500,
                       textTransform: 'uppercase',
-                      fontSize: '0.75rem',
-                      padding: '4px 0',
+                      fontSize: '0.65rem',
+                      padding: '2px 0',
                     }
                   },
                   // Style des cellules
@@ -1672,27 +2349,27 @@ export default function Dashboard(): JSX.Element {
                     padding: '2px',
                   },
                   '.fc-daygrid-day-number': {
-                    fontSize: '0.875rem',
+                    fontSize: '0.75rem',
                     color: '#1d1d1f',
                     opacity: 0.8,
-                    padding: '8px',
+                    padding: '4px',
                     borderRadius: '50%',
-                    width: '32px',
-                    height: '32px',
+                    width: '24px',
+                    height: '24px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    margin: '4px',
+                    margin: '2px',
                   },
                   // Style des événements
                   '.fc-event': {
-                    borderRadius: '10px',
-                    padding: '1px 8px',
+                    borderRadius: '6px',
+                    padding: '1px 4px',
                     marginBottom: '1px',
                     cursor: 'pointer',
                     transition: 'all 0.2s ease',
                     border: 'none',
-                    minHeight: '22px',
+                    minHeight: '16px',
                     '&:hover': {
                       transform: 'translateY(-1px)',
                       filter: 'brightness(0.95)',
@@ -1702,15 +2379,15 @@ export default function Dashboard(): JSX.Element {
                     padding: '1px 4px',
                   },
                   '.fc-event-title': {
-                    fontSize: '0.75rem',
+                    fontSize: '0.65rem',
                     fontWeight: 500,
-                    padding: '1px 0',
+                    padding: '0',
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis'
                   },
                   '.fc-event-time': {
-                    fontSize: '0.7rem',
+                    fontSize: '0.6rem',
                     fontWeight: 400,
                   },
                   // Style des jours hors mois
@@ -1803,10 +2480,12 @@ export default function Dashboard(): JSX.Element {
                     headerToolbar={{
                       left: 'prev,next',
                       center: 'title',
-                      right: 'today'
+                      right: ''
                     }}
-                    height="650px"
-                    dayMaxEvents={4}
+                    height="auto"
+                    contentHeight="auto"
+                    dayMaxEvents={false}
+                    fixedWeekCount={false}
                     moreLinkContent={(args) => (
                       <Typography sx={{ 
                         fontSize: '0.75rem', 
@@ -1821,206 +2500,735 @@ export default function Dashboard(): JSX.Element {
             </Card>
           </Grid>
           
-          {/* Nouvelle carte pour les utilisateurs connectés */}
-          <Grid item xs={12} md={4}>
-            <Card 
-              elevation={0}
-              sx={{
-                borderRadius: '16px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                background: 'rgba(255, 255, 255, 0.8)',
-                backdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255, 255, 255, 0.3)',
-                mb: 3
-              }}
-            >
-              <CardContent sx={{ p: '20px !important' }}>
-                <Typography 
-                  variant="h6" 
-                  sx={{ 
-                    mb: 2, 
-                    fontWeight: 600,
-                    fontSize: '1.1rem',
-                    color: '#1d1d1f'
-                  }}
-                >
-                  Dernières activités
-                </Typography>
-                
-                {connectedUsers.map((user) => (
-                  <Box 
-                    key={user.id}
-                    sx={{ 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      mb: 2,
-                      p: 1.5,
-                      borderRadius: '12px',
-                      transition: 'all 0.2s ease',
+          {/* Colonne droite avec plusieurs boxes */}
+          <Grid item xs={12} md={7}>
+            <Grid container spacing={1.5}>
+              {/* Ligne 1: Missions en cours à gauche, Derniers inscrits et Dernières activités à droite */}
+              <Grid container item xs={12} spacing={1.5} sx={{ alignSelf: 'flex-start' }}>
+                {/* Missions en cours (avec camembert) */}
+                <Grid item xs={12} md={5}>
+                  <Card 
+                    elevation={0}
+                    sx={{
+                      borderRadius: '16px',
+                      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                      border: '1px solid rgba(0, 0, 0, 0.04)',
+                      height: '100%',
+                      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                       '&:hover': {
-                        backgroundColor: 'rgba(0, 0, 0, 0.03)'
+                        transform: 'translateY(-4px)',
+                        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                        border: '1px solid rgba(0, 122, 255, 0.2)'
                       }
                     }}
                   >
-                    <Box sx={{ position: 'relative', mr: 2 }}>
-                      <Avatar 
-                        src={user.photoURL}
-                        sx={{ 
-                          width: 44, 
-                          height: 44,
-                          border: '2px solid #fff',
-                          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                          bgcolor: user.isOnline ? '#34C759' : '#f5f5f7',
-                          color: user.isOnline ? '#fff' : '#1d1d1f'
-                        }}
-                      >
-                        {!user.photoURL && `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`}
-                      </Avatar>
-                      {user.isOnline && (
-                        <Box 
-                          sx={{ 
-                            position: 'absolute',
-                            bottom: 0,
-                            right: 0,
-                            width: 12,
-                            height: 12,
-                            borderRadius: '50%',
-                            backgroundColor: '#34C759',
-                            border: '2px solid #fff',
-                            boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
-                          }} 
-                        />
-                      )}
-                    </Box>
-                    <Box sx={{ flex: 1 }}>
+                    <CardContent sx={{ p: '16px !important' }}>
                       <Typography 
-                        variant="subtitle2" 
+                        variant="h6" 
                         sx={{ 
+                          mb: 1.5, 
                           fontWeight: 600,
-                          color: '#1d1d1f',
-                          fontSize: '0.9rem'
+                          fontSize: '0.95rem',
+                          color: '#1d1d1f'
                         }}
                       >
-                        {user.firstName} {user.lastName}
+                        Missions en cours
                       </Typography>
-                      <Typography 
-                        variant="caption" 
-                        sx={{ 
-                          color: user.isOnline ? '#34C759' : '#86868b',
-                          fontWeight: user.isOnline ? 600 : 400,
-                          fontSize: '0.75rem'
-                        }}
-                      >
-                        {user.isOnline ? 'En ligne' : `Dernière activité: ${user.lastConnection.toLocaleString('fr-FR', {
-                          day: '2-digit',
-                          month: '2-digit',
-                          year: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}`}
-                      </Typography>
-                    </Box>
-                  </Box>
-                ))}
-              </CardContent>
-            </Card>
+                      
+                      {ongoingMissions.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2, fontSize: '0.75rem' }}>
+                          Aucune mission
+                        </Typography>
+                      ) : (
+                        <Box>
+                          {/* Camembert centré */}
+                          <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
+                            {generatePieChart(
+                              ongoingMissions.map((mission, index) => ({
+                                label: mission.numeroMission,
+                                value: 1,
+                                color: ['#007AFF', '#34C759', '#FF9500', '#5856D6', '#FF2D55', '#32ADE6', '#AF52DE', '#32ADE6'][index % 8]
+                              })),
+                              120
+                            )}
+                          </Box>
+                          {/* Liste en dessous */}
+                          <Box>
+                            {ongoingMissions.slice(0, 8).map((mission, index) => (
+                              <Box 
+                                key={mission.id}
+                                sx={{ 
+                                  display: 'flex', 
+                                  alignItems: 'flex-start', 
+                                  mb: 1.25,
+                                  p: 1.25,
+                                  borderRadius: '10px',
+                                  backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                                  transition: 'all 0.2s ease',
+                                  cursor: 'pointer',
+                                  '&:hover': {
+                                    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+                                    transform: 'translateX(2px)'
+                                  }
+                                }}
+                                onClick={() => navigate(`/app/mission/${mission.id}`)}
+                              >
+                                <Box
+                                  sx={{
+                                    width: 10,
+                                    height: 10,
+                                    borderRadius: '50%',
+                                    bgcolor: ['#007AFF', '#34C759', '#FF9500', '#5856D6', '#FF2D55', '#32ADE6', '#AF52DE', '#32ADE6'][index % 8],
+                                    mr: 1.5,
+                                    flexShrink: 0,
+                                    mt: 0.5
+                                  }}
+                                />
+                                <Box sx={{ flex: 1, minWidth: 0 }}>
+                                  <Typography 
+                                    variant="body2" 
+                                    sx={{ 
+                                      fontWeight: 700,
+                                      color: '#1d1d1f',
+                                      fontSize: '0.875rem',
+                                      mb: 0.25,
+                                      lineHeight: 1.2
+                                    }}
+                                  >
+                                    #{mission.numeroMission}
+                                  </Typography>
+                                  <Typography 
+                                    variant="caption" 
+                                    sx={{ 
+                                      color: '#86868b',
+                                      fontSize: '0.7rem',
+                                      display: 'block',
+                                      mb: 0.25
+                                    }}
+                                  >
+                                    {mission.chargeName}
+                                  </Typography>
+                                  {mission.company && (
+                                    <Typography 
+                                      variant="caption" 
+                                      sx={{ 
+                                        color: '#86868b',
+                                        fontSize: '0.65rem',
+                                        display: 'block',
+                                        fontStyle: 'italic'
+                                      }}
+                                    >
+                                      {mission.company}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              </Box>
+                            ))}
+                            {ongoingMissions.length > 8 && (
+                              <Typography variant="caption" sx={{ color: '#86868b', fontSize: '0.65rem', mt: 0.5, display: 'block', textAlign: 'center' }}>
+                                +{ongoingMissions.length - 8} autres missions
+                              </Typography>
+                            )}
+                          </Box>
+                        </Box>
+                      )}
+                    </CardContent>
+                  </Card>
+                </Grid>
 
-            {/* Carte pour les documents récents */}
-            <Card 
-              elevation={0}
-              sx={{
-                borderRadius: '16px',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-                background: 'rgba(255, 255, 255, 0.8)',
-                backdropFilter: 'blur(20px)',
-                border: '1px solid rgba(255, 255, 255, 0.3)'
-              }}
-            >
-              <CardContent sx={{ p: '20px !important' }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Typography 
-                    variant="h6" 
-                    sx={{ 
-                      fontWeight: 600,
-                      fontSize: '1.1rem',
-                      color: '#1d1d1f'
+                {/* Derniers inscrits */}
+                <Grid item xs={12} md={3.5}>
+                  <Card 
+                    elevation={0}
+                    sx={{
+                      borderRadius: '16px',
+                      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                      border: '1px solid rgba(0, 0, 0, 0.04)',
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                      '&:hover': {
+                        transform: 'translateY(-4px)',
+                        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                        border: '1px solid rgba(0, 122, 255, 0.2)'
+                      }
                     }}
                   >
-                    Documents récents
-                  </Typography>
-                  <Button
-                    size="small"
-                    endIcon={<ArrowForwardIcon />}
-                    onClick={() => navigate('/app/documents')}
-                    sx={{ textTransform: 'none' }}
-                  >
-                    Voir tout
-                  </Button>
-                </Box>
-                
-                {recentDocuments.length === 0 ? (
-                  <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
-                    Aucun document récent
-                  </Typography>
-                ) : (
-                  recentDocuments.map((doc) => (
-                    <Box 
-                      key={doc.id}
-                      sx={{ 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        mb: 1.5,
-                        p: 1,
-                        borderRadius: '8px',
-                        transition: 'all 0.2s ease',
-                        cursor: 'pointer',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.03)'
-                        }
-                      }}
-                      onClick={() => navigate('/app/documents')}
-                    >
-                      <Box sx={{ mr: 1.5 }}>
-                        <DescriptionIcon sx={{ color: '#007AFF', fontSize: 24 }} />
-                      </Box>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <CardContent sx={{ p: '16px !important', display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 1.5, flexShrink: 0 }}>
+                        <PersonAddIcon sx={{ color: '#007AFF', fontSize: 16, mr: 0.75 }} />
                         <Typography 
-                          variant="body2" 
+                          variant="h6" 
                           sx={{ 
-                            fontWeight: 500,
-                            color: '#1d1d1f',
-                            fontSize: '0.875rem',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap'
+                            fontWeight: 600,
+                            fontSize: '0.95rem',
+                            color: '#1d1d1f'
                           }}
                         >
-                          {doc.name}
+                          Derniers inscrits
                         </Typography>
+                      </Box>
+                      
+                      {recentUsers.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 1.5, fontSize: '0.75rem' }}>
+                          Aucun utilisateur
+                        </Typography>
+                      ) : (
+                        <Box
+                          sx={{
+                            flex: 1,
+                            overflowY: 'auto',
+                            pr: 0.5,
+                            '&::-webkit-scrollbar': {
+                              width: '4px',
+                            },
+                            '&::-webkit-scrollbar-track': {
+                              background: 'transparent',
+                            },
+                            '&::-webkit-scrollbar-thumb': {
+                              background: 'rgba(0, 0, 0, 0.2)',
+                              borderRadius: '2px',
+                            },
+                            '&::-webkit-scrollbar-thumb:hover': {
+                              background: 'rgba(0, 0, 0, 0.3)',
+                            },
+                          }}
+                        >
+                          {recentUsers.slice(0, 5).map((user) => (
+                            <Box 
+                              key={user.id}
+                              sx={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                mb: 1,
+                                p: 1,
+                                borderRadius: '8px',
+                                transition: 'all 0.2s ease',
+                                '&:hover': {
+                                  backgroundColor: 'rgba(0, 0, 0, 0.03)'
+                                }
+                              }}
+                            >
+                              <Avatar 
+                                src={user.photoURL}
+                                sx={{ 
+                                  width: 28, 
+                                  height: 28,
+                                  mr: 1,
+                                  bgcolor: '#007AFF',
+                                  fontSize: '0.7rem'
+                                }}
+                              >
+                                {!user.photoURL && `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`}
+                              </Avatar>
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Typography 
+                                  variant="body2" 
+                                  sx={{ 
+                                    fontWeight: 600,
+                                    color: '#1d1d1f',
+                                    fontSize: '0.75rem',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}
+                                >
+                                  {user.firstName} {user.lastName}
+                                </Typography>
+                                <Typography 
+                                  variant="caption" 
+                                  sx={{ 
+                                    color: '#86868b',
+                                    fontSize: '0.65rem'
+                                  }}
+                                >
+                                  {user.createdAt.toLocaleDateString('fr-FR', {
+                                    day: 'numeric',
+                                    month: 'short'
+                                  })}
+                                </Typography>
+                              </Box>
+                            </Box>
+                          ))}
+                        </Box>
+                      )}
+                    </CardContent>
+                  </Card>
+                </Grid>
+
+                {/* Dernières activités */}
+                <Grid item xs={12} md={3.5}>
+                  <Card 
+                    elevation={0}
+                    sx={{
+                      borderRadius: '16px',
+                      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                      border: '1px solid rgba(0, 0, 0, 0.04)',
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                      '&:hover': {
+                        transform: 'translateY(-4px)',
+                        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                        border: '1px solid rgba(0, 122, 255, 0.2)'
+                      }
+                    }}
+                  >
+                    <CardContent sx={{ p: '16px !important', display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+                      <Typography 
+                        variant="h6" 
+                        sx={{ 
+                          mb: 1.5, 
+                          fontWeight: 600,
+                          fontSize: '0.95rem',
+                          color: '#1d1d1f',
+                          flexShrink: 0
+                        }}
+                      >
+                        Dernières activités
+                      </Typography>
+                      
+                      {connectedUsers.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 1.5, fontSize: '0.75rem' }}>
+                          Aucune activité
+                        </Typography>
+                      ) : (
+                        <Box
+                          sx={{
+                            flex: 1,
+                            overflowY: 'auto',
+                            pr: 0.5,
+                            '&::-webkit-scrollbar': {
+                              width: '4px',
+                            },
+                            '&::-webkit-scrollbar-track': {
+                              background: 'transparent',
+                            },
+                            '&::-webkit-scrollbar-thumb': {
+                              background: 'rgba(0, 0, 0, 0.2)',
+                              borderRadius: '2px',
+                            },
+                            '&::-webkit-scrollbar-thumb:hover': {
+                              background: 'rgba(0, 0, 0, 0.3)',
+                            },
+                          }}
+                        >
+                          {connectedUsers.slice(0, 5).map((user) => (
+                            <Box 
+                              key={user.id}
+                              sx={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                mb: 1,
+                                p: 1,
+                                borderRadius: '8px',
+                                transition: 'all 0.2s ease',
+                                '&:hover': {
+                                  backgroundColor: 'rgba(0, 0, 0, 0.03)'
+                                }
+                              }}
+                            >
+                              <Box sx={{ position: 'relative', mr: 1 }}>
+                                <Avatar 
+                                  src={user.photoURL}
+                                  sx={{ 
+                                    width: 28, 
+                                    height: 28,
+                                    border: '2px solid #fff',
+                                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                                    bgcolor: user.isOnline ? '#34C759' : '#f5f5f7',
+                                    color: user.isOnline ? '#fff' : '#1d1d1f',
+                                    fontSize: '0.7rem'
+                                  }}
+                                >
+                                  {!user.photoURL && `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`}
+                                </Avatar>
+                                {user.isOnline && (
+                                  <Box 
+                                    sx={{ 
+                                      position: 'absolute',
+                                      bottom: -2,
+                                      right: -2,
+                                      width: 8,
+                                      height: 8,
+                                      borderRadius: '50%',
+                                      backgroundColor: '#34C759',
+                                      border: '2px solid #fff',
+                                      boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
+                                    }} 
+                                  />
+                                )}
+                              </Box>
+                              <Box sx={{ flex: 1, minWidth: 0 }}>
+                                <Typography 
+                                  variant="body2" 
+                                  sx={{ 
+                                    fontWeight: 600,
+                                    color: '#1d1d1f',
+                                    fontSize: '0.75rem',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}
+                                >
+                                  {user.firstName} {user.lastName}
+                                </Typography>
+                                <Typography 
+                                  variant="caption" 
+                                  sx={{ 
+                                    color: user.isOnline ? '#34C759' : '#86868b',
+                                    fontWeight: user.isOnline ? 600 : 400,
+                                    fontSize: '0.65rem'
+                                  }}
+                                >
+                                  {user.isOnline ? 'En ligne' : user.lastConnection.toLocaleString('fr-FR', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit'
+                                  })}
+                                </Typography>
+                              </Box>
+                            </Box>
+                          ))}
+                        </Box>
+                      )}
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+
+              {/* Ligne 2: Dernière entreprise et Documents récents */}
+              {/* Dernière entreprise */}
+              {lastCompany && (
+                <Grid item xs={12} md={5} sx={{ alignSelf: 'flex-start' }}>
+                  <Card 
+                    elevation={0}
+                    sx={{
+                      borderRadius: '16px',
+                      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                      border: '1px solid rgba(0, 0, 0, 0.04)',
+                      cursor: 'pointer',
+                      height: '160px',
+                      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                      '&:hover': {
+                        transform: 'translateY(-4px)',
+                        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                        border: '1px solid rgba(0, 122, 255, 0.2)'
+                      }
+                    }}
+                    onClick={() => navigate(`/app/entreprises`)}
+                  >
+                    <CardContent sx={{ p: '12px !important', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', height: '100%' }}>
+                      <Typography 
+                        variant="body2" 
+                        sx={{ 
+                          fontWeight: 600,
+                          color: '#86868b',
+                          fontSize: '0.75rem',
+                          mb: 1,
+                          width: '100%'
+                        }}
+                      >
+                        Dernière entreprise créée
+                      </Typography>
+                      <Box sx={{ mb: 1 }}>
+                        {lastCompany.logo ? (
+                          <Box
+                            component="img"
+                            src={lastCompany.logo}
+                            alt={lastCompany.name}
+                            sx={{
+                              width: 48,
+                              height: 48,
+                              objectFit: 'contain',
+                              borderRadius: '6px',
+                              backgroundColor: '#f5f5f7',
+                              p: 0.75
+                            }}
+                          />
+                        ) : (
+                          <Box
+                            sx={{
+                              width: 48,
+                              height: 48,
+                              borderRadius: '6px',
+                              backgroundColor: '#007AFF15',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center'
+                            }}
+                          >
+                            <BusinessIcon sx={{ color: '#007AFF', fontSize: 24 }} />
+                          </Box>
+                        )}
+                      </Box>
+                      <Typography 
+                        variant="body2" 
+                        sx={{ 
+                          fontWeight: 700,
+                          color: '#1d1d1f',
+                          fontSize: '0.85rem',
+                          mb: 0.5,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          width: '100%'
+                        }}
+                      >
+                        {lastCompany.name}
+                      </Typography>
+                      {lastCompany.createdByName && (
                         <Typography 
                           variant="caption" 
                           sx={{ 
                             color: '#86868b',
-                            fontSize: '0.75rem'
+                            fontSize: '0.65rem',
+                            mb: 0.25
                           }}
                         >
-                          {doc.createdAt && (doc.createdAt as any).toDate
-                            ? (doc.createdAt as any).toDate().toLocaleDateString('fr-FR', {
-                                day: 'numeric',
-                                month: 'short'
-                              })
-                            : new Date(doc.createdAt as Date).toLocaleDateString('fr-FR', {
-                                day: 'numeric',
-                                month: 'short'
-                              })}
-                          {doc.uploadedByName && ` • ${doc.uploadedByName}`}
+                          Par {lastCompany.createdByName}
                         </Typography>
-                      </Box>
+                      )}
+                      <Typography 
+                        variant="caption" 
+                        sx={{ 
+                          color: '#86868b',
+                          fontSize: '0.6rem'
+                        }}
+                      >
+                        {lastCompany.createdAt.toLocaleDateString('fr-FR', {
+                          day: 'numeric',
+                          month: 'short'
+                        })}
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              )}
+
+              {/* Documents récents */}
+              <Grid item xs={12} md={7} sx={{ alignSelf: 'flex-start' }}>
+                <Card 
+                  elevation={0}
+                  sx={{
+                    borderRadius: '16px',
+                    boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                    background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)',
+                    border: '1px solid rgba(0, 0, 0, 0.04)',
+                    height: '160px',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    '&:hover': {
+                      transform: 'translateY(-4px)',
+                      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+                      border: '1px solid rgba(0, 122, 255, 0.2)'
+                    }
+                  }}
+                >
+                  <CardContent sx={{ p: '16px !important', height: '100%' }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+                      <Typography 
+                        variant="h6" 
+                        sx={{ 
+                          fontWeight: 600,
+                          fontSize: '0.95rem',
+                          color: '#1d1d1f'
+                        }}
+                      >
+                        Documents récents
+                      </Typography>
+                      <Button
+                        size="small"
+                        endIcon={<ArrowForwardIcon sx={{ fontSize: 14 }} />}
+                        onClick={() => navigate('/app/documents')}
+                        sx={{ 
+                          textTransform: 'none',
+                          color: '#007AFF',
+                          fontSize: '0.65rem',
+                          minWidth: 'auto',
+                          p: 0.25,
+                          '& .MuiSvgIcon-root': {
+                            fontSize: '14px'
+                          }
+                        }}
+                      >
+                        Tout
+                      </Button>
                     </Box>
-                  ))
-                )}
-              </CardContent>
-            </Card>
+                    
+                    {pinnedFolders.length === 0 && pinnedDocuments.length === 0 && recentDocuments.length === 0 ? (
+                      <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 1.5, fontSize: '0.75rem' }}>
+                        Aucun document
+                      </Typography>
+                    ) : (
+                      <>
+                        {/* Dossiers épinglés */}
+                        {pinnedFolders.map((folder) => (
+                          <Box 
+                            key={`folder-${folder.id}`}
+                            sx={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              mb: 1,
+                              p: 1,
+                              borderRadius: '8px',
+                              transition: 'all 0.2s ease',
+                              cursor: 'pointer',
+                              backgroundColor: 'rgba(0, 122, 255, 0.05)',
+                              border: '1px solid rgba(0, 122, 255, 0.2)',
+                              '&:hover': {
+                                backgroundColor: 'rgba(0, 122, 255, 0.1)',
+                                transform: 'translateX(2px)'
+                              }
+                            }}
+                            onClick={() => navigate('/app/documents')}
+                          >
+                            <Box sx={{ mr: 1 }}>
+                              <FolderIcon sx={{ color: '#007AFF', fontSize: 16 }} />
+                            </Box>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Typography 
+                                variant="body2" 
+                                sx={{ 
+                                  fontWeight: 600,
+                                  color: '#1d1d1f',
+                                  fontSize: '0.75rem',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap'
+                                }}
+                              >
+                                {folder.name}
+                              </Typography>
+                              <Typography 
+                                variant="caption" 
+                                sx={{ 
+                                  color: '#86868b',
+                                  fontSize: '0.65rem'
+                                }}
+                              >
+                                Dossier épinglé
+                              </Typography>
+                            </Box>
+                          </Box>
+                        ))}
+                        {/* Documents épinglés */}
+                        {pinnedDocuments.map((doc) => (
+                          <Box 
+                            key={`pinned-${doc.id}`}
+                            sx={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              mb: 1,
+                              p: 1,
+                              borderRadius: '8px',
+                              transition: 'all 0.2s ease',
+                              cursor: 'pointer',
+                              backgroundColor: 'rgba(255, 149, 0, 0.05)',
+                              border: '1px solid rgba(255, 149, 0, 0.2)',
+                              '&:hover': {
+                                backgroundColor: 'rgba(255, 149, 0, 0.1)',
+                                transform: 'translateX(2px)'
+                              }
+                            }}
+                            onClick={() => navigate('/app/documents')}
+                          >
+                            <Box sx={{ mr: 1 }}>
+                              <DescriptionIcon sx={{ color: '#FF9500', fontSize: 16 }} />
+                            </Box>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Typography 
+                                variant="body2" 
+                                sx={{ 
+                                  fontWeight: 600,
+                                  color: '#1d1d1f',
+                                  fontSize: '0.75rem',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap'
+                                }}
+                              >
+                                {doc.name}
+                              </Typography>
+                              <Typography 
+                                variant="caption" 
+                                sx={{ 
+                                  color: '#86868b',
+                                  fontSize: '0.65rem'
+                                }}
+                              >
+                                Document épinglé
+                              </Typography>
+                            </Box>
+                          </Box>
+                        ))}
+                        {/* Documents récents */}
+                        {recentDocuments.filter(doc => !doc.isPinned).map((doc) => (
+                          <Box 
+                            key={doc.id}
+                            sx={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              mb: 1,
+                              p: 1,
+                              borderRadius: '8px',
+                              transition: 'all 0.2s ease',
+                              cursor: 'pointer',
+                              '&:hover': {
+                                backgroundColor: 'rgba(0, 0, 0, 0.03)'
+                              }
+                            }}
+                            onClick={() => navigate('/app/documents')}
+                          >
+                            <Box sx={{ mr: 1 }}>
+                              <DescriptionIcon sx={{ color: '#007AFF', fontSize: 16 }} />
+                            </Box>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Typography 
+                                variant="body2" 
+                                sx={{ 
+                                  fontWeight: 500,
+                                  color: '#1d1d1f',
+                                  fontSize: '0.75rem',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap'
+                                }}
+                              >
+                                {doc.name}
+                              </Typography>
+                              <Typography 
+                                variant="caption" 
+                                sx={{ 
+                                  color: '#86868b',
+                                  fontSize: '0.65rem'
+                                }}
+                              >
+                                {doc.createdAt && (doc.createdAt as any).toDate
+                                  ? (doc.createdAt as any).toDate().toLocaleDateString('fr-FR', {
+                                      day: 'numeric',
+                                      month: 'short'
+                                    })
+                                  : new Date(doc.createdAt as Date).toLocaleDateString('fr-FR', {
+                                      day: 'numeric',
+                                      month: 'short'
+                                    })}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        ))}
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
           </Grid>
         </Grid>
       </Box>

@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>JS Connect LinkedIn Prospect</title>
+  <title>JSConnect - LinkedIn Prospect</title>
   <link rel="stylesheet" href="popup.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
   <style>
@@ -69,7 +69,7 @@
 </head>
 <body>
   <div class="container">
-    <h2>JS Connect LinkedIn</h2>
+    <h2>JSConnect</h2>
     
     <!-- État de chargement initial -->
     <div id="initialLoading" class="initial-loading">
@@ -91,6 +91,17 @@
     <!-- État connecté -->
     <div id="loggedIn" style="display: none;">
       <p class="user-info">Connecté en tant que : <span id="userEmail"></span></p>
+
+      <!-- Affichage du quota de tokens -->
+      <div id="tokenStatus" class="token-status" style="display: none; padding: 8px; margin: 8px 0; border-radius: 5px; font-size: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span>Quota mensuel:</span>
+          <span id="tokenCount" style="font-weight: 600;"></span>
+        </div>
+        <div id="tokenProgressBar" style="height: 4px; background: #e5e5ea; border-radius: 2px; overflow: hidden;">
+          <div id="tokenProgressFill" style="height: 100%; background: #34c759; transition: width 0.3s;"></div>
+        </div>
+      </div>
 
       <button id="saveProspect">Ajouter le prospect</button>
       <div id="prospectInfo" class="prospect-info" style="display: none;">

@@ -6,17 +6,30 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const sourceDir = path.join(__dirname, '../src/extension');
-const destDir = path.join(__dirname, '../public/extension');
+// Utiliser public/extension comme source (qui contient déjà la configuration injectée)
+// Si public/extension n'existe pas ou est vide, utiliser dist/extension
+const distDir = path.join(__dirname, '../dist/extension');
+const publicDir = path.join(__dirname, '../public/extension');
+const destDir = publicDir;
 
 console.log('🔄 Génération de l\'extension ZIP...');
 
 try {
-  // 1. Copier les fichiers de l'extension
-  console.log('📁 Copie des fichiers de l\'extension...');
-  fs.removeSync(destDir);
-  fs.copySync(sourceDir, destDir);
-  console.log('✅ Fichiers copiés avec succès');
+  // Vérifier que les fichiers existent (build-extension.js doit avoir été exécuté)
+  if (!fs.existsSync(publicDir) || fs.readdirSync(publicDir).length === 0) {
+    if (fs.existsSync(distDir) && fs.readdirSync(distDir).length > 0) {
+      console.log('📁 Copie depuis dist/extension vers public/extension...');
+      fs.ensureDirSync(publicDir);
+      fs.copySync(distDir, publicDir);
+      console.log('✅ Fichiers copiés depuis dist/extension');
+    } else {
+      console.error('❌ ERREUR: Aucun fichier d\'extension trouvé!');
+      console.error('   Veuillez exécuter: npm run build:extension');
+      process.exit(1);
+    }
+  } else {
+    console.log('✅ Utilisation des fichiers existants dans public/extension (avec configuration Firebase injectée)');
+  }
 
   // 2. Créer le fichier ZIP
   console.log('📦 Création du fichier ZIP...');
@@ -27,8 +40,8 @@ try {
     fs.removeSync(extensionZipPath);
   }
 
-  // Créer le nouveau ZIP
-  execSync('zip -r extension.zip * -x "*.DS_Store" "*.git*" "extension.zip"', {
+  // Créer le nouveau ZIP (exclure le ZIP existant, les fichiers système, etc.)
+  execSync('zip -r extension.zip * -x "*.DS_Store" "*.git*" "extension.zip" "*.md"', {
     cwd: destDir,
     stdio: 'inherit'
   });

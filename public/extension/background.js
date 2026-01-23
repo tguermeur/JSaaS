@@ -11,16 +11,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Vérification de l'URL LinkedIn
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete' && tab.url && tab.url.includes('linkedin.com')) {
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background.js:12',message:'LinkedIn tab detected',data:{tabId,url:tab.url,changeInfo},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-    
     // Désactiver temporairement la mise à jour de l'icône pour éviter l'erreur assets/icon16.png
     // L'icône par défaut est déjà configurée dans manifest.json
     // Cette fonctionnalité peut être réactivée une fois le problème de cache résolu
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'background.js:18',message:'Icon update skipped to avoid cache issue',data:{tabId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     console.log('Mise à jour de l\'icône désactivée pour éviter les erreurs de cache');
   }
 });

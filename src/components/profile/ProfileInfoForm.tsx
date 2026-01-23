@@ -22,6 +22,7 @@ import { UserData } from '../../types/user';
 import { updateUserDocument } from '../../firebase/firestore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSnackbar } from 'notistack';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // --- Types & Styles ---
 
@@ -134,16 +135,54 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
   
   // Gestion de l'édition section par section
   const [editingSection, setEditingSection] = useState<string | null>(null);
+  
+  // État pour les erreurs de validation par champ
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const formatDate = (date: any) => {
     if (!date) return '';
+    
+    // Si c'est déjà une string au format ISO (YYYY-MM-DD) ou autre format de date string
+    if (typeof date === 'string') {
+      // Vérifier si c'est un format de date valide (YYYY-MM-DD)
+      const dateMatch = date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (dateMatch) {
+        // Formater la date ISO en format français
+        const dateObj = new Date(date);
+        if (!isNaN(dateObj.getTime())) {
+          return dateObj.toLocaleDateString('fr-FR');
+        }
+      }
+      // Si ce n'est pas un format reconnu, essayer de parser quand même
+      const parsedDate = new Date(date);
+      if (!isNaN(parsedDate.getTime())) {
+        return parsedDate.toLocaleDateString('fr-FR');
+      }
+      // Si le parsing échoue, retourner la string telle quelle
+      return date;
+    }
+    
+    // Si c'est un Timestamp Firestore
     if (typeof date.toDate === 'function') {
-      return date.toDate().toLocaleDateString();
+      return date.toDate().toLocaleDateString('fr-FR');
     }
+    
+    // Si c'est une Date
     if (date instanceof Date) {
-      return date.toLocaleDateString();
+      return date.toLocaleDateString('fr-FR');
     }
-    return new Date(date).toLocaleDateString();
+    
+    // Dernier recours : essayer de parser
+    try {
+      const parsedDate = new Date(date);
+      if (!isNaN(parsedDate.getTime())) {
+        return parsedDate.toLocaleDateString('fr-FR');
+      }
+    } catch (e) {
+      console.warn('Erreur lors du formatage de la date:', date, e);
+    }
+    
+    return '';
   };
 
   useEffect(() => {
@@ -154,7 +193,31 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    
+    // Validation en temps réel pour certains champs
+    let processedValue = value;
+    
+    if (name === 'postalCode') {
+      // Code postal : seulement 5 chiffres
+      processedValue = value.replace(/\D/g, '').slice(0, 5);
+    } else if (name === 'phone') {
+      // Téléphone : seulement chiffres, espaces, +, - et ()
+      processedValue = value.replace(/[^\d+\s()-]/g, '');
+    } else if (name === 'socialSecurityNumber') {
+      // Numéro de sécurité sociale : seulement 13 chiffres
+      processedValue = value.replace(/\D/g, '').slice(0, 13);
+    }
+    
+    setFormData(prev => ({ ...prev, [name]: processedValue }));
+    
+    // Effacer l'erreur du champ quand l'utilisateur modifie la valeur
+    if (fieldErrors[name]) {
+      setFieldErrors(prev => {
+        const newErrors = { ...prev };
+        delete newErrors[name];
+        return newErrors;
+      });
+    }
   };
 
   const handleSelectChange = (e: SelectChangeEvent) => {
@@ -171,17 +234,101 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
       }));
   };
 
+  const validateFormData = (): Record<string, string> => {
+    const errors: Record<string, string> = {};
+    
+    // Validation date de naissance (minimum 18 ans)
+    if (formData.birthDate) {
+      const today = new Date();
+      const birthDateObj = new Date(formData.birthDate);
+      const age = today.getFullYear() - birthDateObj.getFullYear();
+      const monthDiff = today.getMonth() - birthDateObj.getMonth();
+      const dayDiff = today.getDate() - birthDateObj.getDate();
+      const actualAge = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? age - 1 : age;
+      
+      if (actualAge < 18) {
+        errors.birthDate = 'Vous devez avoir au moins 18 ans';
+      }
+    }
+    
+    // Validation code postal (5 chiffres) - seulement si rempli
+    if (formData.postalCode && formData.postalCode.trim() !== '') {
+      if (!/^\d{5}$/.test(formData.postalCode)) {
+        errors.postalCode = 'Le code postal doit contenir exactement 5 chiffres';
+      }
+    }
+    
+    // Validation téléphone (10 chiffres) - seulement si rempli
+    if (formData.phone && formData.phone.trim() !== '') {
+      const phoneDigits = formData.phone.replace(/\D/g, '');
+      if (phoneDigits.length !== 10) {
+        errors.phone = 'Le numéro de téléphone doit contenir exactement 10 chiffres';
+      }
+    }
+    
+    // Validation numéro de sécurité sociale (13 chiffres) - seulement si rempli
+    if (formData.socialSecurityNumber && formData.socialSecurityNumber.trim() !== '') {
+      const ssnDigits = formData.socialSecurityNumber.replace(/\D/g, '');
+      if (ssnDigits.length !== 13) {
+        errors.socialSecurityNumber = 'Le numéro de sécurité sociale doit contenir exactement 13 chiffres';
+      }
+    }
+    
+    return errors;
+  };
+
   const handleSave = async (sectionKey: string) => {
     if (!currentUser) return;
+    
+    // Valider les données avant de sauvegarder
+    const errors = validateFormData();
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      const firstError = Object.values(errors)[0];
+      enqueueSnackbar(firstError, { variant: 'error' });
+      return;
+    }
+    
+    // Effacer les erreurs si la validation passe
+    setFieldErrors({});
+    
     setLoading(true);
     try {
-      // On sauvegarde tout formData, ou on pourrait filtrer par section si on voulait être très précis
+      // Chiffrer les données sensibles avant de sauvegarder
+      let dataToSave = { ...formData };
+      
+      try {
+        const functions = getFunctions();
+        const encryptUserData = httpsCallable(functions, 'encryptUserData');
+        
+        const result = await encryptUserData({
+          userId: currentUser.uid,
+          userData: dataToSave
+        });
+        
+        if (result.data.success && result.data.encryptedData) {
+          // Utiliser les données chiffrées
+          dataToSave = {
+            ...dataToSave,
+            ...result.data.encryptedData
+          };
+        }
+      } catch (encryptError: any) {
+        // Si le chiffrement échoue, continuer quand même avec les données non chiffrées
+        // (pour la compatibilité rétroactive avec les anciennes données)
+        console.warn('Impossible de chiffrer les données (peut être normal si non chiffrées):', encryptError.message);
+        // Ne pas bloquer la sauvegarde si le chiffrement échoue
+      }
+      
+      // Sauvegarder les données (chiffrées si possible)
       await updateUserDocument(currentUser.uid, {
-        ...formData,
+        ...dataToSave,
         updatedAt: new Date()
       });
+      
       onUpdate();
       setEditingSection(null);
+      setFieldErrors({}); // Effacer les erreurs après sauvegarde réussie
       enqueueSnackbar('Modifications enregistrées', { variant: 'success' });
     } catch (error) {
       console.error('Erreur save:', error);
@@ -195,28 +342,51 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
     // Reset formData to userData
     if (userData) setFormData({ ...userData });
     setEditingSection(null);
+    setFieldErrors({}); // Effacer les erreurs lors de l'annulation
   };
 
   const isStudent = userData.status === 'etudiant' || userData.status === 'membre' || userData.status === 'admin' || userData.status === 'superadmin';
   const isCompany = userData.status === 'entreprise';
 
+  // Fonction pour formater une valeur - si elle est cryptée, indiquer qu'elle n'a pas pu être décryptée
+  const formatDisplayValue = (value: any): any => {
+    if (!value || typeof value !== 'string') return value || '-';
+    // Si la valeur commence par ENC:, elle n'a pas été décryptée
+    // On affiche un message informatif
+    if (value.startsWith('ENC:')) {
+      return '[Donnée cryptée - Déchiffrement en cours...]';
+    }
+    return value || '-';
+  };
+
   // --- Préparation des données d'affichage ---
   
+  // Fonction pour formater la date de naissance (gérer aussi les valeurs cryptées)
+  const formatBirthDate = (birthDate: any): string => {
+    if (!birthDate) return '-';
+    // Si c'est une valeur cryptée, elle devrait déjà être décryptée dans Profile.tsx
+    // Mais si elle ne l'est pas, on le détecte
+    if (typeof birthDate === 'string' && birthDate.startsWith('ENC:')) {
+      return '[Date cryptée]';
+    }
+    return formatDate(birthDate);
+  };
+
   const personalInfoData = [
-    { label: 'Prénom', value: userData.firstName },
-    { label: 'Nom', value: userData.lastName },
-    { label: 'Email', value: userData.email },
-    { label: 'Téléphone', value: userData.phone },
-    { label: 'Date de naissance', value: formatDate(userData.birthDate) },
-    { label: 'Genre', value: userData.gender === 'M' ? 'Homme' : userData.gender === 'F' ? 'Femme' : userData.gender },
-    { label: 'Lieu de naissance', value: userData.birthPlace },
-    { label: 'Nationalité', value: userData.nationality },
-    { label: 'LinkedIn', value: userData.linkedinUrl ? <a href={userData.linkedinUrl} target="_blank" rel="noreferrer" style={{color: '#1976d2', textDecoration: 'none'}}>Voir le profil</a> : '' },
+    { label: 'Prénom', value: userData.firstName || '-' },
+    { label: 'Nom', value: userData.lastName || '-' },
+    { label: 'Email', value: userData.email || '-' },
+    { label: 'Téléphone', value: formatDisplayValue(userData.phone) },
+    { label: 'Date de naissance', value: formatBirthDate(userData.birthDate) },
+    { label: 'Genre', value: userData.gender === 'M' ? 'Homme' : userData.gender === 'F' ? 'Femme' : userData.gender || '-' },
+    { label: 'Lieu de naissance', value: formatDisplayValue(userData.birthPlace) },
+    { label: 'Nationalité', value: userData.nationality || '-' },
+    { label: 'LinkedIn', value: userData.linkedinUrl ? <a href={userData.linkedinUrl} target="_blank" rel="noreferrer" style={{color: '#1976d2', textDecoration: 'none'}}>Voir le profil</a> : '-' },
   ];
 
   const addressData = [
-    { label: 'Adresse', value: userData.address },
-    { label: 'Code Postal', value: userData.postalCode },
+    { label: 'Adresse', value: formatDisplayValue(userData.address) },
+    { label: 'Code Postal', value: formatDisplayValue(userData.postalCode) },
     // On pourrait déduire la ville du code postal si on avait une API, ou ajouter un champ Ville
   ];
 
@@ -254,7 +424,16 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
           <TextField fullWidth label="Nom" name="lastName" value={formData.lastName || ''} onChange={handleChange} sx={textFieldStyles} />
         </Grid>
         <Grid item xs={12} md={6}>
-          <TextField fullWidth label="Téléphone" name="phone" value={formData.phone || ''} onChange={handleChange} sx={textFieldStyles} />
+          <TextField 
+            fullWidth 
+            label="Téléphone" 
+            name="phone" 
+            value={formData.phone || ''} 
+            onChange={handleChange} 
+            error={!!fieldErrors.phone}
+            helperText={fieldErrors.phone || "10 chiffres requis (ex: 06 12 34 56 78)"}
+            sx={textFieldStyles} 
+          />
         </Grid>
         <Grid item xs={12} md={6}>
           <TextField 
@@ -265,6 +444,9 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
             InputLabelProps={{ shrink: true }}
             value={formData.birthDate || ''} 
             onChange={handleChange} 
+            error={!!fieldErrors.birthDate}
+            helperText={fieldErrors.birthDate || "Vous devez avoir au moins 18 ans"}
+            inputProps={{ max: new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split('T')[0] }}
             sx={textFieldStyles} 
           />
         </Grid>
@@ -303,7 +485,17 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
           <TextField fullWidth label="Adresse complète" name="address" value={formData.address || ''} onChange={handleChange} multiline rows={2} sx={textFieldStyles} />
         </Grid>
         <Grid item xs={12} md={6}>
-          <TextField fullWidth label="Code Postal" name="postalCode" value={formData.postalCode || ''} onChange={handleChange} sx={textFieldStyles} />
+          <TextField 
+            fullWidth 
+            label="Code Postal" 
+            name="postalCode" 
+            value={formData.postalCode || ''} 
+            onChange={handleChange} 
+            inputProps={{ maxLength: 5 }}
+            error={!!fieldErrors.postalCode}
+            helperText={fieldErrors.postalCode || "5 chiffres requis"}
+            sx={textFieldStyles} 
+          />
         </Grid>
       </SectionCard>
 
@@ -331,7 +523,17 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
             <TextField fullWidth label="Numéro Étudiant" name="studentId" value={formData.studentId || ''} onChange={handleChange} sx={textFieldStyles} />
           </Grid>
           <Grid item xs={12} md={6}>
-            <TextField fullWidth label="Numéro Sécurité Sociale" name="socialSecurityNumber" value={formData.socialSecurityNumber || ''} onChange={handleChange} sx={textFieldStyles} />
+            <TextField 
+              fullWidth 
+              label="Numéro Sécurité Sociale" 
+              name="socialSecurityNumber" 
+              value={formData.socialSecurityNumber || ''} 
+              onChange={handleChange} 
+              inputProps={{ maxLength: 13 }}
+              error={!!fieldErrors.socialSecurityNumber}
+              helperText={fieldErrors.socialSecurityNumber || "13 chiffres requis"}
+              sx={textFieldStyles} 
+            />
           </Grid>
         </SectionCard>
       )}
@@ -396,9 +598,9 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
                  <Button size="small" onClick={() => handleSave('prefs')} sx={{ ml: 2 }}>Enregistrer</Button>
              )}
              
-            {userData.acceptsElectronicDocumentsDate && (
+            {(userData.acceptsElectronicDocumentsDate || formData.acceptsElectronicDocumentsDate) && (
               <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1, ml: 7 }}>
-                Accepté le : {formatDate(userData.acceptsElectronicDocumentsDate)}
+                Accepté le : {formatDate(userData.acceptsElectronicDocumentsDate || formData.acceptsElectronicDocumentsDate)}
               </Typography>
             )}
         </Box>

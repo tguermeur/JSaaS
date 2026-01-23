@@ -55,6 +55,32 @@ import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import SettingsCard from '../../components/settings/SettingsCard';
 
+// Fonction utilitaire pour convertir les dates Firestore en Date
+const toDate = (dateValue: any): Date => {
+  if (!dateValue) return new Date();
+  
+  // Si c'est déjà une Date
+  if (dateValue instanceof Date) {
+    return dateValue;
+  }
+  
+  // Si c'est un Timestamp Firestore (avec méthode toDate)
+  if (dateValue && typeof dateValue.toDate === 'function') {
+    return dateValue.toDate();
+  }
+  
+  // Si c'est une string (ISO ou autre)
+  if (typeof dateValue === 'string') {
+    const date = new Date(dateValue);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+  }
+  
+  // Par défaut, retourner une nouvelle Date
+  return new Date();
+};
+
 const StructureSettings: React.FC = () => {
   const theme = useTheme();
   const { currentUser } = useAuth();
@@ -323,8 +349,8 @@ const StructureSettings: React.FC = () => {
           firstName: data.firstName || '',
           lastName: data.lastName || '',
           email: data.email || '',
-          subscriptionPaidAt: data.subscriptionPaidAt?.toDate() || new Date(),
-          subscriptionExpiresAt: data.subscriptionExpiresAt?.toDate() || new Date()
+          subscriptionPaidAt: toDate(data.subscriptionPaidAt),
+          subscriptionExpiresAt: toDate(data.subscriptionExpiresAt)
         };
       });
       

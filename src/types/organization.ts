@@ -17,8 +17,33 @@ export interface OrganizationInfo {
   description: string;
 }
 
+export interface Pole {
+  id: string;
+  name: string;
+}
+
 export interface UserPole {
   poleId: string;
+  isResponsable: boolean;
+}
+
+export interface PoleVisual {
+  id: string;
   name: string;
-  role: 'admin' | 'mission_manager' | 'etudiant' | 'teacher';
+  color?: string;
+  icon?: string;
+  backgroundColor?: string;
+  borderColor?: string;
+}
+
+export interface Organigramme {
+  poles: Pole[];
+  poleVisuals?: Record<string, PoleVisual>;
+  members: Array<{
+    id: string;
+    displayName: string;
+    photoURL?: string;
+    poles?: UserPole[];
+    mandat?: string;
+  }>;
 } 

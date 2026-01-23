@@ -20,6 +20,8 @@ import { Mission } from '../types/mission';
 import { db } from '../firebase/config';
 import { doc, getDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { useSnackbar } from 'notistack';
+import { useSearchParams } from 'react-router-dom';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // Sous-composants
 import ProfileHeader from '../components/profile/ProfileHeader';
@@ -56,6 +58,7 @@ function TabPanel(props: TabPanelProps) {
 const Profile: React.FC = () => {
   const { currentUser } = useAuth();
   const { enqueueSnackbar } = useSnackbar();
+  const [searchParams, setSearchParams] = useSearchParams();
   
   const [userData, setUserData] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,7 +72,59 @@ const Profile: React.FC = () => {
         try {
           const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
           if (userDoc.exists()) {
-        setUserData(userDoc.data() as UserData);
+            let userDataRaw = userDoc.data() as UserData;
+            
+            // Toujours essayer de déchiffrer les données de l'utilisateur pour lui-même
+            // Vérifier si des données sont cryptées (commencent par ENC:)
+            const hasEncryptedData = Object.values(userDataRaw).some(value => 
+              typeof value === 'string' && value.startsWith('ENC:')
+            );
+            
+            if (hasEncryptedData) {
+              try {
+                const functions = getFunctions();
+                // Utiliser decryptOwnUserData qui permet de décrypter ses propres données sans 2FA
+                const decryptOwnUserData = httpsCallable(functions, 'decryptOwnUserData');
+                
+                const result = await decryptOwnUserData({});
+                
+                if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
+                  // Fusionner les données déchiffrées avec les données brutes
+                  const decryptedData = (result.data as any).decryptedData;
+                  
+                  userDataRaw = {
+                    ...userDataRaw,
+                    ...decryptedData
+                  };
+                  console.log('[Profile] Données déchiffrées avec succès');
+                }
+              } catch (decryptError: any) {
+                // Si le déchiffrement échoue, essayer avec decryptUserData (avec 2FA)
+                console.warn('Impossible de déchiffrer avec decryptOwnUserData, essai avec decryptUserData:', decryptError.message);
+                
+                try {
+                  const functions = getFunctions();
+                  const decryptUserData = httpsCallable(functions, 'decryptUserData');
+                  
+                  const result = await decryptUserData({ 
+                    userId: currentUser.uid,
+                    deviceId: localStorage.getItem('deviceId') || undefined
+                  });
+                  
+                  if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
+                    const decryptedData = (result.data as any).decryptedData;
+                    userDataRaw = {
+                      ...userDataRaw,
+                      ...decryptedData
+                    };
+                  }
+                } catch (fallbackError: any) {
+                  console.warn('Impossible de déchiffrer les données utilisateur (données restent cryptées):', fallbackError.message);
+                }
+              }
+            }
+            
+            setUserData(userDataRaw);
           }
         } catch (error) {
       console.error('Erreur fetch user data:', error);
@@ -80,58 +135,85 @@ const Profile: React.FC = () => {
   };
 
   const fetchMissions = async () => {
-    if (!currentUser) return;
+    if (!currentUser || !userData) return;
     setLoadingMissions(true);
     try {
-      // Logique simplifiée : récupérer les missions où l'user est impliqué
-      // Adapter selon votre structure réelle de Firestore.
-      // Hypothèse : il y a une collection 'missions'
-      const missionsRef = collection(db, 'missions');
-      // Exemple de requête : missions créées par user ou assignées à user
-      // Note: Cela dépend de votre modèle de données exact.
-      // Si étudiant: chercher dans un champ array 'studentIds' ou similaire
-      // Si entreprise: chercher 'createdBy' == uid ou 'companyId' == uid
-      
-      // Pour l'instant, je fais une requête générique sécurisée qui ne plantera pas
-      // Vous devrez peut-être adapter les clauses 'where'
-      let q;
-      if (userData?.status === 'entreprise') {
-         q = query(missionsRef, where('companyId', '==', currentUser.uid));
+      if (userData.status === 'entreprise') {
+        // Pour les entreprises : récupérer les missions où companyId correspond
+        const missionsRef = collection(db, 'missions');
+        const q = query(missionsRef, where('companyId', '==', currentUser.uid));
+        const querySnapshot = await getDocs(q);
+        const fetchedMissions = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Mission[];
+        setMissions(fetchedMissions);
+      } else if (userData.status === 'etudiant') {
+        // Pour les étudiants : récupérer les missions où ils ont postulé via la collection applications
+        const applicationsRef = collection(db, 'applications');
+        const applicationsQuery = query(
+          applicationsRef,
+          where('userId', '==', currentUser.uid)
+        );
+        const applicationsSnapshot = await getDocs(applicationsQuery);
+        
+        // Créer une map missionId -> applicationStatus
+        const applicationStatusMap: Record<string, string> = {};
+        applicationsSnapshot.docs.forEach(appDoc => {
+          const appData = appDoc.data();
+          if (appData.missionId) {
+            applicationStatusMap[appData.missionId] = appData.status || 'En attente';
+          }
+        });
+        
+        // Récupérer les IDs des missions
+        const missionIds = Object.keys(applicationStatusMap);
+        
+        if (missionIds.length === 0) {
+          setMissions([]);
+          return;
+        }
+        
+        // Récupérer les missions correspondantes une par une (ou par batches si possible)
+        const missionsRef = collection(db, 'missions');
+        const missionsList: (Mission & { applicationStatus?: string })[] = [];
+        
+        // Récupérer chaque mission individuellement
+        for (const missionId of missionIds) {
+          try {
+            const missionDoc = await getDoc(doc(db, 'missions', missionId));
+            if (missionDoc.exists()) {
+              missionsList.push({
+                id: missionDoc.id,
+                ...missionDoc.data(),
+                applicationStatus: applicationStatusMap[missionId] || 'Postulé'
+              } as Mission & { applicationStatus?: string });
+            }
+          } catch (error) {
+            console.error(`Erreur lors de la récupération de la mission ${missionId}:`, error);
+          }
+        }
+        
+        setMissions(missionsList as Mission[]);
+      } else {
+        // Pour admin/member/superadmin : récupérer les missions de leur structure
+        if (userData.structureId) {
+          const missionsRef = collection(db, 'missions');
+          const q = query(missionsRef, where('structureId', '==', userData.structureId));
+          const querySnapshot = await getDocs(q);
+          const fetchedMissions = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          })) as Mission[];
+          setMissions(fetchedMissions);
         } else {
-         // Pour les étudiants, on suppose qu'ils sont assignés. 
-         // Si pas de champ direct, on récupère tout et on filtre (moins performant) ou on utilise un index array-contains
-         // Je tente 'assignedStudents' array-contains uid comme c'est courant
-         // Si ça échoue (index manquant), ça sera catché.
-         try {
-            // Tentative 1 : array-contains
-            // q = query(missionsRef, where('assignedStudents', 'array-contains', currentUser.uid));
-            // Fallback pour éviter erreur d'index si pas sûr : récupérer par createdBy pour test
-            q = query(missionsRef, where('createdBy', '==', currentUser.uid)); 
-         } catch {
-             q = query(missionsRef, where('createdBy', '==', currentUser.uid));
-         }
+          setMissions([]);
+        }
       }
-
-      // Note: Sans index composé, faire attention aux queries multiples. 
-      // Je vais utiliser une requête simple sur createdBy pour commencer si je ne suis pas sûr du modèle.
-      // Mais le code précédent suggérait une relation. 
-      // Je vais laisser vide pour l'instant si je ne suis pas sûr, ou mieux :
-      // Utiliser le fait que Profile.tsx précédent n'a pas montré la logique de fetch mission clairement.
-      
-      // RECTIFICATION: Je vais utiliser une requête simple 'createdBy' comme fallback sûr,
-      // et vous pourrez ajuster la requête selon votre schéma.
-      const qSafe = query(missionsRef, where('createdBy', '==', currentUser.uid)); 
-      
-      const querySnapshot = await getDocs(qSafe);
-      const fetchedMissions = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Mission[];
-      
-      setMissions(fetchedMissions);
-      } catch (error) {
+    } catch (error) {
       console.error('Erreur fetch missions:', error);
       // Ne pas bloquer l'UI pour les missions
+      setMissions([]);
     } finally {
       setLoadingMissions(false);
     }
@@ -159,6 +241,17 @@ const Profile: React.FC = () => {
       fetchMissions();
     }
   }, [userData]);
+
+  // Gérer l'ouverture de l'onglet depuis l'URL
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam === 'missions') {
+      // L'onglet missions est l'index 1
+      setTabValue(1);
+      // Nettoyer le paramètre de l'URL
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
@@ -206,7 +299,7 @@ const Profile: React.FC = () => {
                <Skeleton variant="rectangular" width="100%" height={200} />
                     </Box>
                   ) : (
-             <MissionsList missions={missions} />
+             <MissionsList missions={missions} isStudent={userData?.status === 'etudiant'} />
            )}
         </TabPanel>
 

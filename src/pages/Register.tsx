@@ -21,7 +21,9 @@ import {
   MenuItem,
   SelectChangeEvent,
   Checkbox,
-  FormControlLabel
+  FormControlLabel,
+  useTheme,
+  useMediaQuery
 } from '@mui/material';
 import { 
   Visibility, 
@@ -37,9 +39,11 @@ import { createUserDocument } from '../firebase/firestore';
 import { UserData } from '../types/user';
 import { findStructureByEmail } from '../firebase/structure';
 import { Structure } from '../types/structure';
-import { uploadCV } from '../firebase/storage';
+import { uploadCV, uploadFile } from '../firebase/storage';
 import { doc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import { getAuth } from 'firebase/auth';
+import axios from 'axios';
 
 // Style pour l'input de fichier
 const VisuallyHiddenInput = styled('input')({
@@ -57,6 +61,8 @@ const VisuallyHiddenInput = styled('input')({
 type RegistrationType = 'student' | 'company' | 'structure';
 
 const Register: React.FC = () => {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [searchParams] = useSearchParams();
   const registrationType: RegistrationType = (searchParams.get('type') as RegistrationType) || 'student';
   
@@ -68,6 +74,7 @@ const Register: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [acceptTerms, setAcceptTerms] = useState<boolean>(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   
   // ========== ÉTATS FLUX ÉTUDIANT ==========
   const [activeStep, setActiveStep] = useState(0);
@@ -78,6 +85,7 @@ const Register: React.FC = () => {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [birthDate, setBirthDate] = useState('');
+  const [birthPostalCode, setBirthPostalCode] = useState('');
   const [graduationYear, setGraduationYear] = useState('');
   const [cv, setCv] = useState<File | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
@@ -204,7 +212,9 @@ const Register: React.FC = () => {
   
   const handleStudentNext = async () => {
     if (activeStep === 0) {
-      if (!firstName || !lastName || !email || !birthDate) {
+      const errors: Record<string, string> = {};
+      
+      if (!firstName || !lastName || !email || !birthDate || !birthPostalCode) {
         setError('Veuillez remplir tous les champs obligatoires');
         return;
       }
@@ -220,19 +230,40 @@ const Register: React.FC = () => {
         return;
       }
       
+      // Validation date de naissance (minimum 18 ans)
       const today = new Date();
       const birthDateObj = new Date(birthDate);
       const age = today.getFullYear() - birthDateObj.getFullYear();
+      const monthDiff = today.getMonth() - birthDateObj.getMonth();
+      const dayDiff = today.getDate() - birthDateObj.getDate();
+      const actualAge = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? age - 1 : age;
       
-      if (age < 16) {
-        setError('Vous devez avoir au moins 16 ans pour vous inscrire');
+      if (actualAge < 18) {
+        errors.birthDate = 'Vous devez avoir au moins 18 ans pour vous inscrire';
+      }
+      
+      // Validation code postal (5 chiffres)
+      if (birthPostalCode && !/^\d{5}$/.test(birthPostalCode)) {
+        errors.birthPostalCode = 'Le code postal de naissance doit contenir exactement 5 chiffres';
+      }
+      
+      // Si des erreurs existent, les afficher et empêcher la progression
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors);
+        const firstError = Object.values(errors)[0];
+        setError(firstError);
         return;
       }
+      
+      // Effacer les erreurs si tout est valide
+      setFieldErrors({});
+      setError(null);
     } else if (activeStep === 1) {
       if (!graduationYear) {
-        setError('Veuillez sélectionner votre année de diplomation');
+        setError('Veuillez remplir tous les champs obligatoires');
         return;
       }
+      setError(null);
     } else if (activeStep === 2) {
       if (!password || !confirmPassword) {
         setError('Veuillez remplir tous les champs');
@@ -261,6 +292,7 @@ const Register: React.FC = () => {
     
     setActiveStep((prevActiveStep) => prevActiveStep + 1);
     setError(null);
+    setFieldErrors({}); // Effacer les erreurs lors de la progression
   };
   
   const handleStudentBack = () => {
@@ -291,6 +323,45 @@ const Register: React.FC = () => {
       const user = await registerUser(email, password, `${firstName} ${lastName}`.trim());
       
       try {
+        // Uploader et chiffrer le CV si fourni
+        let cvUrl = '';
+        if (cv) {
+          // 1. Uploader le fichier dans Storage
+          const fileExtension = cv.name.split('.').pop();
+          const fileName = `cv_${Date.now()}.${fileExtension}`;
+          const filePath = `cvs/${user.uid}/${fileName}`;
+          
+          const uploadResult = await uploadFile(cv, filePath);
+          
+          // 2. Chiffrer le fichier via Cloud Function
+          // Récupérer le token de manière fiable depuis l'utilisateur fraîchement créé
+          try {
+            const token = await user.getIdToken(true); // Force refresh du token
+            if (token) {
+              try {
+                await axios.post(
+                  `https://us-central1-jsaas-dd2f7.cloudfunctions.net/encryptFile`,
+                  { filePath },
+                  {
+                    headers: {
+                      'Authorization': `Bearer ${token}`,
+                      'Content-Type': 'application/json'
+                    }
+                  }
+                );
+              } catch (encryptError) {
+                console.warn('Erreur lors du chiffrement du CV (continuons quand même):', encryptError);
+                // On continue même si le chiffrement échoue pour ne pas bloquer l'inscription
+              }
+            }
+          } catch (tokenError) {
+            console.warn('Impossible de récupérer le token pour chiffrer le CV (continuons quand même):', tokenError);
+            // On continue même si on ne peut pas récupérer le token
+          }
+          
+          cvUrl = uploadResult.url;
+        }
+        
         const userData: UserData = {
           displayName: `${firstName} ${lastName}`.trim(),
           email,
@@ -303,10 +374,11 @@ const Register: React.FC = () => {
           status: 'etudiant' as const,
           structureId: structure.id,
           ecole: structure.ecole,
-          cvUrl: cv ? await uploadCV(cv, user.uid) : '',
+          cvUrl,
           acceptsElectronicDocuments: acceptsElectronicDocuments,
-          acceptsElectronicDocumentsDate: acceptsElectronicDocuments ? new Date() : undefined
-        };
+          acceptsElectronicDocumentsDate: acceptsElectronicDocuments ? new Date() : null,
+          birthPostalCode
+        } as any; // Utilisation de 'as any' car birthPostalCode n'est pas dans UserData pour l'instant
         
         await createUserDocument(user.uid, userData);
         navigate('/app/profile');
@@ -335,6 +407,8 @@ const Register: React.FC = () => {
   
   // ========== FONCTIONS FLUX ENTREPRISE ==========
   const handleCompanySubmit = async () => {
+    const errors: Record<string, string> = {};
+    
     // Validation des champs
     if (!companyName || !companyContactFirstName || !companyContactLastName || !companyEmail || !companyPhone || !companyPassword || !companyConfirmPassword) {
       setError('Veuillez remplir tous les champs obligatoires');
@@ -347,10 +421,10 @@ const Register: React.FC = () => {
       return;
     }
     
-    const phoneRegex = /^[0-9+\s()-]+$/;
-    if (!phoneRegex.test(companyPhone)) {
-      setError('Veuillez entrer un numéro de téléphone valide');
-      return;
+    // Validation téléphone (10 chiffres)
+    const phoneDigits = companyPhone.replace(/\D/g, '');
+    if (phoneDigits.length !== 10) {
+      errors.companyPhone = 'Le numéro de téléphone doit contenir exactement 10 chiffres';
     }
     
     if (companyPassword !== companyConfirmPassword) {
@@ -373,6 +447,17 @@ const Register: React.FC = () => {
       setError("Vous devez accepter les conditions d'utilisation et la politique de confidentialité");
       return;
     }
+    
+    // Si des erreurs existent, les afficher et empêcher la soumission
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      const firstError = Object.values(errors)[0];
+      setError(firstError);
+      return;
+    }
+    
+    // Effacer les erreurs si tout est valide
+    setFieldErrors({});
 
     try {
       setLoading(true);
@@ -394,6 +479,7 @@ const Register: React.FC = () => {
         
         await createUserDocument(user.uid, userData);
         
+        setFieldErrors({}); // Effacer les erreurs après succès
         // Rediriger vers le formulaire de mission après l'inscription
         navigate('/app/mission?new=true');
       } catch (error) {
@@ -536,7 +622,12 @@ const Register: React.FC = () => {
       <Stepper 
         activeStep={activeStep} 
         alternativeLabel
-        sx={{ mb: 4 }}
+        sx={{ 
+          mb: { xs: 3, sm: 4 },
+          '& .MuiStepLabel-label': {
+            fontSize: { xs: '0.75rem', sm: '0.875rem' }
+          }
+        }}
       >
         {steps.map((label) => (
           <Step key={label}>
@@ -561,7 +652,7 @@ const Register: React.FC = () => {
             disabled={loading}
             variant="outlined"
             sx={{ 
-              mb: 2,
+              mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
                 borderRadius: '8px'
               }
@@ -581,7 +672,7 @@ const Register: React.FC = () => {
             disabled={loading}
             variant="outlined"
             sx={{ 
-              mb: 2,
+              mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
                 borderRadius: '8px'
               }
@@ -603,7 +694,7 @@ const Register: React.FC = () => {
             helperText={emailError || "Utilisez votre adresse email académique"}
             variant="outlined"
             sx={{ 
-              mb: 2,
+              mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
                 borderRadius: '8px'
               }
@@ -619,14 +710,61 @@ const Register: React.FC = () => {
             name="birthDate"
             type="date"
             value={birthDate}
-            onChange={(e) => setBirthDate(e.target.value)}
+            onChange={(e) => {
+              setBirthDate(e.target.value);
+              // Effacer l'erreur si elle existe
+              if (fieldErrors.birthDate) {
+                setFieldErrors(prev => {
+                  const newErrors = { ...prev };
+                  delete newErrors.birthDate;
+                  return newErrors;
+                });
+              }
+            }}
             disabled={loading}
             variant="outlined"
             InputLabelProps={{
               shrink: true,
             }}
+            error={!!fieldErrors.birthDate}
+            helperText={fieldErrors.birthDate || "Vous devez avoir au moins 18 ans"}
+            inputProps={{ max: new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split('T')[0] }}
             sx={{ 
-              mb: 2,
+              mb: { xs: 1.5, sm: 2 },
+              '& .MuiOutlinedInput-root': {
+                borderRadius: '8px'
+              }
+            }}
+          />
+          
+          <TextField
+            margin="normal"
+            required
+            fullWidth
+            id="birthPostalCode"
+            label="Code postal de naissance"
+            name="birthPostalCode"
+            value={birthPostalCode}
+            onChange={(e) => {
+              // Ne garder que les chiffres
+              const value = e.target.value.replace(/\D/g, '').slice(0, 5);
+              setBirthPostalCode(value);
+              // Effacer l'erreur si elle existe
+              if (fieldErrors.birthPostalCode) {
+                setFieldErrors(prev => {
+                  const newErrors = { ...prev };
+                  delete newErrors.birthPostalCode;
+                  return newErrors;
+                });
+              }
+            }}
+            disabled={loading}
+            variant="outlined"
+            inputProps={{ maxLength: 5 }}
+            error={!!fieldErrors.birthPostalCode}
+            helperText={fieldErrors.birthPostalCode || "5 chiffres requis"}
+            sx={{ 
+              mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
                 borderRadius: '8px'
               }
@@ -859,15 +997,17 @@ const Register: React.FC = () => {
         </>
       )}
       
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: { xs: 3, sm: 4 }, flexDirection: { xs: 'column-reverse', sm: 'row' }, gap: { xs: 2, sm: 0 } }}>
         {activeStep > 0 ? (
           <Button
             onClick={handleStudentBack}
             disabled={loading}
             startIcon={<ArrowBack />}
+            fullWidth={isMobile}
             sx={{ 
               textTransform: 'none',
-              fontWeight: 500
+              fontWeight: 500,
+              fontSize: { xs: '0.85rem', sm: '0.875rem' }
             }}
           >
             Retour
@@ -881,12 +1021,14 @@ const Register: React.FC = () => {
           onClick={handleStudentNext}
           disabled={loading}
           endIcon={activeStep < steps.length - 1 ? <ArrowForward /> : undefined}
+          fullWidth={isMobile}
           sx={{ 
             borderRadius: '20px',
-            px: 3,
-            py: 1,
+            px: { xs: 2, sm: 3 },
+            py: { xs: 1.25, sm: 1 },
             textTransform: 'none',
             fontWeight: 500,
+            fontSize: { xs: '0.85rem', sm: '0.875rem' },
             bgcolor: '#0071e3',
             '&:hover': {
               bgcolor: '#0062c3'
@@ -994,10 +1136,23 @@ const Register: React.FC = () => {
             name="companyPhone"
             type="tel"
             value={companyPhone}
-            onChange={(e) => setCompanyPhone(e.target.value)}
+            onChange={(e) => {
+              // Ne garder que les chiffres, espaces, +, - et ()
+              const value = e.target.value.replace(/[^\d+\s()-]/g, '');
+              setCompanyPhone(value);
+              // Effacer l'erreur si elle existe
+              if (fieldErrors.companyPhone) {
+                setFieldErrors(prev => {
+                  const newErrors = { ...prev };
+                  delete newErrors.companyPhone;
+                  return newErrors;
+                });
+              }
+            }}
             disabled={loading}
             variant="outlined"
-            helperText="Important pour le rappel commercial"
+            error={!!fieldErrors.companyPhone}
+            helperText={fieldErrors.companyPhone || "10 chiffres requis (ex: 06 12 34 56 78)"}
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
@@ -1334,15 +1489,15 @@ const Register: React.FC = () => {
         flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
-        minHeight: '100vh',
+        minHeight: { xs: 'calc(100vh - 80px)', sm: '100vh' },
         bgcolor: '#ffffff',
-        p: 2
+        p: { xs: 1.5, sm: 2 }
       }}
     >
       <Paper
         elevation={0}
         sx={{
-          p: 4,
+          p: { xs: 2.5, sm: 4 },
           maxWidth: 600,
           width: '100%',
           borderRadius: '12px',
@@ -1356,8 +1511,8 @@ const Register: React.FC = () => {
           gutterBottom
           sx={{ 
             fontWeight: 600, 
-            fontSize: { xs: '1.5rem', sm: '2rem' },
-            mb: 3
+            fontSize: { xs: '1.25rem', sm: '1.5rem', md: '2rem' },
+            mb: { xs: 2, sm: 3 }
           }}
         >
           {getTitle()}
@@ -1377,10 +1532,10 @@ const Register: React.FC = () => {
           {registrationType === 'structure' && renderStructureForm()}
         </Box>
         
-        <Divider sx={{ my: 4 }} />
+        <Divider sx={{ my: { xs: 3, sm: 4 } }} />
         
         <Box sx={{ textAlign: 'center' }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.8rem', sm: '0.875rem' } }}>
             Vous avez déjà un identifiant JS Connect ?
           </Typography>
           <Link 
@@ -1391,6 +1546,7 @@ const Register: React.FC = () => {
               color: '#0071e3',
               textDecoration: 'none',
               fontWeight: 500,
+              fontSize: { xs: '0.8rem', sm: '0.875rem' },
               '&:hover': {
                 textDecoration: 'underline'
               }
@@ -1401,13 +1557,13 @@ const Register: React.FC = () => {
         </Box>
       </Paper>
       
-      <Typography variant="body2" color="text.secondary" sx={{ mt: 4, textAlign: 'center' }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: { xs: 2, sm: 4 }, mb: { xs: 2, sm: 0 }, textAlign: 'center', px: { xs: 2, sm: 0 }, fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
         En créant un compte, vous acceptez les{' '}
-        <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+        <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
           Conditions d'utilisation
         </Link>{' '}
         et la{' '}
-        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
           Politique de confidentialité
         </Link>{' '}
         de JS Connect.

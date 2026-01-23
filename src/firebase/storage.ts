@@ -8,7 +8,9 @@ import {
   ListResult,
   uploadBytes
 } from "firebase/storage";
-import { storage, auth } from "./config";
+import { storage, auth, app } from "./config";
+import { getAuth } from "firebase/auth";
+import { getStorage } from "firebase/storage";
 
 interface FileUploadResult {
   url: string;
@@ -21,56 +23,172 @@ interface FileInfo {
   url: string;
 }
 
-// Télécharger un fichier
-export const uploadFile = async (file: File, path: string): Promise<FileUploadResult> => {
+// Télécharger un fichier avec callback de progression
+export const uploadFile = async (
+  file: File, 
+  path: string,
+  onProgress?: (progress: number) => void
+): Promise<FileUploadResult> => {
   // #region agent log
-  const authUser = auth?.currentUser;
-  const authToken = authUser ? await authUser.getIdToken().catch(() => null) : null;
-  fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:26',message:'uploadFile entry',data:{path,fileName:file.name,fileSize:file.size,fileType:file.type,authUserExists:!!authUser,authUserId:authUser?.uid,authTokenExists:!!authToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+  console.log('[DEBUG] storage.ts:25 - uploadFile called', {path,fileSize:file.size,hasStorage:!!storage,hasApp:!!app,hypothesisId:'A'});
   // #endregion
   
-  if (!storage) {
+  // S'assurer que Storage est initialisé avec la même instance app que Auth
+  let storageInstance = storage;
+  if (!storageInstance && app) {
+    // #region agent log
+    console.log('[DEBUG] storage.ts:30 - Storage null, réinitialisation avec app', {hasApp:!!app,appName:app.name,hypothesisId:'A'});
+    // #endregion
+    storageInstance = getStorage(app);
+  }
+  
+  if (!storageInstance) {
     throw new Error('Firebase Storage non disponible');
   }
   
   try {
-    const storageRef = ref(storage, path);
-    
     // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:33',message:'Before uploadBytesResumable',data:{path,storageRefExists:!!storageRef,authUserExists:!!authUser},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B,C'})}).catch(()=>{});
-    // #endregion
+    const authInstance = getAuth(app || undefined);
+    const firebaseUser = authInstance.currentUser;
     
-    const uploadTask: UploadTask = uploadBytesResumable(storageRef, file);
+    // Vérifier que l'utilisateur est authentifié avant l'upload
+    if (!firebaseUser) {
+      throw new Error('Utilisateur non authentifié');
+    }
     
-    return new Promise((resolve, reject) => {
-      uploadTask.on(
-        "state_changed",
-        (snapshot) => {
-          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          console.log(`Progression du téléchargement: ${progress}%`);
-        },
-        (error) => {
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:44',message:'Upload error',data:{errorCode:error?.code,errorMessage:error?.message,errorName:error?.name,path,authUserExists:!!authUser,authUserId:authUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
-          // #endregion
-          reject(error);
-        },
-        async () => {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:50',message:'Upload success',data:{path,downloadURL:downloadURL?.substring(0,50)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
-          // #endregion
-          resolve({
-            url: downloadURL,
-            path: path
-          });
-        }
-      );
+    // Forcer le refresh du token AVANT l'upload pour s'assurer qu'il est valide et inclus
+    const token = await firebaseUser.getIdToken(true).catch(()=>null);
+    
+    // Vérifier que Storage et Auth utilisent la même instance app
+    const storageAppName = (storageInstance as any)?._delegate?.app?.name;
+    const authAppName = (authInstance as any)?._delegate?.app?.name;
+    const storageAppInternal = (storageInstance as any)?._delegate?.app;
+    const authAppInternal = (authInstance as any)?._delegate?.app;
+    
+    console.log('[DEBUG] storage.ts:42 - Auth check before upload', {
+      hasStorage:!!storageInstance,
+      hasUser:!!firebaseUser,
+      userId:firebaseUser?.uid,
+      hasToken:!!token,
+      tokenLength:token?.length || 0,
+      storageAppName,
+      authAppName,
+      sameAppName:storageAppName === authAppName,
+      sameAppInstance:storageAppInternal === authAppInternal,
+      storageAppType:typeof storageAppInternal,
+      authAppType:typeof authAppInternal,
+      hypothesisId:'A'
     });
-  } catch (error) {
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'storage.ts:58',message:'Upload catch error',data:{errorCode:error?.code,errorMessage:error?.message,errorName:error?.name,path},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
     // #endregion
+    
+    // S'assurer que Storage utilise la même instance app que Auth
+    if (storageAppInternal !== authAppInternal && app) {
+      // #region agent log
+      console.log('[DEBUG] storage.ts:65 - Storage et Auth n\'utilisent pas la même instance app, réinitialisation Storage', {
+        storageAppName,
+        authAppName,
+        hypothesisId:'A'
+      });
+      // #endregion
+      storageInstance = getStorage(app);
+    }
+    
+    const storageRef = ref(storageInstance, path);
+    // #region agent log
+    console.log('[DEBUG] storage.ts:73 - Before uploadBytes', {
+      path,
+      storageRefPath:storageRef.fullPath,
+      fullPath:storageRef.fullPath,
+      storageBucket:storageRef.bucket,
+      storageAppAfter:((storageInstance as any)?._delegate?.app?.name),
+      authAppAfter:((authInstance as any)?._delegate?.app?.name),
+      hypothesisId:'B'
+    });
+    // #endregion
+    
+    // Essayer d'abord avec uploadBytes (synchronisé) au lieu de uploadBytesResumable
+    // D'autres parties du code utilisent uploadBytes avec succès
+    if (onProgress) {
+      // Si onProgress est fourni, utiliser uploadBytesResumable pour le suivi de progression
+      const uploadTask: UploadTask = uploadBytesResumable(storageRef, file);
+      
+      return new Promise((resolve, reject) => {
+        uploadTask.on(
+          "state_changed",
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            console.log(`Progression du téléchargement: ${progress}%`);
+            if (onProgress) {
+              onProgress(progress);
+            }
+          },
+          (error) => {
+            // #region agent log
+            const errorDetails: any = {
+              errorCode:error.code,
+              errorMessage:error.message,
+              errorName:error.name,
+              errorStack:error.stack,
+              serverResponse:error.serverResponse,
+              hypothesisId:'B'
+            };
+            // Essayer d'extraire plus d'informations de l'erreur
+            if ((error as any).customData) {
+              errorDetails.customData = (error as any).customData;
+            }
+            if ((error as any).code_) {
+              errorDetails.code_ = (error as any).code_;
+            }
+            console.log('[DEBUG] storage.ts:120 - Upload error in state_changed (uploadBytesResumable)', errorDetails);
+            // #endregion
+            reject(error);
+          },
+          async () => {
+            const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve({
+              url: downloadURL,
+              path: path
+            });
+          }
+        );
+      });
+    } else {
+      // Si pas de callback de progression, utiliser uploadBytes (plus simple et peut-être plus fiable)
+      // #region agent log
+      console.log('[DEBUG] storage.ts:145 - Using uploadBytes (no progress callback)', {hypothesisId:'B'});
+      // #endregion
+      try {
+        await uploadBytes(storageRef, file);
+        // #region agent log
+        console.log('[DEBUG] storage.ts:149 - uploadBytes completed successfully', {hypothesisId:'B'});
+        // #endregion
+        const downloadURL = await getDownloadURL(storageRef);
+        return {
+          url: downloadURL,
+          path: path
+        };
+      } catch (error: any) {
+        // #region agent log
+        const errorDetails: any = {
+          errorCode:error.code,
+          errorMessage:error.message,
+          errorName:error.name,
+          errorStack:error.stack,
+          serverResponse:error.serverResponse,
+          hypothesisId:'B'
+        };
+        if ((error as any).customData) {
+          errorDetails.customData = (error as any).customData;
+        }
+        if ((error as any).code_) {
+          errorDetails.code_ = (error as any).code_;
+        }
+        console.log('[DEBUG] storage.ts:165 - Upload error (uploadBytes)', errorDetails);
+        // #endregion
+        throw error;
+      }
+    }
+  } catch (error) {
     throw error;
   }
 };

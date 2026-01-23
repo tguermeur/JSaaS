@@ -5,11 +5,16 @@ import { useAuth } from './AuthContext';
 
 const CURRENT_VERSION = '2.0.0';
 
+// Rôles autorisés à voir le changelog
+const ALLOWED_ROLES = ['admin_structure', 'admin', 'membre', 'superadmin'];
+
 interface ChangelogContextType {
   showChangelog: boolean;
   markChangelogAsSeen: () => Promise<void>;
   openChangelog: () => void;
   loading: boolean;
+  showInfoButtonHint: boolean;
+  hideInfoButtonHint: () => void;
 }
 
 const ChangelogContext = createContext<ChangelogContextType | undefined>(undefined);
@@ -17,11 +22,20 @@ const ChangelogContext = createContext<ChangelogContextType | undefined>(undefin
 export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [showChangelog, setShowChangelog] = useState(false);
   const [loading, setLoading] = useState(true);
-  const { currentUser } = useAuth();
+  const [showInfoButtonHint, setShowInfoButtonHint] = useState(false);
+  const { currentUser, userData } = useAuth();
 
   useEffect(() => {
     const checkChangelogStatus = async () => {
       if (!currentUser) {
+        setLoading(false);
+        return;
+      }
+
+      // Vérifier le rôle de l'utilisateur
+      const userRole = userData?.status;
+      if (!userRole || !ALLOWED_ROLES.includes(userRole)) {
+        // Utilisateur non autorisé (etudiant ou entreprise)
         setLoading(false);
         return;
       }
@@ -47,7 +61,7 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     checkChangelogStatus();
-  }, [currentUser]);
+  }, [currentUser, userData]);
 
   const markChangelogAsSeen = async () => {
     if (!currentUser) return;
@@ -59,6 +73,15 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         lastSeenChangelogDate: new Date()
       });
       setShowChangelog(false);
+      
+      // Afficher l'animation du bouton "i" après 500ms
+      setTimeout(() => {
+        setShowInfoButtonHint(true);
+        // Masquer automatiquement après 5 secondes
+        setTimeout(() => {
+          setShowInfoButtonHint(false);
+        }, 5000);
+      }, 500);
     } catch (error) {
       console.error('Erreur lors de la mise à jour du changelog:', error);
       // Fermer quand même la popup même en cas d'erreur
@@ -68,6 +91,11 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const openChangelog = () => {
     setShowChangelog(true);
+    setShowInfoButtonHint(false); // Masquer le hint si on rouvre
+  };
+
+  const hideInfoButtonHint = () => {
+    setShowInfoButtonHint(false);
   };
 
   return (
@@ -76,7 +104,9 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         showChangelog,
         markChangelogAsSeen,
         openChangelog,
-        loading
+        loading,
+        showInfoButtonHint,
+        hideInfoButtonHint
       }}
     >
       {children}

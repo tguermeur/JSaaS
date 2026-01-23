@@ -810,7 +810,8 @@ const Tresorerie: React.FC = () => {
       const contractQuery = query(
         contractsRef,
         where('missionId', '==', contractId),
-        where('applicationId', '==', contract.application.id)
+        where('applicationId', '==', contract.application.id),
+        where('structureId', '==', userData?.structureId)
       );
       
       const existingContractSnapshot = await getDocs(contractQuery);
@@ -1422,11 +1423,13 @@ const Tresorerie: React.FC = () => {
           // Si pas d'application acceptée, vérifier s'il y a une facture pour cette mission
           if (applicationsSnapshot.empty) {
             // Vérifier s'il y a une facture uploadée pour cette mission
+            // Filtrer par structureId pour respecter les règles de sécurité Firestore
             const documentsRef = collection(db, 'generatedDocuments');
             const documentsQuery = query(
               documentsRef,
               where('missionId', '==', mission.id),
-              where('category', '==', 'facturation')
+              where('category', '==', 'facturation'),
+              where('structureId', '==', userStructureId)
             );
             const documentsSnapshot = await getDocs(documentsQuery);
             
@@ -1471,11 +1474,13 @@ const Tresorerie: React.FC = () => {
             const applicationData = appDoc.data();
             
             // 3. Vérifier si un contrat existe pour cette application
+            // Filtrer par structureId pour respecter les règles de sécurité Firestore
             const contractsRef = collection(db, 'contracts');
             const contractQuery = query(
               contractsRef,
               where('missionId', '==', mission.id),
-              where('applicationId', '==', appDoc.id)
+              where('applicationId', '==', appDoc.id),
+              where('structureId', '==', userStructureId)
             );
             const contractSnapshot = await getDocs(contractQuery);
             
@@ -1593,11 +1598,13 @@ const Tresorerie: React.FC = () => {
             }) as ExpenseNote[];
 
             // Récupérer la facture associée à cette mission
+            // Filtrer par structureId pour respecter les règles de sécurité Firestore
             const documentsRef = collection(db, 'generatedDocuments');
             const documentsQuery = query(
               documentsRef,
               where('missionId', '==', mission.id),
-              where('category', '==', 'facturation')
+              where('category', '==', 'facturation'),
+              where('structureId', '==', userStructureId)
             );
             const documentsSnapshot = await getDocs(documentsQuery);
             

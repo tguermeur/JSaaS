@@ -147,10 +147,13 @@ const Audit: React.FC = () => {
         
         console.log("Nombre total de missions trouvées:", missionsSnapshot.docs.length);
         
-        const missionsData = await Promise.all(missionsSnapshot.docs.map(async (doc) => {
-          const data = doc.data();
+        const missionsData = await Promise.all(missionsSnapshot.docs.map(async (missionDoc) => {
+          const data = missionDoc.data();
+          // #region agent log
+          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:151',message:'Processing mission',data:{missionId:missionDoc.id,chargeId:data.chargeId,structureId:data.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
           console.log("Mission trouvée:", {
-            id: doc.id,
+            id: missionDoc.id,
             structureId: data.structureId,
             userStructureId,
             match: data.structureId === userStructureId
@@ -160,12 +163,21 @@ const Audit: React.FC = () => {
           let missionMandat: string | undefined;
           if (data.chargeId) {
             try {
+              // #region agent log
+              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:163',message:'Before getDoc call',data:{chargeId:data.chargeId,docType:typeof doc},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+              // #endregion
               const chargeDoc = await getDoc(doc(db, 'users', data.chargeId));
+              // #region agent log
+              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:164',message:'After getDoc call',data:{chargeDocExists:chargeDoc.exists()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+              // #endregion
               if (chargeDoc.exists()) {
                 const chargeData = chargeDoc.data();
                 missionMandat = chargeData.mandat || undefined;
               }
             } catch (error) {
+              // #region agent log
+              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:169',message:'Error getting charge doc',data:{error:error instanceof Error ? error.message : String(error),errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+              // #endregion
               console.error('Erreur lors de la récupération du mandat du chargé de mission:', error);
             }
           }
@@ -185,7 +197,7 @@ const Audit: React.FC = () => {
           }
           
           return {
-            id: doc.id,
+            id: missionDoc.id,
             ...data,
             mandat: data.mandat || missionMandat,
             auditStatus: auditStatus as 'audited' | 'not_audited'

@@ -29,15 +29,29 @@ console.log('📍 VITE_FIREBASE_APP_ID:', import.meta.env.VITE_FIREBASE_APP_ID ?
 console.log('📍 Toutes les variables .env:', Object.keys(import.meta.env).filter(k => k.startsWith('VITE_FIREBASE')));
 console.groupEnd();
 
-// Configuration Firebase avec valeurs par défaut pour le projet jsaas-dd2f7
+// Configuration Firebase - TOUTES les valeurs DOIVENT être définies dans les variables d'environnement
+// Pas de valeurs par défaut pour des raisons de sécurité
+if (!import.meta.env.VITE_FIREBASE_API_KEY) {
+  throw new Error('VITE_FIREBASE_API_KEY est requis. Définissez-la dans votre fichier .env');
+}
+if (!import.meta.env.VITE_FIREBASE_AUTH_DOMAIN) {
+  throw new Error('VITE_FIREBASE_AUTH_DOMAIN est requis. Définissez-la dans votre fichier .env');
+}
+if (!import.meta.env.VITE_FIREBASE_PROJECT_ID) {
+  throw new Error('VITE_FIREBASE_PROJECT_ID est requis. Définissez-la dans votre fichier .env');
+}
+if (!import.meta.env.VITE_FIREBASE_APP_ID) {
+  throw new Error('VITE_FIREBASE_APP_ID est requis. Définissez-la dans votre fichier .env');
+}
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyCW55pfTJwuRosEx9Sxs-LELEWv1RiS3iI',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'jsaas-dd2f7.firebaseapp.com',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'jsaas-dd2f7',
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
   // Si VITE_FIREBASE_STORAGE_BUCKET n'est pas défini, Firebase SDK utilisera le bucket par défaut
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || undefined,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '1028151005055',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:1028151005055:web:66a22fecbffcea812c944a'
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
 console.log('[Firebase Config] 📋 Configuration finale:', {
@@ -50,7 +64,7 @@ console.log('[Firebase Config] 📋 Configuration finale:', {
 });
 
 // Initialiser Firebase avec gestion d'erreur
-let app: any = null;
+export let app: any = null;
 try {
   app = initializeApp(firebaseConfig);
   console.log('Firebase app initialisé avec succès');
@@ -252,7 +266,9 @@ const initializeStorageAsync = async (): Promise<any> => {
     console.log('  - app n\'est pas null:', app !== null);
     
     // Appel de getStorage avec logging détaillé
+    // IMPORTANT: getStorage(app) lie automatiquement Storage à Auth de l'app
     console.log('📍 Appel de getStorage(app)...');
+    console.log('📍 Vérification Auth avant Storage init:', {hasAuth:!!auth,authApp:auth?._delegate?.app?.name});
     const startTime = performance.now();
     storage = getStorage(app);
     const endTime = performance.now();
@@ -515,10 +531,8 @@ export const getFirebaseFunctions = async () => {
   return functionsInstance;
 };
 
-// Vérification des variables d'environnement
-if (!import.meta.env.VITE_FIREBASE_API_KEY) {
-  console.warn('Variable VITE_FIREBASE_API_KEY manquante - utilisation de la valeur par défaut');
-}
+// Vérification des variables d'environnement (déjà fait au début du fichier)
+// Les erreurs seront levées si les variables critiques manquent
 
 // Vérification de la clé publique Stripe
 if (!import.meta.env.VITE_STRIPE_PUBLIC_KEY) {

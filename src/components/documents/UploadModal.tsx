@@ -18,6 +18,7 @@ import { useDropzone } from 'react-dropzone';
 import { uploadFile } from '../../firebase/storage';
 import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../../firebase/config';
+import { getAuth } from 'firebase/auth';
 import { Document } from '../../types/document';
 
 interface UploadModalProps {
@@ -69,7 +70,7 @@ const UploadModal: React.FC<UploadModalProps> = ({
 
     try {
       // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'UploadModal.tsx:70',message:'handleUpload entry',data:{currentUserId,structureId,filesCount:files.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+      console.log('[DEBUG] UploadModal.tsx:60 - handleUpload started', {currentUserId,structureId,fileCount:files.length,hypothesisId:'A'});
       // #endregion
       
       // Récupérer le nom de l'utilisateur pour l'affichage
@@ -78,26 +79,27 @@ const UploadModal: React.FC<UploadModalProps> = ({
       const uploadedByName = userData?.displayName || userData?.firstName + ' ' + userData?.lastName || 'Inconnu';
 
       // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'UploadModal.tsx:75',message:'User data from Firestore',data:{userDataStatus:userData?.status,userDataStructureId:userData?.structureId,userDataRole:userData?.role,structureId,statusType:typeof userData?.status,structureIdMatch:userData?.structureId === structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,D'})}).catch(()=>{});
+      console.log('[DEBUG] UploadModal.tsx:73 - User data retrieved', {userId:currentUserId,structureId:userData?.structureId,status:userData?.status,expectedStructureId:structureId,hypothesisId:'B'});
       // #endregion
 
       // #region agent log
-      const authUser = auth?.currentUser;
-      const authToken = authUser ? await authUser.getIdToken().catch(() => null) : null;
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'UploadModal.tsx:78',message:'Auth state before upload',data:{authUserExists:!!authUser,authUserId:authUser?.uid,authTokenExists:!!authToken,authTokenLength:authToken?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      const auth = getAuth();
+      const firebaseUser = auth.currentUser;
+      const token = firebaseUser ? await firebaseUser.getIdToken().catch(()=>null) : null;
+      console.log('[DEBUG] UploadModal.tsx:78 - Auth token check', {hasUser:!!firebaseUser,userId:firebaseUser?.uid,hasToken:!!token,tokenLength:token?.length,hypothesisId:'A'});
       // #endregion
 
       const totalFiles = files.length;
       let uploadedCount = 0;
 
       for (const file of files) {
+        // Générer un ID unique pour le fichier
+        const fileId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
+        const storagePath = `structures/${structureId}/documents/${fileId}`;
+        
         try {
-          // Générer un ID unique pour le fichier
-          const fileId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
-          const storagePath = `structures/${structureId}/documents/${fileId}`;
-
           // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'UploadModal.tsx:87',message:'Before uploadFile call',data:{storagePath,fileId,fileName:file.name,fileSize:file.size,fileType:file.type,structureId,userDataStatus:userData?.status,userDataStructureId:userData?.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          console.log('[DEBUG] UploadModal.tsx:87 - Before uploadFile call', {storagePath,fileSize:file.size,fileName:file.name,fileId,hypothesisId:'A'});
           // #endregion
 
           // Uploader le fichier
@@ -126,6 +128,9 @@ const UploadModal: React.FC<UploadModalProps> = ({
           uploadedCount++;
           setUploadProgress((uploadedCount / totalFiles) * 100);
         } catch (fileError: any) {
+          // #region agent log
+          console.log('[DEBUG] UploadModal.tsx:111 - Upload error caught', {errorCode:fileError.code,errorMessage:fileError.message,errorDetails:fileError,storagePath,fileId,fileName:file.name,hypothesisId:'A'});
+          // #endregion
           console.error(`Erreur lors de l'upload de ${file.name}:`, fileError);
           setError(`Erreur lors de l'upload de ${file.name}: ${fileError.message}`);
         }

@@ -21,6 +21,7 @@ import {
   Edit as EditIcon,
   Lock as LockIcon,
   Info as InfoIcon,
+  PushPin as PushPinIcon,
 } from '@mui/icons-material';
 import { Document } from '../../types/document';
 import { formatFileSize } from '../../utils/fileUtils';
@@ -32,6 +33,7 @@ interface DocumentCardProps {
   onDelete: (document: Document) => void;
   onRename?: (document: Document) => void;
   onProperties?: (document: Document) => void;
+  onPin?: (document: Document) => void;
   canDelete?: boolean;
   canRename?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
@@ -44,6 +46,7 @@ const DocumentCard: React.FC<DocumentCardProps> = ({
   onDelete,
   onRename,
   onProperties,
+  onPin,
   canDelete = true,
   canRename = true,
   onDragStart,
@@ -62,18 +65,18 @@ const DocumentCard: React.FC<DocumentCardProps> = ({
 
   const getFileIcon = () => {
     if (document.type.startsWith('image/')) {
-      return <ImageIcon sx={{ fontSize: 64, color: '#007AFF' }} />;
+      return <ImageIcon sx={{ fontSize: 48, color: '#007AFF' }} />;
     }
     if (document.type === 'application/pdf') {
-      return <PdfIcon sx={{ fontSize: 64, color: '#FF3B30' }} />;
+      return <PdfIcon sx={{ fontSize: 48, color: '#FF3B30' }} />;
     }
     if (
       document.type.includes('word') ||
       document.type.includes('document')
     ) {
-      return <DocIcon sx={{ fontSize: 64, color: '#007AFF' }} />;
+      return <DocIcon sx={{ fontSize: 48, color: '#007AFF' }} />;
     }
-    return <FileTextIcon sx={{ fontSize: 64, color: '#86868b' }} />;
+    return <FileTextIcon sx={{ fontSize: 48, color: '#86868b' }} />;
   };
 
   const formatDate = (date: Date | any) => {
@@ -127,18 +130,18 @@ const DocumentCard: React.FC<DocumentCardProps> = ({
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'flex-start',
-          p: 2,
+          p: 1.5,
         }}
       >
         {/* Icon / Thumbnail Area */}
         <Box
           sx={{
             width: '100%',
-            height: 120,
+            height: 80,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            mb: 1.5,
+            mb: 1,
             position: 'relative',
           }}
         >
@@ -186,6 +189,50 @@ const DocumentCard: React.FC<DocumentCardProps> = ({
               </Box>
             </Tooltip>
           )}
+          
+          {/* Personal Document Icon Overlay (crypté) */}
+          {document.isPersonalDocument && (
+            <Tooltip title="Document personnel crypté">
+              <Box
+                sx={{
+                  position: 'absolute',
+                  bottom: 0,
+                  right: document.isRestricted ? '5%' : '20%',
+                  backgroundColor: 'rgba(0, 122, 255, 0.9)',
+                  borderRadius: '50%',
+                  p: 0.5,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                }}
+              >
+                <LockIcon sx={{ fontSize: 14, color: '#ffffff' }} />
+              </Box>
+            </Tooltip>
+          )}
+          
+          {/* Pinned Icon Overlay */}
+          {document.isPinned && (
+            <Tooltip title="Document épinglé">
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 0,
+                  right: 0,
+                  backgroundColor: 'rgba(255, 149, 0, 0.9)',
+                  borderRadius: '50%',
+                  p: 0.5,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                }}
+              >
+                <PushPinIcon sx={{ fontSize: 14, color: '#ffffff' }} />
+              </Box>
+            </Tooltip>
+          )}
         </Box>
 
         {/* Text Area */}
@@ -195,31 +242,21 @@ const DocumentCard: React.FC<DocumentCardProps> = ({
             sx={{
               fontWeight: 500,
               color: '#1d1d1f',
-              fontSize: '13px',
-              lineHeight: 1.4,
+              fontSize: '12px',
+              lineHeight: 1.3,
               display: '-webkit-box',
-              WebkitLineClamp: 2,
+              WebkitLineClamp: 4,
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               wordBreak: 'break-word',
-              px: 1,
+              px: 0.5,
+              minHeight: '3.9em', // 4 lignes * 1.3 line-height
             }}
           >
             {document.name}
           </Typography>
           
-          <Typography
-            variant="caption"
-            sx={{
-              color: '#86868b',
-              fontSize: '11px',
-              mt: 0.5,
-              display: 'block',
-            }}
-          >
-            {formatFileSize(document.size)}
-          </Typography>
         </Box>
       </CardActionArea>
 
@@ -299,6 +336,17 @@ const DocumentCard: React.FC<DocumentCardProps> = ({
           >
             <EditIcon sx={{ fontSize: 18, color: '#1d1d1f' }} />
             Renommer
+          </MenuItem>
+        )}
+        {onPin && (
+          <MenuItem
+            onClick={() => {
+              handleMenuClose();
+              onPin(document);
+            }}
+          >
+            <PushPinIcon sx={{ fontSize: 18, color: document.isPinned ? '#FF9500' : '#1d1d1f' }} />
+            {document.isPinned ? 'Désépingler' : 'Épingler'}
           </MenuItem>
         )}
         {canDelete && (

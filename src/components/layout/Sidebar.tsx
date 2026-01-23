@@ -69,7 +69,7 @@ const IconSidebar = styled(Box)(({ theme }) => ({
   paddingBottom: '12px',
   position: 'fixed',
   left: 0,
-  zIndex: theme.zIndex.drawer - 1,
+  zIndex: 1,
     borderRight: '1px solid #f0f0f0',
 }));
 
@@ -84,7 +84,7 @@ const DetailSidebar = styled(Box, {
   marginLeft: ICON_SIDEBAR_WIDTH,
   position: 'fixed',
   left: 0,
-  zIndex: theme.zIndex.drawer,
+  zIndex: 2,
   borderRight: '1px solid #f0f0f0',
   overflowY: 'auto',
   overflowX: 'hidden',
@@ -247,7 +247,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     
     // Ouvrir la sidebar droite si on est sur une section qui nécessite la sidebar
     // Ne pas ouvrir pour /app/settings car on utilise maintenant les onglets
-    if (path.startsWith('/app/profile') || path.startsWith('/app/available-missions')) {
+    // Ne pas réouvrir automatiquement pour /app/available-missions pour laisser l'utilisateur fermer la sidebar
+    if (path.startsWith('/app/profile')) {
       setDetailSidebarOpen(true);
     } else if (path.startsWith('/app/settings')) {
       // Fermer la sidebar pour les paramètres

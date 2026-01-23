@@ -33,6 +33,7 @@ import {
   InputLabel,
   Snackbar,
   Alert,
+  AlertTitle,
   CircularProgress,
   Table,
   TableHead,
@@ -47,7 +48,9 @@ import {
   Toolbar,
   Accordion,
   AccordionSummary,
-  AccordionDetails
+  AccordionDetails,
+  Tabs,
+  Tab
 } from '@mui/material';
 // Ajout de l'import ContentCopyIcon pour les balises si pas déjà présent (il l'est déjà pour le header)
 import {
@@ -60,7 +63,6 @@ import {
   DragIndicator as DragIcon,
   FormatSize as FormatSizeIcon,
   Check as CheckIcon,
-  KeyboardArrowDown as KeyboardArrowDownIcon,
   FormatAlignLeft as FormatAlignLeftIcon,
   FormatAlignCenter as FormatAlignCenterIcon,
   FormatAlignRight as FormatAlignRightIcon,
@@ -76,7 +78,12 @@ import {
   Close as CloseIcon,
   Code as CodeIcon, // Nouvel icône pour les balises
   Visibility as VisibilityIcon,
-  VisibilityOff as VisibilityOffIcon
+  VisibilityOff as VisibilityOffIcon,
+  KeyboardArrowUp as ArrowUpIcon,
+  KeyboardArrowDown as ArrowDownIcon,
+  KeyboardArrowLeft as ArrowLeftIcon,
+  KeyboardArrowRight as ArrowRightIcon,
+  SelectAll as SelectAllIcon
 } from '@mui/icons-material';
 import { useMission } from '../contexts/MissionContext';
 import { getFileURL } from '../firebase/storage';
@@ -495,6 +502,7 @@ const TemplatesPDF: React.FC = () => {
   });
   const [defaultTemplates, setDefaultTemplates] = useState<{ [key: string]: string }>({});
   const [selectedPlacedVariable, setSelectedPlacedVariable] = useState<string | null>(null);
+  const [selectedVariables, setSelectedVariables] = useState<Set<string>>(new Set()); // Sélection multiple
 
   // Ajout des états pour la gestion du line-height
   const [lineHeightDialogOpen, setLineHeightDialogOpen] = useState(false);
@@ -850,16 +858,20 @@ const TemplatesPDF: React.FC = () => {
   const pdfContainerRef = useRef<HTMLDivElement>(null);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
+  const [templateToDeleteName, setTemplateToDeleteName] = useState<string>('');
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState<string>('');
   const [replacePdfDialogOpen, setReplacePdfDialogOpen] = useState(false);
   const [replacementPdfFile, setReplacementPdfFile] = useState<File | null>(null);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
   const [duplicateTemplateName, setDuplicateTemplateName] = useState<string>('');
   const [tagsDialogOpen, setTagsDialogOpen] = useState(false); // État pour le dialogue des balises
   const [renameDialogOpen, setRenameDialogOpen] = useState(false); // État pour le dialogue de renommage
+  const [sidebarTab, setSidebarTab] = useState(0); // État pour l'onglet actif dans la sidebar (0: Variables, 1: Balises)
   const [newTemplateName, setNewTemplateName] = useState<string>(''); // État pour le nouveau nom
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false); // État pour le dialogue d'aperçu
   const [previewUrl, setPreviewUrl] = useState<string | null>(null); // URL du PDF généré pour l'aperçu
   const [generatingPreview, setGeneratingPreview] = useState(false); // État pour la génération de l'aperçu
+  const [pdfLoadError, setPdfLoadError] = useState<string | null>(null); // État pour les erreurs de chargement PDF
   
   const [newTemplate, setNewTemplate] = useState<{
     name: string;
@@ -892,6 +904,9 @@ const TemplatesPDF: React.FC = () => {
   const [resizingVariable, setResizingVariable] = useState<string | null>(null);
   const [resizeStartPos, setResizeStartPos] = useState({ x: 0, y: 0 });
   const [resizeStartSize, setResizeStartSize] = useState({ width: 0, height: 0 });
+  
+  // États pour le déplacement multiple
+  const [dragStartPositions, setDragStartPositions] = useState<Map<string, { x: number; y: number }>>(new Map());
   
   // Ajouter un état pour suivre les modifications
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -1060,6 +1075,9 @@ const TemplatesPDF: React.FC = () => {
         template.id === selectedTemplate.id ? updatedTemplate : template
       ));
       setSelectedTemplate(updatedTemplate);
+
+      // Réinitialiser l'erreur de chargement
+      setPdfLoadError(null);
 
       // Réinitialiser le formulaire
       setReplacementPdfFile(null);
@@ -1280,12 +1298,18 @@ const TemplatesPDF: React.FC = () => {
   };
   
   const handlePdfClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if ((!selectedVariableId && !isAddingRawText) || !pdfContainerRef.current || !selectedTemplate) return;
+    if ((!selectedVariableId && !isAddingRawText) || !pdfContainerRef.current || !selectedTemplate) {
+      // Désélectionner toutes les balises si on clique sur le PDF sans rien sélectionner
+      setSelectedVariables(new Set());
+      setSelectedPlacedVariable(null);
+      return;
+    }
     
     e.preventDefault();
     e.stopPropagation();
     
     setSelectedPlacedVariable(null);
+    setSelectedVariables(new Set()); // Désélectionner toutes les balises lors de l'ajout d'une nouvelle
     
     const pdfRect = pdfContainerRef.current.getBoundingClientRect();
     const pdfWidth = 595 * zoom;
@@ -1388,19 +1412,39 @@ const TemplatesPDF: React.FC = () => {
     const variable = selectedTemplate.variables.find(v => v.id === variableId);
     if (!variable) return;
 
+    // Si la variable cliquée n'est pas dans la sélection, la sélectionner seule
+    if (!selectedVariables.has(variableId)) {
+      setSelectedVariables(new Set([variableId]));
+      setSelectedPlacedVariable(variableId);
+    }
+
     // Position de la souris dans le conteneur PDF
     const mouseX = (e.clientX - pdfLeft) / zoom;
     const mouseY = (e.clientY - pdfTop) / zoom;
 
-    // Offset entre la souris et le coin supérieur gauche de la variable
+    // Offset entre la souris et le coin supérieur gauche de la variable principale
     const offsetX = mouseX - variable.position.x;
     const offsetY = mouseY - variable.position.y;
+
+    // Stocker les positions initiales de toutes les balises sélectionnées
+    const initialPositions = new Map<string, { x: number; y: number }>();
+    selectedVariables.forEach(id => {
+      const v = selectedTemplate.variables.find(v => v.id === id);
+      if (v && v.position.page === pageNumber) {
+        initialPositions.set(id, { x: v.position.x, y: v.position.y });
+      }
+    });
+    // Ajouter aussi la balise actuelle si elle n'est pas déjà sélectionnée
+    if (!selectedVariables.has(variableId)) {
+      initialPositions.set(variableId, { x: variable.position.x, y: variable.position.y });
+    }
 
     setDraggingVariable(variableId);
     setDragOffset({
       x: offsetX,
       y: offsetY
     });
+    setDragStartPositions(initialPositions);
   };
 
   const handleVariableMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -1414,25 +1458,51 @@ const TemplatesPDF: React.FC = () => {
     const pdfLeft = pdfRect.left + (pdfRect.width - pdfWidth) / 2;
     const pdfTop = pdfRect.top + (pdfRect.height - pdfHeight) / 2;
     
-    const variable = selectedTemplate.variables.find(v => v.id === draggingVariable);
-    if (!variable) return;
+    const mainVariable = selectedTemplate.variables.find(v => v.id === draggingVariable);
+    if (!mainVariable) return;
 
-    // Calculer la nouvelle position en tenant compte de l'offset initial et du zoom
+    // Calculer la nouvelle position de la balise principale
     const newX = Math.round((e.clientX - pdfLeft) / zoom - dragOffset.x);
     const newY = Math.round((e.clientY - pdfTop) / zoom - dragOffset.y);
     
     // Limiter la position en fonction de la taille du PDF et de la variable
-    const maxX = 595 - variable.width;
-    const maxY = 842 - variable.height;
+    const maxX = 595 - mainVariable.width;
+    const maxY = 842 - mainVariable.height;
     
     const finalX = Math.max(0, Math.min(newX, maxX));
     const finalY = Math.max(0, Math.min(newY, maxY));
     
-    const updatedVariables = selectedTemplate.variables.map(v => 
-      v.id === draggingVariable 
-        ? { ...v, position: { ...v.position, x: finalX, y: finalY } } 
-        : v
-    );
+    // Calculer le delta de déplacement
+    const startPos = dragStartPositions.get(draggingVariable);
+    if (!startPos) return;
+    
+    const deltaX = finalX - startPos.x;
+    const deltaY = finalY - startPos.y;
+    
+    // Déplacer toutes les balises sélectionnées par le même delta
+    const updatedVariables = selectedTemplate.variables.map(v => {
+      // Si c'est la balise principale ou une balise sélectionnée sur la même page
+      if (v.id === draggingVariable || (selectedVariables.has(v.id) && v.position.page === pageNumber)) {
+        const initialPos = dragStartPositions.get(v.id);
+        if (!initialPos) return v;
+        
+        const newVarX = initialPos.x + deltaX;
+        const newVarY = initialPos.y + deltaY;
+        
+        // Limiter la position pour chaque balise
+        const maxVarX = 595 - v.width;
+        const maxVarY = 842 - v.height;
+        
+        const clampedX = Math.max(0, Math.min(newVarX, maxVarX));
+        const clampedY = Math.max(0, Math.min(newVarY, maxVarY));
+        
+        return { 
+          ...v, 
+          position: { ...v.position, x: clampedX, y: clampedY } 
+        };
+      }
+      return v;
+    });
     
     setSelectedTemplate({
       ...selectedTemplate,
@@ -1451,6 +1521,7 @@ const TemplatesPDF: React.FC = () => {
       ));
       
       setDraggingVariable(null);
+      setDragStartPositions(new Map());
     }
   };
   
@@ -1516,7 +1587,7 @@ const TemplatesPDF: React.FC = () => {
     }
   };
   
-  const handleDeleteTemplate = async (templateId: string) => {
+  const handleDeleteTemplate = (templateId: string) => {
     // Vérifier si le template est un template universel
     if (defaultTemplates[templateId]) {
       setSnackbar({
@@ -1527,12 +1598,27 @@ const TemplatesPDF: React.FC = () => {
       return;
     }
 
+    const template = templates.find(t => t.id === templateId);
+    if (!template) return;
+
     setTemplateToDelete(templateId);
+    setTemplateToDeleteName(template.name);
+    setDeleteConfirmationName('');
     setDeleteConfirmationOpen(true);
   };
 
   const handleConfirmDelete = async () => {
     if (!currentUser || !templateToDelete) return;
+
+    // Vérifier que le nom saisi correspond au nom du template
+    if (deleteConfirmationName.trim() !== templateToDeleteName.trim()) {
+      setSnackbar({
+        open: true,
+        message: 'Le nom saisi ne correspond pas au nom du template',
+        severity: 'error'
+      });
+      return;
+    }
 
     try {
       // 1. Récupérer les données du template
@@ -1544,11 +1630,16 @@ const TemplatesPDF: React.FC = () => {
       const templateData = templateDoc.data();
 
       // 2. Supprimer le fichier PDF de Firebase Storage
-      if (templateData.pdfUrl) {
-        const storageRef = ref(storage, templateData.pdfUrl);
-        await deleteObject(storageRef).catch(error => {
-          console.error('Erreur lors de la suppression du fichier:', error);
-        });
+      if (templateData.fileName) {
+        try {
+          const storageRef = ref(storage, `templates/${templateData.fileName}`);
+          await deleteObject(storageRef);
+        } catch (error: any) {
+          // Ignorer l'erreur si le fichier n'existe pas
+          if (error?.code !== 'storage/object-not-found') {
+            console.error('Erreur lors de la suppression du fichier:', error);
+          }
+        }
       }
 
       // 3. Supprimer le document de Firestore
@@ -1577,12 +1668,16 @@ const TemplatesPDF: React.FC = () => {
     } finally {
       setDeleteConfirmationOpen(false);
       setTemplateToDelete(null);
+      setTemplateToDeleteName('');
+      setDeleteConfirmationName('');
     }
   };
 
   const handleCancelDelete = () => {
     setDeleteConfirmationOpen(false);
     setTemplateToDelete(null);
+    setTemplateToDeleteName('');
+    setDeleteConfirmationName('');
   };
   
   const handleSaveAll = () => {
@@ -1640,9 +1735,48 @@ const TemplatesPDF: React.FC = () => {
 
       try {
         setLoading(true);
+        setPdfLoadError(null);
         
-        // Convertir le PDF en base64
-        const base64PDF = await fetchPdfAsBase64(selectedTemplate.pdfUrl);
+        let pdfUrlToUse = selectedTemplate.pdfUrl;
+        let base64PDF: string;
+        
+        try {
+          // Essayer d'abord avec l'URL stockée
+          base64PDF = await fetchPdfAsBase64(pdfUrlToUse);
+        } catch (firstError: any) {
+          // Si erreur 403 et qu'on a un fileName, essayer de régénérer l'URL
+          if (firstError?.message?.includes('403') && selectedTemplate.fileName && storage) {
+            console.log('URL expirée, tentative de régénération depuis le chemin du fichier...');
+            try {
+              const storageRef = ref(storage, `templates/${selectedTemplate.fileName}`);
+              pdfUrlToUse = await getDownloadURL(storageRef);
+              
+              // Réessayer avec la nouvelle URL
+              base64PDF = await fetchPdfAsBase64(pdfUrlToUse);
+              
+              // Mettre à jour l'URL dans Firestore
+              const templateRef = doc(db, 'templates', selectedTemplate.id);
+              await updateDoc(templateRef, {
+                pdfUrl: pdfUrlToUse,
+                updatedAt: serverTimestamp()
+              });
+              
+              // Mettre à jour l'état local
+              setTemplates(prev => prev.map(t => 
+                t.id === selectedTemplate.id ? { ...t, pdfUrl: pdfUrlToUse } : t
+              ));
+            } catch (regenerateError: any) {
+              console.error('Erreur lors de la régénération de l\'URL:', regenerateError);
+              // Si l'erreur de régénération est aussi une 403 ou object-not-found, le fichier n'existe probablement plus
+              if (regenerateError?.code === 'storage/object-not-found' || regenerateError?.message?.includes('404')) {
+                throw new Error('FILE_NOT_FOUND');
+              }
+              throw firstError; // Re-lancer l'erreur originale
+            }
+          } else {
+            throw firstError; // Re-lancer l'erreur si ce n'est pas une 403 ou pas de fileName
+          }
+        }
         
         setSelectedTemplate(prev => {
           if (!prev) return null;
@@ -1652,16 +1786,35 @@ const TemplatesPDF: React.FC = () => {
               url: base64PDF,
               name: prev.fileName || 'template.pdf',
               type: 'application/pdf'
-            }
+            },
+            pdfUrl: pdfUrlToUse // Mettre à jour l'URL dans l'état local
           };
         });
+        setPdfLoadError(null);
 
-      } catch (error) {
+      } catch (error: any) {
         console.error('Erreur lors du chargement du PDF:', error);
+        let errorMessage = 'Erreur lors du chargement du PDF. Le fichier peut avoir été supprimé ou n\'est plus accessible.';
+        
+        if (error?.message === 'FILE_NOT_FOUND' || error?.code === 'storage/object-not-found') {
+          errorMessage = 'Le fichier PDF n\'existe plus dans le stockage. Veuillez le remplacer en cliquant sur le bouton "PDF".';
+        } else if (error?.message?.includes('403') || error?.code === 'storage/unauthorized') {
+          errorMessage = 'Le fichier PDF n\'est plus accessible (permission refusée). Veuillez le remplacer en cliquant sur le bouton "PDF".';
+        }
+        
+        setPdfLoadError(errorMessage);
         setSnackbar({
           open: true,
-          message: 'Erreur lors du chargement du PDF',
+          message: errorMessage,
           severity: 'error'
+        });
+        // Réinitialiser le file pour permettre un nouveau chargement
+        setSelectedTemplate(prev => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            file: null
+          };
         });
       } finally {
         setLoading(false);
@@ -1677,15 +1830,104 @@ const TemplatesPDF: React.FC = () => {
     event.preventDefault();
     event.stopPropagation();
     
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-    const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
-    
-    setSelectedPlacedVariable(variableId);
-    setPopupPosition({
-      x: rect.left + scrollLeft,
-      y: rect.top + scrollTop - 100
+    // Gestion de la sélection multiple avec Ctrl/Cmd
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedVariables(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(variableId)) {
+          newSet.delete(variableId);
+          if (newSet.size === 0) {
+            setSelectedPlacedVariable(null);
+          }
+        } else {
+          newSet.add(variableId);
+        }
+        return newSet;
+      });
+      // Ne pas changer selectedPlacedVariable pour garder le panneau de propriétés ouvert
+    } else {
+      // Sélection simple
+      setSelectedVariables(new Set([variableId]));
+      setSelectedPlacedVariable(variableId);
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+      const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+      setPopupPosition({
+        x: rect.left + scrollLeft,
+        y: rect.top + scrollTop - 100
+      });
+    }
+  };
+
+  // Sélectionner toutes les balises de la page actuelle
+  const handleSelectAll = () => {
+    if (!selectedTemplate) return;
+    const pageVariables = selectedTemplate.variables.filter(v => v.position.page === pageNumber);
+    const allIds = new Set(pageVariables.map(v => v.id));
+    setSelectedVariables(allIds);
+    if (allIds.size > 0) {
+      setSelectedPlacedVariable(Array.from(allIds)[0]); // Sélectionner la première pour afficher les propriétés
+    }
+  };
+
+  // Désélectionner toutes les balises
+  const handleDeselectAll = () => {
+    setSelectedVariables(new Set());
+    setSelectedPlacedVariable(null);
+  };
+
+  // Déplacer toutes les balises sélectionnées dans une direction
+  const handleMoveSelectedVariables = (direction: 'up' | 'down' | 'left' | 'right', distance: number = 5) => {
+    if (!selectedTemplate || selectedVariables.size === 0) return;
+
+    const updatedVariables = selectedTemplate.variables.map(variable => {
+      if (selectedVariables.has(variable.id) && variable.position.page === pageNumber) {
+        const currentX = variable.position.x;
+        const currentY = variable.position.y;
+        const width = variable.width || 100;
+        const height = variable.height || 30;
+        let newX = currentX;
+        let newY = currentY;
+
+        switch (direction) {
+          case 'left':
+            newX = Math.max(0, currentX - distance);
+            break;
+          case 'right': {
+            const maxX = Math.max(0, 595 - width);
+            newX = Math.min(maxX, currentX + distance);
+            break;
+          }
+          case 'up':
+            newY = Math.max(0, currentY - distance);
+            break;
+          case 'down': {
+            const maxY = Math.max(0, 842 - height);
+            newY = Math.min(maxY, currentY + distance);
+            break;
+          }
+        }
+
+        return {
+          ...variable,
+          position: {
+            ...variable.position,
+            x: newX,
+            y: newY
+          }
+        };
+      }
+      return variable;
     });
+
+    const updatedTemplate = {
+      ...selectedTemplate,
+      variables: updatedVariables
+    };
+
+    setSelectedTemplate(updatedTemplate);
+    setTemplates(prev => prev.map(t => t.id === selectedTemplate.id ? updatedTemplate : t));
+    setHasUnsavedChanges(true);
   };
 
   // Ajouter la popup dans le rendu des variables
@@ -1834,6 +2076,50 @@ const TemplatesPDF: React.FC = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  // Gestion des raccourcis clavier pour déplacer les balises sélectionnées
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Vérifier qu'on n'est pas en train de taper dans un input
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
+      // Si des balises sont sélectionnées, utiliser les flèches pour les déplacer
+      if (selectedVariables.size > 0) {
+        const distance = event.shiftKey ? 10 : 1; // Shift = déplacement plus rapide
+        
+        switch (event.key) {
+          case 'ArrowUp':
+            event.preventDefault();
+            handleMoveSelectedVariables('up', distance);
+            break;
+          case 'ArrowDown':
+            event.preventDefault();
+            handleMoveSelectedVariables('down', distance);
+            break;
+          case 'ArrowLeft':
+            event.preventDefault();
+            handleMoveSelectedVariables('left', distance);
+            break;
+          case 'ArrowRight':
+            event.preventDefault();
+            handleMoveSelectedVariables('right', distance);
+            break;
+          case 'Escape':
+            event.preventDefault();
+            handleDeselectAll();
+            break;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedVariables, selectedTemplate, pageNumber]);
   
   const handleSaveVariables = async () => {
     if (!selectedTemplate || !currentUser) {
@@ -1841,6 +2127,17 @@ const TemplatesPDF: React.FC = () => {
       setSnackbar({
         open: true,
         message: 'Erreur: données manquantes',
+        severity: 'error'
+      });
+      return;
+    }
+
+    // Vérifier que l'ID du template existe
+    if (!selectedTemplate.id || selectedTemplate.id.trim() === '') {
+      console.error('Erreur: L\'ID du template est manquant', { selectedTemplate });
+      setSnackbar({
+        open: true,
+        message: 'Erreur: L\'ID du template est manquant. Veuillez recharger la page.',
         severity: 'error'
       });
       return;
@@ -1966,6 +2263,30 @@ const TemplatesPDF: React.FC = () => {
       setHasUnsavedChanges(false);
     }
   }, [selectedTemplate?.id]);
+
+  // Filtrer les balises sélectionnées lors du changement de page
+  useEffect(() => {
+    if (!selectedTemplate) return;
+    
+    const pageVariables = selectedTemplate.variables.filter(v => v.position.page === pageNumber);
+    const pageVariableIds = new Set(pageVariables.map(v => v.id));
+    
+    // Garder uniquement les balises sélectionnées qui sont sur la page actuelle
+    setSelectedVariables(prev => {
+      const filtered = new Set(Array.from(prev).filter(id => pageVariableIds.has(id)));
+      
+      // Si la balise principale sélectionnée n'est plus sur la page, sélectionner la première de la page
+      if (selectedPlacedVariable && !pageVariableIds.has(selectedPlacedVariable)) {
+        if (filtered.size > 0) {
+          setSelectedPlacedVariable(Array.from(filtered)[0]);
+        } else {
+          setSelectedPlacedVariable(null);
+        }
+      }
+      
+      return filtered;
+    });
+  }, [pageNumber, selectedTemplate]);
   
   const handleAddVariable = (variable: DatabaseField) => {
     if (!selectedTemplate) return;
@@ -2028,6 +2349,39 @@ const TemplatesPDF: React.FC = () => {
   }, []);
 
   const renderPDF = () => {
+    // Afficher un message d'erreur si le PDF n'a pas pu être chargé
+    if (pdfLoadError) {
+      return (
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            height: '100%',
+            p: 4,
+            textAlign: 'center',
+            bgcolor: '#fff3cd',
+            borderRadius: 1
+          }}
+        >
+          <Alert severity="error" sx={{ mb: 2, width: '100%', maxWidth: 600 }}>
+            <AlertTitle>Erreur de chargement du PDF</AlertTitle>
+            {pdfLoadError}
+          </Alert>
+          <Button
+            variant="contained"
+            color="primary"
+            startIcon={<UploadIcon />}
+            onClick={handleOpenReplacePdfDialog}
+            sx={{ mt: 2 }}
+          >
+            Remplacer le PDF
+          </Button>
+        </Box>
+      );
+    }
+
     if (!selectedTemplate?.file?.url) return null;
 
     // Utiliser le proxy en développement pour éviter les problèmes CORS
@@ -2119,13 +2473,14 @@ const TemplatesPDF: React.FC = () => {
               >
               <Box
                 component="div"
+                data-variable-id={variable.id}
                 sx={{
                   position: 'absolute',
                   left: `${variable.position.x}px`,
                   top: `${variable.position.y}px`,
                   width: `${variable.width}px`,
                   height: `${variable.height}px`,
-                  backgroundColor: selectedPlacedVariable === variable.id 
+                  backgroundColor: selectedVariables.has(variable.id) || selectedPlacedVariable === variable.id
                     ? 'rgba(0, 113, 227, 0.3)' 
                     : 'rgba(0, 113, 227, 0.1)',
                   padding: '0px',
@@ -2133,9 +2488,10 @@ const TemplatesPDF: React.FC = () => {
                   fontSize: `${variable.fontSize}pt`,
                   fontFamily: variable.fontFamily || 'Arial',
                   fontWeight: variable.isBold ? 'bold' : 'normal',
-                  border: selectedPlacedVariable === variable.id 
-                    ? '1px solid #0071e3' 
+                  border: selectedVariables.has(variable.id) || selectedPlacedVariable === variable.id
+                    ? '2px solid #0071e3' 
                     : '1px solid rgba(0, 113, 227, 0.3)',
+                  boxShadow: selectedVariables.has(variable.id) ? '0 0 0 2px rgba(0, 113, 227, 0.2)' : 'none',
                   cursor: draggingVariable === variable.id ? 'grabbing' : 'grab',
                   userSelect: 'none',
                   zIndex: draggingVariable === variable.id ? 1000 : 1,
@@ -3241,6 +3597,74 @@ const TemplatesPDF: React.FC = () => {
     }
   };
 
+  // Fonction pour extraire les balises utilisées dans le template
+  const getUsedTags = (): TagMapping[] => {
+    if (!selectedTemplate) return [];
+    
+    const usedTagsSet = new Set<string>();
+    
+    selectedTemplate.variables.forEach(variable => {
+      if (variable.type === 'raw' && variable.rawText) {
+        // Extraire toutes les balises du texte brut
+        const matches = variable.rawText.match(/<[^>]+>/g);
+        if (matches) {
+          matches.forEach(tag => usedTagsSet.add(tag));
+        }
+      } else if (variable.variableId) {
+        // Trouver la balise correspondante dans VARIABLE_TAGS
+        const tagMapping = VARIABLE_TAGS.find(t => t.variableId === variable.variableId);
+        if (tagMapping) {
+          usedTagsSet.add(tagMapping.tag);
+        }
+      }
+    });
+    
+    // Retourner les TagMapping correspondants
+    return VARIABLE_TAGS.filter(tag => usedTagsSet.has(tag.tag));
+  };
+
+  // Fonction pour sélectionner une variable correspondant à une balise
+  const handleSelectTag = (tag: string) => {
+    if (!selectedTemplate) return;
+    
+    // Trouver toutes les variables correspondantes
+    const matchingVariables = selectedTemplate.variables.filter(variable => {
+      if (variable.type === 'raw' && variable.rawText && variable.rawText.includes(tag)) {
+        return true;
+      } else if (variable.variableId) {
+        const tagMapping = VARIABLE_TAGS.find(t => t.tag === tag);
+        if (tagMapping && tagMapping.variableId === variable.variableId) {
+          return true;
+        }
+      }
+      return false;
+    });
+    
+    if (matchingVariables.length > 0) {
+      // Sélectionner la première variable trouvée (ou toutes si on veut sélection multiple)
+      const firstVariable = matchingVariables[0];
+      setSelectedPlacedVariable(firstVariable.id);
+      setSelectedVariables(new Set([firstVariable.id]));
+      
+      // Changer de page si nécessaire
+      if (firstVariable.position.page !== pageNumber) {
+        setPageNumber(firstVariable.position.page);
+      }
+      
+      // Scroll vers la variable après un court délai pour laisser le temps au changement de page
+      setTimeout(() => {
+        const variableElement = document.querySelector(`[data-variable-id="${firstVariable.id}"]`);
+        if (variableElement) {
+          variableElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 200);
+    } else {
+      // Si aucune variable trouvée, ajouter la balise au texte libre
+      setRawText((prev) => prev + tag);
+      setSidebarTab(0);
+    }
+  };
+
 return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: '#f5f5f5' }}>
         {/* HEADER */}
@@ -3254,6 +3678,7 @@ return (
                             onChange={(e) => {
                                 const template = templates.find(t => t.id === e.target.value);
                                 setSelectedTemplate(template || null);
+                                setPdfLoadError(null); // Réinitialiser l'erreur lors du changement de template
                             }}
                             renderValue={(value) => {
                                 if (!value) return <Typography color="text.secondary">Sélectionner un modèle</Typography>;
@@ -3268,15 +3693,24 @@ return (
                         </Select>
                     </FormControl>
                     {selectedTemplate && (
-                        <IconButton
-                            size="small"
-                            onClick={() => {
-                                setNewTemplateName(selectedTemplate.name);
-                                setRenameDialogOpen(true);
-                            }}
-                        >
-                            <EditIcon />
-                        </IconButton>
+                        <>
+                            <IconButton
+                                size="small"
+                                onClick={() => {
+                                    setNewTemplateName(selectedTemplate.name);
+                                    setRenameDialogOpen(true);
+                                }}
+                            >
+                                <EditIcon />
+                            </IconButton>
+                            <IconButton
+                                size="small"
+                                onClick={() => handleDeleteTemplate(selectedTemplate.id)}
+                                color="error"
+                            >
+                                <DeleteIcon />
+                            </IconButton>
+                        </>
                     )}
                     <Button startIcon={<AddIcon />} size="small" onClick={() => setOpenDialog(true)}>
                         Nouveau
@@ -3285,11 +3719,11 @@ return (
 
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <IconButton onClick={() => setPageNumber(Math.max(1, pageNumber - 1))} disabled={pageNumber <= 1} size="small">
-                         <KeyboardArrowDownIcon sx={{ transform: 'rotate(90deg)' }} />
+                         <ArrowDownIcon sx={{ transform: 'rotate(90deg)' }} />
                     </IconButton>
                     <Typography variant="body2">Page {pageNumber} / {numPages || 1}</Typography>
                     <IconButton onClick={() => setPageNumber(Math.min(numPages || 1, pageNumber + 1))} disabled={pageNumber >= (numPages || 1)} size="small">
-                         <KeyboardArrowDownIcon sx={{ transform: 'rotate(-90deg)' }} />
+                         <ArrowDownIcon sx={{ transform: 'rotate(-90deg)' }} />
                     </IconButton>
                     <Divider orientation="vertical" flexItem variant="middle" />
                     <Box sx={{ width: 100, display: 'flex', alignItems: 'center' }}>
@@ -3306,16 +3740,80 @@ return (
                     {selectedTemplate && (
                         <>
                             <Divider orientation="vertical" flexItem variant="middle" />
+                            <Tooltip title="Sélectionner toutes les balises de la page">
+                                <IconButton
+                                    size="small"
+                                    onClick={handleSelectAll}
+                                    color={selectedVariables.size > 0 ? "primary" : "default"}
+                                >
+                                    <SelectAllIcon />
+                                </IconButton>
+                            </Tooltip>
+                            {selectedVariables.size > 0 && (
+                                <>
+                                    <Tooltip title="Désélectionner toutes les balises">
+                                        <IconButton
+                                            size="small"
+                                            onClick={handleDeselectAll}
+                                        >
+                                            <CloseIcon fontSize="small" />
+                                        </IconButton>
+                                    </Tooltip>
+                                    <Divider orientation="vertical" flexItem variant="middle" />
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.25 }}>
+                                        <Tooltip title="Déplacer vers le haut">
+                                            <IconButton
+                                                size="small"
+                                                onClick={() => handleMoveSelectedVariables('up', 5)}
+                                                sx={{ p: 0.5, minWidth: 'auto', width: 24, height: 24 }}
+                                            >
+                                                <ArrowUpIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Box sx={{ display: 'flex', gap: 0.25 }}>
+                                            <Tooltip title="Déplacer vers la gauche">
+                                                <IconButton
+                                                    size="small"
+                                                    onClick={() => handleMoveSelectedVariables('left', 5)}
+                                                    sx={{ p: 0.5, minWidth: 'auto', width: 24, height: 24 }}
+                                                >
+                                                    <ArrowLeftIcon fontSize="small" />
+                                                </IconButton>
+                                            </Tooltip>
+                                            <Tooltip title="Déplacer vers la droite">
+                                                <IconButton
+                                                    size="small"
+                                                    onClick={() => handleMoveSelectedVariables('right', 5)}
+                                                    sx={{ p: 0.5, minWidth: 'auto', width: 24, height: 24 }}
+                                                >
+                                                    <ArrowRightIcon fontSize="small" />
+                                                </IconButton>
+                                            </Tooltip>
+                                        </Box>
+                                        <Tooltip title="Déplacer vers le bas">
+                                            <IconButton
+                                                size="small"
+                                                onClick={() => handleMoveSelectedVariables('down', 5)}
+                                                sx={{ p: 0.5, minWidth: 'auto', width: 24, height: 24 }}
+                                            >
+                                                <ArrowDownIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </Box>
+                                    <Typography variant="caption" color="primary" sx={{ ml: 0.5, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
+                                        {selectedVariables.size}
+                                    </Typography>
+                                </>
+                            )}
+                            <Divider orientation="vertical" flexItem variant="middle" />
                             <Tooltip title="Générer et afficher l'aperçu du document">
-                                <Button
-                                    variant="outlined"
+                                <IconButton
                                     size="small"
                                     onClick={handleGeneratePreview}
                                     disabled={generatingPreview}
-                                    startIcon={generatingPreview ? <CircularProgress size={16} /> : <VisibilityIcon />}
                                 >
-                                    {generatingPreview ? 'Génération...' : 'Aperçu PDF'}
-                                </Button>
+                                    {generatingPreview ? <CircularProgress size={16} /> : <VisibilityIcon />}
+                                </IconButton>
                             </Tooltip>
                         </>
                     )}
@@ -3368,7 +3866,13 @@ return (
                     alignItems: 'flex-start',
                     p: 4
                 }}
-                onClick={() => setSelectedPlacedVariable(null)}
+                onClick={(e) => {
+                  // Ne désélectionner que si on clique directement sur le canvas (pas sur une balise)
+                  if (e.target === e.currentTarget) {
+                    setSelectedPlacedVariable(null);
+                    setSelectedVariables(new Set());
+                  }
+                }}
             >
                 {selectedTemplate ? (
                      <Box
@@ -3433,11 +3937,29 @@ return (
                         // STATE 2: PROPERTIES
                         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                             <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                <Typography variant="subtitle1" fontWeight="bold">Propriétés</Typography>
-                                <IconButton size="small" onClick={() => setSelectedPlacedVariable(null)}>
+                                <Box>
+                                    <Typography variant="subtitle1" fontWeight="bold">Propriétés</Typography>
+                                    {selectedVariables.size > 1 && (
+                                        <Typography variant="caption" color="primary" sx={{ display: 'block', mt: 0.5 }}>
+                                            {selectedVariables.size} balises sélectionnées
+                                        </Typography>
+                                    )}
+                                </Box>
+                                <IconButton size="small" onClick={() => {
+                                    setSelectedPlacedVariable(null);
+                                    setSelectedVariables(new Set());
+                                }}>
                                     <CloseIcon />
                                 </IconButton>
                             </Box>
+                            {selectedVariables.size > 1 && (
+                                <Alert severity="info" sx={{ m: 2, mb: 0 }}>
+                                    <Typography variant="caption">
+                                        Utilisez les flèches du clavier ou les boutons du header pour déplacer toutes les balises sélectionnées ensemble.
+                                        Maintenez Shift pour un déplacement plus rapide.
+                                    </Typography>
+                                </Alert>
+                            )}
                             <Box sx={{ p: 2, overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
                                 {/* Content Editing */}
                                 <Box>
@@ -3682,86 +4204,181 @@ return (
                     ) : (
                         // STATE 1: AVAILABLE VARIABLES
                         <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                            <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0' }}>
-                                <Typography variant="subtitle1" fontWeight="bold">Variables disponibles</Typography>
-                            </Box>
+                            <Tabs 
+                                value={sidebarTab} 
+                                onChange={(_, newValue) => setSidebarTab(newValue)}
+                                sx={{ borderBottom: '1px solid #e0e0e0', minHeight: 48 }}
+                                variant="fullWidth"
+                            >
+                                <Tab label="Variables" sx={{ minHeight: 48, fontSize: '0.875rem' }} />
+                                <Tab label="Balises" sx={{ minHeight: 48, fontSize: '0.875rem' }} />
+                            </Tabs>
                             <Box sx={{ flex: 1, overflowY: 'auto' }}>
-                                {/* Raw Text Input Section */}
-                                <Box sx={{ p: 2, borderBottom: '1px solid #f0f0f0' }}>
-                                    <Typography variant="caption" color="text.secondary" fontWeight="bold" gutterBottom>TEXTE LIBRE</Typography>
-                                    <TextField
-                                        fullWidth
-                                        multiline
-                                        rows={2}
-                                        size="small"
-                                        placeholder="Ajouter du texte brut..."
-                                        value={rawText}
-                                        onChange={(e) => setRawText(e.target.value)}
-                                        sx={{ mb: 1 }}
-                                    />
-                                    <Box sx={{ display: 'flex', gap: 1 }}>
-                                      <Button
-                                          fullWidth
-                                          variant="outlined"
-                                          size="small"
-                                          startIcon={isAddingRawText ? <CheckIcon /> : <AddIcon />}
-                                          onClick={() => {
-                                              setIsAddingRawText(!isAddingRawText);
-                                              setSelectedVariableId(null);
-                                          }}
-                                          color={isAddingRawText ? "success" : "primary"}
-                                          disabled={!rawText.trim()}
-                                      >
-                                          {isAddingRawText ? "Placer" : "Ajouter"}
-                                      </Button>
-                                      <Tooltip title="Insérer une balise dynamique">
-                                        <IconButton size="small" onClick={() => setTagsDialogOpen(true)}>
-                                          <CodeIcon />
-                                        </IconButton>
-                                      </Tooltip>
+                                {sidebarTab === 0 ? (
+                                    <>
+                                        {/* Raw Text Input Section */}
+                                        <Box sx={{ p: 2, borderBottom: '1px solid #f0f0f0' }}>
+                                            <Typography variant="caption" color="text.secondary" fontWeight="bold" gutterBottom>TEXTE LIBRE</Typography>
+                                            <TextField
+                                                fullWidth
+                                                multiline
+                                                rows={2}
+                                                size="small"
+                                                placeholder="Ajouter du texte brut..."
+                                                value={rawText}
+                                                onChange={(e) => setRawText(e.target.value)}
+                                                sx={{ mb: 1 }}
+                                            />
+                                            <Box sx={{ display: 'flex', gap: 1 }}>
+                                              <Button
+                                                  fullWidth
+                                                  variant="outlined"
+                                                  size="small"
+                                                  startIcon={isAddingRawText ? <CheckIcon /> : <AddIcon />}
+                                                  onClick={() => {
+                                                      setIsAddingRawText(!isAddingRawText);
+                                                      setSelectedVariableId(null);
+                                                  }}
+                                                  color={isAddingRawText ? "success" : "primary"}
+                                                  disabled={!rawText.trim()}
+                                              >
+                                                  {isAddingRawText ? "Placer" : "Ajouter"}
+                                              </Button>
+                                              <Tooltip title="Insérer une balise dynamique">
+                                                <IconButton size="small" onClick={() => setTagsDialogOpen(true)}>
+                                                  <CodeIcon />
+                                                </IconButton>
+                                              </Tooltip>
+                                            </Box>
+                                        </Box>
+
+                                        {/* Database Fields Accordions */}
+                                        {Object.keys(databaseFields).map((key) => {
+                                            const dataSourceKey = key as keyof DatabaseFields;
+                                            const dataSourceName = {
+                                                missions: 'Missions',
+                                                users: 'Utilisateurs',
+                                                companies: 'Entreprises',
+                                                contacts: 'Contacts',
+                                                expenseNotes: 'Notes de frais',
+                                                workingHours: 'Heures de travail',
+                                                amendments: 'Avenants',
+                                                structures: 'Structure'
+                                            }[dataSourceKey] || key;
+
+                                            return (
+                                                <Accordion key={key} disableGutters elevation={0} sx={{ '&:before': { display: 'none' }, borderBottom: '1px solid #f0f0f0' }}>
+                                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                                        <Typography variant="body2" fontWeight="medium">{dataSourceName}</Typography>
+                                                    </AccordionSummary>
+                                                    <AccordionDetails sx={{ p: 1, pt: 0 }}>
+                                                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                                            {databaseFields[dataSourceKey].map(field => (
+                                                                <Tooltip key={field.id} title={field.description} arrow placement="left">
+                                                                    <Chip
+                                                                        label={field.name}
+                                                                        size="small"
+                                                                        onClick={() => {
+                                                                            setSelectedDatabase(dataSourceKey);
+                                                                            setSelectedVariableId(selectedVariableId === field.id ? null : field.id);
+                                                                        }}
+                                                                        color={selectedVariableId === field.id ? "primary" : "default"}
+                                                                        sx={{ cursor: 'pointer' }}
+                                                                    />
+                                                                </Tooltip>
+                                                            ))}
+                                                        </Box>
+                                                    </AccordionDetails>
+                                                </Accordion>
+                                            );
+                                        })}
+                                    </>
+                                ) : (
+                                    <Box sx={{ p: 2 }}>
+                                        {!selectedTemplate ? (
+                                            <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 4 }}>
+                                                Aucun template sélectionné
+                                            </Typography>
+                                        ) : (() => {
+                                            const usedTags = getUsedTags();
+                                            
+                                            if (usedTags.length === 0) {
+                                                return (
+                                                    <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 4 }}>
+                                                        Aucune balise utilisée dans ce template
+                                                    </Typography>
+                                                );
+                                            }
+                                            
+                                            // Grouper les balises par catégorie
+                                            const categories = [
+                                                { title: 'Mission', prefix: ['<mission_', '<total_', '<tva>', '<charge_', '<course_', '<mission_learning>', '<student_profile>', '<depense'] },
+                                                { title: 'Utilisateur', prefix: ['<user_'] },
+                                                { title: 'Entreprise', prefix: ['<entreprise_'] },
+                                                { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
+                                                { title: 'Heures de travail', prefix: ['<workingHours'] },
+                                                { title: 'Avenants', prefix: ['<amendment'] },
+                                                { title: 'Contacts', prefix: ['<contact'] },
+                                                { title: 'Structure', prefix: ['<structure_'] },
+                                            ];
+                                            
+                                            return (
+                                                <>
+                                                    <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: 'block' }}>
+                                                        Balises utilisées dans ce template ({usedTags.length})
+                                                    </Typography>
+                                                    {categories.map(category => {
+                                                        const categoryTags = usedTags.filter(tag => category.prefix.some(p => tag.tag.startsWith(p)));
+                                                        
+                                                        if (categoryTags.length === 0) return null;
+
+                                                        return (
+                                                            <Box key={category.title} sx={{ mb: 3 }}>
+                                                                <Typography variant="subtitle2" sx={{ mb: 1.5, color: 'text.primary', fontWeight: 'bold', fontSize: '0.8rem' }}>
+                                                                    {category.title}
+                                                                </Typography>
+                                                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                                                    {categoryTags.map((tagItem) => (
+                                                                        <Tooltip 
+                                                                            key={tagItem.tag} 
+                                                                            title={
+                                                                <Box>
+                                                                    <Typography variant="body2" fontWeight="bold">{tagItem.description}</Typography>
+                                                                    <Typography variant="caption">Ex: {tagItem.example}</Typography>
+                                                                    <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontStyle: 'italic' }}>
+                                                                        Cliquez pour sélectionner sur le PDF
+                                                                    </Typography>
+                                                                </Box>
+                                                            }
+                                                                            arrow
+                                                                            placement="top"
+                                                                        >
+                                                                            <Chip
+                                                                                label={tagItem.tag}
+                                                                                size="small"
+                                                                                onClick={() => handleSelectTag(tagItem.tag)}
+                                                                                sx={{ 
+                                                                                    cursor: 'pointer',
+                                                                                    fontFamily: 'monospace',
+                                                                                    fontSize: '0.7rem',
+                                                                                    bgcolor: 'primary.main',
+                                                                                    color: 'primary.contrastText',
+                                                                                    '&:hover': {
+                                                                                        bgcolor: 'primary.dark'
+                                                                                    }
+                                                                                }}
+                                                                            />
+                                                                        </Tooltip>
+                                                                    ))}
+                                                                </Box>
+                                                            </Box>
+                                                        );
+                                                    })}
+                                                </>
+                                            );
+                                        })()}
                                     </Box>
-                                </Box>
-
-                                {/* Database Fields Accordions */}
-                                {Object.keys(databaseFields).map((key) => {
-                                    const dataSourceKey = key as keyof DatabaseFields;
-                                    const dataSourceName = {
-                                        missions: 'Missions',
-                                        users: 'Utilisateurs',
-                                        companies: 'Entreprises',
-                                        contacts: 'Contacts',
-                                        expenseNotes: 'Notes de frais',
-                                        workingHours: 'Heures de travail',
-                                        amendments: 'Avenants',
-                                        structures: 'Structure'
-                                    }[dataSourceKey] || key;
-
-                                    return (
-                                        <Accordion key={key} disableGutters elevation={0} sx={{ '&:before': { display: 'none' }, borderBottom: '1px solid #f0f0f0' }}>
-                                            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                                                <Typography variant="body2" fontWeight="medium">{dataSourceName}</Typography>
-                                            </AccordionSummary>
-                                            <AccordionDetails sx={{ p: 1, pt: 0 }}>
-                                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                                    {databaseFields[dataSourceKey].map(field => (
-                                                        <Tooltip key={field.id} title={field.description} arrow placement="left">
-                                                            <Chip
-                                                                label={field.name}
-                                                                size="small"
-                                                                onClick={() => {
-                                                                    setSelectedDatabase(dataSourceKey);
-                                                                    setSelectedVariableId(selectedVariableId === field.id ? null : field.id);
-                                                                }}
-                                                                color={selectedVariableId === field.id ? "primary" : "default"}
-                                                                sx={{ cursor: 'pointer' }}
-                                                            />
-                                                        </Tooltip>
-                                                    ))}
-                                                </Box>
-                                            </AccordionDetails>
-                                        </Accordion>
-                                    );
-                                })}
+                                )}
                             </Box>
                         </Box>
                     )
@@ -3910,22 +4527,48 @@ return (
         open={deleteConfirmationOpen}
         onClose={handleCancelDelete}
         aria-labelledby="alert-dialog-title"
-        aria-describedby="alert-dialog-description"
+        maxWidth="sm"
+        fullWidth
       >
         <DialogTitle id="alert-dialog-title">
           Confirmer la suppression
         </DialogTitle>
         <DialogContent>
-          <DialogContentText id="alert-dialog-description">
-            Êtes-vous sûr de vouloir supprimer ce template ? Cette action est irréversible.
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <AlertTitle>Attention</AlertTitle>
+            Cette action est irréversible. Le template et son fichier PDF seront définitivement supprimés.
+          </Alert>
+          <DialogContentText id="alert-dialog-description" sx={{ mb: 2 }}>
+            Pour confirmer la suppression, veuillez saisir le nom du template : <strong>{templateToDeleteName}</strong>
           </DialogContentText>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Nom du template"
+            value={deleteConfirmationName}
+            onChange={(e) => setDeleteConfirmationName(e.target.value)}
+            placeholder={templateToDeleteName}
+            error={deleteConfirmationName.trim() !== '' && deleteConfirmationName.trim() !== templateToDeleteName.trim()}
+            helperText={deleteConfirmationName.trim() !== '' && deleteConfirmationName.trim() !== templateToDeleteName.trim() ? 'Le nom ne correspond pas' : ''}
+            onKeyPress={(e) => {
+              if (e.key === 'Enter' && deleteConfirmationName.trim() === templateToDeleteName.trim()) {
+                handleConfirmDelete();
+              }
+            }}
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCancelDelete} color="primary">
             Annuler
           </Button>
-          <Button onClick={handleConfirmDelete} color="error" autoFocus>
-            Supprimer
+          <Button 
+            onClick={handleConfirmDelete} 
+            color="error" 
+            variant="contained"
+            disabled={deleteConfirmationName.trim() !== templateToDeleteName.trim() || loading}
+            startIcon={loading ? <CircularProgress size={20} /> : <DeleteIcon />}
+          >
+            {loading ? 'Suppression...' : 'Supprimer'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -4108,6 +4751,7 @@ return (
         open={snackbar.open} 
         autoHideDuration={6000} 
         onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+        sx={{ zIndex: 1500 }}
       >
         <Alert 
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))} 

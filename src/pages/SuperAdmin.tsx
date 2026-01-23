@@ -31,7 +31,9 @@ import {
   ListItem,
   ListItemText,
   Divider,
-  Tooltip
+  Tooltip,
+  CircularProgress,
+  LinearProgress
 } from '@mui/material';
 import { createStructure, getStructures, deleteStructure } from '../firebase/structure';
 import { Structure } from '../types/structure';
@@ -63,6 +65,9 @@ import PersonAddIcon from '@mui/icons-material/PersonAdd';
 import { createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
 import { auth } from '../firebase/config';
 import { useNotifications } from '../contexts/NotificationContext';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import LockIcon from '@mui/icons-material/Lock';
+import SecurityIcon from '@mui/icons-material/Security';
 
 interface StructureData {
   id: string;
@@ -526,8 +531,14 @@ const SuperAdmin: React.FC = () => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const { sendNotification } = useNotifications();
 
+  // États pour la migration du chiffrement
+  const [migrationLoading, setMigrationLoading] = useState(false);
+  const [migrationStatus, setMigrationStatus] = useState<any>(null);
+  const [migrationError, setMigrationError] = useState<string | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+
   // Ajouter un nouvel onglet
-  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Clients Stripe'];
+  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Clients Stripe', 'Migration Chiffrement'];
 
   // Ajouter l'état pour le filtre de statut (après les autres états)
   const [reportStatusFilter, setReportStatusFilter] = useState<string>('all');
@@ -1125,6 +1136,79 @@ const SuperAdmin: React.FC = () => {
   const handleCloseNotificationDialog = () => {
     setOpenNotificationDialog(false);
     resetNotificationForm();
+  };
+
+  // Fonctions pour la migration du chiffrement
+  const checkMigrationStatus = async () => {
+    setCheckingStatus(true);
+    setMigrationError(null);
+    
+    try {
+      const functions = getFunctions();
+      const checkStatus = httpsCallable(functions, 'checkMigrationStatus');
+      
+      const [usersStatus, companiesStatus, contactsStatus, prospectsStatus] = await Promise.all([
+        checkStatus({ collectionName: 'users' }),
+        checkStatus({ collectionName: 'companies' }),
+        checkStatus({ collectionName: 'contacts' }),
+        checkStatus({ collectionName: 'prospects' })
+      ]);
+      
+      setMigrationStatus({
+        users: usersStatus.data,
+        companies: companiesStatus.data,
+        contacts: contactsStatus.data,
+        prospects: prospectsStatus.data
+      });
+    } catch (err: any) {
+      setMigrationError(err.message || 'Erreur lors de la vérification du statut');
+      console.error('Erreur checkMigrationStatus:', err);
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
+
+  const startMigration = async () => {
+    if (!window.confirm('Êtes-vous sûr de vouloir lancer la migration ? Cette opération peut prendre plusieurs minutes.')) {
+      return;
+    }
+
+    setMigrationLoading(true);
+    setMigrationError(null);
+    
+    try {
+      const functions = getFunctions();
+      const migrateAllEncryption = httpsCallable(functions, 'migrateAllEncryption');
+      
+      const result = await migrateAllEncryption({});
+      
+      const stats = result.data.stats;
+      const message = `Migration terminée !\n\n` +
+        `Total documents traités: ${stats.total}\n` +
+        `Documents chiffrés: ${stats.encrypted}\n` +
+        `Documents ignorés (déjà chiffrés): ${stats.skipped}\n` +
+        `Erreurs: ${stats.errors}\n\n` +
+        `Collections:\n` +
+        Object.entries(stats.collections).map(([name, coll]: [string, any]) => 
+          `- ${name}: ${coll.encrypted} chiffrés, ${coll.skipped} ignorés, ${coll.errors} erreurs`
+        ).join('\n');
+      
+      alert(message);
+      
+      // Vérifier le statut après migration
+      await checkMigrationStatus();
+      
+      setMessage({ type: 'success', text: 'Migration terminée avec succès' });
+      setOpen(true);
+    } catch (err: any) {
+      const errorMsg = err.message || 'Erreur lors de la migration';
+      setMigrationError(errorMsg);
+      setMessage({ type: 'error', text: errorMsg });
+      setOpen(true);
+      console.error('Erreur migrateAllEncryption:', err);
+    } finally {
+      setMigrationLoading(false);
+    }
   };
 
   // Charger les utilisateurs au montage du composant
@@ -1730,6 +1814,120 @@ const SuperAdmin: React.FC = () => {
               </TableContainer>
             )}
           </Box>
+        </Paper>
+      ) : tabValue === 5 ? (
+        <Paper sx={{ p: 3, mt: 3 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
+            <SecurityIcon color="primary" sx={{ fontSize: 40 }} />
+            <Box>
+              <Typography variant="h5" gutterBottom>
+                Migration du Chiffrement des Données
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Chiffrez toutes les données sensibles existantes dans la base de données
+              </Typography>
+            </Box>
+          </Box>
+
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              Cette fonction permet de chiffrer automatiquement toutes les données sensibles existantes 
+              (numéros de téléphone, adresses, SIRET, etc.) dans les collections suivantes :
+            </Typography>
+            <List dense sx={{ mt: 1 }}>
+              <ListItem sx={{ py: 0.5 }}>
+                <ListItemText primary="• Utilisateurs (users) : téléphones, adresses, numéros de sécurité sociale, secrets 2FA" />
+              </ListItem>
+              <ListItem sx={{ py: 0.5 }}>
+                <ListItemText primary="• Entreprises (companies) : SIRET, TVA, adresses, téléphones" />
+              </ListItem>
+              <ListItem sx={{ py: 0.5 }}>
+                <ListItemText primary="• Contacts (contacts) : téléphones, emails" />
+              </ListItem>
+              <ListItem sx={{ py: 0.5 }}>
+                <ListItemText primary="• Prospects (prospects) : téléphones, emails, adresses, SIRET" />
+              </ListItem>
+            </List>
+          </Alert>
+
+          {migrationError && (
+            <Alert severity="error" sx={{ mb: 3 }} onClose={() => setMigrationError(null)}>
+              {migrationError}
+            </Alert>
+          )}
+
+          <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+            <Button
+              variant="outlined"
+              startIcon={checkingStatus ? <CircularProgress size={20} /> : <LockIcon />}
+              onClick={checkMigrationStatus}
+              disabled={checkingStatus || migrationLoading}
+            >
+              {checkingStatus ? 'Vérification...' : 'Vérifier le Statut'}
+            </Button>
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={migrationLoading ? <CircularProgress size={20} color="inherit" /> : <SecurityIcon />}
+              onClick={startMigration}
+              disabled={migrationLoading || checkingStatus}
+            >
+              {migrationLoading ? 'Migration en cours...' : 'Lancer la Migration'}
+            </Button>
+          </Box>
+
+          {migrationLoading && (
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Migration en cours, veuillez patienter...
+              </Typography>
+              <LinearProgress sx={{ mt: 1 }} />
+            </Box>
+          )}
+
+          {migrationStatus && (
+            <Box>
+              <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>
+                Statut actuel de la migration
+              </Typography>
+              
+              <Grid container spacing={2}>
+                {Object.entries(migrationStatus).map(([collectionName, data]: [string, any]) => (
+                  <Grid item xs={12} md={6} key={collectionName}>
+                    <Paper sx={{ p: 2, bgcolor: 'background.default' }}>
+                      <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+                        {collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}
+                      </Typography>
+                      {data.sample && (
+                        <Box>
+                          <Typography variant="body2">
+                            Total (échantillon) : {data.sample.total}
+                          </Typography>
+                          <Typography variant="body2">
+                            Avec champs sensibles : {data.sample.hasSensitiveFields}
+                          </Typography>
+                          <Typography variant="body2" color="success.main">
+                            Déjà chiffrés : {data.sample.encrypted}
+                          </Typography>
+                          <Typography variant="body2" color="warning.main">
+                            Non chiffrés : {data.sample.notEncrypted}
+                          </Typography>
+                          <Typography variant="body2" fontWeight="bold" sx={{ mt: 1 }}>
+                            Taux de chiffrement : {data.sample.percentageEncrypted}%
+                          </Typography>
+                        </Box>
+                      )}
+                      {data.note && (
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                          {data.note}
+                        </Typography>
+                      )}
+                    </Paper>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
+          )}
         </Paper>
       ) : (
         <Paper sx={{ p: 3, mt: 3 }}>

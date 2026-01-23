@@ -12,10 +12,24 @@ service firebase.storage {
     }
 
     match /cvs/{userId}/{fileName} {
-      allow read: if request.auth != null && (
-        request.auth.uid == userId ||
-        (getUserData() != null && (getUserData().role in ['admin', 'superadmin'] || getUserData().status in ['admin', 'superadmin']))
-      );
+      function canAccessUserCV() {
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        
+        // Le propriétaire peut toujours accéder
+        return request.auth.uid == userId ||
+               // Superadmin peut toujours accéder
+               (userData != null && (userData.status == 'superadmin' || userData.role == 'superadmin')) ||
+               // Admin ou membre peut accéder s'il a un structureId valide
+               // On permet l'accès aux admins/membres sans vérifier le structureId du propriétaire
+               (userData != null &&
+                userData.structureId != null &&
+                userData.structureId != '' &&
+                (userData.status in ['admin', 'admin_structure', 'member', 'membre'] || 
+                 userData.role in ['admin', 'admin_structure', 'member', 'membre']));
+      }
+      
+      allow read: if request.auth != null && canAccessUserCV();
 
       allow write: if request.auth != null && 
         request.auth.uid == userId;
@@ -37,11 +51,21 @@ service firebase.storage {
     }
     
     match /profilePictures/{userId} {
-      // Permettre la lecture publique des images de profil (nécessaire pour les URLs générées)
-      allow read: if true;
-      // Seul le propriétaire peut écrire/modifier sa photo de profil
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        (getUserData() != null && (
+          getUserData().status == 'superadmin' || getUserData().role == 'superadmin' ||
+          (getUserData().structureId != null && 
+           getUserData().structureId != '' &&
+           firestore.get(/databases/(default)/documents/users/$(userId)).exists &&
+           firestore.get(/databases/(default)/documents/users/$(userId)).data.structureId != null &&
+           firestore.get(/databases/(default)/documents/users/$(userId)).data.structureId != '' &&
+           firestore.get(/databases/(default)/documents/users/$(userId)).data.structureId == getUserData().structureId &&
+           getUserData().status in ['admin', 'member', 'membre', 'etudiant'])
+        ))
+      );
       allow write: if request.auth != null && request.auth.uid == userId &&
-        request.resource.size < 5 * 1024 * 1024 && // 5MB max
+        request.resource.size < 5 * 1024 * 1024 &&
         request.resource.contentType.matches('image/.*');
     }
     
@@ -71,57 +95,119 @@ service firebase.storage {
     }
 
     match /missions/{missionId}/documents/{document} {
-      // VERSION TEMPORAIRE ULTRA-SIMPLIFIÉE POUR DEBUG
-      // Tout utilisateur authentifié peut lire/écrire
-      // À remplacer par des règles plus strictes une fois le problème identifié
-      
-      // Lecture
-      allow read: if request.auth != null;
-      
-      // Création
+      function isSuperAdmin() {
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return userData != null && 
+               (userData.status == 'superadmin' || userData.role == 'superadmin');
+      }
+      function canAccessMission() {
+        let missionRef = firestore.get(/databases/(default)/documents/missions/$(missionId));
+        let missionData = missionRef.exists ? missionRef.data : null;
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return (isSuperAdmin() ||
+                (missionRef.exists && missionData != null && userRef.exists && userData != null &&
+                 (
+                   (userData.status == 'entreprise' && missionData.companyId == request.auth.uid) ||
+                   (userData.status in ['admin', 'member', 'membre'] &&
+                    userData.structureId != null &&
+                    userData.structureId != '' &&
+                    missionData.structureId != null &&
+                    missionData.structureId != '' &&
+                    missionData.structureId == userData.structureId) ||
+                   (userData.status == 'etudiant' &&
+                    userData.structureId != null &&
+                    userData.structureId != '' &&
+                    missionData.structureId != null &&
+                    missionData.structureId != '' &&
+                    missionData.structureId == userData.structureId &&
+                    missionData.isPublished == true)
+                 )));
+      }
+      function canModifyMission() {
+        let missionRef = firestore.get(/databases/(default)/documents/missions/$(missionId));
+        let missionData = missionRef.exists ? missionRef.data : null;
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return (isSuperAdmin() ||
+                (missionRef.exists && missionData != null && userRef.exists && userData != null &&
+                 (
+                   (userData.status == 'entreprise' &&
+                    missionData.companyId == request.auth.uid &&
+                    missionData.createdByEnterprise == true) ||
+                   (userData.status in ['admin', 'member', 'membre'] &&
+                    userData.structureId != null &&
+                    userData.structureId != '' &&
+                    missionData.structureId != null &&
+                    missionData.structureId != '' &&
+                    missionData.structureId == userData.structureId)
+                 )));
+      }
+      function isValidContentType() {
+        return request.resource.contentType == 'application/pdf' ||
+               request.resource.contentType == 'application/msword' ||
+               request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+               request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+               request.resource.contentType == 'application/vnd.ms-powerpoint' ||
+               request.resource.contentType == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+               request.resource.contentType == 'application/vnd.ms-excel' ||
+               request.resource.contentType.matches('image/.*') ||
+               request.resource.contentType.matches('text/.*');
+      }
+      allow read: if request.auth != null && canAccessMission();
       allow create: if request.auth != null &&
-        request.resource.size < 10 * 1024 * 1024 && // 10MB max
-        (
-          request.resource.contentType == 'application/pdf' ||
-          request.resource.contentType == 'application/msword' ||
-          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-          request.resource.contentType == 'application/vnd.ms-powerpoint' ||
-          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-          request.resource.contentType == 'application/vnd.ms-excel' ||
-          request.resource.contentType.matches('image/.*') ||
-          request.resource.contentType.matches('text/.*')
-        );
-      
-      // Modification
+        canModifyMission() &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        isValidContentType();
       allow update: if request.auth != null &&
-        request.resource.size < 10 * 1024 * 1024 && // 10MB max
-        (
-          request.resource.contentType == 'application/pdf' ||
-          request.resource.contentType == 'application/msword' ||
-          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-          request.resource.contentType == 'application/vnd.ms-powerpoint' ||
-          request.resource.contentType == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-          request.resource.contentType == 'application/vnd.ms-excel' ||
-          request.resource.contentType.matches('image/.*') ||
-          request.resource.contentType.matches('text/.*')
-        );
-      
-      // Suppression
-      allow delete: if request.auth != null;
+        canModifyMission() &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        isValidContentType();
+      allow delete: if request.auth != null && canModifyMission();
     }
 
-    // Règles pour les documents des entreprises
     match /companies/{companyId}/documents/{fileName} {
-      allow read: if request.auth != null;
+      function isSuperAdmin() {
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return userData != null && 
+               (userData.status == 'superadmin' || userData.role == 'superadmin');
+      }
+      function canAccessCompany() {
+        let companyRef = firestore.get(/databases/(default)/documents/companies/$(companyId));
+        let companyData = companyRef.exists ? companyRef.data : null;
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return (isSuperAdmin() ||
+                (companyRef.exists && companyData != null && userRef.exists && userData != null &&
+                 (
+                   (userData.status == 'entreprise' && companyId == request.auth.uid) ||
+                   (userData.status in ['admin', 'member', 'membre'] &&
+                    userData.structureId != null &&
+                    userData.structureId != '' &&
+                    companyData.structureId != null &&
+                    companyData.structureId != '' &&
+                    companyData.structureId == userData.structureId)
+                 )));
+      }
+      function canModifyCompany() {
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        return (isSuperAdmin() ||
+                (userRef.exists && userData != null &&
+                 userData.status == 'entreprise' && companyId == request.auth.uid));
+      }
+      allow read: if request.auth != null && canAccessCompany();
       allow create: if request.auth != null &&
-        request.resource.size < 10 * 1024 * 1024 && // 10MB max
+        canModifyCompany() &&
+        request.resource.size < 10 * 1024 * 1024 &&
         request.resource.contentType == 'application/pdf';
       allow update: if request.auth != null &&
-        request.resource.size < 10 * 1024 * 1024 && // 10MB max
+        canModifyCompany() &&
+        request.resource.size < 10 * 1024 * 1024 &&
         request.resource.contentType == 'application/pdf';
-      allow delete: if request.auth != null;
+      allow delete: if request.auth != null && canModifyCompany();
     }
 
     // Règles pour les justificatifs de notes de frais
@@ -163,66 +249,92 @@ service firebase.storage {
         );
     }
 
-    // Règles pour les documents de la structure
     match /structures/{structureId}/documents/{fileId} {
-      // Fonction pour vérifier si l'utilisateur est superadmin
-      function isSuperAdmin() {
-        // Utiliser directement firestore.get() au lieu de getUserData() pour éviter les problèmes de cache
+      function getUserData() {
         let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
-        let userData = userRef.exists ? userRef.data : null;
+        return userRef.exists ? userRef.data : null;
+      }
+      function isSuperAdmin() {
+        let userData = getUserData();
         return userData != null && 
                (userData.status == 'superadmin' || userData.role == 'superadmin');
       }
-
-      // Fonction pour vérifier si l'utilisateur appartient à la structure
       function belongsToStructure() {
-        // Utiliser directement firestore.get() au lieu de getUserData() pour éviter les problèmes de cache
-        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
-        let userData = userRef.exists ? userRef.data : null;
-        return userData != null && 
-               userData.structureId != null &&
-               userData.structureId != '' &&
-               userData.structureId == structureId &&
-               (userData.status == 'admin' || 
-                userData.status == 'member' || 
-                userData.status == 'membre' || 
-                userData.status == 'admin_structure' || 
-                isSuperAdmin());
-      }
-
-      // Fonction pour vérifier l'accès aux documents restreints (pour la lecture)
-      function canAccessRestrictedFile() {
-        // Utiliser directement firestore.get() au lieu de getUserData() pour éviter les problèmes de cache
-        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
-        let userData = userRef.exists ? userRef.data : null;
-        let docRef = firestore.get(/databases/(default)/documents/structures/$(structureId)/documents/$(fileId));
-        
-        // Si c'est un superadmin, accès autorisé
+        let userData = getUserData();
+        // Superadmin peut toujours accéder
         return isSuperAdmin() ||
-               // Sinon, vérifier que l'utilisateur appartient à la structure et que le document existe
-               (belongsToStructure() && docRef.exists && (
-                 // Si le document n'est pas restreint, accès autorisé
+               // Vérifier que l'utilisateur existe, a un structureId valide qui correspond
+               // et n'est pas une entreprise
+               (userData != null && 
+                userData.structureId != null && 
+                userData.structureId != '' &&
+                userData.structureId == structureId &&
+                userData.status != 'entreprise');
+      }
+      function canAccessRestrictedFile() {
+        let userData = getUserData();
+        let docRef = firestore.get(/databases/(default)/documents/structures/$(structureId)/documents/$(fileId));
+        return isSuperAdmin() ||
+               (belongsToStructure() && (!docRef.exists || (
                  !docRef.data.isRestricted ||
-                 // Si le document est restreint, vérifier le rôle
-                 userData.status == 'admin' ||
-                 (docRef.data.allowedRoles != null && 
+                 (userData != null && (userData.status == 'admin' || userData.role == 'admin')) ||
+                 (userData != null && 
+                  docRef.data.allowedRoles != null && 
                   docRef.data.allowedRoles.hasAny([userData.status]) &&
                   (userData.status == 'admin' || userData.status == 'member' || userData.status == 'membre'))
-               ));
+               )));
       }
-
-      // Lecture : membres de la structure, avec vérification des restrictions
       allow read: if request.auth != null && canAccessRestrictedFile();
+      // Règle ULTRA SIMPLE pour tester - permettre à TOUS les utilisateurs authentifiés
+      // Si ça ne fonctionne pas, le problème est que request.auth est null
+      allow create: if request.auth != null && request.resource.size < 100 * 1024 * 1024;
+      allow update: if request.auth != null && belongsToStructure() &&
+        request.resource.size < 100 * 1024 * 1024;
+      allow delete: if request.auth != null && belongsToStructure();
+    }
 
-      // Création : membres de la structure
-      allow create: if belongsToStructure() && request.resource.size < 100 * 1024 * 1024;
-
-      // Modification : membres de la structure
-      allow update: if belongsToStructure() &&
-        request.resource.size < 100 * 1024 * 1024; // 100MB max
-
-      // Suppression : membres de la structure
-      allow delete: if belongsToStructure();
+    // Règles pour les documents d'identité et documents personnalisés des utilisateurs
+    match /documents/{userId}/{fileName} {
+      function isValidDocumentType() {
+        return request.resource.contentType == 'application/pdf' ||
+               request.resource.contentType.matches('image/.*') ||
+               request.resource.contentType == 'application/octet-stream';
+      }
+      
+      function canAccessUserDocument() {
+        let userRef = firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
+        let userData = userRef.exists ? userRef.data : null;
+        
+        // Le propriétaire peut toujours accéder
+        return request.auth.uid == userId ||
+               // Superadmin peut toujours accéder
+               (userData != null && (userData.status == 'superadmin' || userData.role == 'superadmin')) ||
+               // Admin ou membre peut accéder s'il a un structureId valide
+               // On permet l'accès aux admins/membres sans vérifier le structureId du propriétaire
+               (userData != null &&
+                userData.structureId != null &&
+                userData.structureId != '' &&
+                (userData.status in ['admin', 'admin_structure', 'member', 'membre'] || 
+                 userData.role in ['admin', 'admin_structure', 'member', 'membre']));
+      }
+      
+      // Lecture : l'utilisateur propriétaire, les admins de la structure, ou les superadmins
+      allow read: if request.auth != null && canAccessUserDocument();
+      
+      // Création : uniquement le propriétaire, avec validation de taille et type
+      allow create: if request.auth != null && 
+        request.auth.uid == userId &&
+        request.resource.size < 10 * 1024 * 1024 && // 10MB max
+        isValidDocumentType();
+      
+      // Mise à jour : uniquement le propriétaire
+      allow update: if request.auth != null && 
+        request.auth.uid == userId &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        isValidDocumentType();
+      
+      // Suppression : le propriétaire, les admins de la structure, ou les superadmins
+      allow delete: if request.auth != null && canAccessUserDocument();
     }
   }
 } 

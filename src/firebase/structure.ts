@@ -41,35 +41,47 @@ export async function findStructureByEmail(email: string): Promise<Structure | n
       return null;
     }
     
-    const domainStartIndex = email.indexOf('@');
-    const fullDomain = email.slice(domainStartIndex);
+    // Normaliser l'email en minuscules pour la comparaison
+    const normalizedEmail = email.toLowerCase().trim();
+    const domainStartIndex = normalizedEmail.indexOf('@');
+    const fullDomain = normalizedEmail.slice(domainStartIndex);
     
-    console.log("Recherche de structure pour le domaine:", fullDomain);
+    console.log("Recherche de structure pour l'email:", normalizedEmail);
+    console.log("Domaine extrait:", fullDomain);
     
     const structuresRef = collection(db, 'structures');
     const snapshot = await getDocs(structuresRef);
+    
+    console.log(`Nombre de structures trouvées dans Firestore: ${snapshot.docs.length}`);
     
     for (const doc of snapshot.docs) {
       const structure = { ...doc.data(), id: doc.id } as Structure;
       
       // Vérifier si emailDomains existe
       if (!structure.emailDomains || !Array.isArray(structure.emailDomains)) {
-        console.warn("Structure sans emailDomains:", structure);
+        console.warn(`Structure "${structure.ecole || structure.name || structure.id}" sans emailDomains:`, structure);
         continue;
       }
       
+      console.log(`Vérification de la structure "${structure.ecole || structure.name || structure.id}" avec domaines:`, structure.emailDomains);
+      
       const found = structure.emailDomains.some(domain => {
-        const domainWithAt = domain.startsWith('@') ? domain : '@' + domain;
+        // Normaliser le domaine stocké
+        const normalizedDomain = domain.toLowerCase().trim();
+        const domainWithAt = normalizedDomain.startsWith('@') ? normalizedDomain : '@' + normalizedDomain;
+        
+        console.log(`  Comparaison: "${fullDomain}" === "${domainWithAt}" ?`, fullDomain === domainWithAt);
         return fullDomain === domainWithAt;
       });
 
       if (found) {
-        console.log("Structure trouvée:", structure);
+        console.log("✓ Structure trouvée:", structure);
         return structure;
       }
     }
     
-    console.log("Aucune structure trouvée pour le domaine:", fullDomain);
+    console.log("✗ Aucune structure trouvée pour le domaine:", fullDomain);
+    console.log("Vérifiez que le domaine est bien configuré dans Firestore avec le format '@domaine.com' ou 'domaine.com'");
     return null;
   } catch (error) {
     console.error("Erreur dans findStructureByEmail:", error);

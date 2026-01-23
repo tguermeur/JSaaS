@@ -14,7 +14,9 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  useTheme,
+  useMediaQuery
 } from '@mui/material';
 import { 
   Visibility, 
@@ -29,6 +31,8 @@ import { auth } from '../firebase/config';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 
 export default function Login(): JSX.Element {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
@@ -173,20 +177,12 @@ export default function Login(): JSX.Element {
       // Récupérer les informations de l'appareil
       const deviceInfo = getDeviceInfo(pendingUserId);
       
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Login.tsx:177',message:'Before calling verifyTwoFactorCode',data:{uid:pendingUserId,codeLength:twoFactorCode.length,deviceInfo},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-      
       // Envoyer le code et les infos de l'appareil
       await verifyTwoFactorCode({ 
         uid: pendingUserId, 
         code: twoFactorCode,
         deviceInfo 
       });
-      
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Login.tsx:186',message:'verifyTwoFactorCode call successful',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
 
       // Code valide, rediriger
       const redirectPath = getRedirectPath(pendingUserStatus || '');
@@ -280,13 +276,14 @@ export default function Login(): JSX.Element {
         alignItems: 'center',
         width: '100%',
         maxWidth: '500px',
-        p: 2
+        p: { xs: 1.5, sm: 2 },
+        minHeight: { xs: 'calc(100vh - 80px)', sm: 'auto' }
       }}
     >
       <Paper
         elevation={0}
         sx={{
-          p: 4,
+          p: { xs: 2.5, sm: 4 },
           width: '100%',
           borderRadius: '12px',
           boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)'
@@ -299,8 +296,8 @@ export default function Login(): JSX.Element {
           gutterBottom
           sx={{ 
             fontWeight: 600, 
-            fontSize: { xs: '1.5rem', sm: '2rem' },
-            mb: 3
+            fontSize: { xs: '1.25rem', sm: '1.5rem', md: '2rem' },
+            mb: { xs: 2, sm: 3 }
           }}
         >
           Connexion à JS Connect
@@ -336,7 +333,7 @@ export default function Login(): JSX.Element {
             disabled={loading}
             variant="outlined"
             sx={{ 
-              mb: 2,
+              mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
                 borderRadius: '8px'
               }
@@ -357,7 +354,7 @@ export default function Login(): JSX.Element {
             disabled={loading}
             variant="outlined"
             sx={{ 
-              mb: 3,
+              mb: { xs: 2, sm: 3 },
               '& .MuiOutlinedInput-root': {
                 borderRadius: '8px'
               }
@@ -383,13 +380,13 @@ export default function Login(): JSX.Element {
             variant="contained"
             disabled={loading}
             sx={{ 
-              mt: 2,
-              mb: 3,
-              py: 1.5,
+              mt: { xs: 1.5, sm: 2 },
+              mb: { xs: 2, sm: 3 },
+              py: { xs: 1.25, sm: 1.5 },
               borderRadius: '20px',
               textTransform: 'none',
               fontWeight: 500,
-              fontSize: '1rem',
+              fontSize: { xs: '0.9rem', sm: '1rem' },
               bgcolor: '#0071e3',
               '&:hover': {
                 bgcolor: '#0062c3'
@@ -426,10 +423,10 @@ export default function Login(): JSX.Element {
           </Box>
         </Box>
 
-        <Divider sx={{ my: 3 }} />
+        <Divider sx={{ my: { xs: 2, sm: 3 } }} />
         
         <Box sx={{ textAlign: 'center' }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" color="text.secondary" sx={{ fontSize: { xs: '0.8rem', sm: '0.875rem' } }}>
             Vous n'avez pas encore de compte ?
           </Typography>
           <Link 
@@ -440,6 +437,7 @@ export default function Login(): JSX.Element {
               color: '#0071e3',
               textDecoration: 'none',
               fontWeight: 500,
+              fontSize: { xs: '0.8rem', sm: '0.875rem' },
               '&:hover': {
                 textDecoration: 'underline'
               }
@@ -457,83 +455,184 @@ export default function Login(): JSX.Element {
         maxWidth="sm"
         fullWidth
         disableEscapeKeyDown
+        PaperProps={{
+          sx: {
+            m: { xs: 2, sm: 3 },
+            maxWidth: { xs: 'calc(100% - 32px)', sm: '420px' },
+            borderRadius: '20px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)'
+          }
+        }}
       >
-        <DialogTitle>
-          Authentification à deux facteurs
+        <DialogTitle 
+          sx={{ 
+            fontSize: '1.5rem',
+            fontWeight: 600,
+            textAlign: 'center',
+            pb: 1,
+            pt: 4,
+            px: 3,
+            color: '#1d1d1f'
+          }}
+        >
+          Vérification en deux étapes
         </DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" paragraph sx={{ mt: 1 }}>
-            Un code de vérification a été généré par votre application d'authentification.
-            Veuillez entrer ce code pour compléter la connexion.
+        <DialogContent sx={{ px: 3, pt: 2, pb: 1 }}>
+          <Typography 
+            variant="body2" 
+            color="text.secondary" 
+            paragraph 
+            sx={{ 
+              textAlign: 'center',
+              fontSize: '0.9375rem',
+              lineHeight: 1.5,
+              color: '#86868b',
+              mb: 0
+            }}
+          >
+            Entrez le code à 6 chiffres de votre application d'authentification
           </Typography>
           
           {twoFactorError && (
-            <Alert severity="error" sx={{ mb: 2 }}>
+            <Alert severity="error" sx={{ mb: 2, fontSize: { xs: '0.8rem', sm: '0.875rem' } }}>
               {twoFactorError}
             </Alert>
           )}
           
           <TextField
             fullWidth
-            label="Code de vérification"
             value={twoFactorCode}
             onChange={(e) => {
               const value = e.target.value.replace(/\D/g, '').slice(0, 6);
               setTwoFactorCode(value);
               setTwoFactorError(null);
+              
+              // Validation automatique quand 6 chiffres sont entrés
+              if (value.length === 6) {
+                setTimeout(() => {
+                  handleTwoFactorVerify();
+                }, 100);
+              }
+            }}
+            onPaste={(e) => {
+              e.preventDefault();
+              const pastedText = e.clipboardData.getData('text');
+              const value = pastedText.replace(/\D/g, '').slice(0, 6);
+              setTwoFactorCode(value);
+              setTwoFactorError(null);
+              
+              // Validation automatique quand 6 chiffres sont collés
+              if (value.length === 6) {
+                setTimeout(() => {
+                  handleTwoFactorVerify();
+                }, 100);
+              }
             }}
             inputProps={{ 
               maxLength: 6, 
               style: { 
                 textAlign: 'center', 
-                fontSize: '1.5rem', 
+                fontSize: '2rem', 
                 letterSpacing: '0.5rem',
-                fontFamily: 'monospace'
+                fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+                fontWeight: 600,
+                padding: '20px 16px'
               } 
             }}
             placeholder="000000"
             disabled={twoFactorLoading}
             sx={{ 
-              mt: 2,
+              mt: 3,
+              mb: 2,
               '& .MuiOutlinedInput-root': {
-                fontSize: '1.5rem',
+                borderRadius: '12px',
+                backgroundColor: '#f5f5f7',
+                border: 'none',
+                fontSize: '2rem',
                 letterSpacing: '0.5rem',
+                '& fieldset': {
+                  border: 'none'
+                },
+                '&:hover fieldset': {
+                  border: 'none'
+                },
+                '&.Mui-focused fieldset': {
+                  border: '2px solid #007AFF',
+                  borderColor: '#007AFF'
+                },
+                '&.Mui-disabled': {
+                  backgroundColor: '#f5f5f7',
+                  opacity: 0.6
+                }
+              },
+              '& .MuiInputBase-input': {
+                color: '#1d1d1f'
               }
             }}
             autoFocus
           />
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button 
-            onClick={handleTwoFactorCancel}
-            disabled={twoFactorLoading}
-          >
-            Annuler
-          </Button>
+        <DialogActions sx={{ px: 3, pb: 4, pt: 2, flexDirection: 'column', gap: 1.5 }}>
           <Button
             onClick={handleTwoFactorVerify}
             variant="contained"
             disabled={twoFactorLoading || twoFactorCode.length !== 6}
+            fullWidth
+            sx={{ 
+              borderRadius: '12px',
+              py: 1.5,
+              fontSize: '1rem',
+              fontWeight: 600,
+              textTransform: 'none',
+              bgcolor: '#007AFF',
+              boxShadow: 'none',
+              '&:hover': {
+                bgcolor: '#0051D5',
+                boxShadow: '0 4px 12px rgba(0, 122, 255, 0.3)'
+              },
+              '&:disabled': {
+                bgcolor: '#d1d1d6',
+                color: '#86868b'
+              }
+            }}
           >
             {twoFactorLoading ? (
-              <>
-                <CircularProgress size={20} sx={{ mr: 1 }} />
-                Vérification...
-              </>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <CircularProgress size={20} sx={{ color: '#ffffff' }} />
+                <span>Vérification...</span>
+              </Box>
             ) : (
-              'Vérifier'
+              'Continuer'
             )}
+          </Button>
+          <Button 
+            onClick={handleTwoFactorCancel}
+            disabled={twoFactorLoading}
+            fullWidth
+            sx={{ 
+              borderRadius: '12px',
+              py: 1.25,
+              fontSize: '0.9375rem',
+              fontWeight: 500,
+              textTransform: 'none',
+              color: '#007AFF',
+              '&:hover': {
+                bgcolor: 'rgba(0, 122, 255, 0.05)'
+              }
+            }}
+          >
+            Annuler
           </Button>
         </DialogActions>
       </Dialog>
       
-      <Typography variant="body2" color="text.secondary" sx={{ mt: 4, textAlign: 'center' }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: { xs: 2, sm: 4 }, mb: { xs: 2, sm: 0 }, textAlign: 'center', px: { xs: 2, sm: 0 }, fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
         En vous connectant, vous acceptez les{' '}
-        <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+        <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
           Conditions d'utilisation
         </Link>{' '}
         et la{' '}
-        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
           Politique de confidentialité
         </Link>{' '}
         de JS Connect.

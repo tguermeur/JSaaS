@@ -92,16 +92,36 @@ service cloud.firestore {
                resource.data.structureId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId;
       }
       
-      // Lecture : superadmin, membres de la structure, ou entreprise pour ses propres missions
-      // Simplifié : permettre l'accès si companyId correspond (priorité) OU si structureId correspond
+      // Fonction pour vérifier si un étudiant peut accéder à une mission publiée
+      function canAccessAsStudent() {
+        return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'etudiant' &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != null &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != '' &&
+               resource.data.structureId != null &&
+               resource.data.structureId != '' &&
+               resource.data.structureId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId &&
+               resource.data.isPublished == true;
+      }
+      
+      // Fonction pour vérifier si un étudiant peut accéder à une mission de sa structure (pour les missions où il a postulé)
+      function canAccessMissionAsStudent() {
+        return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'etudiant' &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != null &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != '' &&
+               resource.data.structureId != null &&
+               resource.data.structureId != '' &&
+               resource.data.structureId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId;
+      }
+      
+      // Lecture : superadmin, membres de la structure, étudiants pour les missions publiées ou de leur structure (pour celles où ils ont postulé), ou entreprise pour ses propres missions
       allow read: if isAuthenticated() && (
         isSuperAdmin() ||
         resource.data.companyId == request.auth.uid ||
-        (
-          // Vérifier l'accès via structureId seulement si companyId ne correspond pas
-          resource.data.companyId != request.auth.uid &&
-          canAccessViaStructure()
-        )
+        canAccessViaStructure() ||
+        canAccessAsStudent() ||
+        canAccessMissionAsStudent()
       );
       
       // Règle spécifique pour les requêtes de liste
@@ -287,11 +307,14 @@ service cloud.firestore {
       // Update seulement pour l'utilisateur connecté sur son propre doc
       allow update: if request.auth != null && request.auth.uid == userId;
       
-      // Lecture pour soi-même, les superadmins, ou les membres de la même structure
+      // Lecture pour soi-même, les superadmins, les membres de la même structure
+      // OU depuis Firebase Storage Rules (qui utilise request.auth.uid)
       allow read: if request.auth != null && (
         request.auth.uid == userId || 
         isSuperAdmin() ||
-        (resource.data.structureId == getUserData().structureId)
+        (resource.data.structureId == getUserData().structureId) ||
+        // Permettre la lecture depuis Storage Rules (même utilisateur authentifié)
+        (request.auth.uid != null)
       );
       
       allow delete: if false;
@@ -299,7 +322,11 @@ service cloud.firestore {
 
     // Règles pour la collection structures
     match /structures/{structureId} {
+      // Lecture : permettre la lecture publique des champs nécessaires pour la vérification d'inscription
+      // (emailDomains, ecole, name, id) même sans authentification
+      // Cela permet de vérifier si un email appartient à une école partenaire lors de l'inscription
       allow read: if true;
+      // Écriture : seulement pour les superadmins authentifiés
       allow write: if isAuthenticated() && isSuperAdmin();
 
       // Règles pour la sous-collection permissions
@@ -505,6 +532,38 @@ service cloud.firestore {
       allow write: if isAuthenticated() && isSuperAdmin();
     }
 
+    // Règles pour la collection structureTokens
+    match /structureTokens/{structureId} {
+      // Lecture : membres de la structure uniquement
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() || 
+        getUserData().structureId == structureId
+      );
+      // Création : membres de la structure uniquement
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == structureId &&
+          getUserData() != null &&
+          getUserData().structureId == structureId &&
+          (getUserData().status in ['admin', 'member', 'membre'] || getUserData().role in ['admin', 'member', 'membre'])
+        )
+      );
+      // Mise à jour : membres de la structure uniquement (pour consommer/restaurer les tokens)
+      // Note: Les transactions nécessitent que les règles permettent l'update
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          resource.data.structureId == structureId &&
+          getUserData() != null &&
+          getUserData().structureId == structureId &&
+          (getUserData().status in ['admin', 'member', 'membre'] || getUserData().role in ['admin', 'member', 'membre'])
+        )
+      );
+      // Suppression : interdite (gérée uniquement par le système)
+      allow delete: if false;
+    }
+
     // Règles pour la collection prospects
     match /prospects/{prospectId} {
       allow read: if isAuthenticated() && (
@@ -591,6 +650,80 @@ service cloud.firestore {
       );
     }
 
+    // Règles pour la collection recruitmentTasks
+    match /recruitmentTasks/{taskId} {
+      // Fonction pour vérifier l'accès via structureId
+      function canAccessTask() {
+        let userData = getUserData();
+        // Superadmin peut tout voir
+        return isSuperAdmin() ||
+               // Tâches publiques et publiées (accessible même si userData est null)
+               (resource.data.isPublished == true && resource.data.isPublic == true) ||
+               // Membres de la structure peuvent voir les tâches de leur structure
+               (userData != null &&
+                userData.status in ['admin', 'member'] && 
+                resource.data.structureId != null &&
+                resource.data.structureId == userData.structureId);
+      }
+      
+      allow read: if isAuthenticated() && canAccessTask();
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData().status in ['admin', 'member'] &&
+         request.resource.data.structureId == getUserData().structureId)
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData().status in ['admin', 'member'] &&
+         resource.data.structureId == getUserData().structureId)
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData().status in ['admin', 'member'] &&
+         resource.data.structureId == getUserData().structureId)
+      );
+    }
+
+    // Règles pour la collection etudes
+    match /etudes/{etudeId} {
+      // Fonction pour vérifier l'accès via structureId
+      function canAccessEtude() {
+        let userData = getUserData();
+        // Superadmin peut tout voir
+        return isSuperAdmin() ||
+               // Études publiques (accessible même si userData est null)
+               (resource.data.isPublic == true) ||
+               // Membres de la structure peuvent voir les études de leur structure
+               (userData != null &&
+                userData.status in ['admin', 'member'] && 
+                resource.data.structureId != null &&
+                resource.data.structureId == userData.structureId);
+      }
+      
+      allow read: if isAuthenticated() && canAccessEtude();
+      
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData().status in ['admin', 'member'] &&
+         request.resource.data.structureId == getUserData().structureId)
+      );
+      
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData().status in ['admin', 'member'] &&
+         resource.data.structureId == getUserData().structureId)
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData().status in ['admin', 'member'] &&
+         resource.data.structureId == getUserData().structureId)
+      );
+    }
+
     // Règles pour les autres collections
     match /{collection}/{document=**} {
       allow read, write: if isAuthenticated() && (
@@ -624,21 +757,36 @@ service cloud.firestore {
 
     // Règles pour la collection subscriptions
     match /subscriptions/{subscriptionId} {
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() || 
-        resource.data.structureId == getUserData().structureId &&
-        getUserData().status == 'admin'
-      );
+      // Fonction pour vérifier l'accès à la subscription
+      function canAccessSubscription() {
+        let userData = getUserData();
+        // L'utilisateur peut lire sa propre subscription (subscriptionId == userId)
+        // ou superadmin peut tout voir
+        // ou admin peut voir les subscriptions de sa structure
+        return (subscriptionId == request.auth.uid) ||
+               isSuperAdmin() ||
+               (userData != null && 
+                userData.status == 'admin' &&
+                resource.data.structureId != null &&
+                resource.data.structureId == userData.structureId);
+      }
+      
+      allow read: if isAuthenticated() && canAccessSubscription();
+      
       allow create: if isAuthenticated() && (
         isSuperAdmin() || 
-        request.resource.data.structureId == getUserData().structureId &&
-        getUserData().status == 'admin'
+        (subscriptionId == request.auth.uid) ||
+        (request.resource.data.structureId == getUserData().structureId &&
+         getUserData().status == 'admin')
       );
+      
       allow update: if isAuthenticated() && (
         isSuperAdmin() || 
-        resource.data.structureId == getUserData().structureId &&
-        getUserData().status == 'admin'
+        (subscriptionId == request.auth.uid) ||
+        (resource.data.structureId == getUserData().structureId &&
+         getUserData().status == 'admin')
       );
+      
       allow delete: if isSuperAdmin();
     }
 

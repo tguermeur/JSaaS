@@ -1,15 +1,38 @@
 // Helper pour les logs de debug (sécurisé pour Cloud Run)
+// SÉCURITÉ: Désactivé en production pour éviter l'exposition d'informations sensibles
 function debugLog(location: string, message: string, data: any, hypothesisId: string) {
+  // Ne pas logger en production ou si l'émulateur n'est pas actif
+  // Vérifier explicitement que l'émulateur est actif
+  const isEmulator = process.env.FUNCTIONS_EMULATOR === 'true' || 
+                      process.env.FIREBASE_FUNCTIONS_EMULATOR === 'true' ||
+                      process.env.GCLOUD_PROJECT?.includes('demo');
+  
+  // Ne rien faire si on n'est pas dans l'émulateur
+  if (!isEmulator || process.env.NODE_ENV === 'production') {
+    return;
+  }
+  
+  // Ne rien faire si fetch n'est pas disponible (Cloud Run)
+  if (typeof fetch === 'undefined') {
+    return;
+  }
+  
+  // Ne rien faire si window est défini (navigateur)
+  if (typeof window !== 'undefined') {
+    return;
+  }
+  
+  // Seulement en développement local avec émulateur actif
   try {
-    if (typeof fetch !== 'undefined' && typeof window === 'undefined') {
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ location, message, data, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId })
-      }).catch(() => {});
-    }
+    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location, message, data, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId })
+    }).catch(() => {
+      // Ignorer silencieusement les erreurs de connexion
+    });
   } catch (e) {
-    // Ignorer les erreurs de fetch dans Cloud Run
+    // Ignorer toutes les erreurs de fetch dans Cloud Run
   }
 }
 
@@ -54,26 +77,127 @@ if (!admin.apps.length) {
 debugLog('index.ts:22', 'After admin.initializeApp', { appsLength: admin.apps.length }, 'B');
 // #endregion
 
-// Configuration CORS plus permissive
-const corsHandler = cors({ 
-  origin: true,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  maxAge: 86400
-});
+// Configuration CORS sécurisée - uniquement les domaines autorisés
+// Liste des origines autorisées (ajoutez vos domaines de production ici)
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:3011',
+  'https://jsaas-dd2f7.firebaseapp.com',
+  'https://jsaas-dd2f7.web.app',
+  'http://js-connect.fr',
+  'https://js-connect.fr',
+  // Ajoutez vos autres domaines de production ici
+];
 
-// Configuration des fonctions avec CORS explicite
+// SÉCURITÉ: Liste blanche des IDs d'extensions Chrome autorisées
+// Remplacez 'VOTRE_EXTENSION_ID' par l'ID réel de votre extension Chrome
+// Pour trouver l'ID: chrome://extensions/ -> Mode développeur -> ID de l'extension
+const allowedExtensionIds: string[] = [
+  // Exemple: 'abcdefghijklmnopqrstuvwxyz123456',
+  // Ajoutez les IDs de vos extensions autorisées ici
+  // Pour le développement local, vous pouvez temporairement commenter cette vérification
+];
+
+// Fonction pour extraire l'ID d'extension depuis une origine chrome-extension://
+function getExtensionId(origin: string): string | null {
+  const match = origin.match(/^chrome-extension:\/\/([a-z]{32})/);
+  return match ? match[1] : null;
+}
+
+// Fonction pour vérifier si l'origine est autorisée
+const corsOptionsDelegate = (req: any, callback: any) => {
+  const origin = req.headers.origin;
+  
+  // Vérifier les requêtes depuis les extensions Chrome avec whitelist
+  if (origin && origin.startsWith('chrome-extension://')) {
+    const extensionId = getExtensionId(origin);
+    
+    // SÉCURITÉ: Autoriser uniquement les extensions dans la whitelist
+    // En développement, si la liste est vide, autoriser toutes les extensions (à désactiver en production)
+    if (allowedExtensionIds.length === 0 && process.env.NODE_ENV !== 'production') {
+      // Mode développement: avertissement mais autorisation temporaire
+      console.warn('⚠️  SÉCURITÉ: Aucune extension Chrome whitelistée. Toutes les extensions sont autorisées en développement.');
+      callback(null, { 
+        origin: true,
+        credentials: true,
+        methods: ['GET', 'POST', 'OPTIONS', 'PUT', 'DELETE'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+        maxAge: 86400
+      });
+      return;
+    }
+    
+    if (extensionId && allowedExtensionIds.includes(extensionId)) {
+      callback(null, { 
+        origin: true,
+        credentials: true,
+        methods: ['GET', 'POST', 'OPTIONS', 'PUT', 'DELETE'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+        maxAge: 86400
+      });
+      return;
+    } else {
+      // Rejeter les extensions non autorisées
+      console.warn(`⚠️  SÉCURITÉ: Extension Chrome non autorisée tentant d'accéder: ${extensionId || origin}`);
+      callback(new Error('Chrome extension not allowed by CORS policy'));
+      return;
+    }
+  }
+  
+  // En production, refuser les requêtes sans origine (sauf pour les extensions)
+  if (!origin) {
+    callback(null, { origin: false, credentials: false });
+    return;
+  }
+  
+  // Vérifier si l'origine est dans la liste autorisée
+  if (allowedOrigins.includes(origin)) {
+    callback(null, { 
+      origin: true,
+      credentials: true,
+      methods: ['GET', 'POST', 'OPTIONS', 'PUT', 'DELETE'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+      maxAge: 86400
+    });
+  } else {
+    // Rejeter les origines non autorisées
+    callback(new Error('Not allowed by CORS'));
+  }
+};
+
+const corsHandler = cors(corsOptionsDelegate);
+
+// Configuration des fonctions avec authentification requise
+// Ressources minimales pour respecter le quota CPU
 const functionConfig = {
   memory: '256MiB' as const,
   timeoutSeconds: 300,
   cors: true,
   region: 'us-central1',
   minInstances: 0,
-  maxInstances: 10,
-  concurrency: 80,
-  allowUnauthenticated: true,
-  secrets: ['GEMINI_API_KEY']
+  maxInstances: 1, // Réduit au minimum pour respecter le quota CPU
+  concurrency: 20, // Réduit au minimum
+  allowUnauthenticated: false, // SÉCURITÉ: Forcer l'authentification sur toutes les fonctions
+  secrets: [
+    'GEMINI_API_KEY',
+    'EMAILJS_SERVICE_ID',
+    'EMAILJS_TEMPLATE_ID',
+    'EMAILJS_USER_ID',
+    'EMAILJS_PRIVATE_KEY'
+    // Note: FRONTEND_URL n'est pas un secret (URL publique) - ne doit PAS être dans secrets
+    //       Elle doit être définie comme variable d'environnement normale dans la console Firebase
+    //       ou via .env pour le développement local
+    // Note: STRIPE_SECRET_KEY et STRIPE_WEBHOOK_SECRET sont utilisés dans stripe.ts
+    // qui utilise des fonctions v1 (functions.https.onRequest) et gère ses propres secrets
+  ]
+};
+
+// Configuration avec moins d'instances pour les fonctions qui dépassent le quota CPU
+const lowResourceConfig = {
+  ...functionConfig,
+  maxInstances: 1, // Minimum pour économiser le quota CPU
+  concurrency: 20, // Réduit encore plus
 };
 
 // Créer l'application Express
@@ -91,7 +215,11 @@ app.get('/', (req, res) => {
 });
 
 // Body parser (important pour recevoir les images base64)
+// Note: Pour les webhooks Stripe, on a besoin du body brut, donc on configure
+// express.raw() pour les routes webhook, et express.json() pour les autres
 app.use(express.json({ limit: '20mb' }));
+// Ajouter support pour body brut (nécessaire pour les webhooks Stripe)
+app.use(express.raw({ type: 'application/json', limit: '10mb' }));
 
 /**
  * Extraction LinkedIn via Gemini côté serveur (clé API secrète)
@@ -125,8 +253,10 @@ app.post('/gemini/extract-profile', async (req, res) => {
       return;
     }
 
-    const geminiApiKey = process.env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
+    // Accéder au secret via process.env (Firebase Functions v2 injecte automatiquement les secrets)
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      console.error('GEMINI_API_KEY non disponible dans process.env');
       res.status(500).json({ success: false, error: 'Server misconfigured: GEMINI_API_KEY missing' });
       return;
     }
@@ -159,7 +289,7 @@ app.post('/gemini/extract-profile', async (req, res) => {
       `6. Si un champ est absent ou non visible, mets "".\n` +
       `7. IMPORTANT: Le JSON doit être complet et valide. Ne tronque pas les chaînes.\n`;
 
-    const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiApiKey}`;
+    const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiKey}`;
     const parts: any[] = [{ text: prompt }];
     for (const img of images) {
       parts.push({
@@ -568,7 +698,8 @@ interface ContactEmailData {
 }
 
 // Fonction pour créer un nouvel utilisateur
-export const createUser = onCall(functionConfig, async (request) => {
+// Utilise lowResourceConfig pour éviter le quota CPU
+export const createUser = onCall(lowResourceConfig, async (request) => {
   try {
     // Vérifier l'authentification
     if (!request.auth) {
@@ -639,7 +770,8 @@ export const updateUserProfile = onCall(functionConfig, async (request) => {
  * - EMAILJS_USER_ID (Public Key)
  * - EMAILJS_PRIVATE_KEY (Private Key)
  */
-export const sendContactEmail = onCall(functionConfig, async (request) => {
+// Utilise lowResourceConfig pour éviter le quota CPU
+export const sendContactEmail = onCall(lowResourceConfig, async (request) => {
   try {
     // Validation des données
     const { company, email, message } = request.data as ContactEmailData;
@@ -648,14 +780,26 @@ export const sendContactEmail = onCall(functionConfig, async (request) => {
       throw new Error('Tous les champs (société, email, message) sont requis.');
     }
 
-    // Récupération des secrets depuis les variables d'environnement
-    const serviceId = process.env.EMAILJS_SERVICE_ID || 'service_wd96h7i'; // Fallback sur la valeur vue dans le frontend pour la migration
-    const templateId = process.env.EMAILJS_TEMPLATE_ID || 'template_bjcdscc';
-    const userId = process.env.EMAILJS_USER_ID || 'Hn6_ev50BvQzoNSS0';
-    const privateKey = process.env.EMAILJS_PRIVATE_KEY; // CRITIQUE: À définir dans .env ou secrets Firebase
+    // Récupération des secrets depuis process.env (Firebase Functions v2 injecte automatiquement les secrets)
+    // SÉCURITÉ: Aucun fallback - les secrets DOIVENT être définis
+    const serviceId = process.env.EMAILJS_SERVICE_ID;
+    const templateId = process.env.EMAILJS_TEMPLATE_ID;
+    const userId = process.env.EMAILJS_USER_ID;
+    const privateKey = process.env.EMAILJS_PRIVATE_KEY;
 
-    // Note: Pour envoyer via le backend EmailJS, on utilise l'API REST
-    // Si la Private Key est manquante, cela échouera sauf si on utilise seulement l'User ID (Public Key) qui est moins sécurisé mais fonctionne parfois selon la config
+    // Validation stricte - échec si les variables manquent
+    if (!serviceId) {
+      throw new Error('EMAILJS_SERVICE_ID n\'est pas configuré. Définissez-la dans les variables d\'environnement Firebase.');
+    }
+    if (!templateId) {
+      throw new Error('EMAILJS_TEMPLATE_ID n\'est pas configuré. Définissez-la dans les variables d\'environnement Firebase.');
+    }
+    if (!userId) {
+      throw new Error('EMAILJS_USER_ID n\'est pas configuré. Définissez-la dans les variables d\'environnement Firebase.');
+    }
+    if (!privateKey) {
+      throw new Error('EMAILJS_PRIVATE_KEY n\'est pas configuré. Définissez-la dans les variables d\'environnement Firebase.');
+    }
     
     const emailData = {
       service_id: serviceId,
@@ -710,3 +854,33 @@ export {
   removeSecureDevice,
   logoutOtherDevices
 } from './twoFactor';
+
+// Exporter les fonctions de chiffrement
+export {
+  encryptUserData,
+  decryptUserData,
+  decryptOwnUserData,
+  encryptCompanyData,
+  decryptCompanyData,
+  encryptContactData,
+  decryptContactData,
+  encryptText,
+  decryptText
+} from './encryptionFunctions';
+
+export {
+  encryptFile,
+  decryptFile,
+  isFileEncrypted
+} from './fileEncryption';
+
+// Exporter les fonctions de migration
+export {
+  migrateAllEncryption,
+  checkMigrationStatus
+} from './migrateEncryption';
+
+// Exporter les fonctions de logging des accès
+export {
+  getEncryptedDataAccessLogsFunction
+} from './accessLogging';

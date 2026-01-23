@@ -94,7 +94,15 @@ function App(): JSX.Element {
                   <CircularProgress />
                 </Box>
               }>
-                <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+                <Box sx={{ 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  minHeight: '100vh',
+                  margin: 0,
+                  padding: 0,
+                  width: '100%',
+                  overflowX: 'hidden'
+                }}>
                   <CssBaseline />
                   <Routes>
                     <Route path="/" element={<Home />} />

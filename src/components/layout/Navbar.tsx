@@ -114,7 +114,7 @@ const Navbar: React.FC<NavbarProps> = () => {
     markAllAsRead 
   } = useNotifications();
   const { enqueueSnackbar } = useSnackbar();
-  const { openChangelog } = useChangelog();
+  const { openChangelog, showInfoButtonHint, hideInfoButtonHint } = useChangelog();
 
   // États pour le menu utilisateur
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
@@ -565,7 +565,20 @@ const Navbar: React.FC<NavbarProps> = () => {
     <StyledAppBar position="fixed">
       <StyledToolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
         {/* Section gauche - Logo */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 0.5, 
+            flexShrink: 0,
+            cursor: 'pointer',
+            transition: 'opacity 0.2s ease',
+            '&:hover': {
+              opacity: 0.8
+            }
+          }}
+          onClick={() => navigate('/app/dashboard')}
+        >
           <Avatar
             src="/images/logo.png"
             alt="Logo JS Connect"
@@ -933,21 +946,103 @@ const Navbar: React.FC<NavbarProps> = () => {
           </IconButton>
 
           {/* Bouton des nouveautés */}
-          <IconButton
-            onClick={openChangelog}
-            size="small"
-            sx={{ 
-              color: '#86868b',
-              transition: 'all 0.2s ease',
-              '&:hover': {
-                color: '#667eea',
-                transform: 'scale(1.1)'
-              }
-            }}
-            title="Voir les nouveautés"
-          >
-            <InfoIcon fontSize="small" />
-          </IconButton>
+          <Box sx={{ position: 'relative' }}>
+            <IconButton
+              onClick={() => {
+                openChangelog();
+                hideInfoButtonHint();
+              }}
+              size="small"
+              sx={{ 
+                color: '#86868b',
+                transition: 'all 0.2s ease',
+                '&:hover': {
+                  color: '#667eea',
+                  transform: 'scale(1.1)'
+                }
+              }}
+              title="Voir les nouveautés"
+            >
+              <InfoIcon fontSize="small" />
+            </IconButton>
+            
+            {/* Animation de hint avec message */}
+            {showInfoButtonHint && (
+              <>
+                {/* Point pulsant */}
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: -4,
+                    right: -4,
+                    width: 12,
+                    height: 12,
+                    borderRadius: '50%',
+                    background: '#667eea',
+                    animation: 'pulse 2s infinite',
+                    '@keyframes pulse': {
+                      '0%': {
+                        transform: 'scale(0.8)',
+                        opacity: 1,
+                      },
+                      '50%': {
+                        transform: 'scale(1.2)',
+                        opacity: 0.7,
+                      },
+                      '100%': {
+                        transform: 'scale(0.8)',
+                        opacity: 1,
+                      }
+                    }
+                  }}
+                />
+                
+                {/* Message tooltip */}
+                <Paper
+                  elevation={3}
+                  sx={{
+                    position: 'absolute',
+                    top: '100%',
+                    right: -10,
+                    mt: 1,
+                    px: 2,
+                    py: 1,
+                    borderRadius: '8px',
+                    background: '#667eea',
+                    color: 'white',
+                    fontSize: '0.75rem',
+                    fontWeight: 500,
+                    whiteSpace: 'nowrap',
+                    zIndex: 1400,
+                    animation: 'slideDown 0.3s ease-out',
+                    '@keyframes slideDown': {
+                      '0%': {
+                        opacity: 0,
+                        transform: 'translateY(-10px)',
+                      },
+                      '100%': {
+                        opacity: 1,
+                        transform: 'translateY(0)',
+                      }
+                    },
+                    '&::before': {
+                      content: '""',
+                      position: 'absolute',
+                      bottom: '100%',
+                      right: '20px',
+                      width: 0,
+                      height: 0,
+                      borderLeft: '6px solid transparent',
+                      borderRight: '6px solid transparent',
+                      borderBottom: '6px solid #667eea',
+                    }
+                  }}
+                >
+                  Cliquez ici pour revoir les nouveautés
+                </Paper>
+              </>
+            )}
+          </Box>
 
           {/* Bouton de notifications */}
           {canSeeNotifications && (
