@@ -276,7 +276,8 @@ export const verifyTwoFactorCode = onCall(functionConfig, async (request) => {
       .get();
 
     if (!userDoc.exists) {
-      throw new Error('Utilisateur non trouvé');
+      console.error('[verifyTwoFactorCode] Document utilisateur inexistant', { uid });
+      throw new Error('Document utilisateur non trouvé. Veuillez vous reconnecter.');
     }
 
     const userData = userDoc.data();

@@ -40,6 +40,7 @@ function debugLog(location: string, message: string, data: any, hypothesisId: st
 debugLog('index.ts:1', 'Module loading started', {}, 'D');
 // #endregion
 import { onCall, onRequest } from 'firebase-functions/v2/https';
+import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 // #region agent log
 debugLog('index.ts:4', 'Before importing stripe module', {}, 'D');
@@ -183,11 +184,12 @@ const functionConfig = {
     'GEMINI_API_KEY',
     'EMAILJS_SERVICE_ID',
     'EMAILJS_TEMPLATE_ID',
+    'EMAILJS_TEMPLATE_ID_AMBASSADOR', // optionnel ; si défini, utilisé pour sendAmbassadorInvite
     'EMAILJS_USER_ID',
     'EMAILJS_PRIVATE_KEY'
-    // Note: FRONTEND_URL n'est pas un secret (URL publique) - ne doit PAS être dans secrets
-    //       Elle doit être définie comme variable d'environnement normale dans la console Firebase
-    //       ou via .env pour le développement local
+    // FRONTEND_URL : ne pas mettre dans secrets. Définir en variable d’env. non secrète
+    // (Console Firebase / GCP ou functions/.env) pour éviter le conflit "overlaps non secret".
+    // Fallback dans le code : process.env.FRONTEND_URL || 'https://js-connect.fr'
     // Note: STRIPE_SECRET_KEY et STRIPE_WEBHOOK_SECRET sont utilisés dans stripe.ts
     // qui utilise des fonctions v1 (functions.https.onRequest) et gère ses propres secrets
   ]
@@ -730,6 +732,81 @@ export const createUser = onCall(lowResourceConfig, async (request) => {
   }
 });
 
+interface CreateContactUserData {
+  email: string;
+  password: string;
+  displayName: string;
+  firstName: string;
+  lastName: string;
+  structureId: string;
+  companyId: string;
+  contactId: string;
+  accessLevel: 'read' | 'write' | 'admin';
+  canViewEvents: boolean;
+  canManageAmbassadors: boolean;
+}
+
+export const createContactUser = onCall(lowResourceConfig, async (request) => {
+  try {
+    if (!request.auth) throw new Error('Non authentifié');
+    
+    const { email, password, displayName, firstName, lastName, structureId, companyId, contactId, accessLevel, canViewEvents, canManageAmbassadors } = request.data as CreateContactUserData;
+
+    // Créer user Auth
+    const userRecord = await admin.auth().createUser({
+      email,
+      password,
+      displayName,
+      emailVerified: true
+    });
+
+    // Créer doc user
+    await admin.firestore().collection('users').doc(userRecord.uid).set({
+      email,
+      displayName,
+      firstName,
+      lastName,
+      structureId,
+      companyId,
+      status: 'entreprise',
+      role: accessLevel,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: request.auth.uid
+    });
+    
+    // Mettre à jour les claims
+    await admin.auth().setCustomUserClaims(userRecord.uid, {
+      structureId,
+      companyId,
+      status: 'entreprise',
+      role: accessLevel
+    });
+
+    // Mettre à jour le contact
+    await admin.firestore().collection('contacts').doc(contactId).update({
+      userId: userRecord.uid,
+      hasAccess: true
+    });
+    
+    // Mettre à jour les accès du contact
+    await admin.firestore().collection('contactAccess').doc(contactId).set({
+        userId: userRecord.uid,
+        accessLevel,
+        canViewEvents,
+        canManageAmbassadors
+    }, { merge: true });
+
+    return { success: true, uid: userRecord.uid };
+  } catch (error: any) {
+    console.error('Erreur createContactUser:', error);
+    if (error.code === 'auth/email-already-exists') {
+        throw new functions.https.HttpsError('already-exists', 'Cet email est déjà utilisé par un autre compte.');
+    }
+    throw new functions.https.HttpsError('internal', error.message || 'Erreur inconnue');
+  }
+});
+
 // Fonction pour mettre à jour le profil utilisateur
 export const updateUserProfile = onCall(functionConfig, async (request) => {
   try {
@@ -829,6 +906,181 @@ export const sendContactEmail = onCall(lowResourceConfig, async (request) => {
   }
 });
 
+interface AmbassadorInviteData {
+  email: string;
+}
+
+/**
+ * Fonction pour envoyer un email d'invitation à devenir ambassadeur
+ * Nécessite les variables d'environnement EmailJS
+ */
+export const sendAmbassadorInvite = onCall(lowResourceConfig, async (request) => {
+  try {
+    if (!request.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Vous devez être connecté pour envoyer une invitation.'
+      );
+    }
+
+    const { email } = (request.data || {}) as AmbassadorInviteData;
+
+    if (!email || !email.includes('@')) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Une adresse email valide est requise.'
+      );
+    }
+
+    // Récupération des secrets EmailJS (trim pour éviter espaces/newlines via secrets)
+    const rawServiceId = process.env.EMAILJS_SERVICE_ID;
+    const rawTemplateId =
+      process.env.EMAILJS_TEMPLATE_ID_AMBASSADOR || process.env.EMAILJS_TEMPLATE_ID;
+    const rawUserId = process.env.EMAILJS_USER_ID;
+    const rawPrivateKey = process.env.EMAILJS_PRIVATE_KEY;
+    const serviceId = typeof rawServiceId === 'string' ? rawServiceId.trim() : '';
+    const templateId = typeof rawTemplateId === 'string' ? rawTemplateId.trim() : '';
+    const userId = typeof rawUserId === 'string' ? rawUserId.trim() : '';
+    const privateKey = typeof rawPrivateKey === 'string' ? rawPrivateKey.trim() : '';
+    const frontendUrl = (process.env.FRONTEND_URL || 'https://js-connect.fr').trim();
+
+    // Log config (sans valeurs sensibles) pour debug
+    console.log('sendAmbassadorInvite: config', {
+      hasServiceId: !!serviceId,
+      hasTemplateId: !!templateId,
+      hasUserId: !!userId,
+      userIdLength: userId.length,
+      hasPrivateKey: !!privateKey,
+      templateSource: process.env.EMAILJS_TEMPLATE_ID_AMBASSADOR ? 'AMBASSADOR' : 'DEFAULT',
+      frontendUrl: frontendUrl ? '(défini)' : '(manquant)'
+    });
+
+    if (!serviceId || !templateId || !userId || !privateKey) {
+      const missing: string[] = [];
+      if (!serviceId) missing.push('EMAILJS_SERVICE_ID');
+      if (!templateId) missing.push('EMAILJS_TEMPLATE_ID ou EMAILJS_TEMPLATE_ID_AMBASSADOR');
+      if (!userId) missing.push('EMAILJS_USER_ID');
+      if (!privateKey) missing.push('EMAILJS_PRIVATE_KEY');
+      console.error('sendAmbassadorInvite: variables manquantes', missing);
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        `Configuration EmailJS incomplète. Définir dans les secrets Firebase: ${missing.join(', ')}.`
+      );
+    }
+
+    // Lien d'inscription avec paramètre pour pré-remplir le statut ambassadeur
+    const registrationLink = `${frontendUrl}/register?ambassador=true&email=${encodeURIComponent(email)}`;
+
+    const emailData = {
+      service_id: serviceId,
+      template_id: templateId,
+      user_id: userId,
+      accessToken: privateKey,
+      template_params: {
+        to_email: email,
+        registration_link: registrationLink,
+        subject: 'Invitation à devenir Ambassadeur'
+      }
+    };
+
+    try {
+      const res = await axios.post('https://api.emailjs.com/api/v1.0/email/send', emailData, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 15000
+      });
+      console.log('sendAmbassadorInvite: EmailJS OK', res.status);
+      return { success: true, message: 'Email d\'invitation envoyé avec succès' };
+    } catch (axiosErr: any) {
+      const status = axiosErr?.response?.status;
+      const data = axiosErr?.response?.data;
+      const msg = typeof data === 'string' ? data : (data?.message || data?.error || JSON.stringify(data));
+      console.error('sendAmbassadorInvite: EmailJS erreur', {
+        status,
+        message: axiosErr?.message,
+        emailjsResponse: msg
+      });
+
+      // Message utilisateur selon le code HTTP EmailJS
+      let userMsg = 'Impossible d\'envoyer l\'email d\'invitation.';
+      if (status === 401) {
+        userMsg =
+          'EmailJS: clés invalides. Vérifiez EMAILJS_USER_ID (Public Key) et EMAILJS_PRIVATE_KEY (Private Key) dans le dashboard EmailJS.';
+      } else if (status === 400) {
+        userMsg =
+          'EmailJS: requête invalide (template ou paramètres). Vérifiez le template (to_email, registration_link, subject) et les IDs.';
+      } else if (status === 404) {
+        userMsg =
+          'EmailJS: Service ou Template introuvable. Vérifiez EMAILJS_SERVICE_ID et EMAILJS_TEMPLATE_ID.';
+      } else if (status != null) {
+        userMsg = `EmailJS a refusé l'envoi (HTTP ${status}). ${typeof msg === 'string' && msg.length < 200 ? msg : 'Voir les logs Cloud Functions.'}`;
+      }
+
+      throw new functions.https.HttpsError('internal', userMsg, { emailjsStatus: status });
+    }
+  } catch (err: any) {
+    if (err instanceof functions.https.HttpsError) {
+      throw err;
+    }
+    console.error('sendAmbassadorInvite: erreur inattendue', err?.message || err);
+    throw new functions.https.HttpsError(
+      'internal',
+      err?.message || 'Impossible d\'envoyer l\'email d\'invitation.'
+    );
+  }
+});
+
+/**
+ * Retire le statut ambassadeur d'un utilisateur.
+ * Autorisé : superadmin, ou admin/membre/entreprise de la même structure que l'utilisateur cible.
+ */
+export const removeAmbassadorFromUser = onCall(lowResourceConfig, async (request) => {
+  try {
+    if (!request.auth) {
+      throw new Error('Vous devez être connecté.');
+    }
+    const { userId } = request.data as { userId?: string };
+    if (!userId) {
+      throw new Error('userId requis.');
+    }
+
+    const callerId = request.auth.uid;
+    const fs = admin.firestore();
+    const callerDoc = await fs.collection('users').doc(callerId).get();
+    const targetDoc = await fs.collection('users').doc(userId).get();
+
+    if (!targetDoc.exists) {
+      throw new Error('Utilisateur introuvable.');
+    }
+    const targetData = targetDoc.data();
+    const callerData = callerDoc.data();
+    const callerStatus = callerData?.status as string | undefined;
+    const isSuperAdmin = callerStatus === 'superadmin';
+    const sameStructure =
+      targetData?.structureId != null &&
+      callerData?.structureId != null &&
+      targetData.structureId === callerData.structureId;
+    const canManage =
+      callerStatus === 'admin' ||
+      callerStatus === 'admin_structure' ||
+      callerStatus === 'membre' ||
+      callerStatus === 'entreprise';
+
+    if (!isSuperAdmin && (!sameStructure || !canManage)) {
+      throw new Error('Vous n\'avez pas les droits pour retirer le statut ambassadeur.');
+    }
+
+    await fs.collection('users').doc(userId).update({
+      isAmbassador: false,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('removeAmbassadorFromUser:', error?.message || error);
+    throw new Error(error.message || 'Impossible de retirer le statut ambassadeur.');
+  }
+});
+
 // Exporter les autres fonctions
 export { 
   getStripeProducts,
@@ -884,3 +1136,11 @@ export {
 export {
   getEncryptedDataAccessLogsFunction
 } from './accessLogging';
+
+// Exporter les fonctions de synchronisation utilisateur
+export {
+  syncUserClaims
+} from './userSync';
+
+// Exporter le trigger de chiffrement automatique des users
+export { encryptUserOnWrite } from './firestoreTriggers';

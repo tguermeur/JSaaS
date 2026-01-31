@@ -3,7 +3,7 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from './AuthContext';
 
-const CURRENT_VERSION = '2.0.0';
+const CURRENT_VERSION = '2.1.0';
 
 // Rôles autorisés à voir le changelog
 const ALLOWED_ROLES = ['admin_structure', 'admin', 'membre', 'superadmin'];
@@ -15,6 +15,7 @@ interface ChangelogContextType {
   loading: boolean;
   showInfoButtonHint: boolean;
   hideInfoButtonHint: () => void;
+  hasUnseenChangelog: boolean;
 }
 
 const ChangelogContext = createContext<ChangelogContextType | undefined>(undefined);
@@ -23,6 +24,7 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [showChangelog, setShowChangelog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showInfoButtonHint, setShowInfoButtonHint] = useState(false);
+  const [hasUnseenChangelog, setHasUnseenChangelog] = useState(false);
   const { currentUser, userData } = useAuth();
 
   useEffect(() => {
@@ -48,10 +50,17 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const userData = userDoc.data();
           const lastSeenVersion = userData.lastSeenChangelogVersion;
 
-          // Si l'utilisateur n'a pas vu cette version, afficher la popup
+          // Si l'utilisateur n'a pas vu cette version, afficher la popup et marquer comme non vu
           if (lastSeenVersion !== CURRENT_VERSION) {
             setShowChangelog(true);
+            setHasUnseenChangelog(true);
+          } else {
+            setHasUnseenChangelog(false);
           }
+        } else {
+          // Nouvel utilisateur, afficher la popup
+          setShowChangelog(true);
+          setHasUnseenChangelog(true);
         }
       } catch (error) {
         console.error('Erreur lors de la vérification du changelog:', error);
@@ -73,6 +82,7 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         lastSeenChangelogDate: new Date()
       });
       setShowChangelog(false);
+      setHasUnseenChangelog(false);
       
       // Afficher l'animation du bouton "i" après 500ms
       setTimeout(() => {
@@ -106,7 +116,8 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         openChangelog,
         loading,
         showInfoButtonHint,
-        hideInfoButtonHint
+        hideInfoButtonHint,
+        hasUnseenChangelog
       }}
     >
       {children}

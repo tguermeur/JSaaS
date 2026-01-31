@@ -69,6 +69,10 @@ export interface UserData {
   // Changelog
   lastSeenChangelogVersion?: string;
   lastSeenChangelogDate?: Date;
+  
+  // Ambassadeur
+  isAmbassador?: boolean;
+  ambassadorSkills?: string[];
 }
 
 export interface ExtendedUser extends User {

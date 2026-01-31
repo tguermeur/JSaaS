@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { 
   Box, 
   Typography, 
@@ -38,7 +38,7 @@ import {
 } from '@mui/icons-material';
 import EnterpriseMissionForm from '../components/missions/EnterpriseMissionForm';
 import { useAuth } from '../contexts/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { logoutUser } from '../firebase/auth';
 import { collection, query, where, getDocs, addDoc, Timestamp, getDoc, doc, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase/config';
@@ -126,8 +126,30 @@ const useCountAnimation = (targetValue: number, duration: number = 2000) => {
 };
 
 export default function Dashboard(): JSX.Element {
-  const { currentUser, userData } = useAuth();
+  const { currentUser, userData, isContactWithAccess, contactPermissions } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  
+  // Rediriger les contacts avec accès vers available-missions (une seule fois)
+  // Utiliser useRef pour éviter les redirections multiples
+  const hasRedirectedRef = useRef(false);
+  
+  useEffect(() => {
+    // Ne rediriger qu'une seule fois et seulement si on est vraiment sur le dashboard
+    if (!hasRedirectedRef.current && 
+        location.pathname === '/app/dashboard' && 
+        isContactWithAccess && 
+        userData?.status === 'entreprise' && 
+        contactPermissions?.canViewEvents) {
+      hasRedirectedRef.current = true;
+      // Utiliser un timeout pour éviter les redirections multiples
+      const timeoutId = setTimeout(() => {
+        navigate('/app/available-missions', { replace: true });
+      }, 200);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [location.pathname, isContactWithAccess, userData?.status, contactPermissions?.canViewEvents, navigate]);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
@@ -208,11 +230,7 @@ export default function Dashboard(): JSX.Element {
       }
 
       try {
-        console.log('📧 Email de l\'utilisateur connecté:', currentUser.email);
-        console.log('🆔 UID de l\'utilisateur:', currentUser.uid);
-        
         // Récupérer les données de l'utilisateur directement par son UID (plus fiable)
-        console.log('🔍 Récupération des données utilisateur par UID:', currentUser.uid);
         const userDocRef = doc(db, 'users', currentUser.uid);
         const userDocSnapshot = await getDoc(userDocRef);
         
@@ -230,46 +248,19 @@ export default function Dashboard(): JSX.Element {
         const userStructureId = userData.structureId;
         const userStatus = userData.status;
 
-        console.log('📊 Structure ID de l\'utilisateur:', userStructureId);
-        console.log('👤 Statut utilisateur:', userStatus);
-        console.log('👤 Type de statut:', typeof userStatus);
-        console.log('👤 Statut === "entreprise":', userStatus === 'entreprise');
-        console.log('👤 Statut trim() === "entreprise":', String(userStatus).trim() === 'entreprise');
-        console.log('📋 Données complètes de l\'utilisateur:', userData);
-
         // Pour les entreprises, utiliser une logique différente
         if (userStatus === 'entreprise') {
-          console.log('✅ BLOC ENTREPRISE ATTEINT - Chargement des missions...');
-          console.log('✅ Utilisateur détecté comme entreprise, chargement des missions...');
-          console.log('🔍 Recherche des missions avec companyId:', currentUser.uid);
           try {
             const missionsRef = collection(db, 'missions');
             const missionsQuery = query(
               missionsRef,
               where('companyId', '==', currentUser.uid)
             );
-            console.log('📤 Exécution de la requête Firestore...');
             const missionsSnapshot = await getDocs(missionsQuery);
             
             if (missionsSnapshot.docs.length === 0) {
               console.warn('⚠️ Aucune mission trouvée avec ce companyId:', currentUser.uid);
             }
-            
-            console.log('Missions trouvées pour entreprise:', missionsSnapshot.docs.length);
-            console.log('UID de recherche:', currentUser.uid);
-            
-            missionsSnapshot.docs.forEach(doc => {
-              const data = doc.data();
-              console.log('Mission trouvée:', {
-                id: doc.id,
-                title: data.title,
-                companyId: data.companyId,
-                currentUserUid: currentUser.uid,
-                match: data.companyId === currentUser.uid,
-                startDate: data.startDate,
-                status: data.status
-              });
-            });
             
             const missionsList: Mission[] = missionsSnapshot.docs
             .map(doc => {
@@ -316,24 +307,8 @@ export default function Dashboard(): JSX.Element {
             })
             .filter(mission => {
               // Garder toutes les missions, même sans date de début
-              // Mais loguer si une mission n'a pas de startDate pour debug
-              if (!mission.startDate) {
-                console.log('Mission sans startDate:', mission);
-              }
-              return true; // Garder toutes les missions
+              return true;
             });
-
-            console.log('Missions mappées et filtrées:', missionsList.length);
-            console.log('✅ Missions chargées avec succès pour entreprise:', missionsList.length);
-            if (missionsList.length > 0) {
-              console.log('📋 Détails des missions chargées:', missionsList.map(m => ({
-                id: m.id,
-                numeroMission: m.numeroMission,
-                title: m.title,
-                companyId: m.companyId,
-                status: m.status
-              })));
-            }
             setMissions(missionsList);
             setStatistics({
               totalRevenue: 0,
@@ -1358,8 +1333,8 @@ export default function Dashboard(): JSX.Element {
         // Trier par date de dernière activité (les plus récentes d'abord)
         users.sort((a, b) => b.lastConnection.getTime() - a.lastConnection.getTime());
 
-        // Prendre les 3 premiers
-        setConnectedUsers(users.slice(0, 3));
+        // Prendre les 5 premiers
+        setConnectedUsers(users.slice(0, 5));
       } catch (error) {
         // #region agent log
         fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:614',message:'Error in fetchConnectedUsers',data:{errorCode:error?.code,errorMessage:error?.message,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
@@ -1609,8 +1584,7 @@ export default function Dashboard(): JSX.Element {
   // Dashboard simplifié pour les Entreprises
   if (isEntreprise) {
     // Filtrer toutes les missions de l'entreprise
-    console.log('Toutes les missions chargées:', missions.length);
-    console.log('UID utilisateur actuel:', currentUser?.uid);
+    // Logs réduits pour éviter la répétition
     
     const allEnterpriseMissions = missions.filter(mission => {
       if (!currentUser) return false;
@@ -1625,16 +1599,7 @@ export default function Dashboard(): JSX.Element {
       return matches;
     });
 
-    console.log('Missions filtrées pour entreprise:', allEnterpriseMissions.length);
-    allEnterpriseMissions.forEach(m => {
-      console.log('Mission entreprise:', {
-        id: m.id,
-        title: m.title,
-        status: m.status,
-        companyId: m.companyId,
-        createdAt: m.createdAt
-      });
-    });
+    // Logs réduits pour éviter la répétition
 
     // Trier par date de création (plus récentes en premier)
     const sortedMissions = [...allEnterpriseMissions].sort((a, b) => {
@@ -3087,10 +3052,10 @@ export default function Dashboard(): JSX.Element {
                                 transform: 'translateX(2px)'
                               }
                             }}
-                            onClick={() => navigate('/app/documents')}
+                            onClick={() => navigate('/app/documents', { state: { folderId: folder.id } })}
                           >
                             <Box sx={{ mr: 1 }}>
-                              <FolderIcon sx={{ color: '#007AFF', fontSize: 16 }} />
+                              <FolderIcon sx={{ color: folder.color || '#007AFF', fontSize: 16 }} />
                             </Box>
                             <Box sx={{ flex: 1, minWidth: 0 }}>
                               <Typography 

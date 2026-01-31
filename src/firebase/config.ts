@@ -107,8 +107,8 @@ export const auth = app ? getAuth(app) : null;
 export const db = app ? initializeFirestore(app, {
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
-  }),
-  experimentalForceLongPolling: true // Utiliser le long polling pour une meilleure stabilité
+  })
+  // experimentalForceLongPolling retiré pour éviter les problèmes CORS/Proxy
 }) : null;
 
 // Configuration pour la production - pas d'émulateurs
@@ -539,4 +539,4 @@ if (!import.meta.env.VITE_STRIPE_PUBLIC_KEY) {
   console.warn('Clé publique Stripe manquante. Créez un fichier .env avec votre clé Stripe.');
 }
 
-export default app; 
+export default app;

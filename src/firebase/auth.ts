@@ -121,54 +121,84 @@ export const findStructureByEmail = async (email: string) => {
 };
 
 export const createUserDocument = async (user: User) => {
-  if (!user.email) return;
+  if (!user.email) {
+    console.warn("Impossible de créer le document utilisateur : email manquant");
+    return;
+  }
 
   try {
     const userRef = doc(db, 'users', user.uid);
     const userSnap = await getDoc(userRef);
 
     if (!userSnap.exists()) {
+      console.log("Création du document utilisateur pour:", user.uid);
+      
       // Données de base pour tous les utilisateurs
-      const userData = {
+      const userData: any = {
         email: user.email,
         displayName: user.displayName || user.email.split('@')[0], // Utiliser l'email comme fallback
         createdAt: serverTimestamp(),
         lastLogin: serverTimestamp(),
-        isOnline: true
+        isOnline: true,
+        lastActivity: serverTimestamp()
       };
 
       // Ajouter le rôle super admin si l'email correspond
       if (isSuperAdmin(user.email)) {
-        Object.assign(userData, {
-          role: 'superadmin',
-          structureId: null
-        });
+        userData.role = 'superadmin';
+        userData.status = 'superadmin';
+        userData.structureId = null;
       } else {
         // Pour les utilisateurs normaux, chercher leur structure
-        const structure = await findStructureByEmail(user.email);
-        
-        Object.assign(userData, {
-          role: 'user',
-          structureId: structure.id
-        });
+        try {
+          const structure = await findStructureByEmail(user.email);
+          userData.role = 'user';
+          userData.status = 'user';
+          userData.structureId = structure?.id || null;
+        } catch (structureError) {
+          console.error("Erreur lors de la recherche de structure:", structureError);
+          // Créer quand même le document avec des valeurs par défaut
+          userData.role = 'user';
+          userData.status = 'user';
+          userData.structureId = null;
+        }
       }
 
       await setDoc(userRef, userData);
+      console.log("Document utilisateur créé avec succès pour:", user.uid);
       
       // Mettre à jour le profil Firebase Auth avec le displayName
-      if (userData.displayName !== user.displayName) {
-        await updateProfile(user, { displayName: userData.displayName });
+      if (userData.displayName && userData.displayName !== user.displayName) {
+        try {
+          await updateProfile(user, { displayName: userData.displayName });
+        } catch (profileError) {
+          console.warn("Erreur lors de la mise à jour du profil:", profileError);
+          // Ne pas bloquer si la mise à jour du profil échoue
+        }
       }
     } else {
       // Mettre à jour lastLogin et isOnline
-      await setDoc(userRef, {
-        lastLogin: serverTimestamp(),
-        isOnline: true
-      }, { merge: true });
+      try {
+        await setDoc(userRef, {
+          lastLogin: serverTimestamp(),
+          isOnline: true,
+          lastActivity: serverTimestamp()
+        }, { merge: true });
+        console.log("Document utilisateur mis à jour pour:", user.uid);
+      } catch (updateError) {
+        console.error("Erreur lors de la mise à jour du document:", updateError);
+        // Ne pas bloquer si la mise à jour échoue
+      }
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("Erreur lors de la création/mise à jour du document utilisateur:", error);
-    throw error;
+    // Ne pas bloquer la connexion si la création du document échoue
+    // Le document pourra être créé plus tard
+    if (error.code !== 'permission-denied') {
+      throw error;
+    } else {
+      console.warn("Permissions insuffisantes pour créer le document utilisateur. Il sera créé lors de l'inscription.");
+    }
   }
 };
 

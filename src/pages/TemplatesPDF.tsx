@@ -271,6 +271,7 @@ export const VARIABLE_TAGS: TagMapping[] = [
   { tag: '<workingHoursTotal>', variableId: 'totalHours', description: 'Total des heures travaillées', example: '7.5' },
   { tag: '<workingHoursCreation>', variableId: 'createdAt', description: 'Date de création', example: '01/01/2024' },
   { tag: '<workingHoursMaj>', variableId: 'updatedAt', description: 'Date de mise à jour', example: '02/01/2024' },
+  { tag: '<heures_detaillees>', variableId: 'heuresDetaillees', description: 'Heures détaillées (tous les jours avec créneaux et pauses)', example: '28/01/2026 de 16h à 18h, 04/02/2026 de 16h à 18h' },
   
   // Tags pour les avenants
   { tag: '<amendment_planned_start_date>', variableId: 'plannedStartDate', description: 'Date de début prévue', example: '01/01/2024' },
@@ -740,6 +741,12 @@ const TemplatesPDF: React.FC = () => {
         name: 'Total des heures',
         description: 'Total des heures travaillées',
         type: 'number'
+      },
+      {
+        id: 'heuresDetaillees',
+        name: 'Heures détaillées',
+        description: 'Heures détaillées (tous les jours avec créneaux et pauses)',
+        type: 'text'
       }
     ]
   };
@@ -2701,7 +2708,8 @@ const TemplatesPDF: React.FC = () => {
           { id: 'endDate', name: 'Date de fin', description: 'Date de fin des heures travaillées', type: 'date' },
           { id: 'endTime', name: 'Heure de fin', description: 'Heure de fin des heures travaillées', type: 'text' },
           { id: 'breaks', name: 'Pauses', description: 'Liste des pauses', type: 'array' },
-          { id: 'totalHours', name: 'Total des heures', description: 'Total des heures travaillées', type: 'number' }
+          { id: 'totalHours', name: 'Total des heures', description: 'Total des heures travaillées', type: 'number' },
+          { id: 'heuresDetaillees', name: 'Heures détaillées', description: 'Heures détaillées (tous les jours avec créneaux et pauses)', type: 'text' }
         ];
 
         const amendmentFields = [
@@ -2929,6 +2937,13 @@ const TemplatesPDF: React.FC = () => {
       workingHoursStartTime: '<working_hours_debut>',
       workingHoursEndTime: '<working_hours_fin>',
       workingHoursDescription: '<working_hours_description>',
+      startDate: '<workingHoursDateDebut>',
+      startTime: '<workingHoursHeureDebut>',
+      endDate: '<workingHoursDateFin>',
+      endTime: '<workingHoursHeureFin>',
+      breaks: '<workingHoursPauses>',
+      totalHours: '<workingHoursTotal>',
+      heuresDetaillees: '<heures_detaillees>',
       
       // Amendments
       amendmentNumber: '<amendment_number>',
@@ -3234,6 +3249,18 @@ const TemplatesPDF: React.FC = () => {
           return `${dateStr} à ${timeStr}`;
         }
 
+        // Heures détaillées : si pas de working hours, fallback " De date/heure début à date/heure fin "
+        if (variableId === 'heuresDetaillees') {
+          if (missionData?.startDate && missionData?.endDate) {
+            const debut = new Date(missionData.startDate);
+            const fin = new Date(missionData.endDate);
+            const debutStr = `${debut.toLocaleDateString('fr-FR')} à ${debut.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+            const finStr = `${fin.toLocaleDateString('fr-FR')} à ${fin.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+            return ` De ${debutStr} à ${finStr}`;
+          }
+          return ' De <mission_date_heure_debut> à <mission_date_heure_fin>';
+        }
+
         // Calcul du prix total des heures travaillées HT
         if (variableId === 'totalHoursHT' && missionData?.priceHT && missionData?.hours) {
           const total = missionData.priceHT * missionData.hours;
@@ -3353,6 +3380,7 @@ const TemplatesPDF: React.FC = () => {
           structure_email: structureData?.email || 'contact@structure.fr',
           structure_website: structureData?.website || 'www.structure.fr',
           structure_president_fullName: 'Jean Dupont',
+          heuresDetaillees: '28/01/2026 de 16h à 18h, 04/02/2026 de 16h à 18h',
         };
 
         return defaultValues[variableId] || '';
@@ -4316,7 +4344,7 @@ return (
                                                 { title: 'Utilisateur', prefix: ['<user_'] },
                                                 { title: 'Entreprise', prefix: ['<entreprise_'] },
                                                 { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
-                                                { title: 'Heures de travail', prefix: ['<workingHours'] },
+                                                { title: 'Heures de travail', prefix: ['<workingHours', '<heures_detaillees>'] },
                                                 { title: 'Avenants', prefix: ['<amendment'] },
                                                 { title: 'Contacts', prefix: ['<contact'] },
                                                 { title: 'Structure', prefix: ['<structure_'] },
@@ -4640,7 +4668,7 @@ return (
             { title: 'Utilisateur', prefix: ['<user_'] },
             { title: 'Entreprise', prefix: ['<entreprise_'] },
             { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
-            { title: 'Heures de travail', prefix: ['<workingHours'] },
+            { title: 'Heures de travail', prefix: ['<workingHours', '<heures_detaillees>'] },
             { title: 'Avenants', prefix: ['<amendment'] },
             { title: 'Contacts', prefix: ['<contact'] },
             { title: 'Structure', prefix: ['<structure_', '<charge_'] },

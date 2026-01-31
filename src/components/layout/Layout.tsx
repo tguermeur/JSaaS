@@ -46,6 +46,7 @@ const MainContent = styled(Box)(({ theme }) => ({
 
 const ContentWrapper = styled(Box)(({ theme }) => ({
   padding: theme.spacing(3),
+  paddingBottom: 80,
   flex: 1,
   display: 'flex',
   flexDirection: 'column',
@@ -70,7 +71,9 @@ const Layout = () => {
       <LayoutContent>
         <MainContent>
           <ContentWrapper>
-            <Outlet />
+            <Box sx={{ flex: '0 0 auto', minHeight: 'fit-content' }}>
+              <Outlet />
+            </Box>
           </ContentWrapper>
         </MainContent>
         <Footer />

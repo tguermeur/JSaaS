@@ -48,6 +48,7 @@ import { getStorage, ref, getDownloadURL } from 'firebase/storage';
 import axios from 'axios';
 import TwoFactorDialog from '../components/common/TwoFactorDialog';
 import { canAccessPage, type UserStatus } from '../utils/permissions';
+import { fetchDecryptFile, is2FARequiredError } from '../utils/decryptFileUtils';
 import { Template } from '../types/templates';
 import * as PDFLib from 'pdf-lib';
 import { useSearchParams, useNavigate } from 'react-router-dom';
@@ -165,6 +166,12 @@ const HumanResources = () => {
   const [viewerLoading, setViewerLoading] = useState(false);
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [currentViewingDocument, setCurrentViewingDocument] = useState<Document | null>(null);
+  const [twoFactorDocumentOpen, setTwoFactorDocumentOpen] = useState(false);
+  const [pendingDecryptDocument, setPendingDecryptDocument] = useState<{
+    path: string;
+    token: string;
+    document: Document;
+  } | null>(null);
 
   const [searchParams] = useSearchParams();
 
@@ -719,253 +726,105 @@ const HumanResources = () => {
           throw new Error('Utilisateur Firebase non authentifié');
         }
         const token = await firebaseUser.getIdToken(true);
-        
-        // Vérifier d'abord si le fichier est chiffré
+
+        setViewerOpen(true);
+        setCurrentViewingDocument(document);
+        setViewerLoading(true);
+        setViewerError(null);
+        setViewerUrl(null);
+
+        const logDocumentView = async () => {
+          if (!selectedUser || !currentUser) return;
+          try {
+            await addDoc(collection(db, 'history'), {
+              userId: selectedUser.id,
+              date: new Date().toISOString(),
+              action: 'Consultation de document',
+              details: `Document "${document.name}" consulté par ${currentUser.displayName || currentUser.email}`,
+              type: 'document',
+            });
+            fetchUserHistory(selectedUser.id);
+          } catch (historyError) {
+            console.error('Erreur lors de l\'ajout du log dans l\'historique:', historyError);
+          }
+        };
+
         try {
-          const functions = getFunctions();
-          const isFileEncrypted = httpsCallable(functions, 'isFileEncrypted');
-          
-          const checkResult = await isFileEncrypted({ filePath: path });
-          const isEncrypted = (checkResult.data as any)?.encrypted;
-          
-          if (isEncrypted) {
-            // Le fichier est chiffré, utiliser decryptFile
-            setViewerLoading(true);
-            setViewerError(null);
-            try {
-              console.log(`[HumanResources] Appel decryptFile avec filePath:`, path);
-              
-              const response = await axios.get(
-                `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                {
-                  params: { filePath: path },
-                  headers: {
-                    'Authorization': `Bearer ${token}`
-                  },
-                  responseType: 'blob',
-                  timeout: 60000 // 60 secondes
-                }
-              );
-              
-              // Fichier déchiffré avec succès
-              const blob = new Blob([response.data], { type: 'application/pdf' });
-              const url = URL.createObjectURL(blob);
-              console.log('✅ Document déchiffré, URL blob créée:', url.substring(0, 50) + '...');
-              setViewerUrl(url);
-              setCurrentViewingDocument(document);
-              setViewerOpen(true);
-              setViewerLoading(false);
-              
-              // Ajouter un log dans l'historique
-              if (selectedUser && currentUser) {
-                try {
-                  const historyRef = collection(db, 'history');
-                  await addDoc(historyRef, {
-                    userId: selectedUser.id,
-                    date: new Date().toISOString(),
-                    action: 'Consultation de document',
-                    details: `Document "${document.name}" consulté par ${currentUser.displayName || currentUser.email}`,
-                    type: 'document'
-                  });
-                  // Rafraîchir l'historique
-                  fetchUserHistory(selectedUser.id);
-                } catch (historyError) {
-                  console.error('Erreur lors de l\'ajout du log dans l\'historique:', historyError);
-                }
-              }
-            } catch (decryptError: any) {
-              console.error('Erreur lors du déchiffrement:', decryptError);
-              setViewerLoading(false);
-              if (decryptError.response?.status === 403) {
-                const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                if (errorMsg.includes('2FA')) {
-                  setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                } else {
-                  setViewerError('Accès refusé à ce document chiffré');
-                }
-              } else {
-                setViewerError(`Erreur lors du déchiffrement: ${decryptError.message || 'Erreur inconnue'}`);
-              }
-            }
-          } else {
-            // Le fichier n'est pas chiffré, téléchargement direct
-            setViewerLoading(true);
-            setViewerError(null);
+          const { blob, contentType } = await fetchDecryptFile({
+            filePath: path,
+            token,
+            timeout: 60000,
+          });
+          const url = URL.createObjectURL(new Blob([blob], { type: contentType }));
+          setViewerUrl(url);
+          setViewerLoading(false);
+          await logDocumentView();
+        } catch (err: any) {
+          if (err?.response?.status === 403 && is2FARequiredError(err)) {
+            setViewerOpen(false);
+            setViewerLoading(false);
+            setCurrentViewingDocument(null);
+            setPendingDecryptDocument({ path, token, document });
+            setTwoFactorDocumentOpen(true);
+            return;
+          }
+          if (err?.response?.status === 404) {
             try {
               const storage = getStorage();
               const fileRef = ref(storage, path);
               const url = await getDownloadURL(fileRef);
-              console.log('✅ URL Firebase Storage obtenue:', url.substring(0, 100) + '...');
               setViewerUrl(url);
-              setCurrentViewingDocument(document);
-              setViewerOpen(true);
               setViewerLoading(false);
-              
-              // Ajouter un log dans l'historique
-              if (selectedUser && currentUser) {
-                try {
-                  const historyRef = collection(db, 'history');
-                  await addDoc(historyRef, {
-                    userId: selectedUser.id,
-                    date: new Date().toISOString(),
-                    action: 'Consultation de document',
-                    details: `Document "${document.name}" consulté par ${currentUser.displayName || currentUser.email}`,
-                    type: 'document'
-                  });
-                  // Rafraîchir l'historique
-                  fetchUserHistory(selectedUser.id);
-                } catch (historyError) {
-                  console.error('Erreur lors de l\'ajout du log dans l\'historique:', historyError);
-                }
-              }
-            } catch (downloadError: any) {
-              // Si le téléchargement direct échoue, le fichier est probablement chiffré
-              // mais les métadonnées ne sont pas encore propagées, essayer decryptFile
-              console.warn('Téléchargement direct échoué, tentative de déchiffrement (métadonnées peut-être pas encore propagées):', downloadError);
-              try {
-                const response = await axios.get(
-                  `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                  {
-                    params: { filePath: path },
-                    headers: {
-                      'Authorization': `Bearer ${token}`
-                    },
-                    responseType: 'blob'
-                  }
-                );
-                
-                const blob = new Blob([response.data], { type: 'application/pdf' });
-                const url = URL.createObjectURL(blob);
-                console.log('✅ Document déchiffré (fallback), URL blob créée:', url.substring(0, 50) + '...');
-                setViewerUrl(url);
-                setCurrentViewingDocument(document);
-                setViewerOpen(true);
-                setViewerLoading(false);
-                
-                // Ajouter un log dans l'historique
-                if (selectedUser && currentUser) {
-                  try {
-                    const historyRef = collection(db, 'history');
-                    await addDoc(historyRef, {
-                      userId: selectedUser.id,
-                      date: new Date().toISOString(),
-                      action: 'Consultation de document',
-                      details: `Document "${document.name}" consulté par ${currentUser.displayName || currentUser.email}`,
-                      type: 'document'
-                    });
-                    // Rafraîchir l'historique
-                    fetchUserHistory(selectedUser.id);
-                  } catch (historyError) {
-                    console.error('Erreur lors de l\'ajout du log dans l\'historique:', historyError);
-                  }
-                }
-              } catch (decryptError: any) {
-                console.error('Erreur déchiffrement:', decryptError);
-                setViewerLoading(false);
-                if (decryptError.response?.status === 403) {
-                  const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                  if (errorMsg.includes('2FA')) {
-                    setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                  } else {
-                    setViewerError('Accès refusé à ce document chiffré');
-                  }
-                } else {
-                  setViewerError(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`);
-                }
-              }
+              await logDocumentView();
+              return;
+            } catch (downloadErr: any) {
+              setViewerError('Erreur lors de l\'ouverture du document');
             }
-          }
-        } catch (error: any) {
-          // Si la vérification échoue complètement, essayer decryptFile directement
-          console.warn('Erreur lors de la vérification du chiffrement, tentative de déchiffrement:', error);
-          setViewerLoading(true);
-          setViewerError(null);
-          try {
-            const response = await axios.get(
-              `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-              {
-                params: { filePath: path },
-                headers: {
-                  'Authorization': `Bearer ${token}`
-                },
-                responseType: 'blob'
-              }
+          } else {
+            setViewerError(
+              err?.response?.status === 403
+                ? 'Accès refusé à ce document chiffré'
+                : `Erreur lors de l'ouverture du document: ${err?.message || 'Erreur inconnue'}`
             );
-            
-            const blob = new Blob([response.data]);
-            const url = URL.createObjectURL(blob);
-            setViewerUrl(url);
-            setCurrentViewingDocument(document);
-            setViewerOpen(true);
-            setViewerLoading(false);
-            
-            // Ajouter un log dans l'historique
-            if (selectedUser && currentUser) {
-              try {
-                const historyRef = collection(db, 'history');
-                await addDoc(historyRef, {
-                  userId: selectedUser.id,
-                  date: new Date().toISOString(),
-                  action: 'Consultation de document',
-                  details: `Document "${document.name}" consulté par ${currentUser.displayName || currentUser.email}`,
-                  type: 'document'
-                });
-                // Rafraîchir l'historique
-                fetchUserHistory(selectedUser.id);
-              } catch (historyError) {
-                console.error('Erreur lors de l\'ajout du log dans l\'historique:', historyError);
-              }
-            }
-          } catch (decryptError: any) {
-            console.error('Erreur déchiffrement:', decryptError);
-            setViewerLoading(false);
-            if (decryptError.response?.status === 403) {
-              const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-              if (errorMsg.includes('2FA')) {
-                setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-              } else {
-                setViewerError('Accès refusé à ce document chiffré');
-              }
-            } else if (decryptError.response?.status === 404) {
-              // Le fichier n'existe pas ou n'est pas chiffré, essayer le téléchargement direct
-              try {
-                const storage = getStorage();
-                const fileRef = ref(storage, path);
-                const url = await getDownloadURL(fileRef);
-                setViewerUrl(url);
-                setCurrentViewingDocument(document);
-                setViewerOpen(true);
-                setViewerLoading(false);
-                
-                // Ajouter un log dans l'historique
-                if (selectedUser && currentUser) {
-                  try {
-                    const historyRef = collection(db, 'history');
-                    await addDoc(historyRef, {
-                      userId: selectedUser.id,
-                      date: new Date().toISOString(),
-                      action: 'Consultation de document',
-                      details: `Document "${document.name}" consulté par ${currentUser.displayName || currentUser.email}`,
-                      type: 'document'
-                    });
-                    // Rafraîchir l'historique
-                    fetchUserHistory(selectedUser.id);
-                  } catch (historyError) {
-                    console.error('Erreur lors de l\'ajout du log dans l\'historique:', historyError);
-                  }
-                }
-              } catch (downloadError: any) {
-                setViewerError('Erreur lors de l\'ouverture du document');
-              }
-            } else {
-              setViewerError(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`);
-            }
           }
+          setViewerLoading(false);
         }
       }
     } catch (error: any) {
       console.error(`Erreur lors de l'ouverture du document:`, error);
       setViewerError(`Erreur lors de l'ouverture du document`);
+    }
+  };
+
+  const handleVerifyDocument2FA = async (code: string) => {
+    const pending = pendingDecryptDocument;
+    if (!pending) throw new Error('Session expirée. Veuillez rouvrir le document.');
+    const { blob, contentType } = await fetchDecryptFile({
+      filePath: pending.path,
+      token: pending.token,
+      twoFactorCode: code,
+      timeout: 60000,
+    });
+    const url = URL.createObjectURL(new Blob([blob], { type: contentType }));
+    setViewerUrl(url);
+    setCurrentViewingDocument(pending.document);
+    setViewerOpen(true);
+    setViewerError(null);
+    setPendingDecryptDocument(null);
+    setTwoFactorDocumentOpen(false);
+    if (selectedUser && currentUser) {
+      try {
+        await addDoc(collection(db, 'history'), {
+          userId: selectedUser.id,
+          date: new Date().toISOString(),
+          action: 'Consultation de document',
+          details: `Document "${pending.document.name}" consulté par ${currentUser.displayName || currentUser.email}`,
+          type: 'document',
+        });
+        fetchUserHistory(selectedUser.id);
+      } catch (e) {
+        console.error('Erreur log historique:', e);
+      }
     }
   };
 
@@ -2257,6 +2116,11 @@ const HumanResources = () => {
     if (!selectedUser || !currentUser) {
       console.error('[handleDecryptData] Utilisateur non sélectionné');
       throw new Error('Utilisateur non sélectionné');
+    }
+
+    // Valider le code 2FA si fourni
+    if (twoFactorCode && twoFactorCode.length !== 6) {
+      throw new Error('Le code doit contenir 6 chiffres');
     }
 
     setIsDecrypting(true);
@@ -4428,17 +4292,6 @@ const HumanResources = () => {
         onClose={handleCloseEditModal}
         maxWidth="md"
         fullWidth
-        sx={{
-          zIndex: 9999,
-          '& .MuiDialog-container': {
-            zIndex: 9999
-          }
-        }}
-        PaperProps={{
-          sx: {
-            zIndex: 9999
-          }
-        }}
       >
         <DialogTitle>
           Modifier les informations de {getDecryptedFieldValue('firstName')} {getDecryptedFieldValue('lastName')}
@@ -4513,9 +4366,8 @@ const HumanResources = () => {
                     onChange={(e) => handleInputChange('gender', e.target.value)}
                     label="Sexe"
                   >
-                    <MenuItem value="Homme">Homme</MenuItem>
-                    <MenuItem value="Femme">Femme</MenuItem>
-                    <MenuItem value="Autre">Autre</MenuItem>
+                    <MenuItem value="M">Homme</MenuItem>
+                    <MenuItem value="F">Femme</MenuItem>
                   </Select>
                 </FormControl>
               </Grid>
@@ -4584,6 +4436,12 @@ const HumanResources = () => {
                   value={getDecryptedFieldValue('studentId')}
                   onChange={(e) => handleInputChange('studentId', e.target.value)}
                   variant="outlined"
+                  autoComplete="off"
+                  inputProps={{
+                    style: {
+                      caretColor: '#1d1d1f',
+                    },
+                  }}
                 />
               </Grid>
               
@@ -4703,6 +4561,17 @@ const HumanResources = () => {
         message="Veuillez entrer le code à 6 chiffres de votre application d'authentification pour décrypter et afficher les données sensibles."
       />
 
+      <TwoFactorDialog
+        open={twoFactorDocumentOpen}
+        onClose={() => {
+          setTwoFactorDocumentOpen(false);
+          setPendingDecryptDocument(null);
+        }}
+        onVerify={handleVerifyDocument2FA}
+        title="Validation 2FA requise"
+        message="Ce document est chiffré. Entrez le code à 6 chiffres de votre application d'authentification pour y accéder."
+      />
+
       {/* Modal de visualisation de document */}
       <Dialog
         open={viewerOpen}
@@ -4764,9 +4633,12 @@ const HumanResources = () => {
               flexDirection: 'column',
               gap: 2
             }}>
-              <CircularProgress />
-              <Typography variant="body2" color="text.secondary">
+              <CircularProgress size={48} />
+              <Typography variant="body1" color="text.secondary">
                 Chargement du document...
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 360, textAlign: 'center' }}>
+                Le décryptage peut prendre quelques secondes pour les documents protégés.
               </Typography>
             </Box>
           )}

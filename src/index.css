@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 * {
   margin: 0;
   padding: 0;
@@ -89,4 +93,21 @@ code {
 .MuiSnackbar-root {
   position: fixed !important;
   z-index: 9999 !important;
+}
+
+/* Styles pour améliorer le rendu Tailwind */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Assurer que les classes Tailwind s'appliquent correctement */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Google Places Autocomplete – dropdown au‑dessus des modals (édition lieu, etc.) */
+.pac-container {
+  z-index: 10000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 } 

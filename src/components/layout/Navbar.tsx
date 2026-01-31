@@ -114,7 +114,7 @@ const Navbar: React.FC<NavbarProps> = () => {
     markAllAsRead 
   } = useNotifications();
   const { enqueueSnackbar } = useSnackbar();
-  const { openChangelog, showInfoButtonHint, hideInfoButtonHint } = useChangelog();
+  const { openChangelog, showInfoButtonHint, hideInfoButtonHint, hasUnseenChangelog } = useChangelog();
 
   // États pour le menu utilisateur
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
@@ -171,6 +171,8 @@ const Navbar: React.FC<NavbarProps> = () => {
     fetchUserData();
   }, [currentUser]);
 
+  const { contactPermissions, isContactWithAccess } = useAuth();
+  
   const isEtudiant = userData?.status === "etudiant";
   const isEntreprise = userData?.status === "entreprise";
   const isSuperAdmin = userData?.status === "superadmin";
@@ -182,6 +184,9 @@ const Navbar: React.FC<NavbarProps> = () => {
   // Permissions pour la recherche et notifications (uniquement pour JE)
   const canSearch = isJuniorEntreprise;
   const canSeeNotifications = isJuniorEntreprise;
+  
+  // Les contacts avec accès ne peuvent pas voir le bouton "Voir les nouveautés"
+  const canSeeChangelog = !isContactWithAccess;
 
   const handleClick = (event: React.MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget);
@@ -945,26 +950,57 @@ const Navbar: React.FC<NavbarProps> = () => {
             <LightbulbIcon fontSize="small" />
           </IconButton>
 
-          {/* Bouton des nouveautés */}
-          <Box sx={{ position: 'relative' }}>
-            <IconButton
-              onClick={() => {
-                openChangelog();
-                hideInfoButtonHint();
-              }}
-              size="small"
-              sx={{ 
-                color: '#86868b',
-                transition: 'all 0.2s ease',
-                '&:hover': {
-                  color: '#667eea',
-                  transform: 'scale(1.1)'
-                }
-              }}
-              title="Voir les nouveautés"
-            >
-              <InfoIcon fontSize="small" />
-            </IconButton>
+          {/* Bouton des nouveautés - Masqué pour les contacts avec accès */}
+          {canSeeChangelog && (
+            <Box sx={{ position: 'relative' }}>
+              <Badge
+                badgeContent={hasUnseenChangelog ? 1 : 0}
+                color="error"
+                sx={{
+                  '& .MuiBadge-badge': {
+                    backgroundColor: '#ff1744',
+                    color: 'white',
+                    fontWeight: 'bold',
+                    fontSize: '0.7rem',
+                    minWidth: 16,
+                    height: 16,
+                    animation: hasUnseenChangelog ? 'pulse 2s infinite' : 'none',
+                    '@keyframes pulse': {
+                      '0%': {
+                        transform: 'scale(1)',
+                        opacity: 1,
+                      },
+                      '50%': {
+                        transform: 'scale(1.2)',
+                        opacity: 0.8,
+                      },
+                      '100%': {
+                        transform: 'scale(1)',
+                        opacity: 1,
+                      }
+                    }
+                  }
+                }}
+              >
+                <IconButton
+                  onClick={() => {
+                    openChangelog();
+                    hideInfoButtonHint();
+                  }}
+                  size="small"
+                  sx={{ 
+                    color: '#86868b',
+                    transition: 'all 0.2s ease',
+                    '&:hover': {
+                      color: '#667eea',
+                      transform: 'scale(1.1)'
+                    }
+                  }}
+                  title="Voir les nouveautés"
+                >
+                  <InfoIcon fontSize="small" />
+                </IconButton>
+              </Badge>
             
             {/* Animation de hint avec message */}
             {showInfoButtonHint && (
@@ -1042,7 +1078,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                 </Paper>
               </>
             )}
-          </Box>
+            </Box>
+          )}
 
           {/* Bouton de notifications */}
           {canSeeNotifications && (

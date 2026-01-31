@@ -38,6 +38,32 @@ function setCorsHeaders(res: any) {
   res.set('Access-Control-Max-Age', '3600');
 }
 
+/** Extrait missionId du chemin Storage missions/{missionId}/documents/... */
+function extractMissionIdFromPath(filePath: string): string | null {
+  const m = /^missions\/([^/]+)\/documents\//.exec(filePath);
+  return m ? m[1] : null;
+}
+
+/** Vérifie si l'utilisateur a accès à la mission (exemption 2FA pour docs mission). */
+async function userHasMissionAccess(uid: string, missionId: string): Promise<boolean> {
+  try {
+    const [missionSnap, userSnap] = await Promise.all([
+      admin.firestore().collection('missions').doc(missionId).get(),
+      admin.firestore().collection('users').doc(uid).get(),
+    ]);
+    if (!missionSnap.exists || !userSnap.exists) return false;
+    const mission = missionSnap.data();
+    const user = userSnap.data();
+    if (!mission?.structureId || !user) return false;
+    if (user.status === 'superadmin') return true;
+    if (mission.chargeId === uid) return true;
+    if (user.structureId === mission.structureId) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Chiffre un fichier déjà uploadé dans Storage
  * Endpoint HTTP: POST /encrypt-file
@@ -196,20 +222,18 @@ export const encryptFile = onRequest(functionConfig, async (req, res) => {
 });
 
 /**
- * Déchiffre et télécharge un fichier chiffré
- * Endpoint HTTP: GET /decrypt-file?filePath=...
+ * Déchiffre et télécharge un fichier chiffré.
+ * - GET ?filePath=... : pas de 2FA (fichier non chiffré, propriétaire, ou doc mission).
+ * - POST ?filePath=... + body { twoFactorCode } : 2FA requise (fichier chiffré, non propriétaire, hors missions).
  */
 export const decryptFile = onRequest(functionConfig, async (req, res) => {
-  // Gérer CORS pour les requêtes preflight (OPTIONS)
   setCorsHeaders(res);
 
-  // Répondre immédiatement aux requêtes OPTIONS (preflight)
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
     return;
   }
 
-  // Vérifier l'authentification pour les autres méthodes
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     setCorsHeaders(res);
@@ -220,20 +244,27 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
   try {
     const token = authHeader.split('Bearer ')[1];
     const decodedToken = await admin.auth().verifyIdToken(token);
-    
     if (!decodedToken.uid) {
       setCorsHeaders(res);
       res.status(401).json({ error: 'Token invalide' });
       return;
     }
 
-    const { filePath } = req.query;
-    const { twoFactorCode } = req.body || {};
-
+    const filePath = (req.query?.filePath as string) || (req as any).query?.filePath;
     if (!filePath || typeof filePath !== 'string') {
       setCorsHeaders(res);
       res.status(400).json({ error: 'filePath requis' });
       return;
+    }
+
+    let twoFactorCode: string | undefined;
+    if (req.method === 'POST' && req.body) {
+      try {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+        twoFactorCode = typeof body?.twoFactorCode === 'string' ? body.twoFactorCode : undefined;
+      } catch {
+        // ignore
+      }
     }
 
     const requestingUserId = decodedToken.uid;
@@ -362,39 +393,21 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       return;
     }
 
-    // Vérifier si l'utilisateur est le propriétaire du fichier
-    // Le chemin du fichier contient l'UID de l'utilisateur : documents/{userId}/...
     const isOwner = filePath.includes(`/${requestingUserId}/`) || filePath.startsWith(`${requestingUserId}/`);
-    
-    // Si l'utilisateur est le propriétaire, permettre le déchiffrement sans 2FA
+    const missionId = extractMissionIdFromPath(filePath);
+    const isMissionExempt = missionId != null && (await userHasMissionAccess(requestingUserId, missionId));
+
     if (isOwner) {
       console.log('[decryptFile] Utilisateur propriétaire du fichier, déchiffrement sans 2FA');
-      // Lire le fichier chiffré
       const [encryptedBuffer] = await file.download();
-
-      // Déchiffrer
       const iv = Buffer.from(encryptionMetadata.iv, 'hex');
       const tag = Buffer.from(encryptionMetadata.tag, 'hex');
       const decrypted = await decryptBuffer(encryptedBuffer, iv, tag);
-
-      // Logger l'accès aux données cryptées (sans 2FA car propriétaire)
       try {
-        await logEncryptedDataAccess(
-          requestingUserId,
-          'decrypt_file',
-          filePath,
-          true, // twoFactorVerified = true car propriétaire (accès autorisé)
-          {
-            ip: req.ip,
-            userAgent: req.headers['user-agent']
-          }
-        );
+        await logEncryptedDataAccess(requestingUserId, 'decrypt_file', filePath, true, { ip: req.ip, userAgent: req.headers['user-agent'] });
       } catch (logError) {
-        // Ne pas faire échouer le téléchargement si le log échoue
         console.error('Erreur lors du logging:', logError);
       }
-
-      // Envoyer le fichier déchiffré
       setCorsHeaders(res);
       res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
@@ -402,8 +415,24 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       return;
     }
 
-    // Si l'utilisateur n'est pas le propriétaire, exiger la 2FA
-    // Le fichier est chiffré, vérifier que l'utilisateur a la 2FA activée
+    if (isMissionExempt) {
+      console.log('[decryptFile] Document mission, exemption 2FA (accès mission vérifié)');
+      const [encryptedBuffer] = await file.download();
+      const iv = Buffer.from(encryptionMetadata.iv, 'hex');
+      const tag = Buffer.from(encryptionMetadata.tag, 'hex');
+      const decrypted = await decryptBuffer(encryptedBuffer, iv, tag);
+      try {
+        await logEncryptedDataAccess(requestingUserId, 'decrypt_file', filePath, true, { ip: req.ip, userAgent: req.headers['user-agent'] });
+      } catch (logError) {
+        console.error('Erreur lors du logging:', logError);
+      }
+      setCorsHeaders(res);
+      res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
+      res.send(decrypted);
+      return;
+    }
+
     const requestingUserDoc = await admin.firestore().collection('users').doc(requestingUserId).get();
     const requestingUser = requestingUserDoc.data();
 
@@ -413,7 +442,6 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       return;
     }
 
-    // Le fichier est chiffré, vérifier le code 2FA
     if (!twoFactorCode || typeof twoFactorCode !== 'string' || twoFactorCode.length !== 6) {
       setCorsHeaders(res);
       res.status(403).json({ error: 'Validation 2FA requise pour accéder aux données cryptées. Veuillez fournir un code 2FA valide.' });
@@ -421,54 +449,26 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     }
 
     const twoFactorVerified = await verifyTwoFactorCodeForAccess(requestingUserId, twoFactorCode);
-    
     if (!twoFactorVerified) {
-      // Logger l'échec d'accès
       try {
-        await logEncryptedDataAccess(
-          requestingUserId,
-          'decrypt_file',
-          filePath,
-          false,
-          {
-            ip: req.ip,
-            userAgent: req.headers['user-agent']
-          }
-        );
-      } catch (logError) {
-        // Ignorer les erreurs de logging
+        await logEncryptedDataAccess(requestingUserId, 'decrypt_file', filePath, false, { ip: req.ip, userAgent: req.headers['user-agent'] });
+      } catch {
+        /* ignore */
       }
       setCorsHeaders(res);
       res.status(403).json({ error: 'Code 2FA invalide. Veuillez réessayer.' });
       return;
     }
 
-    // Lire le fichier chiffré
     const [encryptedBuffer] = await file.download();
-
-    // Déchiffrer
     const iv = Buffer.from(encryptionMetadata.iv, 'hex');
     const tag = Buffer.from(encryptionMetadata.tag, 'hex');
     const decrypted = await decryptBuffer(encryptedBuffer, iv, tag);
-
-    // Logger l'accès aux données cryptées
     try {
-      await logEncryptedDataAccess(
-        requestingUserId,
-        'decrypt_file',
-        filePath,
-        true,
-        {
-          ip: req.ip,
-          userAgent: req.headers['user-agent']
-        }
-      );
+      await logEncryptedDataAccess(requestingUserId, 'decrypt_file', filePath, true, { ip: req.ip, userAgent: req.headers['user-agent'] });
     } catch (logError) {
-      // Ne pas faire échouer le téléchargement si le log échoue
       console.error('Erreur lors du logging:', logError);
     }
-
-    // Envoyer le fichier déchiffré
     setCorsHeaders(res);
     res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);

@@ -6,6 +6,7 @@ import { ExtendedUser } from '../types/user';
 import { createUserDocument, findStructureByEmail } from '../firebase/auth';
 import { User } from 'firebase/auth';
 import { UserData } from '../types/user';
+import { getContactAccessPermissions, ContactAccessPermissions, isContactWithAccess } from '../utils/contactPermissions';
 
 interface AuthContextType {
   currentUser: ExtendedUser | null;
@@ -16,6 +17,8 @@ interface AuthContextType {
   logoutUser: () => Promise<void>;
   userData: any;
   updateLastActivity: () => Promise<void>;
+  contactPermissions: ContactAccessPermissions | null;
+  isContactWithAccess: boolean;
 }
 
 export const AuthContext = createContext<AuthContextType>({
@@ -27,6 +30,8 @@ export const AuthContext = createContext<AuthContextType>({
   logoutUser: async () => {},
   userData: null,
   updateLastActivity: async () => {},
+  contactPermissions: null,
+  isContactWithAccess: false,
 });
 
 export function AuthProvider({ children }) {
@@ -34,6 +39,7 @@ export function AuthProvider({ children }) {
   const [userData, setUserData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [contactPermissions, setContactPermissions] = useState<ContactAccessPermissions | null>(null);
   const previousUserDataRef = useRef<any>(null);
 
   const logoutUser = async () => {
@@ -60,7 +66,7 @@ export function AuthProvider({ children }) {
     let lastLoginUpdated = false; // Ajout du flag pour éviter la boucle
     let currentAuthUserUid: string | null = null;
 
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       console.log("Auth state changed:", user?.uid);
       
       // Réinitialiser le flag si l'utilisateur change
@@ -76,6 +82,10 @@ export function AuthProvider({ children }) {
       
       try {
         if (user) {
+          // Forcer le rafraîchissement du token pour récupérer les Custom Claims
+          // lors de la connexion initiale
+          user.getIdToken(true).catch(e => console.error("Erreur refresh token initial:", e));
+
           const userDocRef = doc(db, 'users', user.uid);
           
           // Utiliser onSnapshot pour écouter les changements en temps réel
@@ -133,6 +143,15 @@ export function AuthProvider({ children }) {
             setUserData(newUserData);
             // Stocker uniquement les champs importants pour la comparaison
             previousUserDataRef.current = newImportantFields;
+            
+            // Charger les permissions du contact si c'est un contact avec accès
+            if (isContactWithAccess(newUserData) && user.uid) {
+              const permissions = await getContactAccessPermissions(user.uid);
+              setContactPermissions(permissions);
+            } else {
+              setContactPermissions(null);
+            }
+            
             setLoading(false);
             return;
           }
@@ -147,6 +166,18 @@ export function AuthProvider({ children }) {
               previous: previousData,
               new: newImportantFields
             });
+
+            // Si structureId ou role a changé, forcer le rafraîchissement du token
+            // pour récupérer les nouveaux Custom Claims mis à jour par la Cloud Function
+            if (previousData && (
+                previousData.structureId !== newImportantFields.structureId || 
+                previousData.role !== newImportantFields.role ||
+                previousData.status !== newImportantFields.status
+            )) {
+              console.log("Mise à jour des droits détectée, rafraîchissement du token...");
+              user.getIdToken(true).catch(e => console.error("Erreur refresh token:", e));
+            }
+
             // Créer un objet utilisateur étendu avec toutes les données
             const extendedUser = {
               ...user,
@@ -178,16 +209,30 @@ export function AuthProvider({ children }) {
             setUserData(newUserData);
             // Stocker uniquement les champs importants pour la prochaine comparaison
             previousUserDataRef.current = newImportantFields;
+            
+            // Charger les permissions du contact si c'est un contact avec accès
+            if (isContactWithAccess(newUserData) && user.uid) {
+              const permissions = await getContactAccessPermissions(user.uid);
+              setContactPermissions(permissions);
+            } else {
+              setContactPermissions(null);
+            }
           } else {
                 // Pas de changement significatif - juste lastActivity qui a changé
                 // Ne pas mettre à jour l'état pour éviter les re-renders inutiles
                 console.log("Changement ignoré (lastActivity uniquement)");
               }
             } else {
-              // Document inexistant : on ne fait rien ici pour éviter la boucle infinie
-              console.warn('Document utilisateur inexistant dans Firestore. Il doit être créé lors de l\'inscription ou du login.');
+              // Document inexistant : essayer de le créer
+              console.warn('Document utilisateur inexistant dans Firestore. Tentative de création...');
               // On s'assure que currentUser est mis à jour même si pas de doc Firestore
               setCurrentUser(user as ExtendedUser);
+              
+              // Essayer de créer le document de manière asynchrone
+              createUserDocument(user).catch((createError) => {
+                console.error("Erreur lors de la création automatique du document:", createError);
+                // Ne pas bloquer l'application si la création échoue
+              });
             }
             setLoading(false);
           }, (error: any) => {
@@ -206,6 +251,7 @@ export function AuthProvider({ children }) {
         } else {
           setCurrentUser(null);
           setUserData(null);
+          setContactPermissions(null);
           setLoading(false);
         }
       } catch (error) {
@@ -236,7 +282,15 @@ export function AuthProvider({ children }) {
         });
         // Le onSnapshot détectera ce changement mais l'ignorera car seul lastActivity a changé
       } else {
-        console.warn("Document utilisateur non trouvé lors de la mise à jour de l'activité");
+        console.warn("Document utilisateur non trouvé lors de la mise à jour de l'activité. Tentative de création...");
+        // Essayer de créer le document s'il n'existe pas
+        if (currentUser) {
+          try {
+            await createUserDocument(currentUser);
+          } catch (createError) {
+            console.error("Erreur lors de la création du document pour l'activité:", createError);
+          }
+        }
       }
     } catch (error) {
       console.error("Erreur lors de la mise à jour de l'activité:", error);
@@ -266,7 +320,9 @@ export function AuthProvider({ children }) {
     login,
     isAuthenticated: !!currentUser,
     logoutUser,
-    updateLastActivity
+    updateLastActivity,
+    contactPermissions,
+    isContactWithAccess: isContactWithAccess(userData)
   };
 
   if (loading) {

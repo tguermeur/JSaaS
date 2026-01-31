@@ -5,10 +5,11 @@
  * Usage: node scripts/setup-firebase-secrets.js
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { tmpdir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -19,10 +20,12 @@ const envPath = join(projectRoot, '.env');
 const secretsToSet = [
   'EMAILJS_SERVICE_ID',
   'EMAILJS_TEMPLATE_ID',
+  'EMAILJS_TEMPLATE_ID_AMBASSADOR', // optionnel ; template dédié invitations ambassadeurs
   'EMAILJS_USER_ID',
   'EMAILJS_PRIVATE_KEY',
   'GEMINI_API_KEY',
-  'FRONTEND_URL',
+  // FRONTEND_URL : exclu des secrets pour éviter "overlaps non secret" au deploy.
+  // Définir en var. d’env. non secrète (Console Firebase ou functions/.env).
   'STRIPE_SECRET_KEY', // Optionnel
   'STRIPE_WEBHOOK_SECRET', // Optionnel
 ];
@@ -72,11 +75,13 @@ function setSecret(key, value) {
     return false;
   }
   
+  const tmpPath = join(tmpdir(), `firebase-secret-${key}-${Date.now()}`);
   try {
     console.log(`📝 Configuration de ${key}...`);
-    // Utiliser echo pour passer la valeur via stdin pour éviter qu'elle soit visible dans l'historique
-    execSync(`echo "${value}" | firebase functions:secrets:set ${key} --data-file -`, {
-      stdio: ['pipe', 'inherit', 'inherit'],
+    // Fichier temporaire sans saut de ligne (évite "Public Key is invalid" etc.)
+    writeFileSync(tmpPath, value, 'utf8');
+    execSync(`firebase functions:secrets:set ${key} --data-file "${tmpPath}"`, {
+      stdio: 'inherit',
       cwd: projectRoot
     });
     console.log(`✅ ${key} configuré avec succès\n`);
@@ -84,6 +89,10 @@ function setSecret(key, value) {
   } catch (error) {
     console.error(`❌ Erreur lors de la configuration de ${key}:`, error.message);
     return false;
+  } finally {
+    try {
+      unlinkSync(tmpPath);
+    } catch (_) {}
   }
 }
 

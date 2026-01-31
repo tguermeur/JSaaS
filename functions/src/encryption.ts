@@ -28,8 +28,17 @@ export const SENSITIVE_FIELDS = {
     'postalCode', // Code postal
     'birthPlace', // Lieu de naissance
     'birthDate', // Date de naissance
+    'birthPostalCode', // Code postal de naissance
     'studentId', // Numéro étudiant
     'twoFactorSecret', // Secret 2FA (déjà sensible, double protection)
+    'firstName', // Prénom
+    'lastName', // Nom
+    'displayName', // Nom affiché
+    // 'email' exclu : utilisé pour requêtes Firestore (where email == ...)
+    'ecole', // École (étudiants)
+    'graduationYear', // Année de diplôme
+    'program', // Programme (étudiants)
+    'companyName', // Nom entreprise (users entreprise)
   ],
   // Données entreprises
   COMPANY: [

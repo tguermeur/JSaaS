@@ -1,5 +1,7 @@
 # Guide: Configurer les secrets Firebase Functions
 
+> **EmailJS (invitations ambassadeurs, formulaire contact)** : pour créer le compte, le service, les templates et récupérer les clés, voir **[EMAILJS_SETUP.md](./EMAILJS_SETUP.md)**.
+
 ## Étape 1: S'authentifier à Firebase
 
 **Avant de configurer les secrets, vous devez être connecté :**
@@ -33,17 +35,20 @@ Le script va configurer automatiquement tous les secrets qui sont dans votre `.e
 Si vous préférez faire une commande à la fois, voici toutes les commandes :
 
 ```bash
-# 1. EmailJS
-echo "service_wd96h7i" | firebase functions:secrets:set EMAILJS_SERVICE_ID --data-file -
-echo "template_bjcdscc" | firebase functions:secrets:set EMAILJS_TEMPLATE_ID --data-file -
-echo "Hn6_ev50BvQzoNSS0" | firebase functions:secrets:set EMAILJS_USER_ID --data-file -
-echo "20QKad4-0CztTbMAg3fEm" | firebase functions:secrets:set EMAILJS_PRIVATE_KEY --data-file -
+# 1. EmailJS (voir EMAILJS_SETUP.md pour obtenir les valeurs)
+echo "service_xxxxx" | firebase functions:secrets:set EMAILJS_SERVICE_ID --data-file -
+echo "template_xxxxx" | firebase functions:secrets:set EMAILJS_TEMPLATE_ID --data-file -
+# optionnel : template dédié invitations ambassadeurs
+# echo "template_yyyyy" | firebase functions:secrets:set EMAILJS_TEMPLATE_ID_AMBASSADOR --data-file -
+echo "votre_public_key" | firebase functions:secrets:set EMAILJS_USER_ID --data-file -
+echo "votre_private_key" | firebase functions:secrets:set EMAILJS_PRIVATE_KEY --data-file -
 
 # 2. Gemini AI
 echo "AIzaSyAif_pUauZ44QFtI7y3AhrDJUEwMwCAMAY" | firebase functions:secrets:set GEMINI_API_KEY --data-file -
 
-# 3. Frontend URL
-echo "http://js-connect.fr" | firebase functions:secrets:set FRONTEND_URL --data-file -
+# 3. FRONTEND_URL : ne pas utiliser secrets (évite l’erreur "overlaps non secret" au deploy).
+#    Définir en variable d’env. non secrète : Console Firebase → Functions → Configuration
+#    → Variables d’environnement, ou dans functions/.env en local.
 
 # 4. Stripe (si vous utilisez Stripe côté serveur)
 # echo "sk_live_..." | firebase functions:secrets:set STRIPE_SECRET_KEY --data-file -
@@ -95,9 +100,10 @@ secrets: [
   'GEMINI_API_KEY',
   'EMAILJS_SERVICE_ID',
   'EMAILJS_TEMPLATE_ID',
+  'EMAILJS_TEMPLATE_ID_AMBASSADOR', // optionnel
   'EMAILJS_USER_ID',
   'EMAILJS_PRIVATE_KEY',
-  'FRONTEND_URL',
+  // 'FRONTEND_URL' en var. d'env. non secrète, pas dans secrets
   'STRIPE_SECRET_KEY',
   'STRIPE_WEBHOOK_SECRET'
 ]
@@ -109,12 +115,13 @@ Cela permet à vos Cloud Functions d'accéder à ces secrets via `process.env.NO
 
 | Secret | Valeur dans .env | Obligatoire |
 |--------|------------------|-------------|
-| `EMAILJS_SERVICE_ID` | `service_wd96h7i` | ✅ Oui |
-| `EMAILJS_TEMPLATE_ID` | `template_bjcdscc` | ✅ Oui |
-| `EMAILJS_USER_ID` | `Hn6_ev50BvQzoNSS0` | ✅ Oui |
-| `EMAILJS_PRIVATE_KEY` | `20QKad4-0CztTbMAg3fEm` | ✅ Oui |
-| `GEMINI_API_KEY` | `AIzaSyAif_pUauZ44QFtI7y3AhrDJUEwMwCAMAY` | ✅ Oui |
-| `FRONTEND_URL` | `http://js-connect.fr` | ✅ Oui |
+| `EMAILJS_SERVICE_ID` | (dashboard EmailJS) | ✅ Oui |
+| `EMAILJS_TEMPLATE_ID` | (dashboard EmailJS) | ✅ Oui |
+| `EMAILJS_TEMPLATE_ID_AMBASSADOR` | template dédié invitations | ❌ Optionnel |
+| `EMAILJS_USER_ID` | Public Key EmailJS | ✅ Oui |
+| `EMAILJS_PRIVATE_KEY` | Private Key EmailJS | ✅ Oui |
+| `GEMINI_API_KEY` | (Google AI Studio) | ✅ Oui |
+| `FRONTEND_URL` | Var. d’env. **non secrète** (Console ou `functions/.env`) | ✅ Oui |
 | `STRIPE_SECRET_KEY` | (non défini) | ❌ Optionnel |
 | `STRIPE_WEBHOOK_SECRET` | (non défini) | ❌ Optionnel |
 

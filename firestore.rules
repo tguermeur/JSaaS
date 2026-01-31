@@ -49,6 +49,16 @@ service cloud.firestore {
              request.resource.data.createdByEnterprise == true;
     }
     
+    // Fonction pour vérifier si un contact avec accès crée un événement ambassadeur pour son entreprise
+    function isContactCreatingEvent() {
+      let userData = getUserData();
+      return userData != null &&
+             userData.status == 'entreprise' &&
+             userData.companyId != null &&
+             request.resource.data.type == 'ambassadeur_event' &&
+             request.resource.data.companyId == userData.companyId;
+    }
+    
     // Fonction pour vérifier si l'entreprise accède à sa propre mission
     function isEnterpriseAccessingOwnMission() {
       let userData = getUserData();
@@ -115,13 +125,25 @@ service cloud.firestore {
                resource.data.structureId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId;
       }
       
-      // Lecture : superadmin, membres de la structure, étudiants pour les missions publiées ou de leur structure (pour celles où ils ont postulé), ou entreprise pour ses propres missions
+      // Fonction pour vérifier si un contact avec accès peut voir les événements ambassadeurs
+      function canAccessAsContactWithAccess() {
+        let userData = getUserData();
+        // Vérifier que c'est un contact avec accès (status == 'entreprise' et a un companyId)
+        // et que la mission appartient à leur entreprise
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               resource.data.companyId == userData.companyId;
+      }
+      
+      // Lecture : superadmin, membres de la structure, étudiants pour les missions publiées ou de leur structure (pour celles où ils ont postulé), ou entreprise pour ses propres missions, ou contacts avec accès
       allow read: if isAuthenticated() && (
         isSuperAdmin() ||
         resource.data.companyId == request.auth.uid ||
         canAccessViaStructure() ||
         canAccessAsStudent() ||
-        canAccessMissionAsStudent()
+        canAccessMissionAsStudent() ||
+        canAccessAsContactWithAccess()
       );
       
       // Règle spécifique pour les requêtes de liste
@@ -129,22 +151,64 @@ service cloud.firestore {
       // allow read filtrera les résultats
       // allow list: if isAuthenticated();
       
-      // Création : superadmin, membres de la structure, ou entreprise pour ses propres missions
+      // Création : superadmin, membres de la structure, entreprise pour ses propres missions, ou contacts avec accès pour les événements ambassadeurs
       allow create: if isAuthenticated() && (
         isSuperAdmin() || 
         (
           getUserData().status in ['admin', 'member'] && 
           request.resource.data.structureId == getUserData().structureId
         ) ||
-        isEnterpriseCreatingOwnMission()
+        isEnterpriseCreatingOwnMission() ||
+        isContactCreatingEvent()
       );
       
-      // Mise à jour : superadmin, membres de la structure, ou entreprise pour ses propres missions
+      // Fonction pour vérifier si un contact avec accès peut modifier un événement ambassadeur
+      // Version ultra-permissive - permet la modification de tous les événements ambassadeurs pour les comptes entreprise
+      function canContactUpdateEvent() {
+        // Vérifier directement via get() pour éviter les problèmes avec getUserData()
+        return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'entreprise' &&
+               resource.data.type == 'ambassadeur_event' &&
+               request.resource.data.type == 'ambassadeur_event';
+      }
+      
+      // Fonction pour vérifier si un contact avec accès peut modifier les slots (ajouter des ambassadeurs)
+      function canContactUpdateSlots() {
+        let userData = getUserData();
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               resource.data.type == 'ambassadeur_event' &&
+               resource.data.companyId == userData.companyId &&
+               // Permettre uniquement la modification des slots et updatedAt
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly(['slots', 'updatedAt']);
+      }
+      
+      // Fonction pour vérifier si un contact avec accès peut modifier la visibilité et autres champs non critiques
+      function canContactUpdateVisibility() {
+        let userData = getUserData();
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               resource.data.type == 'ambassadeur_event' &&
+               resource.data.companyId == userData.companyId &&
+               // Permettre la modification de visibleForAmbassadors et updatedAt
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly(['visibleForAmbassadors', 'updatedAt']);
+      }
+      
+      // Fonction pour vérifier si un contact avec accès peut modifier les champs non critiques de l'événement
+      // Version simplifiée - même logique que canContactUpdateEvent mais avec vérifications supplémentaires
+      function canContactUpdateEventFields() {
+        // Utiliser la même logique que canContactUpdateEvent
+        return canContactUpdateEvent();
+      }
+      
+      // Mise à jour : superadmin, membres de la structure, entreprise pour ses propres missions, ou contacts avec accès pour leurs événements
       // Note: Les entreprises ne peuvent modifier que leurs missions en attente, la structure gère le reste
       allow update: if isAuthenticated() && (
         isSuperAdmin() || 
         (
-          getUserData().status in ['admin', 'member'] && 
+          getUserData().status in ['admin', 'member', 'membre'] && 
           resource.data.structureId == getUserData().structureId
         ) ||
         (
@@ -155,7 +219,19 @@ service cloud.firestore {
           request.resource.data.structureId == resource.data.structureId &&
           request.resource.data.numeroMission == resource.data.numeroMission &&
           request.resource.data.companyId == resource.data.companyId
-        )
+        ) ||
+        // Permettre à tous les comptes entreprise de modifier les événements ambassadeurs
+        // Version ultra-permissive : aucune restriction sur les champs modifiés
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'entreprise' &&
+          resource.data.type == 'ambassadeur_event' &&
+          request.resource.data.type == 'ambassadeur_event'
+        ) ||
+        canContactUpdateEvent() ||
+        canContactUpdateSlots() ||
+        canContactUpdateVisibility() ||
+        canContactUpdateEventFields()
       );
       
       // Suppression : seulement superadmin ou membres de la structure
@@ -187,10 +263,24 @@ service cloud.firestore {
                  docData.structureId == userData.structureId;
         }
         
+        // Fonction pour vérifier si un contact avec accès peut lire les documents de ses événements
+        function canAccessAsContactWithAccess() {
+          let userData = getUserData();
+          let docData = resource.data;
+          // Vérifier que c'est un contact avec accès et que le document est lié à une mission de leur entreprise
+          return userData != null &&
+                 userData.status == 'entreprise' &&
+                 userData.companyId != null &&
+                 docData.missionId != null &&
+                 exists(/databases/$(database)/documents/missions/$(docData.missionId)) &&
+                 get(/databases/$(database)/documents/missions/$(docData.missionId)).data.companyId == userData.companyId;
+        }
+        
         allow read: if isAuthenticated() && (
           isSuperAdmin() ||
           isDocumentStudent() ||
-          canAccessViaStructure()
+          canAccessViaStructure() ||
+          canAccessAsContactWithAccess()
         );
         
         allow create: if isAuthenticated() && (
@@ -212,14 +302,39 @@ service cloud.firestore {
 
     // Règles pour la collection companies
     match /companies/{companyId} {
+      // Fonction pour vérifier si un contact avec accès peut lire son entreprise
+      function canAccessAsContactWithAccess() {
+        let userData = getUserData();
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               resource.id == userData.companyId;
+      }
+      
       allow read: if isAuthenticated() && (
         isSuperAdmin() || 
-        resource.data.structureId == getUserData().structureId
+        resource.data.structureId == getUserData().structureId ||
+        canAccessAsContactWithAccess()
       );
-      allow write: if isAuthenticated() && (
+      allow update: if isAuthenticated() && (
         isSuperAdmin() || 
         (
           request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        ) ||
+        canAccessAsContactWithAccess()
+      );
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          getUserData().status in ['membre', 'admin']
+        )
+      );
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() || 
+        (
+          resource.data.structureId == getUserData().structureId &&
           getUserData().status in ['membre', 'admin']
         )
       );
@@ -275,25 +390,74 @@ service cloud.firestore {
                  )
                );
       }
+      
+      // Fonction pour vérifier si un contact avec accès peut voir les candidatures
+      function canAccessAsContactWithAccess() {
+        let userData = getUserData();
+        let applicationData = resource.data;
+        // Vérifier que c'est un contact avec accès et que la mission existe et appartient à leur entreprise
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               exists(/databases/$(database)/documents/missions/$(applicationData.missionId)) &&
+               get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.companyId == userData.companyId;
+      }
 
       allow read: if isAuthenticated() && (
         isSuperAdmin() ||
-        canAccessViaMission()
+        canAccessViaMission() ||
+        canAccessAsContactWithAccess()
       );
+
+      // Fonction pour vérifier si un contact avec accès peut créer des candidatures pour ses événements
+      function canCreateAsContactWithAccess() {
+        let userData = getUserData();
+        let applicationData = request.resource.data;
+        // Vérifier que c'est un contact avec accès et que la mission existe et appartient à leur entreprise
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               exists(/databases/$(database)/documents/missions/$(applicationData.missionId)) &&
+               get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.companyId == userData.companyId &&
+               get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.type == 'ambassadeur_event' &&
+               // Vérifier que les champs requis sont présents
+               applicationData.keys().hasAll(['missionId', 'userId', 'userEmail', 'submittedAt', 'status']) &&
+               // Permettre le statut 'Acceptée' pour les ajouts manuels
+               applicationData.status in ['En attente', 'Acceptée'];
+      }
 
       allow create: if isAuthenticated() && (
-        request.resource.data.userId == request.auth.uid &&
-        request.resource.data.keys().hasAll(['missionId', 'userId', 'userEmail', 'submittedAt', 'status']) &&
-        request.resource.data.status == 'En attente'
+        // L'utilisateur crée sa propre candidature avec statut "En attente"
+        (request.resource.data.userId == request.auth.uid &&
+         request.resource.data.keys().hasAll(['missionId', 'userId', 'userEmail', 'submittedAt', 'status']) &&
+         request.resource.data.status == 'En attente') ||
+        // Ou un contact avec accès crée une candidature pour son événement
+        canCreateAsContactWithAccess()
       );
 
+      // Fonction pour vérifier si un contact avec accès peut modifier les candidatures
+      function canUpdateAsContactWithAccess() {
+        let userData = getUserData();
+        let applicationData = resource.data;
+        // Vérifier que c'est un contact avec accès et que la mission existe et appartient à leur entreprise
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               exists(/databases/$(database)/documents/missions/$(applicationData.missionId)) &&
+               get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.companyId == userData.companyId &&
+               // S'assurer que seuls les champs autorisés sont modifiés (status, updatedAt)
+               request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+               request.resource.data.status in ['En attente', 'Acceptée', 'Refusée'];
+      }
+      
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
         (
           getUserData().status in ['admin', 'member'] &&
           exists(/databases/$(database)/documents/missions/$(resource.data.missionId)) &&
           get(/databases/$(database)/documents/missions/$(resource.data.missionId)).data.structureId == getUserData().structureId
-        )
+        ) ||
+        canUpdateAsContactWithAccess()
       );
 
       allow delete: if false;
@@ -307,12 +471,24 @@ service cloud.firestore {
       // Update seulement pour l'utilisateur connecté sur son propre doc
       allow update: if request.auth != null && request.auth.uid == userId;
       
-      // Lecture pour soi-même, les superadmins, les membres de la même structure
+      // Fonction pour vérifier si un contact avec accès peut lire un utilisateur
+      // Les contacts avec accès peuvent lire les documents des étudiants
+      // (ils ne peuvent déjà accéder qu'aux applications liées à leurs événements via les règles applications)
+      function canContactReadUser() {
+        let userData = getUserData();
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               resource.data.status == 'etudiant';
+      }
+      
+      // Lecture pour soi-même, les superadmins, les membres de la même structure, ou contacts avec accès pour les étudiants
       // OU depuis Firebase Storage Rules (qui utilise request.auth.uid)
       allow read: if request.auth != null && (
         request.auth.uid == userId || 
         isSuperAdmin() ||
         (resource.data.structureId == getUserData().structureId) ||
+        canContactReadUser() ||
         // Permettre la lecture depuis Storage Rules (même utilisateur authentifié)
         (request.auth.uid != null)
       );
@@ -687,6 +863,26 @@ service cloud.firestore {
       );
     }
 
+    // Règles pour les invitations ambassadeur (emails invités, pas encore de compte)
+    match /ambassadorInvites/{inviteId} {
+      allow create: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData() != null && (
+          resource.data.structureId == getUserData().structureId ||
+          resource.data.invitedBy == request.auth.uid
+        ))
+      );
+      allow update: if false;
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData() != null && (
+          resource.data.structureId == getUserData().structureId ||
+          resource.data.invitedBy == request.auth.uid
+        ))
+      );
+    }
+
     // Règles pour la collection etudes
     match /etudes/{etudeId} {
       // Fonction pour vérifier l'accès via structureId
@@ -1034,12 +1230,26 @@ service cloud.firestore {
                userData.status in ['admin', 'member'] &&
                docData.structureId == userData.structureId;
       }
+      
+      // Fonction pour vérifier si un contact avec accès peut lire les documents de ses événements
+      function canAccessAsContactWithAccess() {
+        let userData = getUserData();
+        let docData = resource.data;
+        // Vérifier que c'est un contact avec accès et que le document est lié à une mission de leur entreprise
+        return userData != null &&
+               userData.status == 'entreprise' &&
+               userData.companyId != null &&
+               docData.missionId != null &&
+               exists(/databases/$(database)/documents/missions/$(docData.missionId)) &&
+               get(/databases/$(database)/documents/missions/$(docData.missionId)).data.companyId == userData.companyId;
+      }
 
       
       allow read: if isAuthenticated() && (
         isSuperAdmin() ||
         isDocumentStudent() ||
-        canAccessViaStructure()
+        canAccessViaStructure() ||
+        canAccessAsContactWithAccess()
       );
       
       allow create: if isAuthenticated() && (
@@ -1122,6 +1332,19 @@ service cloud.firestore {
                      get(/databases/$(database)/documents/companies/$(contactData.companyId)).data.structureId == userData.structureId
                    )
                  )
+               ) ||
+               (
+                 // Permettre aux contacts avec accès de lire leur propre document
+                 userData != null &&
+                 userData.status == 'entreprise' &&
+                 contactData.userId == request.auth.uid
+               ) ||
+               (
+                 // Permettre aux contacts avec accès de lire tous les contacts de leur entreprise
+                 userData != null &&
+                 userData.status == 'entreprise' &&
+                 userData.companyId != null &&
+                 contactData.companyId == userData.companyId
                );
       }
       
@@ -1151,6 +1374,47 @@ service cloud.firestore {
         )
       );
     }
+
+    // Règles pour la collection contactAccess
+    match /contactAccess/{contactAccessId} {
+      // Fonction pour vérifier si l'utilisateur peut accéder aux permissions
+      function canAccessContactAccess() {
+        let userData = getUserData();
+        // Superadmin a toujours accès
+        return isSuperAdmin() ||
+               (
+                 // Les admins/membres peuvent accéder si le contact appartient à leur structure
+                 userData != null && 
+                 userData.status in ['admin', 'member', 'membre'] &&
+                 exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
+                 get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == userData.structureId
+               ) ||
+               (
+                 // Les contacts avec accès peuvent lire leurs propres permissions
+                 userData != null && 
+                 userData.status == 'entreprise' &&
+                 exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
+                 get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.userId == request.auth.uid
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessContactAccess();
+      
+      // Seuls les superadmins et admins peuvent modifier les permissions
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (
+          getUserData() != null &&
+          getUserData().status in ['admin', 'membre'] &&
+          // Vérifier que le contact appartient à leur structure
+          exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
+          get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == getUserData().structureId
+        )
+      );
+    }
+    
+    // Règles pour permettre les requêtes sur contacts avec where('userId', '==', userId)
+    // Les règles sur /contacts/{contactId} ci-dessus gèrent déjà cela via canAccessContact()
 
     // Règles pour la collection defaultTemplateAssignments
     match /defaultTemplateAssignments/{documentType} {

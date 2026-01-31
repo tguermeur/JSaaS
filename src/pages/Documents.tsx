@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -76,9 +77,12 @@ import DocumentRow from '../components/documents/DocumentRow';
 import FolderCard from '../components/documents/FolderCard';
 import UploadModal from '../components/documents/UploadModal';
 import { trackUserActivity } from '../services/userActivityService';
+import TwoFactorDialog from '../components/common/TwoFactorDialog';
+import { fetchDecryptFile, is2FARequiredError } from '../utils/decryptFileUtils';
 
 const Documents: React.FC = () => {
   const { currentUser, userData } = useAuth();
+  const location = useLocation();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [missionDocuments, setMissionDocuments] = useState<{ [missionId: string]: { mission: any; documents: Document[] } }>({});
@@ -95,17 +99,24 @@ const Documents: React.FC = () => {
   ]);
   
   // ID spécial pour le dossier virtuel "Missions"
-  const MISSIONS_FOLDER_ID = '__missions__';
+  const MISSIONS_FOLDER_ID = 'virtual-folder-missions';
   // ID Firestore pour stocker la couleur (ne peut pas utiliser __missions__ car réservé par Firebase)
   const MISSIONS_FOLDER_FIRESTORE_ID = 'missions-folder-color';
   // ID spécial pour le dossier virtuel "Documents Étudiants"
-  const STUDENTS_DOCUMENTS_FOLDER_ID = '__students_documents__';
+  const STUDENTS_DOCUMENTS_FOLDER_ID = 'virtual-folder-students-documents';
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [twoFactorDocumentOpen, setTwoFactorDocumentOpen] = useState(false);
+  const [pendingDecryptDocument, setPendingDecryptDocument] = useState<{
+    storagePath: string;
+    token: string;
+    document: Document;
+  } | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<{ type: 'document' | 'folder'; item: Document | Folder } | null>(null);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
@@ -117,6 +128,7 @@ const Documents: React.FC = () => {
   const [folderSize, setFolderSize] = useState<number>(0);
   const [folderSizes, setFolderSizes] = useState<{ [folderId: string]: number }>({});
   const [savedFolderColors, setSavedFolderColors] = useState<{ [folderId: string]: string }>({});
+  const [pinnedVirtualFolders, setPinnedVirtualFolders] = useState<{ [folderId: string]: boolean }>({});
   
   // États pour les filtres
   const [documentTypeFilter, setDocumentTypeFilter] = useState<string>('all');
@@ -232,7 +244,55 @@ const Documents: React.FC = () => {
     if (!structureId || !currentUser) return;
     loadMissions();
     loadFolderColors();
+    loadPinnedStatus();
   }, [structureId, currentUser]);
+
+  // Gérer la navigation depuis le dashboard
+  useEffect(() => {
+    if (location.state?.folderId) {
+       const folderId = location.state.folderId;
+       setCurrentFolderId(folderId);
+       
+       // Mettre à jour les breadcrumbs pour les dossiers virtuels connus
+       if (folderId === MISSIONS_FOLDER_ID) {
+          setBreadcrumbs([
+            { id: null, name: 'Documents' },
+            { id: MISSIONS_FOLDER_ID, name: 'Missions' }
+          ]);
+       } else if (folderId === STUDENTS_DOCUMENTS_FOLDER_ID) {
+          setBreadcrumbs([
+            { id: null, name: 'Documents' },
+            { id: STUDENTS_DOCUMENTS_FOLDER_ID, name: 'Documents Étudiants' }
+          ]);
+       } else {
+          // Pour les autres dossiers, il faudrait idéalement charger le chemin complet
+          // Pour l'instant on met juste le dossier courant s'il est connu dans la liste des dossiers
+          // Mais comme les dossiers ne sont pas encore chargés à ce stade, c'est compliqué.
+          // On laisse le breadcrumb par défaut "Documents" et on ajoute un item "..." -> "Dossier" si nécessaire plus tard
+       }
+    }
+  }, [location.state, MISSIONS_FOLDER_ID, STUDENTS_DOCUMENTS_FOLDER_ID]);
+
+  // Charger l'état épinglé des dossiers virtuels
+  const loadPinnedStatus = async () => {
+    if (!structureId) return;
+
+    try {
+      const virtualFolders = [MISSIONS_FOLDER_ID, STUDENTS_DOCUMENTS_FOLDER_ID];
+      const newPinnedStatus: { [key: string]: boolean } = {};
+
+      for (const folderId of virtualFolders) {
+         const docRef = doc(db, 'structures', structureId, 'folders', folderId);
+         const docSnap = await getDoc(docRef);
+         if (docSnap.exists() && docSnap.data().isPinned) {
+            newPinnedStatus[folderId] = true;
+         }
+      }
+      setPinnedVirtualFolders(newPinnedStatus);
+    } catch (error) {
+      console.error('Erreur lors du chargement des épingles:', error);
+    }
+  };
 
   // Charger les couleurs personnalisées des dossiers
   const loadFolderColors = async () => {
@@ -577,7 +637,7 @@ const Documents: React.FC = () => {
         }
 
         // 3. Récupérer les documents personnels de tous les utilisateurs de la structure
-        const STUDENTS_DOCUMENTS_FOLDER_ID = '__students_documents__';
+        // Utilisation de la constante définie au niveau du composant
         const personalDocsList: Document[] = [];
         
         try {
@@ -755,6 +815,9 @@ const Documents: React.FC = () => {
 
         const foldersList: Folder[] = [];
         for (const folderSnap of foldersSnapshot.docs) {
+          // Filtrer les dossiers virtuels qui existent en base uniquement pour l'épinglage
+          if (folderSnap.id === MISSIONS_FOLDER_ID || folderSnap.id === STUDENTS_DOCUMENTS_FOLDER_ID) continue;
+
           const data = folderSnap.data();
           // Récupérer le nom de l'utilisateur
           let createdByName = '';
@@ -786,6 +849,7 @@ const Documents: React.FC = () => {
             structureId: structureId,
             isRestricted: false,
             isPersonalFolder: true,
+            isPinned: pinnedVirtualFolders[STUDENTS_DOCUMENTS_FOLDER_ID] || false,
           } as Folder);
         }
         
@@ -1398,13 +1462,16 @@ const Documents: React.FC = () => {
 
     // Pour les documents personnels, obtenir une URL signée avec authentification
     if (document.isPersonalDocument && document.storagePath) {
-      // Déclarer storagePath avant le try pour qu'il soit accessible dans le catch
       let storagePath = document.storagePath;
       let documentOpenedSuccessfully = false;
+
+      // Ouvrir le dialogue immédiatement avec un état de chargement
+      setPreviewDocument({ ...document });
+      setPreviewDialogOpen(true);
+      setPreviewError(null);
+      setPreviewLoading(true);
       
       try {
-        setLoading(true);
-        
         // Extraire le chemin depuis l'URL si nécessaire
         if (storagePath && storagePath.startsWith('http')) {
           // Si c'est une URL, extraire le chemin
@@ -1423,7 +1490,8 @@ const Documents: React.FC = () => {
         }
         
         if (!storagePath) {
-          console.error('Impossible d\'extraire le chemin du document:', document);
+          setPreviewLoading(false);
+          setPreviewDialogOpen(false);
           setSnackbar({
             open: true,
             message: 'Impossible d\'accéder à ce document',
@@ -1456,6 +1524,8 @@ const Documents: React.FC = () => {
                           userData?.role === 'superadmin';
         
         if (!canAccess && currentUser?.uid !== document.uploadedBy) {
+          setPreviewLoading(false);
+          setPreviewDialogOpen(false);
           setSnackbar({
             open: true,
             message: 'Vous n\'avez pas les permissions nécessaires pour accéder à ce document',
@@ -1463,163 +1533,91 @@ const Documents: React.FC = () => {
           });
           return;
         }
-        
-        // Forcer la régénération du token pour s'assurer qu'il a les bonnes permissions
+
         const auth = getAuth();
         const firebaseUser = auth.currentUser;
-        if (firebaseUser) {
-          await firebaseUser.getIdToken(true); // Force token refresh
+        if (!firebaseUser) {
+          setPreviewLoading(false);
+          setPreviewDialogOpen(false);
+          setSnackbar({ open: true, message: 'Utilisateur non authentifié', severity: 'error' });
+          return;
         }
-        
-        // Utiliser la même logique que DocumentsTab : utiliser decryptFile
-        // Cela fonctionne pour les fichiers chiffrés et non chiffrés
-        setLoading(true);
-        setPreviewError(null);
-        
+        const token = await firebaseUser.getIdToken(true);
+
         try {
-          // Obtenir le token d'authentification
-          const auth = getAuth();
-          const firebaseUser = auth.currentUser;
-          if (!firebaseUser) {
-            throw new Error('Utilisateur non authentifié');
-          }
-          const token = await firebaseUser.getIdToken(true); // Force refresh du token
-          
-          // Utiliser decryptFile (fonctionne même pour les fichiers non chiffrés)
-          const axios = (await import('axios')).default;
-          const response = await axios.get(
-            `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-            {
-              params: { filePath: storagePath },
-              headers: {
-                'Authorization': `Bearer ${token}`
-              },
-              responseType: 'blob',
-              timeout: 60000 // 60 secondes
-            }
-          );
-          
-          // Créer le blob et l'URL blob
-          let dataToBlob: BlobPart;
-          if (response.data instanceof Blob) {
-            dataToBlob = response.data;
-          } else if (response.data instanceof ArrayBuffer) {
-            dataToBlob = response.data;
-          } else {
-            dataToBlob = new Uint8Array(response.data as any);
-          }
-          
-          const contentType = response.headers['content-type'] || response.headers['Content-Type'] || 'application/pdf';
-          const blob = new Blob([dataToBlob], { type: contentType });
-          
-          // Vérifier que le blob n'est pas vide
+          const { blob, contentType } = await fetchDecryptFile({
+            filePath: storagePath,
+            token,
+            timeout: 60000,
+          });
+
           if (blob.size === 0) {
             throw new Error('Le document est vide');
           }
-          
-          const blobUrl = URL.createObjectURL(blob);
-          
-          // Créer un document avec l'URL blob
+
+          const blobUrl = URL.createObjectURL(new Blob([blob], { type: contentType }));
           const documentWithBlobUrl = {
             ...document,
             url: blobUrl,
-            blobUrl: blobUrl // Conserver l'URL blob pour le nettoyage
+            blobUrl,
           };
-          
+
           setPreviewDocument(documentWithBlobUrl);
-          setPreviewDialogOpen(true);
-          setLoading(false);
+          setPreviewLoading(false);
           documentOpenedSuccessfully = true;
-          
+
           if (currentUser) {
             trackUserActivity(currentUser.uid, 'document', {
               id: document.id,
               title: document.name,
               subtitle: 'Documents',
-              url: blobUrl
+              url: blobUrl,
             });
           }
-          // Retourner immédiatement après succès pour éviter que le catch principal s'exécute
           return;
         } catch (error: any) {
-          console.error('[Documents] Erreur lors de la récupération du document:', {
+          console.error('[Documents] Erreur récupération document:', {
             error,
-            code: error?.code,
-            message: error?.message,
             status: error?.response?.status,
             storagePath: storagePath || document.storagePath,
             documentName: document.name,
-            userId: currentUser?.uid,
-            userStatus: userData?.status,
-            userRole: userData?.role,
-            userStructureId: userData?.structureId
           });
-          
-          setLoading(false);
-          
-          // Gérer les erreurs spécifiques
+          setPreviewLoading(false);
+
+          if (error?.response?.status === 403 && is2FARequiredError(error)) {
+            setPreviewDialogOpen(false);
+            setPendingDecryptDocument({ storagePath, token, document });
+            setTwoFactorDocumentOpen(true);
+            return;
+          }
+
           if (error?.response?.status === 403) {
-            const errorMsg = error?.response?.data?.error || 'Accès refusé';
-            if (errorMsg.includes('2FA')) {
-              setSnackbar({
-                open: true,
-                message: 'Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.',
-                severity: 'warning',
-              });
-            } else {
-              setSnackbar({
-                open: true,
-                message: 'Le document n\'est plus disponible ou a été supprimé',
-                severity: 'error',
-              });
-            }
+            setPreviewError('Le document n\'est plus disponible ou a été supprimé');
           } else if (error?.response?.status === 404) {
-            setSnackbar({
-              open: true,
-              message: 'Le document n\'est plus disponible ou a été supprimé',
-              severity: 'error',
-            });
+            setPreviewError('Le document n\'est plus disponible ou a été supprimé');
           } else {
-            setSnackbar({
-              open: true,
-              message: error?.message?.includes('vide') || error?.message?.includes('supprimé')
+            setPreviewError(
+              error?.message?.includes('vide') || error?.message?.includes('supprimé')
                 ? 'Le document n\'est plus disponible ou a été supprimé'
-                : `Erreur lors de l'ouverture du document: ${error?.message || 'Erreur inconnue'}`,
-              severity: 'error',
-            });
+                : `Erreur lors de l'ouverture du document: ${error?.message || 'Erreur inconnue'}`
+            );
           }
         }
         } catch (error: any) {
-          // Ne pas afficher d'erreur si le document s'est déjà ouvert avec succès
-          if (documentOpenedSuccessfully) {
-            return;
-          }
-          
-          console.error('[Documents] Erreur lors de la récupération de l\'URL du document:', {
+          if (documentOpenedSuccessfully) return;
+          console.error('[Documents] Erreur récupération document:', {
             error,
-            code: error?.code,
-            message: error?.message,
             storagePath: storagePath || document.storagePath,
             documentName: document.name,
-            userId: currentUser?.uid,
-            userStatus: userData?.status,
-            userRole: userData?.role,
-            userStructureId: userData?.structureId
           });
-          
-          // Si l'erreur est 403, ne pas utiliser l'URL directe car elle ne fonctionnera probablement pas
-          // Afficher directement le message d'erreur
-          setLoading(false);
-          
-          setSnackbar({
-            open: true,
-            message: error?.code === 'storage/unauthorized' || error?.response?.status === 403
-              ? 'Le document n\'est plus disponible ou a été supprimé' 
-              : 'Erreur lors de l\'ouverture du document',
-            severity: 'error',
-          });
+          setPreviewLoading(false);
+          setPreviewError(
+            error?.code === 'storage/unauthorized' || error?.response?.status === 403
+              ? 'Le document n\'est plus disponible ou a été supprimé'
+              : `Erreur lors de l'ouverture du document: ${error?.message || 'Erreur inconnue'}`
+          );
         } finally {
-          setLoading(false);
+          setPreviewLoading(false);
         }
       return;
     }
@@ -1692,6 +1690,33 @@ const Documents: React.FC = () => {
     setPreviewDocument(document);
     setPreviewError(null);
     setPreviewDialogOpen(true);
+  };
+
+  const handleVerifyDocument2FA = async (code: string) => {
+    const pending = pendingDecryptDocument;
+    if (!pending) throw new Error('Session expirée. Veuillez rouvrir le document.');
+    const { blob, contentType } = await fetchDecryptFile({
+      filePath: pending.storagePath,
+      token: pending.token,
+      twoFactorCode: code,
+      timeout: 60000,
+    });
+    if (blob.size === 0) throw new Error('Le document est vide');
+    const blobUrl = URL.createObjectURL(new Blob([blob], { type: contentType }));
+    const docWithBlob = { ...pending.document, url: blobUrl, blobUrl };
+    setPreviewDocument(docWithBlob);
+    setPreviewDialogOpen(true);
+    setPreviewError(null);
+    setPendingDecryptDocument(null);
+    setTwoFactorDocumentOpen(false);
+    if (currentUser) {
+      trackUserActivity(currentUser.uid, 'document', {
+        id: pending.document.id,
+        title: pending.document.name,
+        subtitle: 'Documents',
+        url: blobUrl,
+      });
+    }
   };
 
   const handleDocumentDownload = async (doc: Document) => {
@@ -1844,6 +1869,68 @@ const Documents: React.FC = () => {
         message: 'Erreur lors de l\'épinglage du document',
         severity: 'error'
       });
+    }
+  };
+
+  const handleFolderPin = async (folder: Folder) => {
+    if (!structureId || !currentUser) return;
+
+    try {
+      const newPinnedState = !folder.isPinned;
+      const folderRef = doc(db, 'structures', structureId, 'folders', folder.id);
+      
+      // Vérifier si le document existe d'abord
+      const folderSnap = await getDoc(folderRef);
+      
+      if (folderSnap.exists()) {
+        await updateDoc(folderRef, {
+          isPinned: newPinnedState,
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        // Créer le document s'il n'existe pas (pour les dossiers virtuels)
+        if (folder.id === MISSIONS_FOLDER_ID || folder.id === STUDENTS_DOCUMENTS_FOLDER_ID) {
+           await setDoc(folderRef, {
+             name: folder.name,
+             parentFolderId: null,
+             structureId: structureId,
+             createdBy: currentUser.uid,
+             createdAt: serverTimestamp(),
+             updatedAt: serverTimestamp(),
+             isPinned: newPinnedState,
+             isRestricted: false,
+             color: folder.color || '#FF9500',
+             isVirtual: true
+           });
+        } else {
+           console.error("Dossier introuvable:", folder.id);
+           return;
+        }
+      }
+
+      // Mettre à jour l'état local
+      setFolders(prev => prev.map(f => f.id === folder.id ? { ...f, isPinned: newPinnedState } : f));
+
+      if (folder.id === MISSIONS_FOLDER_ID || folder.id === STUDENTS_DOCUMENTS_FOLDER_ID) {
+         setPinnedVirtualFolders(prev => ({
+           ...prev,
+           [folder.id]: newPinnedState
+         }));
+      }
+
+      setSnackbar({
+        open: true,
+        message: newPinnedState ? 'Dossier épinglé' : 'Dossier désépinglé',
+        severity: 'success'
+      });
+      
+    } catch (error) {
+       console.error('Erreur lors de l\'épinglage du dossier:', error);
+       setSnackbar({
+         open: true,
+         message: 'Erreur lors de l\'épinglage du dossier',
+         severity: 'error'
+       });
     }
   };
 
@@ -2680,9 +2767,11 @@ const Documents: React.FC = () => {
                       structureId: structureId || '',
                       isRestricted: false,
                       color: savedFolderColors[MISSIONS_FOLDER_ID] || '#FF9500',
+                      isPinned: pinnedVirtualFolders[MISSIONS_FOLDER_ID] || false,
                     } as Folder}
                     onOpen={handleFolderClick}
                     onProperties={(folder) => handlePropertiesClick('folder', folder)}
+                    onPin={handleFolderPin}
                     canAccess={true}
                     canDelete={false}
                     canRename={false}
@@ -2752,6 +2841,7 @@ const Documents: React.FC = () => {
                     onDelete={(folder) => handleDeleteClick('folder', folder)}
                     onRename={(folder) => handleRenameClick('folder', folder)}
                     onProperties={(folder) => handlePropertiesClick('folder', folder)}
+                    onPin={handleFolderPin}
                     canAccess={canAccessRestricted(folder)}
                     canDelete={userRole === 'admin' || userRole === 'superadmin' || folder.createdBy === currentUser.uid}
                     canRename={userRole === 'admin' || userRole === 'superadmin' || folder.createdBy === currentUser.uid}
@@ -3118,27 +3208,48 @@ const Documents: React.FC = () => {
       <Dialog
         open={previewDialogOpen}
         onClose={() => {
-          // Nettoyer l'URL blob si elle existe
           if (previewDocument?.url && previewDocument.url.startsWith('blob:')) {
             URL.revokeObjectURL(previewDocument.url);
           }
           setPreviewDialogOpen(false);
           setPreviewError(null);
+          setPreviewLoading(false);
         }}
         maxWidth="lg"
         fullWidth
+        PaperProps={{ sx: { minHeight: '60vh' } }}
       >
         <DialogTitle>{previewDocument?.name}</DialogTitle>
-        <DialogContent>
+        <DialogContent sx={{ minHeight: 420, display: 'flex', flexDirection: 'column' }}>
           {previewDocument && (
-            <Box>
-              {previewError ? (
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 400 }}>
+              {previewLoading ? (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flex: 1,
+                    minHeight: 400,
+                    gap: 2,
+                  }}
+                >
+                  <CircularProgress size={48} />
+                  <Typography variant="body1" color="text.secondary" textAlign="center">
+                    Chargement du document...
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ maxWidth: 360 }}>
+                    Le décryptage peut prendre quelques secondes pour les documents protégés.
+                  </Typography>
+                </Box>
+              ) : previewError ? (
                 <Box sx={{ textAlign: 'center', py: 4 }}>
                   <Typography variant="body1" color="error" sx={{ mb: 2 }}>
                     {previewError}
                   </Typography>
                 </Box>
-              ) : previewDocument.type.startsWith('image/') ? (
+              ) : !previewLoading && !previewError && previewDocument.type.startsWith('image/') ? (
                 <img
                   src={previewDocument.url}
                   alt={previewDocument.name}
@@ -3147,7 +3258,7 @@ const Documents: React.FC = () => {
                     setPreviewError('Le document n\'est plus disponible ou a été supprimé');
                   }}
                 />
-              ) : previewDocument.type === 'application/pdf' ? (
+              ) : !previewLoading && !previewError && previewDocument.type === 'application/pdf' ? (
                 <Box sx={{ 
                   height: '100%', 
                   width: '100%',
@@ -3158,7 +3269,7 @@ const Documents: React.FC = () => {
                   minHeight: '600px',
                   position: 'relative'
                 }}>
-                  {previewDocument.url && previewDocument.url.startsWith('blob:') ? (
+                  {previewDocument?.url && previewDocument.url.startsWith('blob:') ? (
                     // Pour les blobs (fichiers téléchargés), utiliser un embed
                     <embed
                       src={`${previewDocument.url}#toolbar=0&navpanes=0&scrollbar=0`}
@@ -3257,7 +3368,7 @@ const Documents: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setPreviewDialogOpen(false)}>Fermer</Button>
-          {previewDocument && (
+          {previewDocument && !previewLoading && (
             <Button
               variant="contained"
               startIcon={<DownloadIcon />}
@@ -3268,6 +3379,17 @@ const Documents: React.FC = () => {
           )}
         </DialogActions>
       </Dialog>
+
+      <TwoFactorDialog
+        open={twoFactorDocumentOpen}
+        onClose={() => {
+          setTwoFactorDocumentOpen(false);
+          setPendingDecryptDocument(null);
+        }}
+        onVerify={handleVerifyDocument2FA}
+        title="Validation 2FA requise"
+        message="Ce document est chiffré. Entrez le code à 6 chiffres de votre application d'authentification pour y accéder."
+      />
 
       {/* Modal de confirmation de suppression */}
       <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>

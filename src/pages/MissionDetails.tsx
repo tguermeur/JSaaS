@@ -86,6 +86,7 @@ import {
   CloudUpload as CloudUploadIcon,
 } from '@mui/icons-material';
 import { doc, collection, query, where, getDocs, addDoc, updateDoc, orderBy, deleteDoc, getDoc, setDoc, writeBatch, limit, deleteField } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { createFilterOptions } from '@mui/material';
@@ -1748,9 +1749,11 @@ const MissionDetails: React.FC = () => {
 
       try {
         setLoadingApplications(true);
+        console.log(`[MissionDetails] Fetching applications for mission ${mission.id}`);
         const applicationsRef = collection(db, 'applications');
         const q = query(applicationsRef, where('missionId', '==', mission.id));
         const snapshot = await getDocs(q);
+        console.log(`[MissionDetails] Found ${snapshot.docs.length} applications`);
         
         // Récupérer tous les IDs des applications
         const applicationIds = snapshot.docs.map(doc => doc.id);
@@ -2543,7 +2546,7 @@ const MissionDetails: React.FC = () => {
             'mission_description', 'mission_titre', 'mission_heures', 'mission_heures_par_etudiant', 'mission_nb_etudiants',
             'missionType', 'totalHT', 'totalTTC', 'total_ttc', 'tva', 'generationDate',
             'workinghours_date_debut', 'workinghours_heure_debut', 'workinghours_date_fin', 'workinghours_heure_fin',
-            'workinghours_pauses', 'workinghours_total', 'workinghours_creation', 'workinghours_maj',
+            'workinghours_pauses', 'workinghours_total', 'workinghours_creation', 'workinghours_maj', 'heures_detaillees', 'heuresDetaillees',
             'contact_nom', 'contact_prenom', 'contact_email', 'contact_telephone', 'contact_poste', 'contact_linkedin', 'contact_nom_complet',
             'user_nom', 'user_prenom', 'user_email', 'user_ecole', 'user_nom_complet', 'user_telephone', 'user_formation',
             'user_specialite', 'user_niveau_etude', 'graduationYear', 'gender', 'birthPlace', 'birthDate', 'address', 'nationality',
@@ -2677,6 +2680,10 @@ const MissionDetails: React.FC = () => {
             isMissing = true;
             category = 'Heures de travail';
             label = 'Date de mise à jour';
+          } else if ((tagName === 'heures_detaillees' || tagName === 'heuresDetaillees') && (!workingHoursData?.hours?.length) && (!mission.startDate || !mission.endDate)) {
+            isMissing = true;
+            category = 'Heures de travail';
+            label = 'Heures détaillées (ou dates de mission pour le repli)';
           }
           // Balises de contact
           else if (tagName === 'contact_nom' && !mission.contact?.lastName) {
@@ -2943,6 +2950,7 @@ const MissionDetails: React.FC = () => {
       chargeData?: any;
       missionTypeData?: any;
       presidentFullName?: string | null;
+      workingHoursData?: { hours?: Array<{ date?: string; startTime?: string; endTime?: string; breaks?: Array<{ start?: string; end?: string }> }> } | null;
     }
   ) => {
     if (!text || !mission) return text;
@@ -3075,6 +3083,38 @@ const MissionDetails: React.FC = () => {
         ).toFixed(2) : '[Total non disponible]',
         '<workinghours_creation>': application?.createdAt ? new Date(application.createdAt).toLocaleDateString() : '[Date de création non disponible]',
         '<workinghours_maj>': application?.updatedAt ? new Date(application.updatedAt).toLocaleDateString() : '[Date de mise à jour non disponible]',
+        '<heures_detaillees>': (() => {
+          const wh = cachedData?.workingHoursData;
+          const missionDebut = mission.startDate ? `${new Date(mission.startDate).toLocaleDateString('fr-FR')} à ${new Date(mission.startDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : '';
+          const missionFin = mission.endDate ? `${new Date(mission.endDate).toLocaleDateString('fr-FR')} à ${new Date(mission.endDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : '';
+          if (!wh?.hours?.length) return missionDebut && missionFin ? ` De ${missionDebut} à ${missionFin}` : '[Heures détaillées non disponibles]';
+          const formatTime = (t: string) => (t ? t.replace(/:\d{2}$/, 'h') : '');
+          const formatDateHour = (dateStr: string, timeStr: string) => {
+            const d = dateStr ? new Date(dateStr).toLocaleDateString('fr-FR') : '';
+            const t = formatTime(timeStr);
+            return t ? `${d} à ${t}` : d;
+          };
+          // Si un seul créneau : afficher "Date et heure de début - Date et heure de fin"
+          if (wh.hours.length === 1) {
+            const day = wh.hours[0];
+            const debut = formatDateHour(day.date, day.startTime);
+            const fin = formatDateHour(day.date, day.endTime);
+            return debut && fin ? `${debut} - ${fin}` : debut || fin || '[Heures détaillées non disponibles]';
+          }
+          // Plusieurs créneaux : liste détaillée "28/01/2026 de 16h à 18h, ..."
+          const parts = wh.hours.map((day: any) => {
+            const dateStr = day.date ? new Date(day.date).toLocaleDateString('fr-FR') : '';
+            const startH = formatTime(day.startTime);
+            const endH = formatTime(day.endTime);
+            let s = `${dateStr} de ${startH} à ${endH}`;
+            if (day.breaks?.length) {
+              const breaksStr = day.breaks.map((b: any) => `${b.start ?? b.startTime ?? ''}-${b.end ?? b.endTime ?? ''}`).filter(Boolean).join(', ');
+              if (breaksStr) s += ` (pauses: ${breaksStr})`;
+            }
+            return s;
+          });
+          return parts.join(', ');
+        })(),
 
         // Balises de contact
         '<contact_nom>': mission.contact?.lastName || '[Nom du contact non disponible]',
@@ -3324,6 +3364,7 @@ const MissionDetails: React.FC = () => {
       'structure_president_fullName': '<structure_president_nom_complet>',
       'generationDate': '<generationDate>',
       'generationDatePlusOneYear': '<mission_date_generation_plus_1_an>',
+      'heuresDetaillees': '<heures_detaillees>',
     };
 
     // Logs réduits pour améliorer les performances
@@ -3629,6 +3670,28 @@ const MissionDetails: React.FC = () => {
         workingHoursDataPromise,
         presidentFullNamePromise
       ]);
+
+      // Décrypter les données du chargé de mission (phone, email) si elles sont chiffrées
+      let chargeDataToUse = chargeData;
+      const isEncryptedValue = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
+      if (mission.chargeId && chargeData && (isEncryptedValue(chargeData.phone) || isEncryptedValue(chargeData.email))) {
+        try {
+          const functions = getFunctions();
+          const decryptUserData = httpsCallable(functions, 'decryptUserData');
+          const deviceId = currentUser?.uid ? `${currentUser.uid}_${btoa(navigator.userAgent + navigator.platform).substring(0, 16)}` : undefined;
+          const result = await decryptUserData({ userId: mission.chargeId, deviceId, twoFactorCode: undefined });
+          if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
+            const dec = (result.data as any).decryptedData;
+            chargeDataToUse = {
+              ...chargeData,
+              phone: (dec.phone && !isEncryptedValue(dec.phone) ? dec.phone : chargeData.phone) ?? chargeData.phone,
+              email: (dec.email && !isEncryptedValue(dec.email) ? dec.email : chargeData.email) ?? chargeData.email
+            };
+          }
+        } catch (decryptErr) {
+          console.warn('Décryptage du chargé de mission ignoré (données chiffrées non décryptées):', decryptErr);
+        }
+      }
       
       console.log('✅ Toutes les données récupérées en parallèle');
 
@@ -3691,9 +3754,10 @@ const MissionDetails: React.FC = () => {
           // console.log(`🔧 Valeur avant remplacement: ${valueToReplace}`);
           const value = await replaceTags(valueToReplace, application, structureData, tempData, {
             userData,
-            chargeData,
+            chargeData: chargeDataToUse,
             missionTypeData,
-            presidentFullName
+            presidentFullName,
+            workingHoursData
           });
           // console.log(`🔧 Valeur après remplacement: ${value}`);
 
@@ -6426,6 +6490,40 @@ const MissionDetails: React.FC = () => {
     try {
       setIsDeleting(true);
 
+      // Vérifier si cette mission a été convertie depuis un salon ambassadeur
+      let isConvertedFromAmbassadorEvent = false;
+      let originalEventId: string | null = null;
+      
+      // Chercher un événement ambassadeur qui a ce convertedMissionId
+      const ambassadorEventsQuery = query(
+        collection(db, 'missions'),
+        where('type', '==', 'ambassadeur_event')
+      );
+      const ambassadorEventsSnapshot = await getDocs(ambassadorEventsQuery);
+      
+      for (const eventDoc of ambassadorEventsSnapshot.docs) {
+        const eventData = eventDoc.data();
+        const convertedMissionId = (eventData as any).convertedMissionId;
+        if (convertedMissionId === mission.id) {
+          isConvertedFromAmbassadorEvent = true;
+          originalEventId = eventDoc.id;
+          break;
+        }
+      }
+      
+      // Si pas trouvé via convertedMissionId, chercher par titre (pour les conversions anciennes)
+      if (!isConvertedFromAmbassadorEvent && mission.title) {
+        for (const eventDoc of ambassadorEventsSnapshot.docs) {
+          const eventData = eventDoc.data();
+          const eventTitle = eventData.title || eventData.campaignName;
+          if (eventTitle === mission.title && eventData.type === 'ambassadeur_event') {
+            isConvertedFromAmbassadorEvent = true;
+            originalEventId = eventDoc.id;
+            break;
+          }
+        }
+      }
+
       // 1. Récupérer toutes les applications liées à la mission
       const applicationsRef = collection(db, 'applications');
       const applicationsQuery = query(applicationsRef, where('missionId', '==', mission.id));
@@ -6489,10 +6587,23 @@ const MissionDetails: React.FC = () => {
         // Supprimer la mission
         batch.delete(doc(db, 'missions', mission.id));
 
-        // Supprimer les applications
-        applicationsSnapshot.docs.forEach((doc) => {
-          batch.delete(doc.ref);
-        });
+        // Supprimer les applications seulement si la mission n'a pas été convertie depuis un salon ambassadeur
+        // Si elle a été convertie, les candidatures doivent rester liées au salon original
+        if (!isConvertedFromAmbassadorEvent) {
+          applicationsSnapshot.docs.forEach((doc) => {
+            batch.delete(doc.ref);
+          });
+        } else {
+          // Si la mission a été convertie depuis un salon, mettre à jour les candidatures pour les relier au salon original
+          if (originalEventId) {
+            applicationsSnapshot.docs.forEach((appDoc) => {
+              batch.update(appDoc.ref, {
+                missionId: originalEventId,
+                updatedAt: new Date()
+              });
+            });
+          }
+        }
 
         // Supprimer les documents générés
         documentsSnapshot.docs.forEach((doc) => {

@@ -41,6 +41,22 @@
       ]
     },
     {
+      "collectionGroup": "missions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "visibleForAmbassadors", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isAmbassador", "order": "ASCENDING" },
+        { "fieldPath": "structureId", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "mission_notes",
       "queryScope": "COLLECTION",
       "fields": [

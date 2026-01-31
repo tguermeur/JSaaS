@@ -48,6 +48,7 @@ import {
   Notifications as NotificationsIcon,
   Add as AddIcon,
   Folder as FolderIcon,
+  Campaign as CampaignIcon,
 } from '@mui/icons-material';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -177,6 +178,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(null);
   const userMenuOpen = Boolean(userMenuAnchorEl);
   
+  const { contactPermissions, isContactWithAccess } = useAuth();
+  
   const isSuperAdmin = userData?.status === "superadmin";
   const isAdmin = userData?.status === "admin";
   const isMember = userData?.status === "membre";
@@ -186,6 +189,10 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   
   // Déterminer si l'utilisateur est une Junior (accès complet)
   const isJuniorEntreprise = isAdminStructure || isAdmin || isMember || isSuperAdmin;
+  
+  // Vérifier les permissions spécifiques pour les contacts avec accès
+  const canViewEvents = isContactWithAccess && contactPermissions?.canViewEvents;
+  const canManageAmbassadors = isContactWithAccess && contactPermissions?.canManageAmbassadors;
 
   // Charger le type de structure et le logo
   useEffect(() => {
@@ -231,8 +238,12 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       setSelectedSection('superadmin');
     } else if (path.startsWith('/app/settings')) {
       setSelectedSection('settings');
-    } else if (path.startsWith('/app/profile') || path.startsWith('/app/available-missions')) {
+    } else if (path.startsWith('/app/profile')) {
       setSelectedSection('personal');
+    } else if (path.startsWith('/app/ambassadeurs')) {
+      setSelectedSection('ambassadors');
+    } else if (path.startsWith('/app/available-missions')) {
+      setSelectedSection('missions');
     } else if (path.startsWith('/app/commercial') || path.startsWith('/app/audit') || path.startsWith('/prospect/') || path.startsWith('/app/tresorerie') || path.startsWith('/app/human-resources')) {
       setSelectedSection('poles');
     } else if (
@@ -343,6 +354,13 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       path: '/app/human-resources',
       section: 'poles',
     },
+    {
+      text: 'Ambassadeurs',
+      icon: <CampaignIcon />,
+      iconSidebarIcon: <BarChartIcon />,
+      path: '/app/ambassadeurs',
+      section: 'poles',
+    },
     // Items de paramètres
     {
       text: 'Templates PDF',
@@ -437,6 +455,24 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       section: 'crm',
     },
   ];
+  
+  // Menu pour les Contacts avec accès
+  const contactMenuItems: MenuItem[] = [
+    {
+      text: 'Ambassadeurs',
+      icon: <CampaignIcon />,
+      iconSidebarIcon: <CampaignIcon />,
+      path: '/app/ambassadeurs',
+      section: 'ambassadors',
+    },
+    {
+      text: 'Missions disponibles',
+      icon: <WorkIcon />,
+      iconSidebarIcon: <WorkIcon />,
+      path: '/app/available-missions',
+      section: 'missions',
+    },
+  ];
 
   const superAdminMenuItems: MenuItem[] = [
     {
@@ -469,7 +505,12 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     if (isJuniorEntreprise) {
       allItems = adminMenuItems;
     } else if (isEntreprise) {
-      allItems = companyMenuItems;
+      // Si c'est un contact avec accès, afficher le menu spécifique
+      if (isContactWithAccess && (canViewEvents || canManageAmbassadors)) {
+        allItems = contactMenuItems;
+      } else {
+        allItems = companyMenuItems;
+      }
     } else if (isEtudiant) {
       allItems = studentMenuItems;
     }
@@ -527,7 +568,19 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     });
     allMenuItems = [...filteredAdminMenuItems, ...studentMenuItems];
   } else if (isEntreprise) {
-    allMenuItems = companyMenuItems;
+    // Si c'est un contact avec accès, afficher le menu spécifique
+    if (isContactWithAccess && (canViewEvents || canManageAmbassadors)) {
+      // Filtrer selon les permissions
+      const filteredContactItems = contactMenuItems.filter(item => {
+        if (item.path === '/app/ambassadeurs' && !canViewEvents && !canManageAmbassadors) {
+          return false;
+        }
+        return true;
+      });
+      allMenuItems = filteredContactItems;
+    } else {
+      allMenuItems = companyMenuItems;
+    }
   } else if (isEtudiant) {
     allMenuItems = studentMenuItems;
   }
@@ -554,6 +607,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       'settings': 'Paramètres',
       'personal': 'Espace Personnel',
       'superadmin': 'SuperAdmin',
+      'ambassadors': 'Ambassadeurs',
+      'missions': 'Missions',
     };
     return titles[section] || section;
   };

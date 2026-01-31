@@ -1,27 +1,33 @@
 /**
  * Triggers Firestore pour chiffrer automatiquement les données sensibles
- * Ces triggers interceptent les écritures et chiffrent les champs sensibles avant stockage
- * 
- * NOTE: Les triggers Firestore v2 sont plus complexes à configurer.
- * Pour l'instant, le chiffrement est géré via les Cloud Functions onCall
- * qui doivent être appelées avant/après les écritures Firestore.
- * 
- * Les triggers automatiques peuvent être ajoutés plus tard si nécessaire.
+ * à la création et à la mise à jour des documents users.
  */
 
-// Désactivé temporairement - utiliser les fonctions onCall pour le chiffrement
-// Les triggers automatiques peuvent causer des boucles infinies si mal configurés
-
-/*
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { encryptSensitiveFields, SENSITIVE_FIELDS } from './encryption';
 
-export const encryptUserOnWrite = onDocumentWritten('users/{userId}', async (event) => {
-  const change = event.data;
-  const context = event.params;
+const triggerConfig = {
+  memory: '256MiB' as const,
+  timeoutSeconds: 60,
+  region: 'us-central1' as const,
+  maxInstances: 10,
+  secrets: ['ENCRYPTION_KEY'],
+};
 
-  try {
-    // Ne pas traiter les suppressions
+/**
+ * Chiffre les champs sensibles des documents users à chaque écriture
+ * (création ou mise à jour). Évite les boucles en ne traitant que les
+ * champs non encore chiffrés (sans préfixe ENC:).
+ */
+export const encryptUserOnWrite = onDocumentWritten(
+  {
+    ...triggerConfig,
+    document: 'users/{userId}',
+  },
+  async (event) => {
+    const change = event.data;
+    const userId = event.params.userId;
+
     if (!change?.after.exists) {
       return;
     }
@@ -31,24 +37,25 @@ export const encryptUserOnWrite = onDocumentWritten('users/{userId}', async (eve
       return;
     }
 
-    // Vérifier si des champs sensibles ont besoin d'être chiffrés
     const hasSensitiveData = SENSITIVE_FIELDS.USER.some(
-      field => userData[field] && typeof userData[field] === 'string' && !userData[field].startsWith('ENC:')
+      (field) =>
+        userData[field] != null &&
+        typeof userData[field] === 'string' &&
+        (userData[field] as string).trim() !== '' &&
+        !(userData[field] as string).startsWith('ENC:')
     );
 
     if (!hasSensitiveData) {
       return;
     }
 
-    // Chiffrer les champs sensibles
-    const encrypted = await encryptSensitiveFields(userData, SENSITIVE_FIELDS.USER);
-
-    // Mettre à jour le document avec les données chiffrées
-    await change.after.ref.set(encrypted, { merge: true });
-
-    console.log(`Données sensibles chiffrées pour l'utilisateur ${context.userId}`);
-  } catch (error) {
-    console.error('Erreur lors du chiffrement automatique des données utilisateur:', error);
+    try {
+      const encrypted = await encryptSensitiveFields(userData, [...SENSITIVE_FIELDS.USER]);
+      await change.after.ref.set(encrypted, { merge: true });
+      console.log(`[encryptUserOnWrite] Données sensibles chiffrées pour l'utilisateur ${userId}`);
+    } catch (error) {
+      console.error(`[encryptUserOnWrite] Erreur pour ${userId}:`, error);
+      // Ne pas re-throw pour éviter les réessais indéfinis (ex. secret manquant)
+    }
   }
-});
-*/
+);

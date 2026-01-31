@@ -9,14 +9,20 @@ interface RequireRoleProps {
   children: React.ReactNode;
   allowedRoles: UserRole[];
   redirectTo?: string;
+  requireContactAccess?: boolean; // Si true, vérifie que c'est un contact avec accès
+  requireCanViewEvents?: boolean; // Si true, vérifie canViewEvents
+  requireCanManageAmbassadors?: boolean; // Si true, vérifie canManageAmbassadors
 }
 
 const RequireRole: React.FC<RequireRoleProps> = ({ 
   children, 
   allowedRoles,
-  redirectTo = '/app/dashboard'
+  redirectTo = '/app/dashboard',
+  requireContactAccess = false,
+  requireCanViewEvents = false,
+  requireCanManageAmbassadors = false
 }) => {
-  const { userData, loading } = useAuth();
+  const { userData, loading, isContactWithAccess, contactPermissions } = useAuth();
 
   if (loading) {
     return (
@@ -40,6 +46,42 @@ const RequireRole: React.FC<RequireRoleProps> = ({
   // Superadmin a toujours accès
   if (userStatus === 'superadmin') {
     return <>{children}</>;
+  }
+
+  // Pour les contacts avec accès (statut 'entreprise'), vérifier les permissions si requises
+  if (userStatus === 'entreprise' && isContactWithAccess) {
+    // Si requireContactAccess est true, vérifier que c'est bien un contact avec accès
+    if (requireContactAccess && !isContactWithAccess) {
+      return <Navigate to={redirectTo} replace />;
+    }
+    
+    // Si requireCanViewEvents est true, vérifier la permission
+    if (requireCanViewEvents && (!contactPermissions || !contactPermissions.canViewEvents)) {
+      return <Navigate to={redirectTo} replace />;
+    }
+    
+    // Si requireCanManageAmbassadors est true, vérifier la permission
+    if (requireCanManageAmbassadors && (!contactPermissions || !contactPermissions.canManageAmbassadors)) {
+      return <Navigate to={redirectTo} replace />;
+    }
+    
+    // Si le rôle 'entreprise' est dans allowedRoles, permettre l'accès
+    if (allowedRoles.includes('entreprise')) {
+      return <>{children}</>;
+    }
+  }
+
+  // Vérifier les permissions spécifiques pour les contacts avec accès (pour les autres statuts aussi)
+  if (requireContactAccess && !isContactWithAccess) {
+    return <Navigate to={redirectTo} replace />;
+  }
+
+  if (requireCanViewEvents && (!contactPermissions || !contactPermissions.canViewEvents)) {
+    return <Navigate to={redirectTo} replace />;
+  }
+
+  if (requireCanManageAmbassadors && (!contactPermissions || !contactPermissions.canManageAmbassadors)) {
+    return <Navigate to={redirectTo} replace />;
   }
 
   // Vérifier si le rôle de l'utilisateur est autorisé

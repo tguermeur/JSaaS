@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from '@mui/material';
 import { CssBaseline, CircularProgress, Box } from '@mui/material';
@@ -33,6 +33,7 @@ import MentionsLegales from './pages/MentionsLegales';
 import PolitiqueConfidentialite from './pages/PolitiqueConfidentialite';
 import ProtectedRoute from './components/ProtectedRoute';
 import RequireRole from './components/guards/RequireRole';
+import { useAuth } from './contexts/AuthContext';
 import Tresorerie from './pages/Tresorerie';
 import StripeCustomers from './pages/settings/StripeCustomers';
 import { SnackbarProvider } from 'notistack';
@@ -67,6 +68,9 @@ import CotisationPayment from './pages/CotisationPayment';
 import CotisationSuccess from './pages/CotisationSuccess';
 import CotisationCancel from './pages/CotisationCancel';
 import Documents from './pages/Documents';
+import Ambassadors from './pages/Ambassadors';
+import { AmbassadorEventDetails } from './pages/AmbassadorEventDetails';
+import { AmbassadorsLayout } from './components/layout/AmbassadorsLayout';
 
 
 // Composant wrapper pour le suivi d'activité
@@ -74,6 +78,27 @@ function ActivityTrackerWrapper({ children }: { children: React.ReactNode }) {
   useActivityTracker();
   return <>{children}</>;
 }
+
+// Composant pour rediriger selon le type d'utilisateur
+const DefaultRedirect: React.FC = () => {
+  const { userData, isContactWithAccess, contactPermissions, loading } = useAuth();
+  
+  if (loading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+  
+  // Pour les contacts avec accès ayant canViewEvents, rediriger vers available-missions
+  if (isContactWithAccess && userData?.status === 'entreprise' && contactPermissions?.canViewEvents) {
+    return <Navigate to="/app/available-missions" replace />;
+  }
+  
+  // Par défaut, rediriger vers le dashboard
+  return <Navigate to="/app/dashboard" replace />;
+};
 
 function App(): JSX.Element {
   useEffect(() => {
@@ -124,7 +149,7 @@ function App(): JSX.Element {
                     <Route path="/cotisation/success" element={<CotisationSuccess />} />
                     <Route path="/cotisation/cancel" element={<CotisationCancel />} />
                     <Route path="/app" element={<ProtectedLayout />}>
-                      <Route index element={<Navigate to="/app/dashboard" replace />} />
+                      <Route index element={<DefaultRedirect />} />
                       <Route path="dashboard" element={
                         <ProtectedRoute requiredPermission={{ pageId: 'dashboard', accessType: 'read' }}>
                           <Dashboard />
@@ -185,7 +210,7 @@ function App(): JSX.Element {
                         </RequireRole>
                       } />
                       <Route path="available-missions" element={
-                        <RequireRole allowedRoles={['etudiant', 'admin_structure', 'admin', 'membre', 'superadmin']}>
+                        <RequireRole allowedRoles={['etudiant', 'admin_structure', 'admin', 'membre', 'superadmin', 'entreprise']}>
                           <AvailableMissions />
                         </RequireRole>
                       } />
@@ -241,6 +266,18 @@ function App(): JSX.Element {
                           </ProtectedRoute>
                         </RequireRole>
                       } />
+                      <Route path="ambassadeurs" element={
+                        <RequireRole 
+                          allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin', 'entreprise']}
+                          requireContactAccess={false}
+                          requireCanViewEvents={false}
+                        >
+                            <AmbassadorsLayout />
+                        </RequireRole>
+                      }>
+                        <Route index element={<Ambassadors />} />
+                        <Route path="event/:eventId" element={<AmbassadorEventDetails />} />
+                      </Route>
                       <Route path="settings" element={<Settings />}>
                         <Route path="templates" element={
                           <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>

@@ -40,6 +40,8 @@ import { useSnackbar } from 'notistack';
 import DocumentDisclaimer from '../DocumentDisclaimer';
 import { getAuth } from 'firebase/auth';
 import axios from 'axios';
+import TwoFactorDialog from '../common/TwoFactorDialog';
+import { fetchDecryptFile, is2FARequiredError } from '../../utils/decryptFileUtils';
 
 interface DocumentsTabProps {
   userData: UserData;
@@ -108,7 +110,9 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [viewerError, setViewerError] = useState<string | null>(null);
-  
+  const [twoFactorDocumentOpen, setTwoFactorDocumentOpen] = useState(false);
+  const [pendingDecryptDocument, setPendingDecryptDocument] = useState<{ path: string; token: string } | null>(null);
+
   // Référence pour l'input file de la carte d'identité
   const identityCardFileInputRef = React.useRef<HTMLInputElement>(null);
   
@@ -247,213 +251,107 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
     }
   };
 
+  const openDocumentWithDecrypt = async (
+    path: string,
+    opts?: { onNotFound?: () => void | Promise<void> }
+  ) => {
+    const auth = getAuth();
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser) {
+      enqueueSnackbar('Utilisateur non authentifié', { variant: 'error' });
+      return;
+    }
+    const token = await firebaseUser.getIdToken(true);
+    setViewerOpen(true);
+    setViewerLoading(true);
+    setViewerError(null);
+    setViewerUrl(null);
+    try {
+      const { blob, contentType } = await fetchDecryptFile({
+        filePath: path,
+        token,
+        timeout: 60000,
+      });
+      const url = URL.createObjectURL(new Blob([blob], { type: contentType }));
+      setViewerUrl(url);
+      setViewerLoading(false);
+    } catch (err: any) {
+      if (err?.response?.status === 403 && is2FARequiredError(err)) {
+        setViewerOpen(false);
+        setViewerLoading(false);
+        setViewerUrl(null);
+        setPendingDecryptDocument({ path, token });
+        setTwoFactorDocumentOpen(true);
+        return;
+      }
+      if (err?.response?.status === 404) {
+        try {
+          const storage = getStorage();
+          const fileRef = ref(storage, path);
+          const url = await getDownloadURL(fileRef);
+          setViewerUrl(url);
+        } catch {
+          setViewerError('Document introuvable.');
+          await opts?.onNotFound?.();
+        }
+      } else {
+        setViewerError(err?.response?.status === 403 ? 'Accès refusé.' : `Erreur: ${err?.message || 'inconnue'}`);
+      }
+      setViewerLoading(false);
+    }
+  };
+
+  const handleVerifyDocument2FA = async (code: string) => {
+    const pending = pendingDecryptDocument;
+    if (!pending) throw new Error('Session expirée. Rouvrez le document.');
+    const { blob, contentType } = await fetchDecryptFile({
+      filePath: pending.path,
+      token: pending.token,
+      twoFactorCode: code,
+      timeout: 60000,
+    });
+    const url = URL.createObjectURL(new Blob([blob], { type: contentType }));
+    setViewerUrl(url);
+    setViewerOpen(true);
+    setViewerError(null);
+    setPendingDecryptDocument(null);
+    setTwoFactorDocumentOpen(false);
+  };
+
   const handleViewCV = async () => {
     if (!userData.cvUrl || !currentUser) return;
-
     try {
-        // Extraire le chemin du fichier depuis l'URL Firebase Storage
-        // Format: https://firebasestorage.googleapis.com/v0/b/[bucket]/o/[path]?alt=media&token=...
-        let path = '';
-        try {
-            const urlObj = new URL(userData.cvUrl);
-            const pathStartIndex = urlObj.pathname.indexOf('/o/') + 3;
-            if (pathStartIndex > 2) {
-                const encodedPath = urlObj.pathname.substring(pathStartIndex);
-                path = decodeURIComponent(encodedPath);
-            }
-        } catch (e) {
-            console.error("Erreur parsing URL CV", e);
-            // Fallback
-            window.open(userData.cvUrl, '_blank');
-            return;
+      let path = '';
+      try {
+        const urlObj = new URL(userData.cvUrl);
+        const idx = urlObj.pathname.indexOf('/o/') + 3;
+        if (idx > 2) {
+          const raw = urlObj.pathname.substring(idx).split('?')[0];
+          path = decodeURIComponent(raw.replace(/%2F/g, '/'));
         }
-
-        if (path) {
-            if (!currentUser) {
-                throw new Error('Utilisateur non authentifié');
-            }
-            
-            // Récupérer le token de manière fiable depuis l'utilisateur Firebase Auth
-            const auth = getAuth();
-            const firebaseUser = auth.currentUser;
-            if (!firebaseUser) {
-              throw new Error('Utilisateur Firebase non authentifié');
-            }
-            const token = await firebaseUser.getIdToken(true); // Force refresh du token
-            
-            // Vérifier d'abord si le fichier est chiffré
-            try {
-              const { getFunctions, httpsCallable } = await import('firebase/functions');
-              const functions = getFunctions();
-              const isFileEncrypted = httpsCallable(functions, 'isFileEncrypted');
-              
-              const checkResult = await isFileEncrypted({ filePath: path });
-              const isEncrypted = (checkResult.data as any)?.encrypted;
-              
-              if (isEncrypted) {
-                // Le fichier est chiffré, utiliser decryptFile
-                setViewerLoading(true);
-                setViewerError(null);
-                try {
-                  const response = await axios.get(
-                    `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                    {
-                      params: { filePath: path },
-                      headers: {
-                        'Authorization': `Bearer ${token}`
-                      },
-                      responseType: 'blob'
-                    }
-                  );
-                  
-                  // Fichier déchiffré avec succès
-                  const blob = new Blob([response.data]);
-                  const url = URL.createObjectURL(blob);
-                  setViewerUrl(url);
-                  setViewerOpen(true);
-                  setViewerLoading(false);
-                } catch (decryptError: any) {
-                  console.error('Erreur lors du déchiffrement:', decryptError);
-                  setViewerLoading(false);
-                  if (decryptError.response?.status === 403) {
-                    const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                    if (errorMsg.includes('2FA')) {
-                      setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                      enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-                    } else {
-                      setViewerError('Accès refusé à ce document chiffré');
-                      enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-                    }
-                  } else {
-                    setViewerError(`Erreur lors du déchiffrement: ${decryptError.message || 'Erreur inconnue'}`);
-                    enqueueSnackbar(`Erreur lors du déchiffrement: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-                  }
-                }
-              } else {
-                // Le fichier n'est pas chiffré, téléchargement direct
-                setViewerLoading(true);
-                setViewerError(null);
-                try {
-                  const storage = getStorage();
-                  const cvRef = ref(storage, path);
-                  const url = await getDownloadURL(cvRef);
-                  setViewerUrl(url);
-                  setViewerOpen(true);
-                  setViewerLoading(false);
-                } catch (downloadError: any) {
-                  // Si le téléchargement direct échoue, le fichier est probablement chiffré
-                  // mais les métadonnées ne sont pas encore propagées, essayer decryptFile
-                  console.warn('Téléchargement direct échoué, tentative de déchiffrement (métadonnées peut-être pas encore propagées):', downloadError);
-                  try {
-                    const response = await axios.get(
-                      `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                      {
-                        params: { filePath: path },
-                        headers: {
-                          'Authorization': `Bearer ${token}`
-                        },
-                        responseType: 'blob'
-                      }
-                    );
-                    
-                    const blob = new Blob([response.data]);
-                    const url = URL.createObjectURL(blob);
-                    setViewerUrl(url);
-                    setViewerOpen(true);
-                    setViewerLoading(false);
-                  } catch (decryptError: any) {
-                    console.error('Erreur déchiffrement:', decryptError);
-                    setViewerLoading(false);
-                    if (decryptError.response?.status === 403) {
-                      const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                      if (errorMsg.includes('2FA')) {
-                        setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                        enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-                      } else {
-                        setViewerError('Accès refusé à ce document chiffré');
-                        enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-                      }
-                    } else {
-                      setViewerError(`Erreur lors de l'ouverture du CV: ${decryptError.message || 'Erreur inconnue'}`);
-                      enqueueSnackbar(`Erreur lors de l'ouverture du CV: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-                    }
-                  }
-                }
-              }
-            } catch (error: any) {
-              // Si la vérification échoue complètement, essayer decryptFile directement
-              console.warn('Erreur lors de la vérification du chiffrement, tentative de déchiffrement:', error);
-              setViewerLoading(true);
-              setViewerError(null);
-              try {
-                const response = await axios.get(
-                  `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                  {
-                    params: { filePath: path },
-                    headers: {
-                      'Authorization': `Bearer ${token}`
-                    },
-                    responseType: 'blob'
-                  }
-                );
-                
-                const blob = new Blob([response.data], { type: 'application/pdf' });
-                const url = URL.createObjectURL(blob);
-                console.log('✅ Document déchiffré (fallback), URL blob créée:', url.substring(0, 50) + '...');
-                setViewerUrl(url);
-                setViewerOpen(true);
-                setViewerLoading(false);
-              } catch (decryptError: any) {
-                console.error('Erreur déchiffrement:', decryptError);
-                setViewerLoading(false);
-                if (decryptError.response?.status === 403) {
-                  const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                  if (errorMsg.includes('2FA')) {
-                    setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                    enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-                  } else {
-                    setViewerError('Accès refusé à ce document chiffré');
-                    enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-                  }
-                } else if (decryptError.response?.status === 404) {
-                  // Le fichier n'existe pas ou n'est pas chiffré, essayer le téléchargement direct
-                  try {
-                    const storage = getStorage();
-                    const cvRef = ref(storage, path);
-                    const url = await getDownloadURL(cvRef);
-                    setViewerUrl(url);
-                    setViewerOpen(true);
-                    setViewerLoading(false);
-                  } catch (downloadError: any) {
-                    setViewerError('Erreur lors de l\'ouverture du CV');
-                    enqueueSnackbar(`Erreur lors de l'ouverture du CV`, { variant: 'error' });
-                  }
-                } else {
-                  setViewerError(`Erreur lors de l'ouverture du CV: ${decryptError.message || 'Erreur inconnue'}`);
-                  enqueueSnackbar(`Erreur lors de l'ouverture du CV: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-                }
-              }
-            }
-        } else {
-            // Fallback
-            window.open(userData.cvUrl, '_blank');
-        }
-    } catch (error: any) {
-        console.error("Erreur lors de l'ouverture du CV:", error);
-        
-        if (error.code === 'storage/object-not-found' || error.response?.status === 404) {
+      } catch (e) {
+        console.error('Erreur parsing URL CV', e);
+        window.open(userData.cvUrl, '_blank');
+        return;
+      }
+      if (path) {
+        await openDocumentWithDecrypt(path, {
+          onNotFound: async () => {
             enqueueSnackbar("Le fichier n'existe plus. Suppression de la référence...", { variant: 'warning' });
             try {
-                if (currentUser) {
-                    await updateUserDocument(currentUser.uid, { cvUrl: null });
-                    onUpdate();
-                }
+              await updateUserDocument(currentUser!.uid, { cvUrl: null });
+              onUpdate();
             } catch (e) {
-                console.error("Erreur nettoyage profil:", e);
+              console.error('Erreur nettoyage profil:', e);
             }
-        } else {
-            enqueueSnackbar(`Erreur lors de l'ouverture du CV: ${error.message || 'Erreur inconnue'}`, { variant: 'error' });
-        }
+          },
+        });
+      } else {
+        window.open(userData.cvUrl, '_blank');
+      }
+    } catch (error: any) {
+      console.error("Erreur lors de l'ouverture du CV:", error);
+      enqueueSnackbar(`Erreur lors de l'ouverture du CV: ${error.message || 'Erreur inconnue'}`, { variant: 'error' });
     }
   };
 
@@ -899,344 +797,40 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
   // Fonction générique pour télécharger et déchiffrer un document
   const handleDocumentView = async (docType: DocumentType) => {
     if (!currentUser) return;
-    
     const documentUrl = (userData as any)[docType.fieldName];
     if (!documentUrl) return;
-
     try {
-      // Extraire le chemin du fichier depuis l'URL
       let path = '';
       try {
         const urlObj = new URL(documentUrl);
-        const pathStartIndex = urlObj.pathname.indexOf('/o/') + 3;
-        if (pathStartIndex > 2) {
-          const encodedPath = urlObj.pathname.substring(pathStartIndex);
-          // Décoder le chemin, en gérant les cas où il peut y avoir plusieurs niveaux d'encodage
-          try {
-            path = decodeURIComponent(encodedPath);
-            // Si le décodage produit encore des caractères encodés, réessayer
-            if (path.includes('%')) {
-              path = decodeURIComponent(path);
-            }
-          } catch (decodeError) {
-            // Si le décodage échoue, utiliser le chemin tel quel
-            path = encodedPath;
-          }
+        const idx = urlObj.pathname.indexOf('/o/') + 3;
+        if (idx > 2) {
+          const raw = urlObj.pathname.substring(idx).split('?')[0];
+          path = decodeURIComponent(raw.replace(/%2F/g, '/'));
         }
       } catch (e) {
         console.error(`Erreur parsing URL ${docType.label}`, e);
-        // Fallback
         window.open(documentUrl, '_blank');
         return;
       }
-      
-      // S'assurer que le chemin n'est pas vide et est valide
-      if (!path || path.trim() === '') {
-        console.error(`Chemin de fichier vide pour ${docType.label}`);
+      if (!path || !path.trim()) {
         enqueueSnackbar(`Impossible d'extraire le chemin du fichier ${docType.label}`, { variant: 'error' });
         return;
       }
-
-      // Logger le chemin extrait pour le débogage
-      console.log(`[DocumentsTab] Chemin extrait pour ${docType.label}:`, path);
-
-      if (path) {
-        if (!currentUser) {
-          throw new Error('Utilisateur non authentifié');
-        }
-        
-        // Récupérer le token de manière fiable depuis l'utilisateur Firebase Auth
-        const auth = getAuth();
-        const firebaseUser = auth.currentUser;
-        if (!firebaseUser) {
-          throw new Error('Utilisateur Firebase non authentifié');
-        }
-        const token = await firebaseUser.getIdToken(true); // Force refresh du token
-        
-        // Vérifier d'abord si le fichier est chiffré
-        try {
-          const { getFunctions, httpsCallable } = await import('firebase/functions');
-          const functions = getFunctions();
-          const isFileEncrypted = httpsCallable(functions, 'isFileEncrypted');
-          
-          const checkResult = await isFileEncrypted({ filePath: path });
-          const isEncrypted = (checkResult.data as any)?.encrypted;
-          
-          if (isEncrypted) {
-            // Le fichier est chiffré, utiliser decryptFile
-            setViewerLoading(true);
-            setViewerError(null);
-            try {
-              // Logger les paramètres de la requête pour le débogage
-              console.log(`[DocumentsTab] Appel decryptFile avec filePath:`, path);
-              
-              const response = await axios.get(
-                `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                {
-                  params: { filePath: path },
-                  headers: {
-                    'Authorization': `Bearer ${token}`
-                  },
-                  responseType: 'blob',
-                  // Ajouter un timeout pour éviter les attentes infinies
-                  timeout: 60000 // 60 secondes
-                }
-              );
-              
-              // Fichier déchiffré avec succès
-              const blob = new Blob([response.data], { type: 'application/pdf' });
-              const url = URL.createObjectURL(blob);
-              console.log('✅ Document déchiffré, URL blob créée:', url.substring(0, 50) + '...');
-              setViewerUrl(url);
-              setViewerOpen(true);
-              setViewerLoading(false);
-            } catch (decryptError: any) {
-              console.error('Erreur lors du déchiffrement:', decryptError);
-              setViewerLoading(false);
-              if (decryptError.response?.status === 403) {
-                const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                if (errorMsg.includes('2FA')) {
-                  setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                  enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-                } else {
-                  setViewerError('Accès refusé à ce document chiffré');
-                  enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-                }
-              } else {
-                setViewerError(`Erreur lors du déchiffrement: ${decryptError.message || 'Erreur inconnue'}`);
-                enqueueSnackbar(`Erreur lors du déchiffrement: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-              }
-            }
-          } else {
-            // Le fichier n'est pas chiffré selon les métadonnées, mais comme les métadonnées peuvent ne pas être propagées,
-            // on essaie toujours decryptFile d'abord (qui retournera le fichier tel quel s'il n'est pas chiffré)
-            setViewerLoading(true);
-            setViewerError(null);
-            try {
-              // Essayer decryptFile d'abord (fonctionne même pour les fichiers non chiffrés)
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:867',message:'Appel decryptFile (isEncrypted=false)',data:{filePath:path},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'G'})}).catch(()=>{});
-              // #endregion
-              // Logger les paramètres de la requête pour le débogage
-              console.log(`[DocumentsTab] Appel decryptFile avec filePath:`, path);
-              
-              const response = await axios.get(
-                `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                {
-                  params: { filePath: path },
-                  headers: {
-                    'Authorization': `Bearer ${token}`
-                  },
-                  responseType: 'blob',
-                  // Ajouter un timeout pour éviter les attentes infinies
-                  timeout: 60000 // 60 secondes
-                }
-              );
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:880',message:'Réponse decryptFile reçue (isEncrypted=false)',data:{filePath:path,responseStatus:response.status,responseDataSize:response.data?.size||'unknown',responseDataType:response.data?.type||'unknown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'G'})}).catch(()=>{});
-              // #endregion
-              
-              // #region agent log
-              const responseDataIsBlob = response.data instanceof Blob;
-              const responseDataIsArrayBuffer = response.data instanceof ArrayBuffer;
-              const responseDataConstructor = response.data?.constructor?.name || 'unknown';
-              const responseDataSize = response.data?.size || response.data?.byteLength || 'unknown';
-              const responseContentType = response.headers['content-type'] || response.headers['Content-Type'] || 'unknown';
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:888',message:'Données response.data avant création blob',data:{responseDataIsBlob,responseDataIsArrayBuffer,responseDataConstructor,responseDataSize,responseContentType,responseStatus:response.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'H'})}).catch(()=>{});
-              // #endregion
-              
-              // S'assurer que response.data est dans le bon format
-              let dataToBlob: BlobPart;
-              if (response.data instanceof Blob) {
-                dataToBlob = response.data;
-              } else if (response.data instanceof ArrayBuffer) {
-                dataToBlob = response.data;
-              } else {
-                // Si c'est une string ou autre, essayer de la convertir
-                dataToBlob = new Uint8Array(response.data as any);
-              }
-              
-              const blob = new Blob([dataToBlob], { type: responseContentType || 'application/pdf' });
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:900',message:'Blob créé après decryptFile',data:{blobSize:blob.size,blobType:blob.type,responseDataSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'H'})}).catch(()=>{});
-              // #endregion
-              
-              // Vérifier que le blob n'est pas vide
-              if (blob.size === 0) {
-                throw new Error('Le blob créé est vide (0 bytes)');
-              }
-              
-              // Tester si on peut lire le blob
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                // #region agent log
-                const result = reader.result;
-                const resultIsArrayBuffer = result instanceof ArrayBuffer;
-                const resultSize = resultIsArrayBuffer ? result.byteLength : 'not arraybuffer';
-                const firstBytes = resultIsArrayBuffer ? Array.from(new Uint8Array(result).slice(0, 10)).join(',') : 'not arraybuffer';
-                fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:910',message:'FileReader a lu le blob',data:{resultIsArrayBuffer,resultSize,firstBytes,isPDF:firstBytes.startsWith('37,80,68,70')||firstBytes.includes('37,80,68,70')},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'H'})}).catch(()=>{});
-                // #endregion
-              };
-              reader.readAsArrayBuffer(blob);
-              
-              const url = URL.createObjectURL(blob);
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:733',message:'URL blob créée, mise à jour du viewer',data:{blobUrl:url.substring(0,50)+'...',willSetViewerUrl:true,willSetViewerOpen:true},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-              // #endregion
-              console.log('✅ Document obtenu via decryptFile, URL blob créée:', url.substring(0, 50) + '...');
-              setViewerUrl(url);
-              setViewerOpen(true);
-              setViewerLoading(false);
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:738',message:'Viewer state mis à jour',data:{viewerUrlSet:true,viewerOpenSet:true,viewerLoadingSet:false},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-              // #endregion
-            } catch (decryptError: any) {
-              console.warn('decryptFile échoué:', decryptError);
-              const errorStatus = decryptError.response?.status;
-              
-              // Extraire le message d'erreur (peut être dans response.data si c'est un JSON, ou dans response.data si c'est un Blob)
-              let errorMessage = decryptError.message || '';
-              
-              // Si response.data est un Blob, essayer de le convertir en texte pour lire le JSON
-              if (decryptError.response?.data instanceof Blob) {
-                try {
-                  const text = await decryptError.response.data.text();
-                  try {
-                    const jsonError = JSON.parse(text);
-                    errorMessage = jsonError.error || errorMessage;
-                  } catch (e) {
-                    // Si ce n'est pas du JSON, utiliser le texte brut
-                    errorMessage = text || errorMessage;
-                  }
-                } catch (e) {
-                  // Si la conversion en texte échoue, utiliser le message par défaut
-                  errorMessage = 'Erreur lors du déchiffrement du fichier';
-                }
-              } else if (decryptError.response?.data) {
-                // Si response.data est un objet, essayer d'extraire le message d'erreur
-                if (typeof decryptError.response.data === 'object' && decryptError.response.data.error) {
-                  errorMessage = decryptError.response.data.error;
-                } else if (typeof decryptError.response.data === 'string') {
-                  try {
-                    const jsonError = JSON.parse(decryptError.response.data);
-                    errorMessage = jsonError.error || errorMessage;
-                  } catch (e) {
-                    errorMessage = decryptError.response.data || errorMessage;
-                  }
-                }
-              }
-              
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:943',message:'decryptFile erreur capturée',data:{errorStatus,errorMessage,hasResponse:!!decryptError.response,responseDataType:decryptError.response?.data?.constructor?.name||'unknown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'I'})}).catch(()=>{});
-              // #endregion
-              
-              // Vérifier si c'est une erreur 400 (fichier chiffré mais métadonnées manquantes)
-              if (errorStatus === 400) {
-                // Erreur 400 = fichier chiffré mais métadonnées manquantes, ne JAMAIS essayer getDownloadURL
-                const friendlyMessage = errorMessage.includes('métadonnées') || errorMessage.includes('ne sont pas encore disponibles') || errorMessage.includes('semble chiffré')
-                  ? 'Le fichier vient d\'être chiffré et les métadonnées ne sont pas encore propagées. Veuillez attendre quelques secondes et réessayer en cliquant sur "Voir" à nouveau.'
-                  : errorMessage || 'Impossible de déchiffrer le fichier. Les métadonnées de chiffrement ne sont pas disponibles. Le fichier vient peut-être d\'être chiffré. Veuillez attendre quelques secondes et réessayer.';
-                setViewerError(friendlyMessage);
-                enqueueSnackbar(friendlyMessage, { variant: 'warning' });
-                setViewerLoading(false);
-                return;
-              }
-              
-              try {
-                const storage = getStorage();
-                const fileRef = ref(storage, path);
-                const url = await getDownloadURL(fileRef);
-                console.log('✅ URL Firebase Storage obtenue:', url.substring(0, 100) + '...');
-                setViewerUrl(url);
-                setViewerOpen(true);
-                setViewerLoading(false);
-              } catch (downloadError: any) {
-                console.error('Erreur téléchargement:', downloadError);
-                setViewerLoading(false);
-                if (decryptError.response?.status === 403) {
-                  const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                  if (errorMsg.includes('2FA')) {
-                    setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                    enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-                  } else {
-                    setViewerError('Accès refusé à ce document chiffré');
-                    enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-                  }
-                } else {
-                  setViewerError(`Erreur lors de l'ouverture du document: ${decryptError.message || downloadError.message || 'Erreur inconnue'}`);
-                  enqueueSnackbar(`Erreur lors de l'ouverture du document: ${decryptError.message || downloadError.message || 'Erreur inconnue'}`, { variant: 'error' });
-                }
-              }
-            }
-          }
-        } catch (error: any) {
-          // Si la vérification échoue complètement, essayer decryptFile directement
-          console.warn('Erreur lors de la vérification du chiffrement, tentative de déchiffrement:', error);
-          setViewerLoading(true);
-          setViewerError(null);
+      await openDocumentWithDecrypt(path, {
+        onNotFound: async () => {
+          enqueueSnackbar(`Le fichier ${docType.label} n'existe plus. Suppression de la référence...`, { variant: 'warning' });
           try {
-            const response = await axios.get(
-              `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-              {
-                params: { filePath: path },
-                headers: {
-                  'Authorization': `Bearer ${token}`
-                },
-                responseType: 'blob'
-              }
-            );
-            
-            const blob = new Blob([response.data]);
-            const url = URL.createObjectURL(blob);
-            setViewerUrl(url);
-            setViewerOpen(true);
-            setViewerLoading(false);
-          } catch (decryptError: any) {
-            console.error('Erreur déchiffrement:', decryptError);
-            setViewerLoading(false);
-            if (decryptError.response?.status === 403) {
-              const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-              if (errorMsg.includes('2FA')) {
-                setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-              } else {
-                setViewerError('Accès refusé à ce document chiffré');
-                enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-              }
-            } else if (decryptError.response?.status === 404) {
-              // Le fichier n'existe pas ou n'est pas chiffré, essayer le téléchargement direct
-              try {
-                const storage = getStorage();
-                const fileRef = ref(storage, path);
-                const url = await getDownloadURL(fileRef);
-                setViewerUrl(url);
-                setViewerOpen(true);
-                setViewerLoading(false);
-              } catch (downloadError: any) {
-                setViewerError('Erreur lors de l\'ouverture du document');
-                enqueueSnackbar(`Erreur lors de l'ouverture du document`, { variant: 'error' });
-              }
-            } else {
-              setViewerError(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`);
-              enqueueSnackbar(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-            }
+            await updateUserDocument(currentUser.uid, { [docType.fieldName]: null });
+            onUpdate();
+          } catch (e) {
+            console.error('Erreur nettoyage profil:', e);
           }
-        }
-      }
+        },
+      });
     } catch (error: any) {
       console.error(`Erreur lors de l'ouverture de ${docType.label}:`, error);
-      
-      if (error.code === 'storage/object-not-found' || error.response?.status === 404) {
-        enqueueSnackbar(`Le fichier ${docType.label} n'existe plus. Suppression de la référence...`, { variant: 'warning' });
-        try {
-          await updateUserDocument(currentUser.uid, { [docType.fieldName]: null });
-          onUpdate();
-        } catch (e) {
-          console.error('Erreur nettoyage profil:', e);
-        }
-      } else {
-        enqueueSnackbar(`Erreur lors de l'ouverture de ${docType.label}`, { variant: 'error' });
-      }
+      enqueueSnackbar(`Erreur lors de l'ouverture de ${docType.label}`, { variant: 'error' });
     }
   };
 
@@ -1386,195 +980,25 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
   // Fonction pour consulter un document personnalisé
   const handleViewCustomDocument = async (doc: CustomDocument) => {
     if (!currentUser) return;
-
     try {
-      // Extraire le chemin du fichier depuis l'URL
       let path = '';
       try {
         const urlObj = new URL(doc.url);
-        const pathStartIndex = urlObj.pathname.indexOf('/o/') + 3;
-        if (pathStartIndex > 2) {
-          const encodedPath = urlObj.pathname.substring(pathStartIndex);
-          path = decodeURIComponent(encodedPath);
+        const idx = urlObj.pathname.indexOf('/o/') + 3;
+        if (idx > 2) {
+          const raw = urlObj.pathname.substring(idx).split('?')[0];
+          path = decodeURIComponent(raw.replace(/%2F/g, '/'));
         }
       } catch (e) {
-        console.error(`Erreur parsing URL document personnalisé`, e);
+        console.error('Erreur parsing URL document personnalisé', e);
         window.open(doc.url, '_blank');
         return;
       }
-
-      if (path) {
-        const auth = getAuth();
-        const firebaseUser = auth.currentUser;
-        if (!firebaseUser) {
-          throw new Error('Utilisateur Firebase non authentifié');
-        }
-        const token = await firebaseUser.getIdToken(true);
-        
-        // Vérifier d'abord si le fichier est chiffré
-        try {
-          const { getFunctions, httpsCallable } = await import('firebase/functions');
-          const functions = getFunctions();
-          const isFileEncrypted = httpsCallable(functions, 'isFileEncrypted');
-          
-          const checkResult = await isFileEncrypted({ filePath: path });
-          const isEncrypted = (checkResult.data as any)?.encrypted;
-          
-          if (isEncrypted) {
-            // Le fichier est chiffré, utiliser decryptFile
-            setViewerLoading(true);
-            setViewerError(null);
-            try {
-              // Logger les paramètres de la requête pour le débogage
-              console.log(`[DocumentsTab] Appel decryptFile avec filePath:`, path);
-              
-              const response = await axios.get(
-                `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                {
-                  params: { filePath: path },
-                  headers: {
-                    'Authorization': `Bearer ${token}`
-                  },
-                  responseType: 'blob',
-                  // Ajouter un timeout pour éviter les attentes infinies
-                  timeout: 60000 // 60 secondes
-                }
-              );
-              
-              // Fichier déchiffré avec succès
-              const blob = new Blob([response.data], { type: 'application/pdf' });
-              const url = URL.createObjectURL(blob);
-              console.log('✅ Document déchiffré, URL blob créée:', url.substring(0, 50) + '...');
-              setViewerUrl(url);
-              setViewerOpen(true);
-              setViewerLoading(false);
-            } catch (decryptError: any) {
-              console.error('Erreur lors du déchiffrement:', decryptError);
-              setViewerLoading(false);
-              if (decryptError.response?.status === 403) {
-                const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                if (errorMsg.includes('2FA')) {
-                  setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                  enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-                } else {
-                  setViewerError('Accès refusé à ce document chiffré');
-                  enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-                }
-              } else {
-                setViewerError(`Erreur lors du déchiffrement: ${decryptError.message || 'Erreur inconnue'}`);
-                enqueueSnackbar(`Erreur lors du déchiffrement: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-              }
-            }
-          } else {
-            // Le fichier n'est pas chiffré, téléchargement direct
-            setViewerLoading(true);
-            setViewerError(null);
-            try {
-              const storage = getStorage();
-              const fileRef = ref(storage, path);
-              const url = await getDownloadURL(fileRef);
-              console.log('✅ URL Firebase Storage obtenue:', url.substring(0, 100) + '...');
-              setViewerUrl(url);
-              setViewerOpen(true);
-              setViewerLoading(false);
-            } catch (downloadError: any) {
-              // Si le téléchargement direct échoue, le fichier est probablement chiffré
-              // mais les métadonnées ne sont pas encore propagées, essayer decryptFile
-              console.warn('Téléchargement direct échoué, tentative de déchiffrement (métadonnées peut-être pas encore propagées):', downloadError);
-              try {
-                const response = await axios.get(
-                  `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-                  {
-                    params: { filePath: path },
-                    headers: {
-                      'Authorization': `Bearer ${token}`
-                    },
-                    responseType: 'blob'
-                  }
-                );
-                
-                const blob = new Blob([response.data], { type: 'application/pdf' });
-                const url = URL.createObjectURL(blob);
-                console.log('✅ Document déchiffré (fallback), URL blob créée:', url.substring(0, 50) + '...');
-                setViewerUrl(url);
-                setViewerOpen(true);
-                setViewerLoading(false);
-              } catch (decryptError: any) {
-                console.error('Erreur déchiffrement:', decryptError);
-                setViewerLoading(false);
-                if (decryptError.response?.status === 403) {
-                  const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-                  if (errorMsg.includes('2FA')) {
-                    setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                    enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-                  } else {
-                    setViewerError('Accès refusé à ce document chiffré');
-                    enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-                  }
-                } else {
-                  setViewerError(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`);
-                  enqueueSnackbar(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-                }
-              }
-            }
-          }
-        } catch (error: any) {
-          // Si la vérification échoue complètement, essayer decryptFile directement
-          console.warn('Erreur lors de la vérification du chiffrement, tentative de déchiffrement:', error);
-          setViewerLoading(true);
-          setViewerError(null);
-          try {
-            const response = await axios.get(
-              `https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile`,
-              {
-                params: { filePath: path },
-                headers: {
-                  'Authorization': `Bearer ${token}`
-                },
-                responseType: 'blob'
-              }
-            );
-            
-            const blob = new Blob([response.data]);
-            const url = URL.createObjectURL(blob);
-            setViewerUrl(url);
-            setViewerOpen(true);
-            setViewerLoading(false);
-          } catch (decryptError: any) {
-            console.error('Erreur déchiffrement:', decryptError);
-            setViewerLoading(false);
-            if (decryptError.response?.status === 403) {
-              const errorMsg = decryptError.response?.data?.error || 'Accès refusé';
-              if (errorMsg.includes('2FA')) {
-                setViewerError('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.');
-                enqueueSnackbar('Ce document est chiffré. Veuillez activer l\'authentification à deux facteurs (2FA) pour y accéder.', { variant: 'warning' });
-              } else {
-                setViewerError('Accès refusé à ce document chiffré');
-                enqueueSnackbar('Accès refusé à ce document chiffré', { variant: 'error' });
-              }
-            } else if (decryptError.response?.status === 404) {
-              // Le fichier n'existe pas ou n'est pas chiffré, essayer le téléchargement direct
-              try {
-                const storage = getStorage();
-                const fileRef = ref(storage, path);
-                const url = await getDownloadURL(fileRef);
-                setViewerUrl(url);
-                setViewerOpen(true);
-                setViewerLoading(false);
-              } catch (downloadError: any) {
-                setViewerError('Erreur lors de l\'ouverture du document');
-                enqueueSnackbar(`Erreur lors de l'ouverture du document`, { variant: 'error' });
-              }
-            } else {
-              setViewerError(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`);
-              enqueueSnackbar(`Erreur lors de l'ouverture du document: ${decryptError.message || 'Erreur inconnue'}`, { variant: 'error' });
-            }
-          }
-        }
-      }
+      if (path) await openDocumentWithDecrypt(path);
+      else window.open(doc.url, '_blank');
     } catch (error: any) {
-      console.error(`Erreur lors de l'ouverture du document personnalisé:`, error);
-      enqueueSnackbar(`Erreur lors de l'ouverture du document`, { variant: 'error' });
+      console.error('Erreur lors de l\'ouverture du document personnalisé:', error);
+      enqueueSnackbar('Erreur lors de l\'ouverture du document', { variant: 'error' });
     }
   };
 
@@ -3036,9 +2460,12 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
               flexDirection: 'column',
               gap: 2
             }}>
-              <CircularProgress />
-              <Typography variant="body2" color="text.secondary">
+              <CircularProgress size={48} />
+              <Typography variant="body1" color="text.secondary">
                 Chargement du document...
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 360, textAlign: 'center' }}>
+                Le décryptage peut prendre quelques secondes pour les documents protégés.
               </Typography>
             </Box>
           )}
@@ -3224,6 +2651,17 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <TwoFactorDialog
+        open={twoFactorDocumentOpen}
+        onClose={() => {
+          setTwoFactorDocumentOpen(false);
+          setPendingDecryptDocument(null);
+        }}
+        onVerify={handleVerifyDocument2FA}
+        title="Validation 2FA requise"
+        message="Ce document est chiffré. Entrez le code à 6 chiffres de votre application d'authentification pour y accéder."
+      />
     </Box>
   );
 };

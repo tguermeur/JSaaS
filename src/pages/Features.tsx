@@ -85,11 +85,6 @@ const features = [
     title: "Gestion des Missions",
     description: [
       {
-        icon: <AttachMoneyIcon sx={{ color: '#34C759', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
-        title: "Dépôt de mission 100% gratuit",
-        detail: "Déposez votre mission sans frais. Aucun coût d'inscription, aucune commission sur le dépôt. Vous ne payez que la mission réalisée."
-      },
-      {
         icon: <ReceiptIcon sx={{ color: '#34C759', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
         title: "Devis gratuit par les Junior",
         detail: "Recevez un devis personnalisé et gratuit de la part des Junior adaptées à votre besoin. Aucun engagement, aucune obligation."

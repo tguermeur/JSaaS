@@ -16,7 +16,8 @@ import {
   DialogContent,
   DialogActions,
   useTheme,
-  useMediaQuery
+  useMediaQuery,
+  Snackbar
 } from '@mui/material';
 import { 
   Visibility, 
@@ -24,7 +25,7 @@ import {
 } from '@mui/icons-material';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
 import { loginUser, resetPassword } from '../firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase/config';
@@ -50,10 +51,39 @@ export default function Login(): JSX.Element {
 
   const navigate = useNavigate();
 
-  const getRedirectPath = (userStatus: string): string => {
+  const getRedirectPath = async (userStatus: string, userId: string): Promise<string> => {
+    // Pour les entreprises, vérifier si c'est un contact avec accès
+    if (userStatus === 'entreprise') {
+      try {
+        // Vérifier si c'est un contact avec accès
+        const contactsQuery = query(
+          collection(db, 'contacts'),
+          where('userId', '==', userId)
+        );
+        const contactsSnapshot = await getDocs(contactsQuery);
+        
+        if (!contactsSnapshot.empty) {
+          const contactDoc = contactsSnapshot.docs[0];
+          const contactId = contactDoc.id;
+          
+          const contactAccessRef = doc(db, 'contactAccess', contactId);
+          const contactAccessDoc = await getDoc(contactAccessRef);
+          
+          if (contactAccessDoc.exists()) {
+            const accessData = contactAccessDoc.data();
+            // Si le contact a canViewEvents ou canManageAmbassadors, rediriger vers ambassadeurs
+            if (accessData.canViewEvents || accessData.canManageAmbassadors) {
+              return '/app/ambassadeurs';
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors de la vérification des permissions du contact:', error);
+      }
+      return '/app/dashboard'; // Dashboard entreprise par défaut
+    }
+    
     switch (userStatus) {
-      case 'entreprise':
-        return '/app/dashboard'; // Dashboard entreprise
       case 'etudiant':
         return '/app/dashboard'; // Dashboard étudiant
       case 'admin_structure':
@@ -74,9 +104,20 @@ export default function Login(): JSX.Element {
     try {
       const user = await loginUser(email, password);
       
+      // Attendre un peu pour s'assurer que le document est créé
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       // Récupérer le statut de l'utilisateur pour vérifier la 2FA
       try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        let userDoc = await getDoc(doc(db, 'users', user.uid));
+        
+        // Si le document n'existe toujours pas, réessayer une fois
+        if (!userDoc.exists()) {
+          console.warn('Document utilisateur non trouvé après connexion, nouvelle tentative...');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          userDoc = await getDoc(doc(db, 'users', user.uid));
+        }
+        
         if (userDoc.exists()) {
           const userData = userDoc.data();
           const userStatus = userData.status;
@@ -93,10 +134,29 @@ export default function Login(): JSX.Element {
             return; // Ne pas rediriger, attendre la vérification 2FA
           } else {
             // Pas de 2FA, rediriger normalement
-            const redirectPath = getRedirectPath(userStatus);
+            const redirectPath = await getRedirectPath(userStatus, user.uid);
+            
+            // Si c'est un contact avec accès, attendre un peu plus pour que le contexte charge les permissions
+            if (userStatus === 'entreprise') {
+              try {
+                const contactsQuery = query(
+                  collection(db, 'contacts'),
+                  where('userId', '==', user.uid)
+                );
+                const contactsSnapshot = await getDocs(contactsQuery);
+                if (!contactsSnapshot.empty) {
+                  // C'est un contact avec accès, attendre que le contexte charge les permissions
+                  await new Promise(resolve => setTimeout(resolve, 1500));
+                }
+              } catch (error) {
+                console.warn('Erreur lors de la vérification du contact:', error);
+              }
+            }
+            
             navigate(redirectPath);
           }
         } else {
+          console.warn('Document utilisateur toujours inexistant après plusieurs tentatives');
           navigate('/app/dashboard');
         }
       } catch (error) {
@@ -161,8 +221,16 @@ export default function Login(): JSX.Element {
     };
   };
 
-  const handleTwoFactorVerify = async () => {
-    if (!pendingUserId || twoFactorCode.length !== 6) {
+  const handleTwoFactorVerify = async (codeOverride?: string) => {
+    if (!pendingUserId) {
+      setTwoFactorError('Erreur : session invalide. Veuillez réessayer de vous connecter.');
+      return;
+    }
+    
+    // Utiliser le code passé en paramètre ou celui de l'état
+    const codeToVerify = codeOverride || twoFactorCode;
+    
+    if (codeToVerify.length !== 6) {
       setTwoFactorError('Veuillez entrer un code à 6 chiffres');
       return;
     }
@@ -180,29 +248,22 @@ export default function Login(): JSX.Element {
       // Envoyer le code et les infos de l'appareil
       await verifyTwoFactorCode({ 
         uid: pendingUserId, 
-        code: twoFactorCode,
+        code: codeToVerify,
         deviceInfo 
       });
 
       // Code valide, rediriger
-      const redirectPath = getRedirectPath(pendingUserStatus || '');
+      const redirectPath = await getRedirectPath(pendingUserStatus || '', pendingUserId || '');
       navigate(redirectPath);
     } catch (error: any) {
       console.error('Erreur vérification 2FA:', error);
-      setTwoFactorError(error.message || 'Code invalide. Veuillez réessayer.');
+      const errorMessage = error.message || 'Code invalide. Veuillez réessayer.';
+      setTwoFactorError(errorMessage);
       
-      // Déconnecter l'utilisateur en cas d'échec
-      try {
-        await signOut(auth);
-      } catch (signOutError) {
-        console.error('Erreur lors de la déconnexion:', signOutError);
-      }
-      
-      // Réinitialiser l'état
-      setTwoFactorRequired(false);
+      // Réinitialiser le code pour permettre une nouvelle tentative
       setTwoFactorCode('');
-      setPendingUserId(null);
-      setPendingUserStatus(null);
+      
+      // Ne pas déconnecter l'utilisateur, laisser le dialog ouvert pour réessayer
     } finally {
       setTwoFactorLoading(false);
     }
@@ -509,8 +570,9 @@ export default function Login(): JSX.Element {
               
               // Validation automatique quand 6 chiffres sont entrés
               if (value.length === 6) {
+                // Passer la valeur directement pour éviter les problèmes de synchronisation d'état
                 setTimeout(() => {
-                  handleTwoFactorVerify();
+                  handleTwoFactorVerify(value);
                 }, 100);
               }
             }}
@@ -523,8 +585,9 @@ export default function Login(): JSX.Element {
               
               // Validation automatique quand 6 chiffres sont collés
               if (value.length === 6) {
+                // Passer la valeur directement pour éviter les problèmes de synchronisation d'état
                 setTimeout(() => {
-                  handleTwoFactorVerify();
+                  handleTwoFactorVerify(value);
                 }, 100);
               }
             }}
@@ -625,6 +688,34 @@ export default function Login(): JSX.Element {
           </Button>
         </DialogActions>
       </Dialog>
+      
+      {/* Snackbar pour afficher les erreurs 2FA */}
+      <Snackbar
+        open={!!twoFactorError && twoFactorRequired}
+        autoHideDuration={5000}
+        onClose={() => setTwoFactorError(null)}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        sx={{
+          '& .MuiSnackbar-root': {
+            top: '80px !important'
+          }
+        }}
+      >
+        <Alert 
+          onClose={() => setTwoFactorError(null)} 
+          severity="error" 
+          sx={{ 
+            width: '100%',
+            fontSize: '0.9375rem',
+            fontWeight: 500,
+            '& .MuiAlert-icon': {
+              fontSize: '1.25rem'
+            }
+          }}
+        >
+          {twoFactorError}
+        </Alert>
+      </Snackbar>
       
       <Typography variant="body2" color="text.secondary" sx={{ mt: { xs: 2, sm: 4 }, mb: { xs: 2, sm: 0 }, textAlign: 'center', px: { xs: 2, sm: 0 }, fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
         En vous connectant, vous acceptez les{' '}

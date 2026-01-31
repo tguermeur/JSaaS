@@ -16,6 +16,7 @@ import {
   Delete as DeleteIcon,
   Edit as EditIcon,
   Info as InfoIcon,
+  PushPin as PinIcon,
 } from '@mui/icons-material';
 import { Folder } from '../../types/document';
 
@@ -25,6 +26,7 @@ interface FolderCardProps {
   onDelete?: (folder: Folder) => void;
   onRename?: (folder: Folder) => void;
   onProperties?: (folder: Folder) => void;
+  onPin?: (folder: Folder) => void;
   canAccess: boolean;
   canDelete?: boolean;
   canRename?: boolean;
@@ -39,6 +41,7 @@ const FolderCard: React.FC<FolderCardProps> = ({
   onDelete,
   onRename,
   onProperties,
+  onPin,
   canAccess,
   canDelete = true,
   canRename = true,
@@ -109,6 +112,29 @@ const FolderCard: React.FC<FolderCardProps> = ({
           {/* macOS Style Folder Icon Color */}
           <FolderIcon sx={{ fontSize: 90, color: folder.color || '#007AFF' }} />
           
+          {/* Pinned Icon Overlay */}
+          {folder.isPinned && (
+            <Tooltip title="Épinglé">
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 0,
+                  right: '25%',
+                  backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                  borderRadius: '50%',
+                  p: 0.5,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  zIndex: 1,
+                }}
+              >
+                <PinIcon sx={{ fontSize: 14, color: '#007AFF', transform: 'rotate(45deg)' }} />
+              </Box>
+            </Tooltip>
+          )}
+
           {/* Restricted Icon Overlay */}
           {folder.isRestricted && (
             <Tooltip title="Restreint">
@@ -213,6 +239,23 @@ const FolderCard: React.FC<FolderCardProps> = ({
           },
         }}
       >
+        {onPin && (
+          <MenuItem
+            onClick={() => {
+              handleMenuClose();
+              onPin(folder);
+            }}
+          >
+            <PinIcon 
+              sx={{ 
+                fontSize: 18, 
+                color: folder.isPinned ? '#007AFF' : '#1d1d1f',
+                transform: folder.isPinned ? 'rotate(45deg)' : 'none'
+              }} 
+            />
+            {folder.isPinned ? 'Désépingler' : 'Épingler'}
+          </MenuItem>
+        )}
         {onProperties && (
           <MenuItem
             onClick={() => {

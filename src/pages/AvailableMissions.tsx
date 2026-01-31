@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -37,16 +37,19 @@ import {
   CheckCircle as CheckCircleIcon,
   PictureAsPdf as PdfIcon,
   Payment as PaymentIcon,
+  Event as EventIcon,
 } from '@mui/icons-material';
-import { collection, query, where, getDocs, getDoc, doc, addDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, doc, addDoc, updateDoc } from 'firebase/firestore';
+import { registerAmbassadorToSlot } from '../services/missionService';
 import { loadStripe } from '@stripe/stripe-js';
 import { db } from '../firebase/config';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Sidebar from '../components/layout/Sidebar';
 import Navbar from '../components/layout/Navbar';
 import { styled } from '@mui/material';
 import { fetchStripePaymentIntents, checkPaymentIntentExists } from '../api/stripe';
+import MissionMap from '../components/missions/MissionMap';
 
 // Déclaration globale pour le bouton Stripe
 declare global {
@@ -123,8 +126,16 @@ interface Mission {
   salary?: number;
   priceHT?: number;
   startDate?: string;
+  endDate?: string;
   requiresCV?: boolean;
+  locationCoordinates?: {
+    lat: number;
+    lng: number;
+  };
   requiresMotivation?: boolean;
+  type?: string;
+  convertedMissionId?: string;
+  slots?: any[];
 }
 
 interface RecruitmentTask {
@@ -218,39 +229,45 @@ interface FirebaseTimestamp {
 
 const AvailableMissions: React.FC = () => {
   const [missions, setMissions] = useState<Mission[]>([]);
+  const [ambassadorEvents, setAmbassadorEvents] = useState<Mission[]>([]);
+  const [isAmbassador, setIsAmbassador] = useState(false);
   const [recruitmentTasks, setRecruitmentTasks] = useState<RecruitmentTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { currentUser, userData } = useAuth();
+  const location = useLocation();
+  const { currentUser, userData, isContactWithAccess, contactPermissions } = useAuth();
 
-  // Rediriger les entreprises vers le dashboard
-  useEffect(() => {
-    const checkUserRole = async () => {
-      if (!currentUser) return;
-      
-      try {
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        const userStatus = userDoc.data()?.status;
-        
-        if (userStatus === 'entreprise') {
-          navigate('/app/dashboard', { replace: true });
-        }
-      } catch (error) {
-        console.error('Erreur lors de la vérification du rôle:', error);
-      }
-    };
-    
-    checkUserRole();
-  }, [currentUser, navigate]);
+  // Ne pas rediriger les contacts avec accès qui ont canViewEvents - ils peuvent accéder à cette page
+  // La redirection est gérée dans Dashboard.tsx pour éviter les boucles
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [selectedMission, setSelectedMission] = useState<Mission | null>(null);
   const [selectedRecruitmentTask, setSelectedRecruitmentTask] = useState<RecruitmentTask | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
   const [currentMissionIndex, setCurrentMissionIndex] = useState<number>(0);
+
+  // Pour les contacts avec accès, on affiche uniquement les événements ambassadeurs
+  const isContactWithAccessView = isContactWithAccess && contactPermissions?.canViewEvents;
+  
+  // Filtrer les missions pour l'affichage (exclure ambassadeurs et converties)
+  // Pour les contacts avec accès, on ne montre pas les missions normales
+  const filteredMissions = React.useMemo(() => {
+    // Si c'est un contact avec accès, ne pas afficher de missions normales
+    if (isContactWithAccessView) {
+      return [];
+    }
+    const convertedMissionIds = new Set(ambassadorEvents.map(e => (e as any).convertedMissionId).filter(Boolean));
+    return missions.filter(m => 
+      m.type !== 'ambassadeur_event' && !convertedMissionIds.has(m.id)
+    );
+  }, [missions, ambassadorEvents, isContactWithAccessView]);
   
   // Créer un tableau combiné pour la navigation
-  const allItems = [...missions, ...recruitmentTasks.map(task => ({
+  // Pour les contacts avec accès, uniquement les événements ambassadeurs
+  // Sinon : missions + événements ambassadeur si isAmbassador + tâches de recrutement
+  const allItems = isContactWithAccessView 
+    ? [...ambassadorEvents]
+    : [...missions, ...ambassadorEvents, ...recruitmentTasks.map(task => ({
     id: task.id,
     title: task.title,
     numeroMission: task.numeroEtude || `RT-${task.id.slice(-6)}`,
@@ -277,7 +294,7 @@ const AvailableMissions: React.FC = () => {
   const [applicationStatuses, setApplicationStatuses] = useState<Record<string, string>>({});
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
-  const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error'>('success');
+  const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'warning' | 'info'>('success');
   const [applicationSuccess, setApplicationSuccess] = useState(false);
   const [profileData, setProfileData] = useState<ExtendedUserData | null>(null);
   const [incompleteProfileDialogOpen, setIncompleteProfileDialogOpen] = useState(false);
@@ -305,14 +322,18 @@ const AvailableMissions: React.FC = () => {
         const userData = userDoc.data();
         const userStatus = userData?.status;
         const userStructureId = userData?.structureId;
+        const ambassadorFlag = !!userData?.isAmbassador;
+        setIsAmbassador(ambassadorFlag);
 
-        // Rediriger les entreprises
-        if (userStatus === 'entreprise') {
+        // Ne pas rediriger les contacts avec accès qui ont canViewEvents
+        // Ils peuvent voir les missions ambassadeurs de leur entreprise
+        if (userStatus === 'entreprise' && !(isContactWithAccess && contactPermissions?.canViewEvents)) {
           navigate('/app/dashboard', { replace: true });
           return;
         }
 
-        if (!userStructureId) {
+        // Pour les contacts avec accès, on n'a pas besoin de structureId
+        if (!userStructureId && !(isContactWithAccess && userData?.companyId)) {
           setError("Vous n'êtes pas associé à une structure");
           setLoading(false);
           return;
@@ -323,12 +344,32 @@ const AvailableMissions: React.FC = () => {
           const missionsRef = collection(db, 'missions');
           let missionsQuery;
 
-          if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
+          // Pour les contacts avec accès, charger UNIQUEMENT les missions ambassadeurs de leur entreprise
+          // (comme dans Ambassadors.tsx)
+          if (isContactWithAccess && userData?.companyId && contactPermissions?.canViewEvents) {
+            // Ne charger que les événements ambassadeurs pour les contacts avec accès
+            // Les missions normales seront vides pour eux
+            setMissions([]);
+            missionsLoaded = true;
+          } else if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
             // Admin, Superadmin et membres voient les missions de leur structure
             missionsQuery = query(
               missionsRef,
               where('structureId', '==', userStructureId)
             );
+            const missionsSnapshot = await getDocs(missionsQuery);
+            const missionsList = missionsSnapshot.docs.map(doc => {
+              const data = doc.data();
+              return {
+                id: doc.id,
+                ...data,
+                publishedAt: data.publishedAt && typeof data.publishedAt.toDate === 'function'
+                  ? data.publishedAt.toDate()
+                  : data.publishedAt
+              };
+            });
+            setMissions(missionsList);
+            missionsLoaded = true;
           } else {
             // Les étudiants ne voient que les missions publiées de leur structure
             missionsQuery = query(
@@ -336,22 +377,20 @@ const AvailableMissions: React.FC = () => {
               where('structureId', '==', userStructureId),
               where('isPublished', '==', true)
             );
+            const missionsSnapshot = await getDocs(missionsQuery);
+            const missionsList = missionsSnapshot.docs.map(doc => {
+              const data = doc.data();
+              return {
+                id: doc.id,
+                ...data,
+                publishedAt: data.publishedAt && typeof data.publishedAt.toDate === 'function'
+                  ? data.publishedAt.toDate()
+                  : data.publishedAt
+              };
+            });
+            setMissions(missionsList);
+            missionsLoaded = true;
           }
-
-          const missionsSnapshot = await getDocs(missionsQuery);
-          const missionsList = missionsSnapshot.docs.map(doc => {
-            const data = doc.data();
-            return {
-              id: doc.id,
-              ...data,
-              publishedAt: data.publishedAt && typeof data.publishedAt.toDate === 'function'
-                ? data.publishedAt.toDate()
-                : data.publishedAt
-            };
-          });
-
-          setMissions(missionsList);
-          missionsLoaded = true;
         } catch (missionsError) {
           console.error("Erreur lors du chargement des missions:", missionsError);
           // Ne pas bloquer l'affichage si les missions échouent, on continue avec les tâches de recrutement
@@ -359,25 +398,27 @@ const AvailableMissions: React.FC = () => {
         }
 
         // 3. Récupérer les tâches de recrutement publiées de la structure de l'utilisateur
-        try {
-          const recruitmentTasksRef = collection(db, 'recruitmentTasks');
-          let recruitmentTasksQuery;
+        // Ne pas charger les tâches de recrutement pour les contacts avec accès
+        if (!(isContactWithAccess && contactPermissions?.canViewEvents)) {
+          try {
+            const recruitmentTasksRef = collection(db, 'recruitmentTasks');
+            let recruitmentTasksQuery;
 
-          if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
-            // Admin, Superadmin et membres voient les tâches de recrutement de leur structure
-            recruitmentTasksQuery = query(
-              recruitmentTasksRef,
-              where('isPublished', '==', true),
-              where('isPublic', '==', true)
-            );
-          } else {
-            // Les étudiants ne voient que les tâches de recrutement de leur structure
-            recruitmentTasksQuery = query(
-              recruitmentTasksRef,
-              where('isPublished', '==', true),
-              where('isPublic', '==', true)
-            );
-          }
+            if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
+              // Admin, Superadmin et membres voient les tâches de recrutement de leur structure
+              recruitmentTasksQuery = query(
+                recruitmentTasksRef,
+                where('isPublished', '==', true),
+                where('isPublic', '==', true)
+              );
+            } else {
+              // Les étudiants ne voient que les tâches de recrutement de leur structure
+              recruitmentTasksQuery = query(
+                recruitmentTasksRef,
+                where('isPublished', '==', true),
+                where('isPublic', '==', true)
+              );
+            }
 
           const recruitmentTasksSnapshot = await getDocs(recruitmentTasksQuery);
           const recruitmentTasksList = await Promise.all(recruitmentTasksSnapshot.docs.map(async (taskDoc) => {
@@ -428,12 +469,72 @@ const AvailableMissions: React.FC = () => {
             };
           }));
 
-          setRecruitmentTasks(recruitmentTasksList);
-          recruitmentTasksLoaded = true;
-        } catch (recruitmentError) {
-          console.error("Erreur lors du chargement des tâches de recrutement:", recruitmentError);
-          // Ne pas bloquer l'affichage si les tâches de recrutement échouent
+            setRecruitmentTasks(recruitmentTasksList);
+            recruitmentTasksLoaded = true;
+          } catch (recruitmentError) {
+            console.error("Erreur lors du chargement des tâches de recrutement:", recruitmentError);
+            setRecruitmentTasks([]);
+          }
+        } else {
+          // Pour les contacts avec accès, ne pas charger les tâches de recrutement
           setRecruitmentTasks([]);
+          recruitmentTasksLoaded = true;
+        }
+
+        // 4. Pour les users Ambassadeur ou contacts avec accès : récupérer les événements ambassadeur
+        // Pour les contacts avec accès, charger les événements de leur entreprise (même logique que Ambassadors.tsx)
+        if (ambassadorFlag || (isContactWithAccess && contactPermissions?.canViewEvents && userData?.companyId)) {
+          try {
+            let ambassadorQuery;
+            if (isContactWithAccess && userData?.companyId) {
+              // Pour les contacts avec accès, charger uniquement les événements visibles de leur entreprise
+              ambassadorQuery = query(
+                collection(db, 'missions'),
+                where('type', '==', 'ambassadeur_event'),
+                where('companyId', '==', userData.companyId),
+                where('visibleForAmbassadors', '==', true)
+              );
+            } else {
+              // Pour les ambassadeurs, charger les événements visibles
+              ambassadorQuery = query(
+                collection(db, 'missions'),
+                where('type', '==', 'ambassadeur_event'),
+                where('visibleForAmbassadors', '==', true)
+              );
+            }
+            const ambassadorSnapshot = await getDocs(ambassadorQuery);
+            const ambassadorList = ambassadorSnapshot.docs.map(docSnap => {
+              const d = docSnap.data();
+              const slots = d.slots || [];
+              const capacity = slots.reduce((acc: number, s: { capacity?: number }) => acc + (s.capacity || 0), 0);
+              return {
+                id: docSnap.id,
+                title: d.title || d.campaignName || d.description,
+                numeroMission: `AMB-${docSnap.id.slice(-6)}`,
+                location: d.location || 'À définir',
+                publishedAt: d.startDate ? (typeof d.startDate === 'string' ? d.startDate : (d.startDate?.toDate?.() || d.startDate)) : new Date(),
+                announcement: d.description,
+                description: d.description,
+                hoursPerStudent: 0,
+                hours: 0,
+                studentCount: capacity || 1,
+                salary: 0,
+                priceHT: 0,
+                startDate: d.startDate,
+                convertedMissionId: d.convertedMissionId,
+                slots: d.slots || [],
+                requiresCV: false,
+                requiresMotivation: false,
+                isAmbassadorEvent: true
+              } as Mission & { isAmbassadorEvent?: boolean };
+            });
+            setAmbassadorEvents(ambassadorList);
+          } catch (ambassadorError) {
+            console.error("Erreur chargement événements ambassadeur:", ambassadorError);
+            setAmbassadorEvents([]);
+          }
+        } else {
+          setAmbassadorEvents([]);
         }
 
         // Ne définir l'erreur que si vraiment rien n'a pu être chargé
@@ -462,7 +563,7 @@ const AvailableMissions: React.FC = () => {
         clearInterval(pollingInterval);
       }
     };
-  }, [currentUser]);
+  }, [currentUser, isContactWithAccess, contactPermissions?.canViewEvents]);
 
   useEffect(() => {
     if (currentUser?.uid) {
@@ -540,26 +641,25 @@ const AvailableMissions: React.FC = () => {
     fetchProfileData();
   }, [currentUser]);
 
-  // Charger les données de la structure et de l'abonnement utilisateur
-  useEffect(() => {
-    const fetchStructureAndSubscriptionData = async () => {
-      if (!currentUser?.uid) return;
+  // Fonction pour charger les données de la structure et de l'abonnement utilisateur
+  const fetchStructureAndSubscriptionData = useCallback(async () => {
+    if (!currentUser?.uid) return;
+    
+    try {
+      // Récupérer les données de l'utilisateur pour obtenir structureId
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      if (!userDoc.exists()) return;
       
-      try {
-        // Récupérer les données de l'utilisateur pour obtenir structureId
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        if (!userDoc.exists()) return;
-        
-        const userData = userDoc.data();
-        const structureId = userData.structureId;
-        
-        if (!structureId) return;
+      const userData = userDoc.data();
+      const structureId = userData.structureId;
+      
+      if (!structureId) return;
 
-        // Récupérer les données de la structure
-        const structureDoc = await getDoc(doc(db, 'structures', structureId));
-        if (structureDoc.exists()) {
-          const structureData = structureDoc.data();
-                  setStructureData({
+      // Récupérer les données de la structure
+      const structureDoc = await getDoc(doc(db, 'structures', structureId));
+      if (structureDoc.exists()) {
+        const structureData = structureDoc.data();
+        setStructureData({
           cotisationsEnabled: structureData.cotisationsEnabled || false,
           cotisationAmount: structureData.cotisationAmount || 0,
           cotisationDuration: structureData.cotisationDuration || '1_year',
@@ -570,42 +670,53 @@ const AvailableMissions: React.FC = () => {
           structureId: structureId,
           structureName: structureData.name || structureData.ecole || 'Structure'
         });
-        }
+      }
 
-        // Récupérer l'abonnement de l'utilisateur
-        const subscriptionDoc = await getDoc(doc(db, 'subscriptions', currentUser.uid));
-        if (subscriptionDoc.exists()) {
-          const subscriptionData = subscriptionDoc.data();
-          setUserSubscription({
-            status: subscriptionData.status || 'inactive',
-            paidAt: subscriptionData.paidAt?.toDate(),
-            expiresAt: subscriptionData.expiresAt?.toDate()
-          });
-        } else {
-          // Vérifier aussi dans le document utilisateur
-          const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-          if (userDoc.exists()) {
-            const userData = userDoc.data();
-            if (userData.hasActiveSubscription && userData.subscriptionExpiresAt) {
-              setUserSubscription({
-                status: userData.subscriptionStatus || 'active',
-                paidAt: userData.subscriptionPaidAt?.toDate(),
-                expiresAt: userData.subscriptionExpiresAt?.toDate()
-              });
-            } else {
-              setUserSubscription({ status: 'inactive' });
-            }
+      // Récupérer l'abonnement de l'utilisateur
+      const subscriptionDoc = await getDoc(doc(db, 'subscriptions', currentUser.uid));
+      
+      const convertToDate = (value: any): Date | undefined => {
+        if (!value) return undefined;
+        if (value instanceof Date) return value;
+        if (typeof value.toDate === 'function') return value.toDate();
+        if (typeof value === 'string' || typeof value === 'number') return new Date(value);
+        return undefined;
+      };
+      
+      if (subscriptionDoc.exists()) {
+        const subscriptionData = subscriptionDoc.data();
+        setUserSubscription({
+          status: subscriptionData.status || 'inactive',
+          paidAt: convertToDate(subscriptionData.paidAt),
+          expiresAt: convertToDate(subscriptionData.expiresAt)
+        });
+      } else {
+        // Vérifier aussi dans le document utilisateur
+        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          if (userData.hasActiveSubscription && userData.subscriptionExpiresAt) {
+            setUserSubscription({
+              status: userData.subscriptionStatus || 'active',
+              paidAt: convertToDate(userData.subscriptionPaidAt),
+              expiresAt: convertToDate(userData.subscriptionExpiresAt)
+            });
           } else {
             setUserSubscription({ status: 'inactive' });
           }
+        } else {
+          setUserSubscription({ status: 'inactive' });
         }
-      } catch (error) {
-        console.error('Erreur lors du chargement des données de structure/abonnement:', error);
       }
-    };
-
-    fetchStructureAndSubscriptionData();
+    } catch (error) {
+      console.error('Erreur lors du chargement des données de structure/abonnement:', error);
+    }
   }, [currentUser]);
+
+  // Charger les données de la structure et de l'abonnement utilisateur
+  useEffect(() => {
+    fetchStructureAndSubscriptionData();
+  }, [fetchStructureAndSubscriptionData]);
 
   // Effet pour charger le bouton Stripe quand le dialogue de paiement s'ouvre
   useEffect(() => {
@@ -1144,27 +1255,61 @@ const AvailableMissions: React.FC = () => {
         throw new Error("Vous avez déjà postulé à cette mission");
       }
 
-      const applicationData: ApplicationData = {
-        missionId: selectedMission.id,
-        userId: currentUser.uid,
-        userEmail: currentUser.email,
-        cvUrl: userCV?.url || null,
-        cvUpdatedAt: userCV?.updatedAt ? userCV.updatedAt.toISOString() : null,
-        motivationLetter: document.querySelector<HTMLTextAreaElement>('textarea')?.value || '',
-        submittedAt: new Date().toISOString(),
-        status: 'En attente'
-      };
+      // Pour les événements ambassadeurs, il faut s'inscrire à un slot
+      if ((selectedMission as any).type === 'ambassadeur_event') {
+        const slots = (selectedMission as any).slots || [];
+        
+        // Trouver un slot disponible (avec de la place)
+        const availableSlot = slots.find(slot => 
+          slot.assignedStudentIds && 
+          slot.assignedStudentIds.length < slot.capacity &&
+          !slot.assignedStudentIds.includes(currentUser.uid)
+        );
 
-      // Vérifier que toutes les données requises sont présentes
-      const requiredFields = ['missionId', 'userId', 'userEmail', 'submittedAt', 'status'] as const;
-      const missingFields = requiredFields.filter(field => !applicationData[field]);
-      
-      if (missingFields.length > 0) {
-        throw new Error(`Champs manquants: ${missingFields.join(', ')}`);
+        if (!availableSlot) {
+          throw new Error("Aucun créneau disponible pour cet événement");
+        }
+
+        // Inscrire l'utilisateur au slot
+        await registerAmbassadorToSlot(selectedMission.id, availableSlot.id, currentUser.uid);
+
+        // Créer aussi une candidature pour le suivi
+        const applicationData: ApplicationData = {
+          missionId: selectedMission.id,
+          userId: currentUser.uid,
+          userEmail: currentUser.email,
+          cvUrl: userCV?.url || null,
+          cvUpdatedAt: userCV?.updatedAt ? userCV.updatedAt.toISOString() : null,
+          motivationLetter: document.querySelector<HTMLTextAreaElement>('textarea')?.value || '',
+          submittedAt: new Date().toISOString(),
+          status: 'Acceptée' // Automatiquement acceptée pour les événements ambassadeurs
+        };
+
+        await addDoc(collection(db, 'applications'), applicationData);
+      } else {
+        // Pour les missions normales, créer seulement la candidature
+        const applicationData: ApplicationData = {
+          missionId: selectedMission.id,
+          userId: currentUser.uid,
+          userEmail: currentUser.email,
+          cvUrl: userCV?.url || null,
+          cvUpdatedAt: userCV?.updatedAt ? userCV.updatedAt.toISOString() : null,
+          motivationLetter: document.querySelector<HTMLTextAreaElement>('textarea')?.value || '',
+          submittedAt: new Date().toISOString(),
+          status: 'En attente'
+        };
+
+        // Vérifier que toutes les données requises sont présentes
+        const requiredFields = ['missionId', 'userId', 'userEmail', 'submittedAt', 'status'] as const;
+        const missingFields = requiredFields.filter(field => !applicationData[field]);
+        
+        if (missingFields.length > 0) {
+          throw new Error(`Champs manquants: ${missingFields.join(', ')}`);
+        }
+
+        // Créer la candidature
+        await addDoc(collection(db, 'applications'), applicationData);
       }
-
-      // Créer la candidature
-      await addDoc(collection(db, 'applications'), applicationData);
 
       // Mettre à jour la liste des candidatures localement
       setUserApplications(prev => [...prev, selectedMission.id]);
@@ -1187,7 +1332,25 @@ const AvailableMissions: React.FC = () => {
     }
   };
 
-  const hasApplied = (missionId: string) => userApplications.includes(missionId);
+  const hasApplied = (missionId: string) => {
+    // Vérifier dans les candidatures
+    if (userApplications.includes(missionId)) {
+      return true;
+    }
+    
+    // Pour les événements ambassadeurs, vérifier aussi dans les slots
+    const mission = allItems.find(m => m.id === missionId);
+    if ((mission as any)?.type === 'ambassadeur_event' && (mission as any).slots && currentUser) {
+      const isRegisteredInSlot = (mission as any).slots.some((slot: any) => 
+        slot.assignedStudentIds?.includes(currentUser.uid)
+      );
+      if (isRegisteredInSlot) {
+        return true;
+      }
+    }
+    
+    return false;
+  };
   const isAccepted = (missionId: string) => applicationStatuses[missionId] === 'Acceptée';
   const isPending = (missionId: string) => applicationStatuses[missionId] === 'En attente';
 
@@ -1518,7 +1681,7 @@ const AvailableMissions: React.FC = () => {
             animation: 'fadeIn 0.5s ease-out',
           }}
         >
-          Missions disponibles
+          Espace Candidat
         </Typography>
 
         <Drawer
@@ -1589,36 +1752,56 @@ const AvailableMissions: React.FC = () => {
                   </Button>
                 </Box>
 
-                <Typography variant="caption" sx={{ 
-                  display: 'block', 
-                  mb: 2,
-                  color: '#666666',
-                  fontSize: '0.875rem',
-                }}>
-                  Offre n° {selectedMission.numeroMission}
-                </Typography>
+                    <Typography variant="body2" sx={{ color: '#666666', mb: 0 }}>
+                      • Publiée le {selectedMission.publishedAt instanceof Date 
+                        ? selectedMission.publishedAt.toLocaleDateString('fr-FR', {
+                            day: 'numeric',
+                            month: 'long',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })
+                        : new Date(selectedMission.publishedAt as any).toLocaleDateString('fr-FR', {
+                            day: 'numeric',
+                            month: 'long',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                    </Typography>
 
-                <Grid container spacing={4} alignItems="flex-start">
-                  <Grid item xs={12} md={8}>
-                    <Box>
-                      <Typography variant="h5" sx={{ 
-                        fontWeight: 600, 
-                        mb: 2,
-                        fontSize: '1.75rem',
-                        letterSpacing: '-0.5px',
-                        color: '#1A1A1A',
-                      }}>
-                        {selectedMission.title || `Mission #${selectedMission.numeroMission}`}
-                      </Typography>
+                  <Grid container spacing={4} alignItems="flex-start">
+                    <Grid item xs={12} md={8}>
+                      <Box>
+                        <Typography variant="h5" sx={{ 
+                          fontWeight: 600, 
+                          mb: 2,
+                          fontSize: '1.75rem',
+                          letterSpacing: '-0.5px',
+                          color: '#1A1A1A',
+                        }}>
+                          {selectedMission.title || `Mission #${selectedMission.numeroMission}`}
+                        </Typography>
 
-                      <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 4 }}>
-                        <Typography variant="subtitle1" sx={{ color: '#2E3B7C' }}>
-                          {selectedMission.location}
-                        </Typography>
-                        <Typography variant="body2" sx={{ color: '#666666' }}>
-                          • Publiée le {formatDate(selectedMission.publishedAt)}
-                        </Typography>
-                      </Stack>
+                        <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 4 }}>
+                          <Typography variant="subtitle1" sx={{ color: '#2E3B7C' }}>
+                            {selectedMission.location}
+                          </Typography>
+                        </Stack>
+
+                        <Box sx={{ 
+                          width: '100%', 
+                          height: '300px', 
+                          borderRadius: '16px', 
+                          overflow: 'hidden',
+                          border: '1px solid rgba(0,0,0,0.1)',
+                          mb: 4
+                        }}>
+                          <MissionMap 
+                            address={selectedMission.location} 
+                            coordinates={selectedMission.locationCoordinates}
+                          />
+                        </Box>
 
                       <Box>
                         <Typography variant="h6" sx={{ 
@@ -1636,6 +1819,47 @@ const AvailableMissions: React.FC = () => {
                         }}>
                           {selectedMission.announcement || selectedMission.description}
                         </Typography>
+
+                        {selectedMission.slots && selectedMission.slots.length > 0 && (
+                          <Box sx={{ mt: 3 }}>
+                            <Typography variant="h6" sx={{ 
+                              mb: 2,
+                              fontSize: '1.1rem',
+                              fontWeight: 600,
+                              color: '#1A1A1A',
+                            }}>
+                              Détail des horaires
+                            </Typography>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                              {selectedMission.slots.sort((a: any, b: any) => {
+                                const dateA = a.startTime.toDate ? a.startTime.toDate() : new Date(a.startTime);
+                                const dateB = b.startTime.toDate ? b.startTime.toDate() : new Date(b.startTime);
+                                return dateA.getTime() - dateB.getTime();
+                              }).map((slot: any, index: number) => {
+                                const start = slot.startTime.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+                                const end = slot.endTime.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+                                return (
+                                  <Box key={index} sx={{ 
+                                    p: 1.5, 
+                                    borderRadius: '8px', 
+                                    bgcolor: 'rgba(46, 59, 124, 0.04)',
+                                    border: '1px solid rgba(46, 59, 124, 0.1)',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center'
+                                  }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#2E3B7C', textTransform: 'capitalize' }}>
+                                      {start.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                                    </Typography>
+                                    <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
+                                      {start.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} - {end.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                                    </Typography>
+                                  </Box>
+                                );
+                              })}
+                            </Box>
+                          </Box>
+                        )}
                       </Box>
                     </Box>
                   </Grid>
@@ -1655,16 +1879,67 @@ const AvailableMissions: React.FC = () => {
                             color: '#666666',
                             fontSize: '0.875rem',
                           }}>
-                            Type de contrat
+                            Durée
                           </Typography>
                           <Typography variant="subtitle1" sx={{ 
                             fontWeight: 500,
                             color: '#1A1A1A',
                           }}>
-                            {(selectedMission.hoursPerStudent || Math.floor(selectedMission.hours / selectedMission.studentCount)) > 0 
-                              ? `${selectedMission.hoursPerStudent || Math.floor(selectedMission.hours / selectedMission.studentCount)}h`
-                              : 'À définir'
-                            }
+                            {(() => {
+                              // Si slots disponibles, calculer le total exact et afficher les détails
+                              if (selectedMission.slots && selectedMission.slots.length > 0) {
+                                const totalMs = selectedMission.slots.reduce((acc: number, slot: any) => {
+                                  if (slot.startTime && slot.endTime) {
+                                    // Gérer les dates Firestore (Timestamp) ou Date JS
+                                    const start = slot.startTime.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+                                    const end = slot.endTime.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+                                    return acc + (end.getTime() - start.getTime());
+                                  }
+                                  return acc;
+                                }, 0);
+                                const totalHours = (totalMs / (1000 * 60 * 60)).toFixed(2);
+                                
+                                return (
+                                  <Box>
+                                    <div style={{
+                                      fontSize: '14px',
+                                      fontWeight: 600,
+                                      color: 'rgb(30, 64, 175)'
+                                    }}>
+                                      Total: {totalHours}h
+                                    </div>
+                                    <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                                      {selectedMission.slots.sort((a: any, b: any) => {
+                                        const dateA = a.startTime.toDate ? a.startTime.toDate() : new Date(a.startTime);
+                                        const dateB = b.startTime.toDate ? b.startTime.toDate() : new Date(b.startTime);
+                                        return dateA.getTime() - dateB.getTime();
+                                      }).map((slot: any, index: number) => {
+                                        const start = slot.startTime.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+                                        const end = slot.endTime.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+                                        return (
+                                          <Typography key={index} variant="caption" sx={{ color: '#666666', display: 'block' }}>
+                                            • {start.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })} : {start.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })} - {end.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                                          </Typography>
+                                        );
+                                      })}
+                                    </Box>
+                                  </Box>
+                                );
+                              }
+
+                              // Si c'est un événement ambassadeur sans slots mais avec dates
+                              if (selectedMission.startDate && selectedMission.endDate) {
+                                const start = new Date(selectedMission.startDate);
+                                const end = new Date(selectedMission.endDate);
+                                const diff = Math.abs(end.getTime() - start.getTime());
+                                const hours = Math.ceil(diff / (1000 * 60 * 60));
+                                if (hours > 0) return `${hours}h`;
+                              }
+                              
+                              // Sinon fallback sur hoursPerStudent ou hours
+                              const hours = selectedMission.hoursPerStudent || Math.floor(selectedMission.hours / selectedMission.studentCount);
+                              return hours > 0 ? `${hours}h` : 'À définir';
+                            })()}
                           </Typography>
                         </Box>
                         <Divider sx={{ borderColor: 'rgba(0, 0, 0, 0.1)' }} />
@@ -1680,10 +1955,38 @@ const AvailableMissions: React.FC = () => {
                             fontWeight: 500,
                             color: '#1A1A1A',
                           }}>
-                            {selectedMission.numeroMission?.startsWith('RT-') 
-                              ? `${selectedMission.salary || selectedMission.priceHT}€`
-                              : `${selectedMission.salary || selectedMission.priceHT}€/h`
-                            }
+                            {(() => {
+                              // Calcul spécial pour les événements ambassadeur : Total heures * 10€
+                              if (selectedMission.type === 'ambassadeur_event' || selectedMission.numeroMission?.startsWith('AMB-')) {
+                                let totalHours = 0;
+                                if (selectedMission.slots && selectedMission.slots.length > 0) {
+                                  const totalMs = selectedMission.slots.reduce((acc: number, slot: any) => {
+                                    if (slot.startTime && slot.endTime) {
+                                      const start = slot.startTime.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+                                      const end = slot.endTime.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+                                      return acc + (end.getTime() - start.getTime());
+                                    }
+                                    return acc;
+                                  }, 0);
+                                  totalHours = totalMs / (1000 * 60 * 60);
+                                } else if (selectedMission.hours) {
+                                  totalHours = selectedMission.hours;
+                                }
+                                
+                                if (totalHours > 0) {
+                                  // Arrondir à 2 décimales pour l'affichage monétaire
+                                  return `${(totalHours * 10).toFixed(2)}€ Total`;
+                                }
+                              }
+
+                              const amount = selectedMission.salary || selectedMission.priceHT || 0;
+                              if (amount === 0 || !amount) {
+                                return 'Non communiqué';
+                              }
+                              return selectedMission.numeroMission?.startsWith('RT-') 
+                                ? `${amount}€`
+                                : `${amount}€/h`;
+                            })()}
                           </Typography>
                         </Box>
                         <Divider sx={{ borderColor: 'rgba(0, 0, 0, 0.1)' }} />
@@ -1718,7 +2021,9 @@ const AvailableMissions: React.FC = () => {
                             color: '#1A1A1A',
                           }}>
                             {selectedMission.publishedAt ? 
-                              new Date(selectedMission.publishedAt).toLocaleDateString() : 
+                              (selectedMission.publishedAt instanceof Date 
+                                ? selectedMission.publishedAt.toLocaleDateString()
+                                : new Date(selectedMission.publishedAt as any).toLocaleDateString()) : 
                               'Non publiée'}
                           </Typography>
                         </Box>
@@ -2081,8 +2386,175 @@ const AvailableMissions: React.FC = () => {
         </Snackbar>
 
         <Grid container spacing={3}>
-          {/* Missions */}
-          {missions.map((mission) => (
+          {/* Section Événements Ambassadeurs (visible pour les ambassadeurs ET les contacts avec accès) */}
+          {(isAmbassador || isContactWithAccessView) && ambassadorEvents.length > 0 && (
+            <>
+              <Grid item xs={12}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.5,
+                    mb: 1,
+                    pb: 2,
+                    borderBottom: '2px solid rgba(37, 185, 172, 0.25)',
+                  }}
+                >
+                  <EventIcon sx={{ color: '#25B9AC', fontSize: 28 }} />
+                  <Typography
+                    variant="h5"
+                    sx={{
+                      fontWeight: 700,
+                      color: '#1F4A7F',
+                      letterSpacing: '-0.02em',
+                    }}
+                  >
+                    Événements Ambassadeurs
+                  </Typography>
+                </Box>
+              </Grid>
+              {ambassadorEvents.map((event) => (
+                <Grid item xs={12} md={6} lg={4} key={`ambassador-${event.id}`}>
+                  <Paper
+                    sx={{
+                      p: 3,
+                      borderRadius: '20px',
+                      cursor: 'pointer',
+                      transition: 'all 0.3s ease-in-out',
+                      position: 'relative',
+                      background: 'linear-gradient(135deg, rgba(37, 185, 172, 0.04) 0%, rgba(31, 74, 127, 0.04) 100%)',
+                      backdropFilter: 'blur(10px)',
+                      border: '1px solid rgba(37, 185, 172, 0.25)',
+                      boxShadow: '0 4px 20px rgba(37, 185, 172, 0.08)',
+                      height: '280px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      '&:hover': {
+                        transform: 'translateY(-8px)',
+                        boxShadow: '0 8px 30px rgba(37, 185, 172, 0.15)',
+                        border: '1px solid rgba(37, 185, 172, 0.4)',
+                      },
+                    }}
+                    onClick={() => handleOpenMission(event)}
+                  >
+                    <Chip
+                      label="Salon / Événement"
+                      size="small"
+                      sx={{
+                        position: 'absolute',
+                        top: 16,
+                        right: 16,
+                        borderRadius: '12px',
+                        background: 'rgba(37, 185, 172, 0.15)',
+                        color: '#1F4A7F',
+                        fontWeight: 600,
+                        fontSize: '0.7rem',
+                      }}
+                    />
+                    <Box sx={{ mb: 2, pr: 10 }}>
+                      <Typography
+                        variant="h6"
+                        sx={{
+                          fontWeight: 600,
+                          mb: 1,
+                          fontSize: '1.25rem',
+                          letterSpacing: '-0.3px',
+                          color: '#1e3a5f',
+                        }}
+                      >
+                        {event.title || `Événement #${event.numeroMission}`}
+                      </Typography>
+                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                        {event.studentCount > 0 && (
+                          <Chip
+                            label={`${event.studentCount} places`}
+                            size="small"
+                            sx={{
+                              borderRadius: '12px',
+                              background: 'rgba(31, 74, 127, 0.1)',
+                              color: '#1F4A7F',
+                              fontWeight: 500,
+                            }}
+                          />
+                        )}
+                      </Box>
+                    </Box>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
+                      {event.location && event.location !== 'À définir' && (
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <LocationOnIcon sx={{ color: '#1F4A7F', fontSize: '1.2rem' }} />
+                          <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
+                            {event.location}
+                          </Typography>
+                        </Box>
+                      )}
+                      {event.startDate && (
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <TimerIcon sx={{ color: '#1F4A7F', fontSize: '1.2rem' }} />
+                          <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
+                            {new Date(event.startDate).toLocaleDateString('fr-FR', {
+                              day: 'numeric',
+                              month: 'long',
+                              year: 'numeric',
+                            })}
+                          </Typography>
+                        </Box>
+                      )}
+                    </Box>
+                    <Button
+                      endIcon={<ChevronRightIcon />}
+                      fullWidth
+                      variant="outlined"
+                      sx={{
+                        mt: 'auto',
+                        borderRadius: '12px',
+                        textTransform: 'none',
+                        borderColor: 'rgba(37, 185, 172, 0.5)',
+                        color: '#1F4A7F',
+                        '&:hover': {
+                          borderColor: '#25B9AC',
+                          background: 'rgba(37, 185, 172, 0.08)',
+                        },
+                        py: 1,
+                      }}
+                    >
+                      Voir les détails
+                    </Button>
+                  </Paper>
+                </Grid>
+              ))}
+            </>
+          )}
+
+          {/* Missions (non affichées pour les contacts avec accès) */}
+          {!isContactWithAccessView && filteredMissions.length > 0 && (
+            <Grid item xs={12}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.5,
+                    mb: 1,
+                    pb: 2,
+                    mt: isAmbassador && ambassadorEvents.length > 0 ? 4 : 0,
+                    borderBottom: '2px solid rgba(46, 59, 124, 0.1)',
+                  }}
+                >
+                  <BusinessIcon sx={{ color: '#2E3B7C', fontSize: 28 }} />
+                  <Typography
+                    variant="h5"
+                    sx={{
+                      fontWeight: 700,
+                      color: '#1F4A7F',
+                      letterSpacing: '-0.02em',
+                    }}
+                  >
+                    Missions Disponibles
+                  </Typography>
+                </Box>
+            </Grid>
+          )}
+          {filteredMissions.map((mission) => (
             <Grid item xs={12} md={6} lg={4} key={`mission-${mission.id}`}>
               <Paper
                 sx={{
@@ -2206,8 +2678,8 @@ const AvailableMissions: React.FC = () => {
             </Grid>
           ))}
 
-          {/* Tâches de recrutement */}
-          {recruitmentTasks.map((task) => (
+          {/* Tâches de recrutement (non affichées pour les contacts avec accès) */}
+          {!isContactWithAccessView && recruitmentTasks.map((task) => (
             <Grid item xs={12} md={6} lg={4} key={`recruitment-${task.id}`}>
               <Paper
                 sx={{
@@ -2348,30 +2820,32 @@ const AvailableMissions: React.FC = () => {
             </Grid>
           ))}
 
-          {missions.length === 0 && recruitmentTasks.length === 0 && !loading && (
-            <Grid item xs={12}>
-              <Paper 
-                sx={{ 
-                  p: 4, 
-                  textAlign: 'center',
-                  borderRadius: '20px',
-                  background: 'rgba(255, 255, 255, 0.9)',
-                  backdropFilter: 'blur(10px)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                }}
-              >
-                <Typography 
-                  color="textSecondary"
+          {((isContactWithAccessView && ambassadorEvents.length === 0) ||
+            (!isContactWithAccessView && missions.length === 0 && recruitmentTasks.length === 0 && (!isAmbassador || ambassadorEvents.length === 0))) &&
+            !loading && (
+              <Grid item xs={12}>
+                <Paper
                   sx={{
-                    fontSize: '1.1rem',
-                    color: '#4A4A4A',
+                    p: 4,
+                    textAlign: 'center',
+                    borderRadius: '20px',
+                    background: 'rgba(255, 255, 255, 0.9)',
+                    backdropFilter: 'blur(10px)',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
                   }}
                 >
-                  Aucune mission disponible pour le moment
-                </Typography>
-              </Paper>
-            </Grid>
-          )}
+                  <Typography
+                    color="textSecondary"
+                    sx={{
+                      fontSize: '1.1rem',
+                      color: '#4A4A4A',
+                    }}
+                  >
+                    Aucune mission disponible pour le moment
+                  </Typography>
+                </Paper>
+              </Grid>
+            )}
         </Grid>
 
         {/* Dialogue pour profil incomplet */}

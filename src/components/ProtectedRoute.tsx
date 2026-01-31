@@ -20,7 +20,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   requiredPermission,
   requiresStructureAccess
 }) => {
-  const { currentUser, userData: contextUserData } = useAuth();
+  const { currentUser, userData: contextUserData, isContactWithAccess } = useAuth();
   const location = useLocation();
   const [loading, setLoading] = useState(true);
   const [hasAccess, setHasAccess] = useState(false);
@@ -66,35 +66,51 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
         }
 
         // Vérifier l'accès basé sur les permissions (nouveau système)
+        // Pour les contacts avec accès (statut 'entreprise' avec companyId), on skip la vérification des permissions
+        // car ils n'ont pas de structureId et utilisent un système de permissions différent
+        if (isContactWithAccess && finalUserData?.status === 'entreprise' && finalUserData?.companyId) {
+          // Les contacts avec accès ont leurs propres permissions gérées via contactAccess
+          // On leur donne accès si requiredPermission n'est pas défini ou si c'est une page accessible
+          setHasAccess(true);
+          setLoading(false);
+          return;
+        }
+        
         if (requiredPermission && finalUserData?.structureId) {
-          const permissionsRef = doc(
-            db, 
-            'structures', 
-            finalUserData.structureId, 
-            'permissions', 
-            requiredPermission.accessType === 'read' 
-              ? `${requiredPermission.pageId}_read` 
-              : requiredPermission.pageId
-          );
-          
-          const permissionsDoc = await getDoc(permissionsRef);
-          const permissions = permissionsDoc.data();
+          try {
+            const permissionsRef = doc(
+              db, 
+              'structures', 
+              finalUserData.structureId, 
+              'permissions', 
+              requiredPermission.accessType === 'read' 
+                ? `${requiredPermission.pageId}_read` 
+                : requiredPermission.pageId
+            );
+            
+            const permissionsDoc = await getDoc(permissionsRef);
+            const permissions = permissionsDoc.data();
 
-          if (!permissions) {
+            if (!permissions) {
+              setHasAccess(false);
+              setLoading(false);
+              return;
+            }
+
+            // Vérifier si l'utilisateur a accès
+            const hasRoleAccess = permissions.allowedRoles?.includes(finalUserStatus as UserStatus);
+            const hasPoleAccess = finalUserData.poles?.some(pole => 
+              permissions.allowedPoles?.includes(pole.poleId)
+            );
+            const hasMemberAccess = permissions.allowedMembers?.includes(userId);
+
+            // Nouvelle logique : les rôles dominent sur les pôles
+            setHasAccess(hasRoleAccess || hasPoleAccess || hasMemberAccess);
+          } catch (permissionError) {
+            console.error("Erreur lors de la vérification des permissions:", permissionError);
             setHasAccess(false);
             setLoading(false);
-            return;
           }
-
-          // Vérifier si l'utilisateur a accès
-          const hasRoleAccess = permissions.allowedRoles?.includes(finalUserStatus as UserStatus);
-          const hasPoleAccess = finalUserData.poles?.some(pole => 
-            permissions.allowedPoles?.includes(pole.poleId)
-          );
-          const hasMemberAccess = permissions.allowedMembers?.includes(userId);
-
-          // Nouvelle logique : les rôles dominent sur les pôles
-          setHasAccess(hasRoleAccess || hasPoleAccess || hasMemberAccess);
         } else {
           setHasAccess(true);
         }
@@ -107,7 +123,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     };
 
     checkAccess();
-  }, [userId, userStatus, userData?.structureId, userData?.poles, requiredPermission, requiresStructureAccess, currentUser]);
+  }, [userId, userStatus, userData?.structureId, userData?.poles, requiredPermission, requiresStructureAccess, currentUser, isContactWithAccess, userData]);
 
   if (loading) {
     return (

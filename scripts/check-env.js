@@ -43,6 +43,7 @@ const requiredFunctionVars = [
 
 // Variables optionnelles pour Firebase Functions
 const optionalFunctionVars = [
+  'EMAILJS_TEMPLATE_ID_AMBASSADOR',
   'STRIPE_SECRET_KEY',
   'STRIPE_WEBHOOK_SECRET',
 ];
