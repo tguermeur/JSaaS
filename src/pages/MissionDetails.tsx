@@ -87,6 +87,7 @@ import {
 } from '@mui/icons-material';
 import { doc, collection, query, where, getDocs, addDoc, updateDoc, orderBy, deleteDoc, getDoc, setDoc, writeBatch, limit, deleteField } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { decryptUsersList, decryptUserDisplayData, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { createFilterOptions } from '@mui/material';
@@ -150,7 +151,8 @@ type MissionEtape = 'Négociation' | 'Recrutement' | 'Date de mission' | 'Factur
 
 interface FirestoreCompanyData {
   name: string;
-  nSiret?: string; // Ajout du champ nSiret
+  nSiret?: string;
+  siret?: string;
   createdAt: Date;
   structureId: string;
   missionsCount: number;
@@ -924,7 +926,7 @@ const MissionDetails: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editedMission, setEditedMission] = useState<Mission | null>(null);
-  const [companies, setCompanies] = useState<Array<{id: string; name: string; siret?: string}>>([]);
+  const [companies, setCompanies] = useState<Array<{id: string; name: string; nSiret?: string; siret?: string}>>([]);
   const [descriptions, setDescriptions] = useState<string[]>([]);
   const [notes, setNotes] = useState<MissionNote[]>([]);
   const [generatedDocuments, setGeneratedDocuments] = useState<GeneratedDocument[]>([]);
@@ -1218,7 +1220,8 @@ const MissionDetails: React.FC = () => {
         return null;
       })];
 
-      const users = (await Promise.all(userPromises)).filter((user): user is UserRole => user !== null);
+      let users = (await Promise.all(userPromises)).filter((user): user is UserRole => user !== null);
+      users = await decryptUsersList(users as any);
       setMissionUsers(users);
     } catch (error) {
       console.error("Erreur lors du chargement des utilisateurs de la mission:", error);
@@ -1259,9 +1262,10 @@ const MissionDetails: React.FC = () => {
       const userDoc = await getDoc(doc(db, 'users', selectedUserId));
       if (userDoc.exists()) {
         const userData = userDoc.data();
+        const decrypted = await decryptUserDisplayData(selectedUserId, userData);
         const newUser: UserRole = {
           id: selectedUserId,
-          displayName: userData.displayName || '',
+          displayName: decrypted.displayName || userData.displayName || '',
           email: userData.email || '',
           photoURL: userData.photoURL,
           role: selectedRole
@@ -1661,14 +1665,38 @@ const MissionDetails: React.FC = () => {
         }
 
         const snapshot = await getDocs(companiesQuery);
-        const companiesList = snapshot.docs.map(doc => {
-          const data = doc.data() as FirestoreCompanyData;
+        let companiesList = snapshot.docs.map(docSnap => {
+          const data = docSnap.data() as FirestoreCompanyData;
           return {
-            id: doc.id,
+            id: docSnap.id,
             name: data.name,
-            nSiret: data.nSiret // Ajout du champ nSiret dans l'objet company
-          };
+            nSiret: data.nSiret,
+            siret: data.siret
+          } as { id: string; name: string; nSiret?: string; siret?: string };
         });
+
+        const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
+        const needsDecrypt = companiesList.some(c => isEncrypted(c.name) || isEncrypted(c.nSiret) || isEncrypted((c as any).siret));
+        if (needsDecrypt) {
+          const decryptCompanyDataForStructure = httpsCallable(getFunctions(), 'decryptCompanyDataForStructure');
+          companiesList = await Promise.all(companiesList.map(async (company) => {
+            const data = snapshot.docs.find(d => d.id === company.id)?.data() as FirestoreCompanyData | undefined;
+            if (!data || !(isEncrypted(data.name) || isEncrypted(data.nSiret) || isEncrypted(data.siret))) return company;
+            try {
+              const result = await decryptCompanyDataForStructure({ companyId: company.id });
+              const dec = (result.data as any)?.decryptedData;
+              if (!dec) return company;
+              return {
+                ...company,
+                name: (dec.name && !isEncrypted(dec.name) ? dec.name : company.name) ?? company.name,
+                nSiret: (dec.nSiret != null && !isEncrypted(dec.nSiret) ? String(dec.nSiret) : dec.siret && !isEncrypted(dec.siret) ? String(dec.siret) : company.nSiret) ?? company.nSiret
+              };
+            } catch (e) {
+              console.warn('Décryptage entreprise ignoré:', company.id, e);
+              return company;
+            }
+          }));
+        }
         setCompanies(companiesList);
       } catch (error) {
         console.error("Erreur lors du chargement des entreprises:", error);
@@ -1714,25 +1742,58 @@ const MissionDetails: React.FC = () => {
         const usersRef = collection(db, 'users');
         const q = query(usersRef, where('structureId', '==', mission.structureId));
         const snapshot = await getDocs(q);
-        const membersList = snapshot.docs.map(doc => ({
-          id: doc.id,
-          displayName: doc.data().displayName || '',
-          email: doc.data().email || '',
-          status: doc.data().status,
-          structureId: doc.data().structureId,
-          photoURL: doc.data().photoURL || ''
-        })) as StructureMember[];
+        let membersList = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+          return {
+            id: docSnap.id,
+            displayName: data.displayName || `${data.firstName || ''} ${data.lastName || ''}`.trim() || '',
+            email: data.email || '',
+            status: data.status,
+            structureId: data.structureId,
+            photoURL: data.photoURL || '',
+            firstName: data.firstName || '',
+            lastName: data.lastName || ''
+          } as StructureMember & { firstName?: string; lastName?: string };
+        });
+
+        const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
+        const needsDecrypt = membersList.some((m: any) =>
+          isEncrypted(m.displayName) || isEncrypted(m.firstName) || isEncrypted(m.lastName)
+        );
+        if (needsDecrypt) {
+          const decryptUserDataForStructure = httpsCallable(getFunctions(), 'decryptUserDataForStructure');
+          membersList = await Promise.all(membersList.map(async (member: any) => {
+            if (!isEncrypted(member.displayName) && !isEncrypted(member.firstName) && !isEncrypted(member.lastName)) return member;
+            try {
+              const result = await decryptUserDataForStructure({ userId: member.id });
+              const dec = (result.data as any)?.decryptedData;
+              if (!dec) return member;
+              const displayName = (dec.displayName && !isEncrypted(dec.displayName) ? dec.displayName : null)
+                || ((dec.firstName || dec.lastName) ? `${dec.firstName || ''} ${dec.lastName || ''}`.trim() : null);
+              return {
+                ...member,
+                displayName: displayName || member.displayName,
+                firstName: (dec.firstName && !isEncrypted(dec.firstName) ? dec.firstName : member.firstName) ?? member.firstName,
+                lastName: (dec.lastName && !isEncrypted(dec.lastName) ? dec.lastName : member.lastName) ?? member.lastName
+              };
+            } catch (e) {
+              console.warn('Décryptage membre ignoré:', member.id, e);
+              return member;
+            }
+          }));
+        }
+
         setStructureMembers(membersList);
 
         // Préparer les utilisateurs pour le tagging
-        const taggingUsers = snapshot.docs.map(doc => ({
-          id: doc.id,
-          displayName: doc.data().displayName || '',
-          email: doc.data().email || '',
-          photoURL: doc.data().photoURL || '',
-          firstName: doc.data().firstName || '',
-          lastName: doc.data().lastName || '',
-          role: doc.data().status || 'member'
+        const taggingUsers = membersList.map((m: any) => ({
+          id: m.id,
+          displayName: m.displayName || '',
+          email: m.email || '',
+          photoURL: m.photoURL || '',
+          firstName: m.firstName || '',
+          lastName: m.lastName || '',
+          role: m.status || 'member'
         }));
         setAvailableUsersForTagging(taggingUsers);
       } catch (error) {
@@ -1742,6 +1803,18 @@ const MissionDetails: React.FC = () => {
 
     fetchStructureMembers();
   }, [mission?.structureId]);
+
+  // Mettre à jour chargeName avec la valeur décryptée lorsque structureMembers sont chargés
+  useEffect(() => {
+    if (!mission?.chargeId || structureMembers.length === 0) return;
+    const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
+    if (isEncrypted(mission.chargeName)) {
+      const member = structureMembers.find(m => m.id === mission.chargeId);
+      if (member?.displayName) {
+        setMission(prev => prev ? { ...prev, chargeName: member.displayName } : null);
+      }
+    }
+  }, [mission?.chargeId, mission?.chargeName, structureMembers]);
 
   useEffect(() => {
     const fetchApplications = async () => {
@@ -1782,6 +1855,8 @@ const MissionDetails: React.FC = () => {
         const applicationsList = await Promise.all(snapshot.docs.map(async (docSnapshot) => {
           const applicationData = docSnapshot.data();
           const userData = await getDoc(doc(db, 'users', applicationData.userId));
+          const userDocData = userData.data();
+          const userDisplayName = await getDecryptedUserDisplayName(applicationData.userId, userDocData || null);
           
           // Fonction helper pour convertir les dates Firestore
           const convertFirestoreDate = (dateValue: any): Date => {
@@ -1803,13 +1878,13 @@ const MissionDetails: React.FC = () => {
             createdAt: convertFirestoreDate(applicationData.createdAt),
             updatedAt: convertFirestoreDate(applicationData.updatedAt),
             userEmail: applicationData.userEmail,
-            userPhotoURL: userData.data()?.photoURL || null,
-            userDisplayName: userData.data()?.displayName || '',
+            userPhotoURL: userDocData?.photoURL || null,
+            userDisplayName: userDisplayName === 'Inconnu' ? '' : userDisplayName,
             cvUrl: applicationData.cvUrl,
             cvUpdatedAt: applicationData.cvUpdatedAt ? convertFirestoreDate(applicationData.cvUpdatedAt) : null,
             motivationLetter: applicationData.motivationLetter,
             submittedAt: convertFirestoreDate(applicationData.submittedAt),
-            isDossierValidated: userData.data()?.dossierValidated || false,
+            isDossierValidated: userDocData?.dossierValidated || false,
             workingHours: workingHoursMap.get(docSnapshot.id) || []
           } as Application;
         }));
@@ -2419,18 +2494,19 @@ const MissionDetails: React.FC = () => {
             const q = query(usersRef, where('structureId', '==', mission.structureId));
             const usersSnapshot = await getDocs(q);
             
-            const members = usersSnapshot.docs.map(doc => ({
-              id: doc.id,
-              ...doc.data(),
-              mandat: doc.data().mandat || null,
-              bureauRole: doc.data().bureauRole || null,
-              poles: doc.data().poles || [],
-              firstName: doc.data().firstName || '',
-              lastName: doc.data().lastName || '',
-              displayName: doc.data().displayName || ''
+            let members = usersSnapshot.docs.map(docSnap => ({
+              id: docSnap.id,
+              ...docSnap.data(),
+              mandat: docSnap.data().mandat || null,
+              bureauRole: docSnap.data().bureauRole || null,
+              poles: docSnap.data().poles || [],
+              firstName: docSnap.data().firstName || '',
+              lastName: docSnap.data().lastName || '',
+              displayName: docSnap.data().displayName || ''
             }));
+            members = await decryptUsersList(members as any);
 
-            const presidents = members.filter(member => {
+            const presidents = members.filter((member: any) => {
               const hasPresidentRole = member.bureauRole === 'president' || 
                 member.poles?.some((p: any) => p.poleId === 'pre');
               return hasPresidentRole && member.mandat;
@@ -3613,18 +3689,19 @@ const MissionDetails: React.FC = () => {
             const q = query(usersRef, where('structureId', '==', mission.structureId));
             const usersSnapshot = await getDocs(q);
             
-            const members = usersSnapshot.docs.map(doc => ({
-              id: doc.id,
-              ...doc.data(),
-              mandat: doc.data().mandat || null,
-              bureauRole: doc.data().bureauRole || null,
-              poles: doc.data().poles || [],
-              firstName: doc.data().firstName || '',
-              lastName: doc.data().lastName || '',
-              displayName: doc.data().displayName || ''
+            let members = usersSnapshot.docs.map(docSnap => ({
+              id: docSnap.id,
+              ...docSnap.data(),
+              mandat: docSnap.data().mandat || null,
+              bureauRole: docSnap.data().bureauRole || null,
+              poles: docSnap.data().poles || [],
+              firstName: docSnap.data().firstName || '',
+              lastName: docSnap.data().lastName || '',
+              displayName: docSnap.data().displayName || ''
             }));
+            members = await decryptUsersList(members as any);
 
-            const presidents = members.filter(member => {
+            const presidents = members.filter((member: any) => {
               const hasPresidentRole = member.bureauRole === 'president' || 
                 member.poles?.some((p: any) => p.poleId === 'pre');
               return hasPresidentRole && member.mandat;
@@ -6683,11 +6760,36 @@ const MissionDetails: React.FC = () => {
         where('companyId', '==', companyId)
       );
       const snapshot = await getDocs(contactsQuery);
-      const contactsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate() || new Date()
-      })) as Contact[];
+      let contactsData = snapshot.docs.map(docSnap => {
+        const data = docSnap.data();
+        return {
+          id: docSnap.id,
+          ...data,
+          createdAt: data.createdAt?.toDate?.() || new Date(data.createdAt || 0)
+        } as Contact;
+      });
+
+      const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
+      const needsDecrypt = contactsData.some((c: any) => isEncrypted(c.email) || isEncrypted(c.phone));
+      if (needsDecrypt) {
+        const decryptContactDataForStructure = httpsCallable(getFunctions(), 'decryptContactDataForStructure');
+        contactsData = await Promise.all(contactsData.map(async (contact: any) => {
+          if (!isEncrypted(contact.email) && !isEncrypted(contact.phone)) return contact;
+          try {
+            const result = await decryptContactDataForStructure({ contactId: contact.id });
+            const dec = (result.data as any)?.decryptedData;
+            if (!dec) return contact;
+            return {
+              ...contact,
+              email: (dec.email && !isEncrypted(dec.email) ? dec.email : contact.email) ?? contact.email,
+              phone: (dec.phone && !isEncrypted(dec.phone) ? dec.phone : contact.phone) ?? contact.phone
+            };
+          } catch (e) {
+            console.warn('Décryptage contact ignoré:', contact.id, e);
+            return contact;
+          }
+        }));
+      }
       setContacts(contactsData);
     } catch (error) {
       console.error("Erreur lors de la récupération des contacts:", error);
@@ -7867,7 +7969,7 @@ const MissionDetails: React.FC = () => {
                         icon={<PersonIcon sx={{ fontSize: 24 }} />}
                         label="Chargé de mission"
                         field="chargeName"
-                        value={mission?.chargeName || 'Non assigné'}
+                        value={structureMembers.find(m => m.id === mission?.chargeId)?.displayName || mission?.chargeName || 'Non assigné'}
                       />
                       <InfoItemEditable
                         icon={<GroupIcon sx={{ fontSize: 24 }} />}

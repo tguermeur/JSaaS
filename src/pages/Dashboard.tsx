@@ -43,6 +43,7 @@ import { logoutUser } from '../firebase/auth';
 import { collection, query, where, getDocs, addDoc, Timestamp, getDoc, doc, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { Document, Folder } from '../types/document';
+import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -775,7 +776,7 @@ export default function Dashboard(): JSX.Element {
             if (data.uploadedBy) {
               const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
               const userDocData = userDoc.data();
-              uploadedByName = userDocData?.displayName || (userDocData?.firstName && userDocData?.lastName ? `${userDocData.firstName} ${userDocData.lastName}` : 'Inconnu');
+              uploadedByName = await getDecryptedUserDisplayName(data.uploadedBy, userDocData || null);
             }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
@@ -938,7 +939,7 @@ export default function Dashboard(): JSX.Element {
             if (data.uploadedBy) {
               const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
               const userDocData = userDoc.data();
-              uploadedByName = userDocData?.displayName || (userDocData?.firstName && userDocData?.lastName ? `${userDocData.firstName} ${userDocData.lastName}` : 'Inconnu');
+              uploadedByName = await getDecryptedUserDisplayName(data.uploadedBy, userDocData || null);
             }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
@@ -995,7 +996,7 @@ export default function Dashboard(): JSX.Element {
               if (data.createdBy) {
                 const userDoc = await getDoc(doc(db, 'users', data.createdBy));
                 const userDocData = userDoc.data();
-                uploadedByName = userDocData?.displayName || (userDocData?.firstName && userDocData?.lastName ? `${userDocData.firstName} ${userDocData.lastName}` : 'Inconnu');
+                uploadedByName = await getDecryptedUserDisplayName(data.createdBy, userDocData || null);
               }
             } catch (e) {
               console.error('Erreur lors de la récupération du nom utilisateur:', e);
@@ -1048,6 +1049,20 @@ export default function Dashboard(): JSX.Element {
 
   // Charger les derniers utilisateurs inscrits
   useEffect(() => {
+    const parseUserCreatedAt = (raw: any): Date => {
+      if (!raw) return new Date(0);
+      if (typeof raw?.toDate === 'function') return raw.toDate();
+      if (raw instanceof Date) return isNaN(raw.getTime()) ? new Date(0) : raw;
+      if (typeof raw === 'number') return new Date(isNaN(raw) ? 0 : raw);
+      if (typeof raw === 'string') {
+        const d = new Date(raw);
+        return isNaN(d.getTime()) ? new Date(0) : d;
+      }
+      if (raw && typeof raw.seconds === 'number') return new Date(raw.seconds * 1000);
+      const d = new Date(raw);
+      return isNaN(d.getTime()) ? new Date(0) : d;
+    };
+
     const fetchRecentUsers = async () => {
       if (!currentUser || !userStructureId) return;
       if (isEntreprise) return;
@@ -1058,25 +1073,31 @@ export default function Dashboard(): JSX.Element {
           usersRef,
           where('structureId', '==', userStructureId),
           orderBy('createdAt', 'desc'),
-          limit(10)
+          limit(20)
         );
         const usersSnapshot = await getDocs(usersQuery);
 
         const usersList = usersSnapshot.docs
           .map(docSnap => {
             const data = docSnap.data();
+            const createdAt = parseUserCreatedAt(data.createdAt);
             return {
               id: docSnap.id,
               firstName: data.firstName || '',
               lastName: data.lastName || '',
               email: data.email || '',
-              createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0),
-              photoURL: data.photoURL || ''
+              createdAt,
+              photoURL: data.photoURL || '',
+              _status: data.status
             };
           })
-          .filter(user => user.firstName && user.lastName); // Filtrer les utilisateurs sans noms
+          .filter(user => user.firstName && user.lastName && user._status !== 'entreprise') // Exclure les contacts entreprise
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, 10)
+          .map(({ _status, ...user }) => user); // Retirer _status du résultat final
 
-        setRecentUsers(usersList);
+        const decrypted = await decryptUsersList(usersList);
+        setRecentUsers(decrypted);
       } catch (error: any) {
         // Si l'index n'existe pas, récupérer tous les utilisateurs et trier
         if (error.code === 'failed-precondition') {
@@ -1091,20 +1112,24 @@ export default function Dashboard(): JSX.Element {
             const usersList = usersSnapshot.docs
               .map(docSnap => {
                 const data = docSnap.data();
+                const createdAt = parseUserCreatedAt(data.createdAt);
                 return {
                   id: docSnap.id,
                   firstName: data.firstName || '',
                   lastName: data.lastName || '',
                   email: data.email || '',
-                  createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0),
-                  photoURL: data.photoURL || ''
+                  createdAt,
+                  photoURL: data.photoURL || '',
+                  _status: data.status
                 };
               })
-              .filter(user => user.firstName && user.lastName) // Filtrer les utilisateurs sans noms
+              .filter(user => user.firstName && user.lastName && user._status !== 'entreprise')
               .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-              .slice(0, 10);
+              .slice(0, 10)
+              .map(({ _status, ...user }) => user);
 
-            setRecentUsers(usersList);
+            const decrypted = await decryptUsersList(usersList);
+            setRecentUsers(decrypted);
           } catch (fallbackError) {
             console.error('Erreur lors du chargement des utilisateurs récents:', fallbackError);
           }
@@ -1183,13 +1208,13 @@ export default function Dashboard(): JSX.Element {
           const companyDoc = companiesSnapshot.docs[0];
           const data = companyDoc.data();
           
-          // Récupérer le nom du créateur
+          // Récupérer le nom du créateur (décrypté)
           let createdByName = '';
           if (data.createdBy) {
             try {
               const creatorDoc = await getDoc(doc(db, 'users', data.createdBy));
               const creatorData = creatorDoc.data();
-              createdByName = creatorData?.displayName || (creatorData?.firstName && creatorData?.lastName ? `${creatorData.firstName} ${creatorData.lastName}` : 'Inconnu');
+              createdByName = await getDecryptedUserDisplayName(data.createdBy, creatorData || null);
             } catch (e) {
               console.error('Erreur lors de la récupération du créateur:', e);
             }
@@ -1221,19 +1246,20 @@ export default function Dashboard(): JSX.Element {
                 return {
                   id: docSnap.id,
                   name: data.name || '',
-                  createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0)
+                  createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || 0),
+                  createdBy: data.createdBy
                 };
               }).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
               if (companiesList.length > 0) {
                 const company = companiesList[0];
-                // Récupérer le nom du créateur
+                // Récupérer le nom du créateur (décrypté)
                 let createdByName = '';
                 if (company.createdBy) {
                   try {
                     const creatorDoc = await getDoc(doc(db, 'users', company.createdBy));
                     const creatorData = creatorDoc.data();
-                    createdByName = creatorData?.displayName || (creatorData?.firstName && creatorData?.lastName ? `${creatorData.firstName} ${creatorData.lastName}` : 'Inconnu');
+                    createdByName = await getDecryptedUserDisplayName(company.createdBy, creatorData || null);
                   } catch (e) {
                     console.error('Erreur lors de la récupération du créateur:', e);
                   }
@@ -1333,8 +1359,9 @@ export default function Dashboard(): JSX.Element {
         // Trier par date de dernière activité (les plus récentes d'abord)
         users.sort((a, b) => b.lastConnection.getTime() - a.lastConnection.getTime());
 
-        // Prendre les 5 premiers
-        setConnectedUsers(users.slice(0, 5));
+        // Décrypter les noms des utilisateurs
+        const decrypted = await decryptUsersList(users.slice(0, 5));
+        setConnectedUsers(decrypted);
       } catch (error) {
         // #region agent log
         fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:614',message:'Error in fetchConnectedUsers',data:{errorCode:error?.code,errorMessage:error?.message,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
@@ -2710,10 +2737,12 @@ export default function Dashboard(): JSX.Element {
                                     fontSize: '0.65rem'
                                   }}
                                 >
-                                  {user.createdAt.toLocaleDateString('fr-FR', {
-                                    day: 'numeric',
-                                    month: 'short'
-                                  })}
+                                  {user.createdAt.getTime() > 0
+                                    ? user.createdAt.toLocaleDateString('fr-FR', {
+                                        day: 'numeric',
+                                        month: 'short'
+                                      })
+                                    : '—'}
                                 </Typography>
                               </Box>
                             </Box>

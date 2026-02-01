@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { auth, db } from '../firebase/config';
 import { onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth';
 import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { ExtendedUser } from '../types/user';
 import { createUserDocument, findStructureByEmail } from '../firebase/auth';
 import { User } from 'firebase/auth';
@@ -91,7 +92,25 @@ export function AuthProvider({ children }) {
           // Utiliser onSnapshot pour écouter les changements en temps réel
           unsubscribeSnapshot = onSnapshot(userDocRef, async (userDocSnap) => {
             if (userDocSnap.exists()) {
-              const newUserData = userDocSnap.data();
+              let newUserData = userDocSnap.data();
+              const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
+              if (isEncrypted(newUserData.displayName) || isEncrypted(newUserData.firstName) || isEncrypted(newUserData.lastName)) {
+                try {
+                  const decryptOwnUserData = httpsCallable(getFunctions(), 'decryptOwnUserData');
+                  const result = await decryptOwnUserData({});
+                  const dec = (result.data as any)?.decryptedData;
+                  if (dec) {
+                    newUserData = {
+                      ...newUserData,
+                      displayName: (dec.displayName && !isEncrypted(dec.displayName) ? dec.displayName : null) || (dec.firstName || dec.lastName ? `${dec.firstName || ''} ${dec.lastName || ''}`.trim() : null) || newUserData.displayName,
+                      firstName: (dec.firstName && !isEncrypted(dec.firstName) ? dec.firstName : newUserData.firstName) ?? newUserData.firstName,
+                      lastName: (dec.lastName && !isEncrypted(dec.lastName) ? dec.lastName : newUserData.lastName) ?? newUserData.lastName
+                    };
+                  }
+                } catch (e) {
+                  console.warn('Décryptage userData (profil) ignoré:', e);
+                }
+              }
               
               // Mettre à jour la dernière activité seulement si c'est un nouveau login
               if (!newUserData.lastLogin && !lastLoginUpdated) {

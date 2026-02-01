@@ -53,6 +53,7 @@ import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setD
 import { useNavigate } from 'react-router-dom';
 import MissionForm, { MissionFormData } from '../components/missions/MissionForm';
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
+import { decryptUsersList } from '../utils/decryptUserUtils';
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -143,6 +144,8 @@ interface FirestoreMissionData {
 
 interface UserData {
   displayName?: string;
+  firstName?: string;
+  lastName?: string;
   photoURL?: string;
   status?: string;
   structureId?: string;
@@ -152,6 +155,8 @@ interface UserData {
 interface ChargeData {
   id: string;
   displayName: string;
+  firstName?: string;
+  lastName?: string;
   photoURL?: string;
 }
 
@@ -238,15 +243,20 @@ const Mission: React.FC = () => {
         );
 
         const usersSnapshot = await getDocs(usersQuery);
-        const chargesList = usersSnapshot.docs.map(doc => {
+        const chargesListRaw = usersSnapshot.docs.map(doc => {
           const userData = doc.data() as UserData;
           return {
             id: doc.id,
             displayName: userData.displayName || 'Utilisateur sans nom',
+            firstName: userData.firstName,
+            lastName: userData.lastName,
             photoURL: userData.photoURL
           };
         });
-        setAvailableCharges(chargesList);
+        
+        // Décrypter les noms des chargés de mission
+        const decryptedCharges = await decryptUsersList(chargesListRaw);
+        setAvailableCharges(decryptedCharges);
 
         const missionsRef = collection(db, 'missions');
         let missionsQuery;

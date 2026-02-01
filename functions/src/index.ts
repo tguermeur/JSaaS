@@ -1111,11 +1111,15 @@ export {
 export {
   encryptUserData,
   decryptUserData,
+  decryptUserDataForStructure,
   decryptOwnUserData,
   encryptCompanyData,
   decryptCompanyData,
+  decryptOwnCompanyData,
+  decryptCompanyDataForStructure,
   encryptContactData,
   decryptContactData,
+  decryptContactDataForStructure,
   encryptText,
   decryptText
 } from './encryptionFunctions';

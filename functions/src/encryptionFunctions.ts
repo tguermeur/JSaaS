@@ -175,6 +175,53 @@ export const decryptUserData = onCall(functionConfig, async (request) => {
 });
 
 /**
+ * Déchiffre les données d'un utilisateur pour les membres de la structure (sans 2FA)
+ * Permet aux admins/membres de voir les noms des chargés de mission, etc.
+ */
+export const decryptUserDataForStructure = onCall(functionConfig, async (request) => {
+  if (!request.auth) {
+    throw new Error('Non autorisé');
+  }
+
+  try {
+    const { userId } = request.data;
+    const requestingUserId = request.auth.uid;
+
+    if (!userId) {
+      throw new Error('userId requis');
+    }
+
+    const [userDoc, requestingUserDoc] = await Promise.all([
+      admin.firestore().collection('users').doc(userId).get(),
+      admin.firestore().collection('users').doc(requestingUserId).get()
+    ]);
+
+    if (!userDoc.exists) {
+      throw new Error('Utilisateur non trouvé');
+    }
+
+    const userData = userDoc.data();
+    const requestingUser = requestingUserDoc.data();
+    const userStatus = requestingUser?.status;
+    const requestingStructureId = requestingUser?.structureId;
+    const targetStructureId = userData?.structureId;
+
+    const canAccess = userStatus === 'superadmin' ||
+      (requestingStructureId && targetStructureId === requestingStructureId && ['admin', 'admin_structure', 'membre', 'member'].includes(userStatus || ''));
+
+    if (!canAccess) {
+      throw new Error('Non autorisé : accès réservé aux membres de la structure');
+    }
+
+    const decrypted = await decryptSensitiveFields(userData!, SENSITIVE_FIELDS.USER);
+    return { success: true, decryptedData: decrypted };
+  } catch (error: any) {
+    console.error('Erreur lors du déchiffrement des données utilisateur (structure):', error);
+    throw new Error(error.message || 'Erreur lors du déchiffrement des données');
+  }
+});
+
+/**
  * Déchiffre les données de l'utilisateur pour lui-même (sans 2FA)
  * Permet aux utilisateurs de voir leurs propres données sans authentification 2FA
  * Utilisé uniquement pour l'affichage dans leur profil
@@ -302,6 +349,151 @@ export const decryptCompanyData = onCall(functionConfig, async (request) => {
       }
     }
     
+    throw new Error(error.message || 'Erreur lors du déchiffrement des données');
+  }
+});
+
+/**
+ * Déchiffre les données de l'entreprise pour un contact avec accès (sans 2FA)
+ * Permet aux contacts de voir les données de leur propre entreprise
+ */
+export const decryptOwnCompanyData = onCall(functionConfig, async (request) => {
+  if (!request.auth) {
+    throw new Error('Non autorisé');
+  }
+
+  try {
+    const { companyId } = request.data;
+    const requestingUserId = request.auth.uid;
+
+    if (!companyId) {
+      throw new Error('companyId requis');
+    }
+
+    const companyDoc = await admin.firestore().collection('companies').doc(companyId).get();
+
+    if (!companyDoc.exists) {
+      throw new Error('Entreprise non trouvée');
+    }
+
+    const requestingUserDoc = await admin.firestore().collection('users').doc(requestingUserId).get();
+    const requestingUser = requestingUserDoc.data();
+
+    // Vérifier que l'utilisateur est un contact avec accès à cette entreprise
+    const isContactWithAccess = requestingUser?.status === 'entreprise' && requestingUser?.companyId === companyId;
+
+    if (!isContactWithAccess) {
+      throw new Error('Non autorisé : accès réservé au contact de cette entreprise');
+    }
+
+    const companyData = companyDoc.data();
+    const decrypted = await decryptSensitiveFields(companyData!, SENSITIVE_FIELDS.COMPANY);
+
+    return { success: true, decryptedData: decrypted };
+  } catch (error: any) {
+    console.error('Erreur lors du déchiffrement des données entreprise (contact):', error);
+    throw new Error(error.message || 'Erreur lors du déchiffrement des données');
+  }
+});
+
+/**
+ * Déchiffre les données d'une entreprise pour les membres de la structure (sans 2FA)
+ * Permet aux admins/membres de voir les données des entreprises de leur structure
+ */
+export const decryptCompanyDataForStructure = onCall(functionConfig, async (request) => {
+  if (!request.auth) {
+    throw new Error('Non autorisé');
+  }
+
+  try {
+    const { companyId } = request.data;
+    const requestingUserId = request.auth.uid;
+
+    if (!companyId) {
+      throw new Error('companyId requis');
+    }
+
+    const [companyDoc, userDoc] = await Promise.all([
+      admin.firestore().collection('companies').doc(companyId).get(),
+      admin.firestore().collection('users').doc(requestingUserId).get()
+    ]);
+
+    if (!companyDoc.exists) {
+      throw new Error('Entreprise non trouvée');
+    }
+
+    const companyData = companyDoc.data();
+    const userData = userDoc.data();
+    const userStatus = userData?.status;
+    const userStructureId = userData?.structureId;
+    const companyStructureId = companyData?.structureId;
+
+    const canAccess = userStatus === 'superadmin' ||
+      (userStructureId && companyStructureId === userStructureId && ['admin', 'admin_structure', 'membre', 'member'].includes(userStatus || ''));
+
+    if (!canAccess) {
+      throw new Error('Non autorisé : accès réservé aux membres de la structure');
+    }
+
+    const decrypted = await decryptSensitiveFields(companyData!, SENSITIVE_FIELDS.COMPANY);
+    return { success: true, decryptedData: decrypted };
+  } catch (error: any) {
+    console.error('Erreur lors du déchiffrement des données entreprise (structure):', error);
+    throw new Error(error.message || 'Erreur lors du déchiffrement des données');
+  }
+});
+
+/**
+ * Déchiffre les données d'un contact pour les membres de la structure (sans 2FA)
+ * Permet aux admins/membres de voir les données des contacts des entreprises de leur structure
+ */
+export const decryptContactDataForStructure = onCall(functionConfig, async (request) => {
+  if (!request.auth) {
+    throw new Error('Non autorisé');
+  }
+
+  try {
+    const { contactId } = request.data;
+    const requestingUserId = request.auth.uid;
+
+    if (!contactId) {
+      throw new Error('contactId requis');
+    }
+
+    const [contactDoc, userDoc] = await Promise.all([
+      admin.firestore().collection('contacts').doc(contactId).get(),
+      admin.firestore().collection('users').doc(requestingUserId).get()
+    ]);
+
+    if (!contactDoc.exists) {
+      throw new Error('Contact non trouvé');
+    }
+
+    const contactData = contactDoc.data();
+    const userData = userDoc.data();
+    const userStatus = userData?.status;
+    const userStructureId = userData?.structureId;
+    const contactCompanyId = contactData?.companyId;
+
+    if (!contactCompanyId) {
+      throw new Error('Contact sans entreprise associée');
+    }
+
+    const companyDoc = await admin.firestore().collection('companies').doc(contactCompanyId).get();
+    const companyData = companyDoc.exists ? companyDoc.data() : null;
+    const companyStructureId = companyData?.structureId;
+
+    const canAccess = userStatus === 'superadmin' ||
+      (userStructureId && companyStructureId === userStructureId && ['admin', 'admin_structure', 'membre', 'member'].includes(userStatus || ''));
+
+    if (!canAccess) {
+      throw new Error('Non autorisé : accès réservé aux membres de la structure');
+    }
+
+    const decrypted = await decryptSensitiveFields(contactData!, SENSITIVE_FIELDS.CONTACT);
+    return { success: true, decryptedData: decrypted };
+  } catch (error: any) {
+    console.error('Erreur lors du déchiffrement des données contact (structure):', error);
     throw new Error(error.message || 'Erreur lors du déchiffrement des données');
   }
 });

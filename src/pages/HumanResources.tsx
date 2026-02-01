@@ -49,6 +49,7 @@ import axios from 'axios';
 import TwoFactorDialog from '../components/common/TwoFactorDialog';
 import { canAccessPage, type UserStatus } from '../utils/permissions';
 import { fetchDecryptFile, is2FARequiredError } from '../utils/decryptFileUtils';
+import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 import { Template } from '../types/templates';
 import * as PDFLib from 'pdf-lib';
 import { useSearchParams, useNavigate } from 'react-router-dom';
@@ -337,12 +338,12 @@ const HumanResources = () => {
           const q = query(usersRef, where('structureId', '==', structureId));
           const querySnapshot = await getDocs(q);
           
-          const usersData = querySnapshot.docs.map(doc => {
-            const data = doc.data();
+          const usersData = querySnapshot.docs.map(docSnap => {
+            const data = docSnap.data();
             // Gérer la compatibilité avec les anciennes données qui utilisent studyYear
             const graduationYear = data.graduationYear || data.studyYear || '';
             return {
-              id: doc.id,
+              id: docSnap.id,
               ...data,
               graduationYear,
               lastLogin: data.lastLogin || null,
@@ -350,7 +351,8 @@ const HumanResources = () => {
             };
           }) as UserDetails[];
           
-          setUsers(usersData);
+          const decrypted = await decryptUsersList(usersData);
+          setUsers(decrypted);
 
           await fetchConventionTemplate(structureId);
         }
@@ -516,7 +518,7 @@ const HumanResources = () => {
             if (data.uploadedBy) {
               const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
               const userData = userDoc.data();
-              uploadedByName = userData?.displayName || `${userData?.firstName || ''} ${userData?.lastName || ''}`.trim() || 'Inconnu';
+              uploadedByName = await getDecryptedUserDisplayName(data.uploadedBy, userData || null);
             }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);

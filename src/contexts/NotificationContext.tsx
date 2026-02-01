@@ -23,6 +23,7 @@ export interface PersistentNotification {
   message: string;
   read: boolean;
   createdAt: Date;
+  clickedAt: Date | null;
   priority: NotificationPriority;
   userId?: string;
   structureId?: string;
@@ -173,6 +174,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           id: doc.id,
           ...doc.data(),
           createdAt: doc.data().createdAt?.toDate() || new Date(),
+          clickedAt: doc.data().clickedAt?.toDate() ?? null,
           priority: doc.data().priority || 'medium'
         })) as PersistentNotification[];
 
@@ -217,6 +219,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
               id: doc.id,
               ...doc.data(),
               createdAt: doc.data().createdAt?.toDate() || new Date(),
+              clickedAt: doc.data().clickedAt?.toDate() ?? null,
               priority: doc.data().priority || 'medium'
             })) as PersistentNotification[];
 
@@ -391,6 +394,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         id: doc.id,
         ...doc.data(),
         createdAt: doc.data().createdAt?.toDate() || new Date(),
+        clickedAt: doc.data().clickedAt?.toDate() ?? null,
         priority: doc.data().priority || 'medium'
       })) as PersistentNotification[];
 

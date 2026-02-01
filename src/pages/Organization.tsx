@@ -70,6 +70,7 @@ import {
 } from '@mui/icons-material';
 import { doc, updateDoc, getDoc, getDocs, query, where, collection, addDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import { decryptUsersList } from '../utils/decryptUserUtils';
 import { useAuth } from '../contexts/AuthContext';
 import { styled } from '@mui/material';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -469,14 +470,15 @@ const Organization = () => {
           );
 
           const membersData = usersSnapshot.docs
-            .map(doc => ({
-              id: doc.id,
-              ...doc.data(),
-              createdAt: toDate(doc.data().createdAt)
+            .map(docSnap => ({
+              id: docSnap.id,
+              ...docSnap.data(),
+              createdAt: toDate(docSnap.data().createdAt)
             } as User))
             .filter(user => user.status === 'member' || user.status === 'admin');
 
-          setMembers(membersData);
+          const decrypted = await decryptUsersList(membersData);
+          setMembers(decrypted);
           
           // Recharger les pôles depuis Firestore
           const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
@@ -601,14 +603,15 @@ const Organization = () => {
         );
 
         const membersData = usersSnapshot.docs
-          .map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-            createdAt: toDate(doc.data().createdAt)
+          .map(docSnap => ({
+            id: docSnap.id,
+            ...docSnap.data(),
+            createdAt: toDate(docSnap.data().createdAt)
           } as User))
           .filter(user => user.status === 'member' || user.status === 'admin');
 
-        setMembers(membersData);
+        const decrypted = await decryptUsersList(membersData);
+        setMembers(decrypted);
       } catch (error) {
         console.error('Erreur lors du chargement:', error);
         setSnackbar({
@@ -720,7 +723,8 @@ const Organization = () => {
       console.log('Utilisateurs filtrés:', users);
       console.log('Nombre d\'utilisateurs après filtrage:', users.length);
 
-      setAvailableUsers(users);
+      const decrypted = await decryptUsersList(users);
+      setAvailableUsers(decrypted);
       console.log('État availableUsers mis à jour');
 
     } catch (error) {

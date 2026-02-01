@@ -311,7 +311,7 @@ const Authorizations: React.FC = () => {
           id: doc.id,
           ...doc.data()
         } as StructureMember))
-        .filter(user => user.status === 'member' || user.status === 'admin');
+        .filter(user => user.status === 'member' || user.status === 'membre' || user.status === 'admin');
 
       setMembers(membersList);
     } catch (error) {
@@ -501,7 +501,7 @@ const Authorizations: React.FC = () => {
 
         // Pour le tableau de bord, s'assurer que tous les membres ont accès en lecture
         const readPermissionsData = editingPage.pageId === 'dashboard' ? {
-          allowedRoles: ['member', 'admin', 'superadmin'] as UserStatus[],
+          allowedRoles: ['member', 'membre', 'admin', 'superadmin'] as UserStatus[],
           allowedPoles: [] as string[],
           allowedMembers: [] as string[],
           updatedAt: new Date(),

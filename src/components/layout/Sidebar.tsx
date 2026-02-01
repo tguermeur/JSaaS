@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Drawer,
   List,
@@ -15,7 +15,7 @@ import {
   Menu,
   MenuItem,
 } from '@mui/material';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import {
   Dashboard as DashboardIcon,
@@ -49,6 +49,7 @@ import {
   Add as AddIcon,
   Folder as FolderIcon,
   Campaign as CampaignIcon,
+  Lock as LockIcon,
 } from '@mui/icons-material';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -165,6 +166,14 @@ interface MenuItem {
   path: string;
   section: string;
   iconSidebarIcon?: React.ReactNode; // Icône pour la sidebar gauche
+  permissionPageId?: string; // ID de la page pour vérifier les permissions (ex: 'rh', 'tresorerie')
+}
+
+// Interface pour les permissions de page
+interface PagePermission {
+  allowedRoles: string[];
+  allowedPoles: string[];
+  allowedMembers: string[];
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
@@ -177,6 +186,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   const [structureLogo, setStructureLogo] = useState<string | null>(null);
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(null);
   const userMenuOpen = Boolean(userMenuAnchorEl);
+  const [pagePermissions, setPagePermissions] = useState<Record<string, PagePermission>>({});
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   
   const { contactPermissions, isContactWithAccess } = useAuth();
   
@@ -228,6 +239,109 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
 
     loadStructureData();
   }, [currentUser, isEntreprise]);
+
+  // Charger les permissions des pages depuis Firestore
+  useEffect(() => {
+    const loadPagePermissions = async () => {
+      if (!currentUser || !userData?.structureId) {
+        setPermissionsLoaded(true);
+        return;
+      }
+
+      try {
+        const permissionsRef = collection(db, 'structures', userData.structureId, 'permissions');
+        const permissionsSnapshot = await getDocs(permissionsRef);
+        
+        const permissions: Record<string, PagePermission> = {};
+        permissionsSnapshot.docs.forEach(doc => {
+          const data = doc.data();
+          permissions[doc.id] = {
+            allowedRoles: data.allowedRoles || [],
+            allowedPoles: data.allowedPoles || [],
+            allowedMembers: data.allowedMembers || [],
+          };
+        });
+        
+        setPagePermissions(permissions);
+      } catch (error) {
+        console.error('Erreur lors du chargement des permissions:', error);
+      } finally {
+        setPermissionsLoaded(true);
+      }
+    };
+
+    loadPagePermissions();
+  }, [currentUser, userData?.structureId]);
+
+  // Pages CRM de base accessibles par défaut aux membres si pas de permission configurée
+  const defaultMemberAccessPages = ['dashboard', 'organization', 'mission', 'entreprises', 'documents'];
+  
+  // Pages de paramètres accessibles uniquement aux admins par défaut
+  const adminOnlyPages = ['settings_billing', 'settings_authorizations', 'settings_structure'];
+  
+  // Pages de paramètres accessibles aux membres par défaut
+  const memberSettingsPages = ['settings_templates', 'settings_mission_types', 'settings_notifications'];
+
+  // Fonction pour vérifier si l'utilisateur a accès à une page
+  const hasAccessToPage = (permissionPageId: string | undefined): boolean => {
+    // Si pas de permissionPageId, accès autorisé par défaut
+    if (!permissionPageId) return true;
+    
+    // SuperAdmin a toujours accès
+    if (isSuperAdmin) return true;
+    
+    // Admin a toujours accès
+    if (isAdmin) return true;
+    
+    // Vérifier les permissions _read pour la lecture
+    const readPermission = pagePermissions[`${permissionPageId}_read`];
+    
+    if (!readPermission) {
+      // Si pas de permission définie, utiliser les règles par défaut
+      
+      // Pages CRM de base : accès par défaut aux membres
+      if (defaultMemberAccessPages.includes(permissionPageId) && isMember) {
+        return true;
+      }
+      
+      // Pages de paramètres membres : accès par défaut aux membres
+      if (memberSettingsPages.includes(permissionPageId) && isMember) {
+        return true;
+      }
+      
+      // Pages admin uniquement : refuser aux non-admins
+      if (adminOnlyPages.includes(permissionPageId)) {
+        return false;
+      }
+      
+      // Pour les autres pages sans permission définie (pôles), refuser l'accès
+      return false;
+    }
+    
+    // Vérifier si le rôle de l'utilisateur est autorisé
+    const userStatus = userData?.status || '';
+    if (readPermission.allowedRoles.includes(userStatus)) {
+      return true;
+    }
+    
+    // Vérifier si 'membre' ou 'member' est autorisé (gérer l'incohérence)
+    if (isMember && (readPermission.allowedRoles.includes('membre') || readPermission.allowedRoles.includes('member'))) {
+      return true;
+    }
+    
+    // Vérifier si l'utilisateur est dans les membres autorisés
+    if (currentUser && readPermission.allowedMembers.includes(currentUser.uid)) {
+      return true;
+    }
+    
+    // Vérifier si un des pôles de l'utilisateur est autorisé
+    const userPoles = userData?.poles || [];
+    const hasAllowedPole = userPoles.some((pole: any) => 
+      readPermission.allowedPoles.includes(pole.poleId)
+    );
+    
+    return hasAllowedPole;
+  };
 
   // Déterminer la section active basée sur le pathname
   useEffect(() => {
@@ -297,6 +411,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <AppsIcon />,
       path: '/app/dashboard',
       section: 'crm',
+      permissionPageId: 'dashboard',
     },
     {
       text: 'Organisation',
@@ -304,6 +419,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <AppsIcon />,
       path: '/app/organization',
       section: 'crm',
+      permissionPageId: 'organization',
     },
     {
       text: structureType === 'junior' ? 'Études' : 'Missions',
@@ -311,6 +427,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <AppsIcon />,
       path: structureType === 'junior' ? '/app/etude' : '/app/mission',
       section: 'crm',
+      permissionPageId: 'mission',
     },
     {
       text: 'Entreprises',
@@ -318,6 +435,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <AppsIcon />,
       path: '/app/entreprises',
       section: 'crm',
+      permissionPageId: 'entreprises',
     },
     {
       text: 'Documents',
@@ -325,6 +443,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <AppsIcon />,
       path: '/app/documents',
       section: 'crm',
+      permissionPageId: 'documents',
     },
     {
       text: 'Commercial',
@@ -332,6 +451,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <BarChartIcon />,
       path: '/app/commercial',
       section: 'poles',
+      permissionPageId: 'commercial',
     },
     {
       text: 'Audit',
@@ -339,6 +459,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <BarChartIcon />,
       path: '/app/audit',
       section: 'poles',
+      permissionPageId: 'audit',
     },
     {
       text: 'Trésorerie',
@@ -346,6 +467,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <BarChartIcon />,
       path: '/app/tresorerie',
       section: 'poles',
+      permissionPageId: 'tresorerie',
     },
     {
       text: 'Ressources Humaines',
@@ -353,6 +475,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <BarChartIcon />,
       path: '/app/human-resources',
       section: 'poles',
+      permissionPageId: 'rh',
     },
     {
       text: 'Ambassadeurs',
@@ -368,6 +491,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <SettingsIcon />,
       path: '/app/settings/templates',
       section: 'settings',
+      permissionPageId: 'settings_templates',
     },
     {
       text: 'Assignation des Templates',
@@ -375,6 +499,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <SettingsIcon />,
       path: '/app/settings/template-assignment',
       section: 'settings',
+      permissionPageId: 'settings_templates',
     },
     {
       text: "Plans d'abonnement",
@@ -382,6 +507,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <SettingsIcon />,
       path: '/app/settings/billing',
       section: 'settings',
+      permissionPageId: 'settings_billing',
     },
     {
       text: 'Configuration structure',
@@ -389,6 +515,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <SettingsIcon />,
       path: '/app/settings/structure',
       section: 'settings',
+      permissionPageId: 'settings_structure',
     },
     {
       text: 'Gestion des accès',
@@ -396,6 +523,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <SettingsIcon />,
       path: '/app/settings/authorizations',
       section: 'settings',
+      permissionPageId: 'settings_authorizations',
     },
     {
       text: 'Types de mission',
@@ -403,6 +531,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <SettingsIcon />,
       path: '/app/settings/mission-descriptions',
       section: 'settings',
+      permissionPageId: 'settings_mission_types',
     },
     {
       text: 'Notifications',
@@ -410,6 +539,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <SettingsIcon />,
       path: '/app/settings/notifications',
       section: 'settings',
+      permissionPageId: 'settings_notifications',
     },
   ];
 
@@ -810,22 +940,62 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
                location.pathname.startsWith(item.path)) ||
               (item.path === '/app/commercial' && location.pathname.startsWith('/prospect/'));
             
+            // Vérifier si l'utilisateur a accès à cette page
+            // Ne verrouiller que si les permissions ET les données utilisateur sont chargées
+            const hasAccess = hasAccessToPage(item.permissionPageId);
+            const dataLoaded = permissionsLoaded && userData !== null;
+            const isLocked = item.permissionPageId && !hasAccess && dataLoaded;
+            
             return (
               <ListItem key={item.text} disablePadding>
-                <DetailListItemButton
-                  onClick={() => {
-                    navigate(item.path);
-                    setSelectedSection(item.section);
-                    // Fermer la sidebar droite après la navigation
-                    setTimeout(() => {
-                      setDetailSidebarOpen(false);
-                    }, 200);
-                  }}
-                  selected={isSelected}
-                  >
-                    <ListItemIcon>{item.icon}</ListItemIcon>
-                  <ListItemText primary={item.text} />
-                </DetailListItemButton>
+                <Tooltip 
+                  title={isLocked ? "Vous n'avez pas accès à cette page" : ""} 
+                  placement="right"
+                  arrow
+                >
+                  <Box sx={{ width: '100%' }}>
+                    <DetailListItemButton
+                      onClick={() => {
+                        if (isLocked) return; // Ne pas naviguer si verrouillé
+                        navigate(item.path);
+                        setSelectedSection(item.section);
+                        // Fermer la sidebar droite après la navigation
+                        setTimeout(() => {
+                          setDetailSidebarOpen(false);
+                        }, 200);
+                      }}
+                      selected={isSelected}
+                      sx={{
+                        ...(isLocked && {
+                          opacity: 0.5,
+                          cursor: 'not-allowed',
+                          '&:hover': {
+                            backgroundColor: 'transparent',
+                          },
+                        }),
+                      }}
+                    >
+                      <ListItemIcon sx={{ 
+                        ...(isLocked && { color: '#9ca3af !important' }) 
+                      }}>
+                        {item.icon}
+                      </ListItemIcon>
+                      <ListItemText 
+                        primary={item.text} 
+                        sx={{
+                          ...(isLocked && {
+                            '& .MuiListItemText-primary': {
+                              color: '#9ca3af !important',
+                            },
+                          }),
+                        }}
+                      />
+                      {isLocked && (
+                        <LockIcon sx={{ fontSize: 16, color: '#9ca3af', ml: 1 }} />
+                      )}
+                    </DetailListItemButton>
+                  </Box>
+                </Tooltip>
               </ListItem>
             );
           })}

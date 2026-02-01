@@ -16,9 +16,11 @@ import {
   Business as BusinessIcon,
   Person as PersonIcon,
   Settings as SettingsIcon,
-  Info as InfoIcon
+  Info as InfoIcon,
+  OpenInNew as OpenInNewIcon
 } from '@mui/icons-material';
 import { useNotifications, PersistentNotification } from '../../contexts/NotificationContext';
+import { NotificationService } from '../../services/notificationService';
 import { useNavigate } from 'react-router-dom';
 
 interface NotificationListProps {
@@ -87,41 +89,46 @@ const NotificationList: React.FC<NotificationListProps> = ({
   };
 
   const handleNotificationClick = async (notification: PersistentNotification) => {
-    // Marquer comme lue si ce n'est pas déjà fait
+    // 1. Enregistrer le clic en base (engagement)
+    try {
+      await NotificationService.recordNotificationClick(notification.id);
+    } catch (err) {
+      console.warn('Enregistrement du clic non effectué:', err);
+    }
+
+    // 2. Marquer comme lue si ce n'est pas déjà fait
     if (!notification.read) {
       await markAsRead(notification.id);
     }
 
-    // Appeler le callback personnalisé
+    // 3. Deep link : si redirectUrl est présent, rediriger impérativement vers ce lien
+    const redirectUrl = notification.metadata?.redirectUrl;
+    if (redirectUrl) {
+      navigate(redirectUrl);
+      if (onNotificationClick) onNotificationClick(notification);
+      return;
+    }
+
+    // 4. Callback personnalisé
     if (onNotificationClick) {
       onNotificationClick(notification);
     }
 
-    // Rediriger en fonction des métadonnées de la notification
+    // 5. Redirection par défaut selon métadonnées / type
     if (notification.metadata) {
-      // Si une URL de redirection est spécifiée, l'utiliser
-      if (notification.metadata.redirectUrl) {
-        navigate(notification.metadata.redirectUrl);
-        return;
-      }
-
-      // Sinon, utiliser la logique par défaut basée sur le type
       if (notification.metadata.source === 'audit') {
-        // Pour les notifications d'audit, rediriger vers la page d'audit
         if (notification.metadata.missionId) {
           navigate(`/app/audit/mission/${notification.metadata.missionId}`);
         } else {
           navigate('/app/audit');
         }
       } else if (notification.metadata.source === 'entreprise') {
-        // Pour les notifications d'entreprise, rediriger vers la page de l'entreprise
         if (notification.metadata.companyId) {
           navigate(`/app/entreprises/${notification.metadata.companyId}`);
         } else {
           navigate('/app/entreprises');
         }
       } else {
-        // Logique par défaut pour les autres types
         switch (notification.type) {
           case 'report_update':
           case 'report_response':
@@ -130,10 +137,6 @@ const NotificationList: React.FC<NotificationListProps> = ({
           case 'mission_update':
             if (notification.metadata.missionId) {
               navigate(`/app/mission/${notification.metadata.missionId}`);
-            } else if (notification.metadata.missionNumber) {
-              // Fallback: si on a seulement le numéro, on doit chercher l'ID
-              // Pour l'instant, on redirige vers la liste des missions
-              navigate('/app/mission');
             } else {
               navigate('/app/mission');
             }
@@ -145,7 +148,6 @@ const NotificationList: React.FC<NotificationListProps> = ({
             navigate('/app/admin');
             break;
           default:
-            // Pas de redirection par défaut
             break;
         }
       }
@@ -190,22 +192,41 @@ const NotificationList: React.FC<NotificationListProps> = ({
             button
             onClick={() => handleNotificationClick(notification)}
             sx={{
-              bgcolor: notification.read ? 'transparent' : 'action.hover',
+              backgroundColor: notification.read ? 'transparent' : (theme) => `${theme.palette.primary.main}14`,
+              borderLeft: notification.read ? 'none' : '3px solid',
+              borderLeftColor: notification.read ? 'transparent' : 'primary.main',
               '&:hover': { bgcolor: 'action.selected' },
               py: 1.5,
               px: 2
             }}
           >
             <Box sx={{ display: 'flex', alignItems: 'flex-start', width: '100%' }}>
-              {/* Icône de notification */}
-              <Box sx={{ mr: 2, mt: 0.5 }}>
+              {/* Pastille non lue + icône type */}
+              <Box sx={{ mr: 2, mt: 0.5, position: 'relative' }}>
+                {!notification.read && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: -2,
+                      right: -2,
+                      width: 10,
+                      height: 10,
+                      borderRadius: '50%',
+                      bgcolor: 'primary.main',
+                      border: '2px solid',
+                      borderColor: 'background.paper'
+                    }}
+                  />
+                )}
                 <Chip
                   icon={getNotificationIcon(notification.type)}
                   label=""
                   size="small"
                   sx={{
-                    backgroundColor: getNotificationColor(notification.type) + '20',
-                    color: getNotificationColor(notification.type) + '80',
+                    backgroundColor: notification.read
+                      ? getNotificationColor(notification.type) + '20'
+                      : getNotificationColor(notification.type) + '30',
+                    color: getNotificationColor(notification.type) + (notification.read ? '80' : ''),
                     '& .MuiChip-icon': {
                       color: getNotificationColor(notification.type)
                     }
@@ -219,14 +240,19 @@ const NotificationList: React.FC<NotificationListProps> = ({
                   <Typography
                     variant="body2"
                     sx={{
-                      fontWeight: notification.read ? 400 : 600,
+                      fontWeight: notification.read ? 400 : 700,
                       color: notification.read ? 'text.secondary' : 'text.primary',
                       flex: 1
                     }}
                   >
                     {notification.title}
                   </Typography>
-                  
+                  {/* Icône lien de redirection */}
+                  {notification.metadata?.redirectUrl && (
+                    <Tooltip title="Ouvrir">
+                      <OpenInNewIcon sx={{ fontSize: 16, color: 'primary.main', ml: 0.5 }} />
+                    </Tooltip>
+                  )}
                   {/* Indicateur de priorité */}
                   {notification.priority !== 'medium' && (
                     <Box

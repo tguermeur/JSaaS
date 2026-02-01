@@ -46,6 +46,8 @@ import {
   doc, 
   query, 
   where, 
+  orderBy,
+  limit,
   serverTimestamp,
   addDoc,
   setDoc 
@@ -67,7 +69,11 @@ import { auth } from '../firebase/config';
 import { useNotifications } from '../contexts/NotificationContext';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import LockIcon from '@mui/icons-material/Lock';
+import { decryptActivityUsersList } from '../utils/decryptUserUtils';
+import { toDateFromFirestore } from '../utils/dateUtils';
 import SecurityIcon from '@mui/icons-material/Security';
+import LoginIcon from '@mui/icons-material/Login';
+import HowToRegIcon from '@mui/icons-material/HowToReg';
 
 interface StructureData {
   id: string;
@@ -538,7 +544,7 @@ const SuperAdmin: React.FC = () => {
   const [checkingStatus, setCheckingStatus] = useState(false);
 
   // Ajouter un nouvel onglet
-  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Clients Stripe', 'Migration Chiffrement'];
+  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Connexions & Inscriptions', 'Clients Stripe', 'Migration Chiffrement'];
 
   // Ajouter l'état pour le filtre de statut (après les autres états)
   const [reportStatusFilter, setReportStatusFilter] = useState<string>('all');
@@ -546,6 +552,11 @@ const SuperAdmin: React.FC = () => {
   // Ajout de l'interface pour le dialogue d'ajout d'utilisateur
   const [openAddUserDialog, setOpenAddUserDialog] = useState(false);
   const [selectedStructureForUser, setSelectedStructureForUser] = useState<{id: string, name: string} | null>(null);
+
+  // États pour Connexions & Inscriptions
+  const [recentSignups, setRecentSignups] = useState<Array<{id: string; email: string; displayName: string; structureName: string; createdAt: Date}>>([]);
+  const [recentLogins, setRecentLogins] = useState<Array<{id: string; email: string; displayName: string; structureName: string; lastActivity: Date}>>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
 
   // Charger les structures au montage du composant
   useEffect(() => {
@@ -690,6 +701,101 @@ const SuperAdmin: React.FC = () => {
       console.error('Erreur lors de la récupération des notifications:', error);
       setMessage({ type: 'error', text: 'Erreur lors de la récupération des notifications' });
       setOpen(true);
+    }
+  };
+
+  // Fonction pour formater date et heure (toujours afficher les deux)
+  const formatDateTime = (date: Date) => {
+    if (!date || date.getTime() === 0) return '-';
+    return date.toLocaleString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  };
+
+  // Fonction pour récupérer les dernières inscriptions et connexions
+  const fetchActivityData = async () => {
+    setActivityLoading(true);
+    try {
+      const usersRef = collection(db, 'users');
+      const structureMap = new Map(structures.map(s => [s.id, s.nom || s.ecole || 'N/A']));
+
+      // Dernières inscriptions (createdAt)
+      const signupsQuery = query(
+        usersRef,
+        orderBy('createdAt', 'desc'),
+        limit(50)
+      );
+      const signupsSnapshot = await getDocs(signupsQuery);
+      const signupsRaw = signupsSnapshot.docs
+        .filter(d => {
+          const data = d.data();
+          return data.role !== 'superadmin' && data.status !== 'superadmin';
+        })
+        .map(docSnap => {
+          const data = docSnap.data();
+          const createdAt = toDateFromFirestore(data.createdAt);
+          return {
+            id: docSnap.id,
+            email: data.email || '',
+            displayName: data.displayName || data.email || 'N/A',
+            firstName: data.firstName,
+            lastName: data.lastName,
+            ecole: data.ecole,
+            structureId: data.structureId,
+            createdAt
+          };
+        });
+      const signupsDecrypted = await decryptActivityUsersList(
+        signupsRaw,
+        (u) => structureMap.get(u.structureId) || ''
+      );
+      signupsDecrypted.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      setRecentSignups(signupsDecrypted);
+
+      // Dernières connexions (lastActivity ou lastLogin)
+      const loginsQuery = query(
+        usersRef,
+        orderBy('lastActivity', 'desc'),
+        limit(50)
+      );
+      const loginsSnapshot = await getDocs(loginsQuery);
+      const loginsRaw = loginsSnapshot.docs
+        .filter(d => {
+          const data = d.data();
+          return (data.role !== 'superadmin' && data.status !== 'superadmin') && (data.lastActivity || data.lastLogin);
+        })
+        .map(docSnap => {
+          const data = docSnap.data();
+          const ts = data.lastActivity || data.lastLogin;
+          const lastActivity = toDateFromFirestore(ts);
+          return {
+            id: docSnap.id,
+            email: data.email || '',
+            displayName: data.displayName || data.email || 'N/A',
+            firstName: data.firstName,
+            lastName: data.lastName,
+            ecole: data.ecole,
+            structureId: data.structureId,
+            lastActivity
+          };
+        });
+      const loginsDecrypted = await decryptActivityUsersList(
+        loginsRaw,
+        (u) => structureMap.get(u.structureId) || ''
+      );
+      loginsDecrypted.sort((a, b) => b.lastActivity.getTime() - a.lastActivity.getTime());
+      setRecentLogins(loginsDecrypted);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des activités:', error);
+      setMessage({ type: 'error', text: 'Erreur lors de la récupération des connexions et inscriptions' });
+      setOpen(true);
+    } finally {
+      setActivityLoading(false);
     }
   };
 
@@ -1217,6 +1323,13 @@ const SuperAdmin: React.FC = () => {
       fetchAllUsers();
     }
   }, [tabValue]);
+
+  // Charger les connexions et inscriptions quand l'onglet est sélectionné
+  useEffect(() => {
+    if (tabValue === 4 && structures.length >= 0) { // Onglet Connexions & Inscriptions
+      fetchActivityData();
+    }
+  }, [tabValue, structures.length]);
 
   // Fonction pour gérer l'ajout d'un utilisateur à une structure
   const handleAddUserToStructure = async (userData: any) => {
@@ -1815,7 +1928,114 @@ const SuperAdmin: React.FC = () => {
             )}
           </Box>
         </Paper>
-      ) : tabValue === 5 ? (
+      ) : tabValue === 4 ? (
+        <Paper sx={{ p: 3, mt: 3 }}>
+          <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+            Connexions & Inscriptions
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+            Vue d'ensemble des dernières connexions et inscriptions, toutes structures confondues.
+          </Typography>
+
+          {activityLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress />
+            </Box>
+          ) : (
+            <Grid container spacing={3}>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <HowToRegIcon color="primary" />
+                  <Typography variant="h6">Dernières inscriptions</Typography>
+                </Box>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Utilisateur</TableCell>
+                        <TableCell>Structure</TableCell>
+                        <TableCell>Date et heure d'inscription</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {recentSignups.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                            Aucune inscription récente
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        recentSignups.map((user) => (
+                          <TableRow key={user.id}>
+                            <TableCell>
+                              <Typography variant="body2" fontWeight="medium">{user.displayName}</Typography>
+                              <Typography variant="caption" color="text.secondary">{user.email}</Typography>
+                            </TableCell>
+                            <TableCell>{user.structureName}</TableCell>
+                            <TableCell>
+                              {formatDateTime(user.createdAt)}
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <LoginIcon color="primary" />
+                  <Typography variant="h6">Dernières connexions</Typography>
+                </Box>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Utilisateur</TableCell>
+                        <TableCell>Structure</TableCell>
+                        <TableCell>Date et heure de dernière connexion</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {recentLogins.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                            Aucune connexion récente
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        recentLogins.map((user) => (
+                          <TableRow key={user.id}>
+                            <TableCell>
+                              <Typography variant="body2" fontWeight="medium">{user.displayName}</Typography>
+                              <Typography variant="caption" color="text.secondary">{user.email}</Typography>
+                            </TableCell>
+                            <TableCell>{user.structureName}</TableCell>
+                            <TableCell>
+                              {formatDateTime(user.lastActivity)}
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Grid>
+            </Grid>
+          )}
+          {!activityLoading && (recentSignups.length > 0 || recentLogins.length > 0) && (
+            <Box sx={{ mt: 2 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={fetchActivityData}
+              >
+                Actualiser
+              </Button>
+            </Box>
+          )}
+        </Paper>
+      ) : tabValue === 6 ? (
         <Paper sx={{ p: 3, mt: 3 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
             <SecurityIcon color="primary" sx={{ fontSize: 40 }} />

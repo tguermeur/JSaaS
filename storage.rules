@@ -3,7 +3,7 @@ service firebase.storage {
   match /b/{bucket}/o {
     
     // =========================================================================
-    // FONCTIONS UTILITAIRES
+    // FONCTIONS UTILITAIRES DE BASE
     // =========================================================================
     
     // Vérifie si l'utilisateur est authentifié
@@ -16,111 +16,365 @@ service firebase.storage {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Vérifie si l'utilisateur est Superadmin via Custom Claims (Rapide & Fiable)
+    // =========================================================================
+    // FONCTIONS DE LECTURE FIRESTORE
+    // =========================================================================
+    
+    // Récupère les données de l'utilisateur depuis Firestore
+    function getUserData() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    // Vérifie si le document utilisateur existe
+    function userExists() {
+      return firestore.exists(/databases/(default)/documents/users/$(request.auth.uid));
+    }
+    
+    // Vérifie si l'utilisateur est Superadmin
     function isSuperAdmin() {
-      // Vérification plus robuste des Custom Claims
-      return request.auth.token.keys().hasAny(['superadmin']) && request.auth.token.superadmin == true;
+      return isAuthenticated() && 
+             userExists() &&
+             getUserData().status == 'superadmin';
     }
-
-    // Vérifie l'appartenance à une structure via Custom Claims (Rapide & Fiable)
-    function belongsToStructure(structureId) {
-      // On vérifie d'abord si l'utilisateur est authentifié
-      // Puis si c'est un superadmin
-      // Puis si son token contient structureId ET qu'il correspond
-      // Enfin si son rôle ou statut est valide
-      return isAuthenticated() && (
-        isSuperAdmin() ||
-        (
-          request.auth.token.keys().hasAny(['structureId', 'role', 'status']) &&
-          request.auth.token.structureId == structureId &&
-          (
-            (request.auth.token.role in ['admin', 'admin_structure', 'member', 'membre']) ||
-            (request.auth.token.status in ['admin', 'admin_structure', 'member', 'membre'])
-          )
-        )
-      );
+    
+    // Vérifie si l'utilisateur est admin ou member d'une structure
+    function isStructureMember(structureId) {
+      return isAuthenticated() && 
+             userExists() &&
+             getUserData().structureId == structureId &&
+             getUserData().status in ['admin', 'member', 'membre'];
+    }
+    
+    // Vérifie si l'utilisateur est admin d'une structure
+    function isStructureAdmin(structureId) {
+      return isAuthenticated() && 
+             userExists() &&
+             getUserData().structureId == structureId &&
+             getUserData().status == 'admin';
     }
 
     // =========================================================================
-    // RÈGLES PRINCIPALES
+    // FONCTIONS DE VÉRIFICATION DE PERMISSIONS
     // =========================================================================
+    
+    // Vérifie si l'utilisateur a une permission de module (lecture ou écriture)
+    // Simplifié pour Storage Rules - vérifie rôles et membres individuels
+    function hasModulePermission(structureId, permissionId) {
+      let permissionPath = /databases/(default)/documents/structures/$(structureId)/permissions/$(permissionId);
+      
+      return isSuperAdmin() ||
+             (
+               isStructureMember(structureId) &&
+               firestore.exists(permissionPath) &&
+               (
+                 // Vérifier si le rôle de l'utilisateur est autorisé
+                 firestore.get(permissionPath).data.allowedRoles.hasAny([getUserData().status]) ||
+                 // Vérifier si l'utilisateur est explicitement autorisé
+                 (
+                   firestore.get(permissionPath).data.allowedMembers != null &&
+                   firestore.get(permissionPath).data.allowedMembers.hasAny([request.auth.uid])
+                 )
+               )
+             );
+    }
+    
+    // Vérifie l'accès à un document spécifique basé sur ses métadonnées
+    function canAccessDocument(structureId, documentId) {
+      let docPath = /databases/(default)/documents/structures/$(structureId)/documents/$(documentId);
+      
+      return isSuperAdmin() ||
+             (
+               isStructureMember(structureId) &&
+               (
+                 // Si le document n'existe pas dans Firestore, autoriser l'accès
+                 !firestore.exists(docPath) ||
+                 (
+                   firestore.exists(docPath) &&
+                   (
+                     // Document non restreint
+                     firestore.get(docPath).data.isRestricted != true ||
+                     // Document restreint - vérifier permissions
+                     (
+                       firestore.get(docPath).data.isRestricted == true &&
+                       (
+                         getUserData().status == 'admin' ||
+                         (
+                           firestore.get(docPath).data.allowedRoles != null &&
+                           firestore.get(docPath).data.allowedRoles.hasAny([getUserData().status])
+                         )
+                       )
+                     )
+                   )
+                 )
+               )
+             );
+    }
+    
+    // Vérifie l'accès en écriture à un document
+    function canWriteDocument(structureId) {
+      return isSuperAdmin() || isStructureMember(structureId);
+    }
 
-    // -------------------------------------------------------------------------
-    // DOCUMENTS DE STRUCTURE
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // RÈGLES POUR LES DOCUMENTS DE STRUCTURE
+    // =========================================================================
+    
     match /structures/{structureId}/documents/{fileId} {
-      // Lecture : PERMISSIF TEMPORAIREMENT pour débloquer
-      // Le problème persiste : le client n'a pas encore les claims ou le SDK
-      // ne les envoie pas correctement lors de l'upload initial
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && canAccessDocument(structureId, fileId);
       
-      // Écriture : PERMISSIF TEMPORAIREMENT MAIS SÉCURISÉ PAR L'UI
-      // On rétablit la règle simple pour que ça marche immédiatement
-      // TODO: Réactiver belongsToStructure(structureId) une fois que les claims seront propagés
-      allow create, update: if isAuthenticated() && 
-        request.resource.size < 100 * 1024 * 1024; // 100MB max
+      allow create: if isAuthenticated() && 
+                       canWriteDocument(structureId) &&
+                       request.resource.size < 100 * 1024 * 1024;
       
-      // Suppression : PERMISSIF TEMPORAIREMENT
-      allow delete: if isAuthenticated();
+      allow update: if isAuthenticated() && 
+                       canWriteDocument(structureId) &&
+                       request.resource.size < 100 * 1024 * 1024;
+      
+      allow delete: if isAuthenticated() && canWriteDocument(structureId);
+    }
+    
+    // Sous-dossiers de documents de structure
+    match /structures/{structureId}/documents/{folderId}/{fileId} {
+      allow read: if isAuthenticated() && canAccessDocument(structureId, fileId);
+      allow create: if isAuthenticated() && 
+                       canWriteDocument(structureId) &&
+                       request.resource.size < 100 * 1024 * 1024;
+      allow update: if isAuthenticated() && 
+                       canWriteDocument(structureId) &&
+                       request.resource.size < 100 * 1024 * 1024;
+      allow delete: if isAuthenticated() && canWriteDocument(structureId);
     }
 
-    // -------------------------------------------------------------------------
-    // AUTRES RESSOURCES
-    // -------------------------------------------------------------------------
-
-    match /templates/{allPaths=**} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+    // =========================================================================
+    // RÈGLES POUR LES DOCUMENTS DE MISSIONS
+    // =========================================================================
+    
+    match /missions/{missionId}/documents/{document} {
+      function canAccessMissionDocument() {
+        let missionPath = /databases/(default)/documents/missions/$(missionId);
+        
+        return isSuperAdmin() ||
+               (
+                 firestore.exists(missionPath) &&
+                 (
+                   // Membre de la structure de la mission
+                   (
+                     userExists() &&
+                     getUserData().structureId == firestore.get(missionPath).data.structureId &&
+                     getUserData().status in ['admin', 'member', 'membre']
+                   ) ||
+                   // Entreprise accédant à sa propre mission
+                   (
+                     userExists() &&
+                     getUserData().status == 'entreprise' &&
+                     firestore.get(missionPath).data.companyId == request.auth.uid
+                   ) ||
+                   // Contact avec accès à l'entreprise de la mission
+                   (
+                     userExists() &&
+                     getUserData().status == 'entreprise' &&
+                     getUserData().companyId != null &&
+                     firestore.get(missionPath).data.companyId == getUserData().companyId
+                   )
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessMissionDocument();
+      allow write: if isAuthenticated() && canAccessMissionDocument();
     }
 
+    // =========================================================================
+    // RÈGLES POUR LES DOCUMENTS DE TRÉSORERIE (CONTRACTS)
+    // =========================================================================
+    
+    match /contracts/{contractId}/documents/{document} {
+      function canAccessContractDocument() {
+        let contractPath = /databases/(default)/documents/contracts/$(contractId);
+        
+        return isSuperAdmin() ||
+               (
+                 firestore.exists(contractPath) &&
+                 userExists() &&
+                 getUserData().structureId == firestore.get(contractPath).data.structureId &&
+                 (
+                   getUserData().status == 'admin' ||
+                   hasModulePermission(firestore.get(contractPath).data.structureId, 'tresorerie_read')
+                 )
+               );
+      }
+      
+      function canWriteContractDocument() {
+        let contractPath = /databases/(default)/documents/contracts/$(contractId);
+        
+        return isSuperAdmin() ||
+               (
+                 firestore.exists(contractPath) &&
+                 userExists() &&
+                 getUserData().structureId == firestore.get(contractPath).data.structureId &&
+                 (
+                   getUserData().status == 'admin' ||
+                   hasModulePermission(firestore.get(contractPath).data.structureId, 'tresorerie')
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessContractDocument();
+      allow write: if isAuthenticated() && canWriteContractDocument();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES PROSPECTS (COMMERCIAL)
+    // =========================================================================
+    
+    match /prospects/{prospectId}/mails/{fileName} {
+      function canAccessProspectDocument() {
+        let prospectPath = /databases/(default)/documents/prospects/$(prospectId);
+        
+        return isSuperAdmin() ||
+               (
+                 firestore.exists(prospectPath) &&
+                 userExists() &&
+                 getUserData().structureId == firestore.get(prospectPath).data.structureId &&
+                 getUserData().status in ['admin', 'member', 'membre']
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessProspectDocument();
+      allow write: if isAuthenticated() && canAccessProspectDocument();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES DOCUMENTS PERSONNELS
+    // =========================================================================
+    
+    // CVs
     match /cvs/{userId}/{fileName} {
-      allow read: if isAuthenticated();
+      function canReadCV() {
+        let targetUserPath = /databases/(default)/documents/users/$(userId);
+        
+        return isSuperAdmin() ||
+               isOwner(userId) ||
+               (
+                 firestore.exists(targetUserPath) &&
+                 userExists() &&
+                 getUserData().structureId == firestore.get(targetUserPath).data.structureId &&
+                 getUserData().status in ['admin', 'member', 'membre']
+               );
+      }
+      
+      allow read: if isAuthenticated() && canReadCV();
       allow write: if isOwner(userId);
     }
     
+    // Photos de profil
     match /profilePictures/{userId} {
       allow read: if isAuthenticated();
       allow write: if isOwner(userId);
     }
     
+    // Rapports d'erreur
     match /error-reports/{userId}/{fileName} {
-      allow read: if isAuthenticated();
+      allow read: if isOwner(userId) || isSuperAdmin();
       allow write: if isOwner(userId);
-    }
-
-    match /structures/{structureId}/logo {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
     }
     
-    match /company-logos/{companyId}/{fileName} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
-    }
-
-    match /missions/{missionId}/documents/{document} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
-    }
-
-    match /companies/{companyId}/documents/{fileName} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
-    }
-
-    match /expenses/{userId}/{missionId}/{fileName} {
-      allow read: if isAuthenticated();
-      allow write: if isOwner(userId);
-    }
-
-    match /prospects/{prospectId}/mails/{fileName} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
-    }
-
+    // Documents personnels génériques
     match /documents/{userId}/{fileName} {
-      allow read: if isAuthenticated();
+      allow read: if isOwner(userId) || isSuperAdmin();
       allow write: if isOwner(userId);
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES NOTES DE FRAIS
+    // =========================================================================
+    
+    match /expenses/{userId}/{missionId}/{fileName} {
+      function canAccessExpense() {
+        let missionPath = /databases/(default)/documents/missions/$(missionId);
+        
+        return isSuperAdmin() ||
+               isOwner(userId) ||
+               (
+                 firestore.exists(missionPath) &&
+                 userExists() &&
+                 getUserData().structureId == firestore.get(missionPath).data.structureId &&
+                 getUserData().status in ['admin', 'member', 'membre']
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessExpense();
+      allow write: if isOwner(userId);
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES LOGOS ET IMAGES
+    // =========================================================================
+    
+    // Logo de structure
+    match /structures/{structureId}/logo {
+      allow read: if isAuthenticated() && isStructureMember(structureId);
+      allow write: if isAuthenticated() && isStructureAdmin(structureId);
+    }
+    
+    // Logos d'entreprises
+    match /company-logos/{companyId}/{fileName} {
+      function canAccessCompanyLogo() {
+        let companyPath = /databases/(default)/documents/companies/$(companyId);
+        
+        return isSuperAdmin() ||
+               (
+                 firestore.exists(companyPath) &&
+                 userExists() &&
+                 getUserData().structureId == firestore.get(companyPath).data.structureId &&
+                 getUserData().status in ['admin', 'member', 'membre']
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessCompanyLogo();
+      allow write: if isAuthenticated() && canAccessCompanyLogo();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES DOCUMENTS D'ENTREPRISES
+    // =========================================================================
+    
+    match /companies/{companyId}/documents/{fileName} {
+      function canAccessCompanyDocument() {
+        let companyPath = /databases/(default)/documents/companies/$(companyId);
+        
+        return isSuperAdmin() ||
+               (
+                 firestore.exists(companyPath) &&
+                 userExists() &&
+                 (
+                   // Membre de la structure
+                   (
+                     getUserData().structureId == firestore.get(companyPath).data.structureId &&
+                     getUserData().status in ['admin', 'member', 'membre']
+                   ) ||
+                   // Contact de l'entreprise
+                   (
+                     getUserData().status == 'entreprise' &&
+                     getUserData().companyId == companyId
+                   )
+                 )
+               );
+      }
+      
+      allow read: if isAuthenticated() && canAccessCompanyDocument();
+      allow write: if isAuthenticated() && canAccessCompanyDocument();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES TEMPLATES
+    // =========================================================================
+    
+    match /templates/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && 
+                      userExists() &&
+                      getUserData().status in ['admin', 'member', 'membre', 'superadmin'];
     }
   }
 }

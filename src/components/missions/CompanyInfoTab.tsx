@@ -297,7 +297,7 @@ export const CompanyInfoTab: React.FC = () => {
             }
           }
 
-          const company: Company = {
+          let company: Company = {
             id: companyDoc.id,
             name: data.name || '',
             nSiret: nSiretValue,
@@ -316,6 +316,36 @@ export const CompanyInfoTab: React.FC = () => {
             updatedAt: data.updatedAt?.toDate(),
             structureId: data.structureId || ''
           };
+
+          // Pour les contacts avec accès, décrypter les données de leur entreprise
+          if (isContactWithAccess) {
+            const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
+            const hasEncryptedData = [data.nSiret, data.siret, data.address, data.phone].some(isEncrypted);
+            if (hasEncryptedData) {
+              try {
+                const functions = getFunctions();
+                const decryptOwnCompanyData = httpsCallable(functions, 'decryptOwnCompanyData');
+                const result = await decryptOwnCompanyData({ companyId: selectedCompanyId });
+                if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
+                  const dec = (result.data as any).decryptedData;
+                  let decNsiret: string | undefined;
+                  if (dec.nSiret != null && !isEncrypted(dec.nSiret)) {
+                    decNsiret = typeof dec.nSiret === 'string' ? dec.nSiret : String(dec.nSiret);
+                  } else if (dec.siret != null && !isEncrypted(dec.siret)) {
+                    decNsiret = typeof dec.siret === 'string' ? dec.siret : String(dec.siret);
+                  }
+                  company = {
+                    ...company,
+                    nSiret: decNsiret ?? company.nSiret,
+                    address: (dec.address && !isEncrypted(dec.address) ? dec.address : company.address) ?? company.address,
+                    phone: (dec.phone && !isEncrypted(dec.phone) ? dec.phone : company.phone) ?? company.phone,
+                  };
+                }
+              } catch (decryptErr) {
+                console.warn('Décryptage entreprise (contact) ignoré:', decryptErr);
+              }
+            }
+          }
           
           setSelectedCompany(company);
 
@@ -368,7 +398,7 @@ export const CompanyInfoTab: React.FC = () => {
     };
 
     fetchCompanyDetails();
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, isContactWithAccess]);
 
   // Gestion de l'édition de l'entreprise
   const handleEditClick = () => {
