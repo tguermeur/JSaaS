@@ -78,6 +78,8 @@ import { storage } from '../firebase/config';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { getStripeCustomers } from '../services/stripeApiService';
 import { useNavigate } from 'react-router-dom';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 
 // Animations
 const fadeIn = keyframes`
@@ -219,7 +221,7 @@ interface User {
   poles?: UserPole[];
   createdAt: any;
   bureauRole?: BureauRole;
-  status?: 'admin' | 'member';
+  status?: 'admin' | 'membre';
   structureId?: string;
   mandat?: string; // Format: "2022-2023", "2023-2024", etc.
 }
@@ -342,6 +344,7 @@ const StyledMemberCard = styled(Paper)(({ theme }) => ({
 
 const Organization = () => {
   const { currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('organization');
   const [users, setUsers] = useState<User[]>([]);
   const [structureId, setStructureId] = useState<string | null>(null);
   const [organization, setOrganization] = useState<OrganizationInfo>({
@@ -408,6 +411,9 @@ const Organization = () => {
   });
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [cancelVerificationCode, setCancelVerificationCode] = useState('');
+  const [expectedCancelCode, setExpectedCancelCode] = useState('');
+  const [cancelCodeError, setCancelCodeError] = useState('');
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
   const [loadingSubscription, setLoadingSubscription] = useState(true);
@@ -475,7 +481,7 @@ const Organization = () => {
               ...docSnap.data(),
               createdAt: toDate(docSnap.data().createdAt)
             } as User))
-            .filter(user => user.status === 'member' || user.status === 'admin');
+            .filter(user => user.status === 'membre' || user.status === 'admin');
 
           const decrypted = await decryptUsersList(membersData);
           setMembers(decrypted);
@@ -608,7 +614,7 @@ const Organization = () => {
             ...docSnap.data(),
             createdAt: toDate(docSnap.data().createdAt)
           } as User))
-          .filter(user => user.status === 'member' || user.status === 'admin');
+          .filter(user => user.status === 'membre' || user.status === 'admin');
 
         const decrypted = await decryptUsersList(membersData);
         setMembers(decrypted);
@@ -706,7 +712,7 @@ const Organization = () => {
         const hasNoStructure = !user.structureId;
         const hasSameStructureButNotMember = (
           user.structureId === userData.structureId && 
-          (user.status === 'etudiant' || (!['member', 'admin'].includes(user.status || '')))
+          (user.status === 'etudiant' || (!['membre', 'admin'].includes(user.status || '')))
         );
         
         const shouldInclude = notCurrentUser && (hasNoStructure || hasSameStructureButNotMember);
@@ -907,11 +913,11 @@ const Organization = () => {
 
   // Afficher le chip de rôle avec la bonne couleur
   const getRoleChip = (role: User['role'], status?: User['status']) => {
-    // On ne veut afficher que les statuts "admin" ou "member"
+    // On ne veut afficher que les statuts "admin" ou "membre"
     if (status === 'admin') {
       return <Chip icon={<AdminIcon />} label="Administrateur" color="error" />;
     }
-    if (status === 'member') {
+    if (status === 'membre') {
       return <Chip icon={<PersonIcon />} label="Membre" color="default" />;
     }
     // Sinon, on n'affiche rien
@@ -1016,7 +1022,7 @@ const Organization = () => {
       await updateDoc(doc(db, 'users', selectedUserId), {
         poles: selectedPolesList,
         structureId: structureId,
-        status: 'member',
+        status: 'membre',
         bureauRole: selectedBureauRole || null,
         mandat: selectedMandatValue
       });
@@ -1057,7 +1063,7 @@ const Organization = () => {
               ...doc.data(),
               createdAt: toDate(doc.data().createdAt)
             } as User))
-            .filter(user => user.status === 'member' || user.status === 'admin');
+            .filter(user => user.status === 'membre' || user.status === 'admin');
 
           setMembers(membersData);
         }
@@ -1743,6 +1749,11 @@ const Organization = () => {
 
   const handleCancelClick = () => {
     handleClose();
+    // Générer un code aléatoire de 6 chiffres
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    setExpectedCancelCode(code);
+    setCancelVerificationCode('');
+    setCancelCodeError('');
     setCancelDialogOpen(true);
   };
 
@@ -2027,6 +2038,25 @@ const Organization = () => {
   };
 
 
+  // Afficher le chargement des permissions
+  if (permissionLoading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        pageName="Organisation" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      />
+    );
+  }
+
   return (
     <Box sx={{ 
       p: 3,
@@ -2104,7 +2134,7 @@ const Organization = () => {
                       </Typography>
                     }
                     action={
-                      isAdmin && (
+                      canWrite && (
                         <IconButton 
                           onClick={() => {
                             if (editingOrg) {
@@ -2387,7 +2417,7 @@ const Organization = () => {
                               }
                             />
                         )}
-                        {subscriptionStatus.isActive && !subscriptionStatus.cancelAtPeriodEnd && isAdmin && !loadingSubscription && (
+                        {subscriptionStatus.isActive && !subscriptionStatus.cancelAtPeriodEnd && (isAdmin || isSuperAdmin) && !loadingSubscription && (
                           <>
                             <IconButton 
                               size="small" 
@@ -2495,7 +2525,7 @@ const Organization = () => {
                 <CardHeader
                   title="Gestion des membres"
                   action={
-                    (isAdmin || isSuperAdmin) && (
+                    canWrite && (
                       <AddMemberButton />
                     )
                   }
@@ -2955,7 +2985,7 @@ const Organization = () => {
                     </Typography>
                   }
                   action={
-                    (isAdmin || isSuperAdmin) && (
+                    canWrite && (
                       <Box sx={{ display: 'flex', gap: 2 }}>
                         {selectedMembers.length > 0 && (
                           <StyledButton
@@ -3126,7 +3156,7 @@ const Organization = () => {
                               </Box>
                             </TableCell>
                             <TableCell>
-                              {isAdmin && (
+                              {canWrite && (
                                 <Box sx={{ display: 'flex', gap: 1 }}>
                                   <IconButton
                                     size="small"
@@ -3438,19 +3468,19 @@ const Organization = () => {
             <InputLabel id="status-select-label">Statut</InputLabel>
             <Select
               labelId="status-select-label"
-              value={selectedUser?.status || 'member'}
+              value={selectedUser?.status || 'membre'}
               label="Statut"
               onChange={(e: SelectChangeEvent) => {
                 if (selectedUser) {
                   setSelectedUser({
                     ...selectedUser,
-                    status: e.target.value as 'admin' | 'member'
+                    status: e.target.value as 'admin' | 'membre'
                   });
                 }
               }}
             >
               <MenuItem value="admin">Administrateur</MenuItem>
-              <MenuItem value="member">Membre</MenuItem>
+              <MenuItem value="membre">Membre</MenuItem>
             </Select>
           </FormControl>
         </DialogContent>
@@ -3711,30 +3741,94 @@ const Organization = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Dialog de confirmation d'annulation */}
+      {/* Dialog de confirmation d'annulation avec code de vérification */}
       <Dialog
         open={cancelDialogOpen}
-        onClose={() => !cancelling && setCancelDialogOpen(false)}
+        onClose={() => {
+          if (!cancelling) {
+            setCancelDialogOpen(false);
+            setCancelVerificationCode('');
+            setCancelCodeError('');
+          }
+        }}
+        maxWidth="sm"
+        fullWidth
       >
-        <DialogTitle>Confirmer l'annulation</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
+        <DialogTitle sx={{ bgcolor: 'error.main', color: 'white' }}>
+          ⚠️ Annuler l'abonnement
+        </DialogTitle>
+        <DialogContent sx={{ pt: 3 }}>
+          <DialogContentText sx={{ mb: 3 }}>
+            <Typography variant="body1" sx={{ fontWeight: 600, color: 'error.main', mb: 2 }}>
+              Attention : cette action est irréversible.
+            </Typography>
             Êtes-vous sûr de vouloir annuler votre abonnement ? 
             L'abonnement restera actif jusqu'à la fin de la période en cours, puis sera automatiquement annulé.
           </DialogContentText>
+          
+          <Box sx={{ 
+            bgcolor: 'grey.100', 
+            p: 3, 
+            borderRadius: 2, 
+            textAlign: 'center',
+            mb: 3
+          }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Pour confirmer l'annulation, veuillez saisir le code ci-dessous :
+            </Typography>
+            <Typography 
+              variant="h4" 
+              sx={{ 
+                fontFamily: 'monospace', 
+                fontWeight: 700, 
+                color: 'error.main',
+                letterSpacing: 4
+              }}
+            >
+              {expectedCancelCode}
+            </Typography>
+          </Box>
+
+          <TextField
+            fullWidth
+            label="Code de vérification"
+            placeholder="Entrez le code ci-dessus"
+            value={cancelVerificationCode}
+            onChange={(e) => {
+              setCancelVerificationCode(e.target.value);
+              setCancelCodeError('');
+            }}
+            error={!!cancelCodeError}
+            helperText={cancelCodeError}
+            disabled={cancelling}
+            inputProps={{
+              maxLength: 6,
+              style: { textAlign: 'center', fontSize: '1.5rem', letterSpacing: 8, fontFamily: 'monospace' }
+            }}
+          />
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ p: 2, pt: 0 }}>
           <Button 
-            onClick={() => setCancelDialogOpen(false)} 
+            onClick={() => {
+              setCancelDialogOpen(false);
+              setCancelVerificationCode('');
+              setCancelCodeError('');
+            }} 
             disabled={cancelling}
           >
-            Annuler
+            Retour
           </Button>
           <Button 
-            onClick={handleCancelSubscription} 
+            onClick={() => {
+              if (cancelVerificationCode !== expectedCancelCode) {
+                setCancelCodeError('Le code saisi est incorrect');
+                return;
+              }
+              handleCancelSubscription();
+            }} 
             color="error" 
             variant="contained"
-            disabled={cancelling}
+            disabled={cancelling || cancelVerificationCode.length !== 6}
           >
             {cancelling ? 'Annulation en cours...' : 'Confirmer l\'annulation'}
           </Button>

@@ -1514,12 +1514,10 @@ const Documents: React.FC = () => {
         // Si l'utilisateur est admin/membre avec structureId, il devrait pouvoir accéder
         const canAccess = userData?.status === 'admin' || 
                           userData?.status === 'admin_structure' || 
-                          userData?.status === 'member' || 
                           userData?.status === 'membre' ||
                           userData?.status === 'superadmin' ||
                           userData?.role === 'admin' ||
                           userData?.role === 'admin_structure' ||
-                          userData?.role === 'member' ||
                           userData?.role === 'membre' ||
                           userData?.role === 'superadmin';
         

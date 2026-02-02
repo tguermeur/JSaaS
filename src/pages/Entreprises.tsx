@@ -45,6 +45,8 @@ import { useNavigate } from 'react-router-dom';
 import { uploadCompanyLogo } from '../firebase/storage';
 import { keyframes } from '@mui/system';
 import { styled } from '@mui/material';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 
 // Animations
 const fadeIn = keyframes`
@@ -190,6 +192,7 @@ interface Mission {
 
 const Entreprises: React.FC = () => {
   const { currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('entreprises');
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [openDialog, setOpenDialog] = useState(false);
@@ -596,11 +599,22 @@ const Entreprises: React.FC = () => {
     }));
   };
 
-  if (loading) {
+  // Afficher le chargement si les permissions ou les données sont en cours de chargement
+  if (loading || permissionLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
         <CircularProgress />
       </Box>
+    );
+  }
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        title="Accès refusé"
+        message="Vous n'avez pas les permissions nécessaires pour accéder à la page Entreprises. Contactez votre administrateur pour obtenir l'accès."
+      />
     );
   }
 
@@ -625,30 +639,32 @@ const Entreprises: React.FC = () => {
         Entreprises
       </Typography>
 
-      <Box 
-        sx={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
-          mb: 4,
-          px: 2,
-          animation: `${fadeIn} 0.5s ease-out 0.2s both`
-        }}
-      >
-        <StyledButton
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={handleOpenDialog}
-          sx={{
-            bgcolor: theme => theme.palette.primary.main,
-            '&:hover': {
-              bgcolor: theme => theme.palette.primary.dark
-            }
+      {canWrite && (
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center', 
+            mb: 4,
+            px: 2,
+            animation: `${fadeIn} 0.5s ease-out 0.2s both`
           }}
         >
-          Ajouter une entreprise
-        </StyledButton>
-      </Box>
+          <StyledButton
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={handleOpenDialog}
+            sx={{
+              bgcolor: theme => theme.palette.primary.main,
+              '&:hover': {
+                bgcolor: theme => theme.palette.primary.dark
+              }
+            }}
+          >
+            Ajouter une entreprise
+          </StyledButton>
+        </Box>
+      )}
 
       <Grid container spacing={3} sx={{ px: 2 }}>
         {companies.length === 0 ? (
@@ -668,15 +684,20 @@ const Entreprises: React.FC = () => {
                 Aucune entreprise dans votre structure
               </Typography>
               <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-                Commencez par ajouter votre première entreprise en cliquant sur le bouton ci-dessus.
+                {canWrite 
+                  ? "Commencez par ajouter votre première entreprise en cliquant sur le bouton ci-dessous."
+                  : "Aucune entreprise n'a encore été ajoutée à votre structure."
+                }
               </Typography>
-              <StyledButton
-                variant="contained"
-                startIcon={<AddIcon />}
-                onClick={handleOpenDialog}
-              >
-                Ajouter une entreprise
-              </StyledButton>
+              {canWrite && (
+                <StyledButton
+                  variant="contained"
+                  startIcon={<AddIcon />}
+                  onClick={handleOpenDialog}
+                >
+                  Ajouter une entreprise
+                </StyledButton>
+              )}
             </Paper>
           </Grid>
         ) : (

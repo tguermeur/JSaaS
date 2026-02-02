@@ -351,7 +351,7 @@ const AvailableMissions: React.FC = () => {
             // Les missions normales seront vides pour eux
             setMissions([]);
             missionsLoaded = true;
-          } else if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
+          } else if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'membre') {
             // Admin, Superadmin et membres voient les missions de leur structure
             missionsQuery = query(
               missionsRef,
@@ -404,7 +404,7 @@ const AvailableMissions: React.FC = () => {
             const recruitmentTasksRef = collection(db, 'recruitmentTasks');
             let recruitmentTasksQuery;
 
-            if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'member') {
+            if (userStatus === 'superadmin' || userStatus === 'admin' || userStatus === 'membre') {
               // Admin, Superadmin et membres voient les tâches de recrutement de leur structure
               recruitmentTasksQuery = query(
                 recruitmentTasksRef,

@@ -14,7 +14,7 @@ export interface Document {
   updatedAt?: Timestamp | Date;
   structureId: string;
   isRestricted: boolean;
-  allowedRoles?: string[]; // ['admin', 'member', etc.]
+  allowedRoles?: string[]; // ['admin', 'membre', etc.]
   thumbnailUrl?: string; // pour les images
   missionId?: string; // ID de la mission associée
   missionNumber?: string; // Numéro de la mission associée
@@ -34,7 +34,7 @@ export interface Folder {
   updatedAt?: Timestamp | Date;
   structureId: string;
   isRestricted: boolean;
-  allowedRoles?: string[]; // ['admin', 'member', etc.]
+  allowedRoles?: string[]; // ['admin', 'membre', etc.]
   color?: string; // Couleur personnalisée du dossier
   isPersonalFolder?: boolean; // Indique si c'est un dossier personnel (pour les documents du profil utilisateur)
   isPinned?: boolean; // Indique si le dossier est épinglé

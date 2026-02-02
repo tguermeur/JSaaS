@@ -39,7 +39,7 @@ service cloud.firestore {
       let userData = getUserData();
       return userData != null && 
              userData.structureId == structureId &&
-             userData.status in ['admin', 'member', 'membre'];
+             userData.status in ['admin', 'membre'];
     }
     
     function isStructureAdmin(structureId) {
@@ -77,7 +77,7 @@ service cloud.firestore {
                // L'utilisateur doit appartenir à la structure
                userData != null &&
                userData.structureId == structureId &&
-               userData.status in ['admin', 'member', 'membre'] &&
+               userData.status in ['admin', 'membre'] &&
                // Vérifier si la permission existe
                exists(permissionPath) &&
                (
@@ -104,6 +104,81 @@ service cloud.firestore {
       return isSuperAdmin() ||
              isStructureAdmin(structureId) ||
              hasModulePermission(structureId, moduleId);
+    }
+    
+    // =========================================================================
+    // FONCTION RBAC PRINCIPALE - hasPermission
+    // =========================================================================
+    // 
+    // Vérifie si l'utilisateur a une permission spécifique sur une page/module
+    // 
+    // @param pageId - L'identifiant de la page (ex: 'entreprises', 'tresorerie')
+    // @param accessType - 'read' ou 'write'
+    // 
+    // Logique:
+    // 1. SuperAdmin/Admin ont toujours accès
+    // 2. Vérifier allowedRoles pour le status de l'utilisateur
+    // 3. Vérifier allowedMembers pour l'uid de l'utilisateur
+    // 4. Vérifier allowedPoles pour les pôles de l'utilisateur
+    // 
+    function hasPermission(pageId, accessType) {
+      let userData = getUserData();
+      
+      // Pas de données utilisateur = pas d'accès
+      let hasUserData = userData != null;
+      
+      // SuperAdmin a toujours accès
+      let isSuperAdminUser = hasUserData && userData.status == 'superadmin';
+      
+      // Admin a toujours accès
+      let isAdminUser = hasUserData && userData.status == 'admin';
+      
+      // Déterminer le document de permission à vérifier
+      let docId = accessType == 'read' ? pageId + '_read' : pageId;
+      let structureId = hasUserData ? userData.structureId : null;
+      let permissionPath = structureId != null ? 
+        /databases/$(database)/documents/structures/$(structureId)/permissions/$(docId) : 
+        null;
+      
+      // Vérifier si le document de permission existe
+      let permissionExists = structureId != null && permissionPath != null && exists(permissionPath);
+      
+      // Récupérer les données de permission si elles existent
+      let permissionData = permissionExists ? get(permissionPath).data : null;
+      
+      // Vérifier si le rôle est autorisé (gérer member/membre)
+      let hasRoleAccess = permissionExists && 
+        permissionData.allowedRoles != null && 
+        (
+          permissionData.allowedRoles.hasAny([userData.status]) ||
+          // Gérer l'incohérence member/membre
+          (userData.status == 'membre' && permissionData.allowedRoles.hasAny(['member'])) ||
+          (userData.status == 'member' && permissionData.allowedRoles.hasAny(['membre']))
+        );
+      
+      // Vérifier si l'utilisateur est explicitement autorisé
+      let hasMemberAccess = permissionExists && 
+        permissionData.allowedMembers != null && 
+        permissionData.allowedMembers.hasAny([request.auth.uid]);
+      
+      // Note: La vérification des pôles de l'utilisateur n'est pas possible directement
+      // car on ne peut pas itérer sur userData.poles dans les rules Firestore
+      // Les pôles doivent être gérés via allowedMembers ou un champ poleIds simple
+      
+      return isSuperAdminUser || 
+             isAdminUser || 
+             hasRoleAccess || 
+             hasMemberAccess;
+    }
+    
+    // Wrapper pour vérifier l'accès en lecture
+    function canReadPage(pageId) {
+      return hasPermission(pageId, 'read') || hasPermission(pageId, 'write');
+    }
+    
+    // Wrapper pour vérifier l'accès en écriture  
+    function canWritePage(pageId) {
+      return hasPermission(pageId, 'write');
     }
     
     // =========================================================================
@@ -146,7 +221,7 @@ service cloud.firestore {
                resource.data.companyId == request.auth.uid ||
                (
                  userData != null &&
-                 userData.status in ['admin', 'member', 'membre'] &&
+                 userData.status in ['admin', 'membre'] &&
                  userData.structureId != null &&
                  userData.structureId != '' &&
                  resource.data.structureId != null &&
@@ -157,7 +232,7 @@ service cloud.firestore {
       
       function canAccessViaStructure() {
         return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['admin', 'member', 'membre'] &&
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['admin', 'membre'] &&
                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != null &&
                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != '' &&
                resource.data.structureId != null &&
@@ -206,7 +281,7 @@ service cloud.firestore {
       allow create: if isAuthenticated() && (
         isSuperAdmin() || 
         (
-          getUserData().status in ['admin', 'member', 'membre'] && 
+          getUserData().status in ['admin', 'membre'] && 
           request.resource.data.structureId == getUserData().structureId
         ) ||
         isEnterpriseCreatingOwnMission() ||
@@ -247,7 +322,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         isSuperAdmin() || 
         (
-          getUserData().status in ['admin', 'member', 'membre'] && 
+          getUserData().status in ['admin', 'membre'] && 
           resource.data.structureId == getUserData().structureId
         ) ||
         (
@@ -273,7 +348,7 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && (
         isSuperAdmin() || 
         (
-          getUserData().status in ['admin', 'member', 'membre'] && 
+          getUserData().status in ['admin', 'membre'] && 
           resource.data.structureId == getUserData().structureId
         )
       );
@@ -291,7 +366,7 @@ service cloud.firestore {
           let userData = getUserData();
           let docData = resource.data;
           return userData != null && 
-                 userData.status in ['admin', 'member', 'membre'] &&
+                 userData.status in ['admin', 'membre'] &&
                  docData.structureId == userData.structureId;
         }
         
@@ -343,32 +418,42 @@ service cloud.firestore {
                resource.id == userData.companyId;
       }
       
+      // Vérifier l'accès en lecture via le système RBAC
+      function canReadCompanies() {
+        let userData = getUserData();
+        return userData != null && 
+               userData.structureId == resource.data.structureId &&
+               canReadPage('entreprises');
+      }
+      
+      // Vérifier l'accès en écriture via le système RBAC
+      function canWriteCompanies() {
+        let userData = getUserData();
+        return userData != null && 
+               userData.structureId == resource.data.structureId &&
+               canWritePage('entreprises');
+      }
+      
       allow read: if isAuthenticated() && (
         isSuperAdmin() || 
-        resource.data.structureId == getUserData().structureId ||
+        canReadCompanies() ||
         canAccessAsContactWithAccess()
       );
       allow update: if isAuthenticated() && (
         isSuperAdmin() || 
-        (
-          request.resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
-        ) ||
+        canWriteCompanies() ||
         canAccessAsContactWithAccess()
       );
       allow create: if isAuthenticated() && (
         isSuperAdmin() || 
         (
           request.resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
+          canWritePage('entreprises')
         )
       );
       allow delete: if isAuthenticated() && (
         isSuperAdmin() || 
-        (
-          resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
-        )
+        canWriteCompanies()
       );
     }
 
@@ -419,7 +504,7 @@ service cloud.firestore {
                    isSuperAdmin() ||
                    (
                      userData != null && 
-                     userData.status in ['admin', 'member', 'membre'] &&
+                     userData.status in ['admin', 'membre'] &&
                      get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.structureId == userData.structureId
                    )
                  )
@@ -477,7 +562,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
         (
-          getUserData().status in ['admin', 'member', 'membre'] &&
+          getUserData().status in ['admin', 'membre'] &&
           exists(/databases/$(database)/documents/missions/$(resource.data.missionId)) &&
           get(/databases/$(database)/documents/missions/$(resource.data.missionId)).data.structureId == getUserData().structureId
         ) ||
@@ -494,7 +579,15 @@ service cloud.firestore {
     match /users/{userId} {
       allow create: if request.auth == null || request.auth.uid == userId;
       
-      allow update: if request.auth != null && request.auth.uid == userId;
+      // Permettre la mise à jour par l'utilisateur lui-même, le superadmin, ou l'admin de la structure
+      allow update: if request.auth != null && (
+        request.auth.uid == userId ||
+        isSuperAdmin() ||
+        (
+          getUserData().status == 'admin' &&
+          resource.data.structureId == getUserData().structureId
+        )
+      );
       
       function canContactReadUser() {
         let userData = getUserData();
@@ -527,7 +620,7 @@ service cloud.firestore {
       match /permissions/{permissionId} {
         allow read: if isAuthenticated() && (
           isSuperAdmin() || 
-          getUserData().status in ['admin', 'member', 'membre'] &&
+          getUserData().status in ['admin', 'membre'] &&
           getUserData().structureId == structureId
         );
         allow write: if isAuthenticated() && (
@@ -573,7 +666,7 @@ service cloud.firestore {
         allow create: if isAuthenticated() && (
           isSuperAdmin() ||
           (
-            getUserData().status in ['admin', 'member', 'membre'] && 
+            getUserData().status in ['admin', 'membre'] && 
             getUserData().structureId == structureId
           )
         );
@@ -581,7 +674,7 @@ service cloud.firestore {
         allow update: if isAuthenticated() && (
           isSuperAdmin() ||
           (
-            getUserData().status in ['admin', 'member', 'membre'] && 
+            getUserData().status in ['admin', 'membre'] && 
             getUserData().structureId == structureId
           )
         );
@@ -589,7 +682,7 @@ service cloud.firestore {
         allow delete: if isAuthenticated() && (
           isSuperAdmin() ||
           (
-            getUserData().status in ['admin', 'member', 'membre'] && 
+            getUserData().status in ['admin', 'membre'] && 
             getUserData().structureId == structureId
           )
         );
@@ -605,7 +698,7 @@ service cloud.firestore {
         allow write: if isAuthenticated() && (
           isSuperAdmin() ||
           (
-            getUserData().status in ['admin', 'member', 'membre'] && 
+            getUserData().status in ['admin', 'membre'] && 
             getUserData().structureId == structureId
           )
         );
@@ -647,7 +740,7 @@ service cloud.firestore {
         allow create: if isAuthenticated() && (
           isSuperAdmin() ||
           (
-            getUserData().status in ['admin', 'member', 'membre'] && 
+            getUserData().status in ['admin', 'membre'] && 
             getUserData().structureId == structureId
           )
         );
@@ -655,7 +748,7 @@ service cloud.firestore {
         allow update: if isAuthenticated() && (
           isSuperAdmin() ||
           (
-            getUserData().status in ['admin', 'member', 'membre'] && 
+            getUserData().status in ['admin', 'membre'] && 
             getUserData().structureId == structureId
           )
         );
@@ -663,7 +756,7 @@ service cloud.firestore {
         allow delete: if isAuthenticated() && (
           isSuperAdmin() ||
           (
-            getUserData().status in ['admin', 'member', 'membre'] && 
+            getUserData().status in ['admin', 'membre'] && 
             getUserData().structureId == structureId
           )
         );
@@ -772,7 +865,7 @@ service cloud.firestore {
           request.resource.data.structureId == structureId &&
           getUserData() != null &&
           getUserData().structureId == structureId &&
-          (getUserData().status in ['admin', 'member', 'membre'] || getUserData().role in ['admin', 'member', 'membre'])
+          (getUserData().status in ['admin', 'membre'] || getUserData().role in ['admin', 'membre'])
         )
       );
       allow update: if isAuthenticated() && (
@@ -781,7 +874,7 @@ service cloud.firestore {
           resource.data.structureId == structureId &&
           getUserData() != null &&
           getUserData().structureId == structureId &&
-          (getUserData().status in ['admin', 'member', 'membre'] || getUserData().role in ['admin', 'member', 'membre'])
+          (getUserData().status in ['admin', 'membre'] || getUserData().role in ['admin', 'membre'])
         )
       );
       allow delete: if false;
@@ -799,7 +892,7 @@ service cloud.firestore {
                (
                  userData != null &&
                  resource.data.structureId == userData.structureId &&
-                 userData.status in ['admin', 'member', 'membre']
+                 userData.status in ['admin', 'membre']
                );
       }
       
@@ -809,7 +902,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           request.resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['member', 'membre', 'admin']
+          getUserData().status in ['membre', 'admin']
         )
       );
       
@@ -817,7 +910,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['member', 'membre', 'admin']
+          getUserData().status in ['membre', 'admin']
         )
       );
       
@@ -825,7 +918,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['member', 'membre', 'admin']
+          getUserData().status in ['membre', 'admin']
         )
       );
 
@@ -839,14 +932,14 @@ service cloud.firestore {
           isSuperAdmin() || 
           (
             get(/databases/$(database)/documents/prospects/$(prospectId)).data.structureId == getUserData().structureId &&
-            getUserData().status in ['member', 'membre', 'admin']
+            getUserData().status in ['membre', 'admin']
           )
         );
         allow update: if isAuthenticated() && (
           isSuperAdmin() || 
           (
             get(/databases/$(database)/documents/prospects/$(prospectId)).data.structureId == getUserData().structureId &&
-            getUserData().status in ['member', 'membre', 'admin']
+            getUserData().status in ['membre', 'admin']
           )
         );
         allow delete: if isAuthenticated() && (
@@ -873,7 +966,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null &&
-                 userData.status in ['admin', 'member', 'membre'] &&
+                 userData.status in ['admin', 'membre'] &&
                  structureId == userData.structureId
                );
       }
@@ -885,7 +978,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null &&
-                 userData.status in ['admin', 'member', 'membre'] &&
+                 userData.status in ['admin', 'membre'] &&
                  resource.data.structureId == userData.structureId
                );
       }
@@ -904,7 +997,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (resource.data.isPublished == true && resource.data.isPublic == true) ||
                (userData != null &&
-                userData.status in ['admin', 'member', 'membre'] && 
+                userData.status in ['admin', 'membre'] && 
                 resource.data.structureId != null &&
                 resource.data.structureId == userData.structureId);
       }
@@ -913,19 +1006,19 @@ service cloud.firestore {
       
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        (getUserData().status in ['admin', 'member', 'membre'] &&
+        (getUserData().status in ['admin', 'membre'] &&
          request.resource.data.structureId == getUserData().structureId)
       );
       
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
-        (getUserData().status in ['admin', 'member', 'membre'] &&
+        (getUserData().status in ['admin', 'membre'] &&
          resource.data.structureId == getUserData().structureId)
       );
       
       allow delete: if isAuthenticated() && (
         isSuperAdmin() ||
-        (getUserData().status in ['admin', 'member', 'membre'] &&
+        (getUserData().status in ['admin', 'membre'] &&
          resource.data.structureId == getUserData().structureId)
       );
     }
@@ -963,7 +1056,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (resource.data.isPublic == true) ||
                (userData != null &&
-                userData.status in ['admin', 'member', 'membre'] && 
+                userData.status in ['admin', 'membre'] && 
                 resource.data.structureId != null &&
                 resource.data.structureId == userData.structureId);
       }
@@ -972,19 +1065,19 @@ service cloud.firestore {
       
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        (getUserData().status in ['admin', 'member', 'membre'] &&
+        (getUserData().status in ['admin', 'membre'] &&
          request.resource.data.structureId == getUserData().structureId)
       );
       
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
-        (getUserData().status in ['admin', 'member', 'membre'] &&
+        (getUserData().status in ['admin', 'membre'] &&
          resource.data.structureId == getUserData().structureId)
       );
       
       allow delete: if isAuthenticated() && (
         isSuperAdmin() ||
-        (getUserData().status in ['admin', 'member', 'membre'] &&
+        (getUserData().status in ['admin', 'membre'] &&
          resource.data.structureId == getUserData().structureId)
       );
     }
@@ -998,7 +1091,7 @@ service cloud.firestore {
         let userData = getUserData();
         return isSuperAdmin() ||
                (userData != null &&
-                userData.status in ['admin', 'member', 'membre']);
+                userData.status in ['admin', 'membre']);
       }
       
       allow read: if isAuthenticated() && canAccessHistory();
@@ -1078,7 +1171,7 @@ service cloud.firestore {
                  isSuperAdmin() ||
                  (
                    userData != null && 
-                   userData.status in ['admin', 'member', 'membre'] &&
+                   userData.status in ['admin', 'membre'] &&
                    get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.structureId == userData.structureId
                  ) ||
                  (
@@ -1125,7 +1218,7 @@ service cloud.firestore {
                  isSuperAdmin() ||
                  (
                    userData != null && 
-                   userData.status in ['admin', 'member', 'membre'] &&
+                   userData.status in ['admin', 'membre'] &&
                    get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.structureId == userData.structureId
                  ) ||
                  (
@@ -1175,7 +1268,7 @@ service cloud.firestore {
                      isSuperAdmin() ||
                      (
                        userData != null && 
-                       userData.status in ['admin', 'member', 'membre'] &&
+                       userData.status in ['admin', 'membre'] &&
                        get(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(workingHourData.applicationId)).data.missionId)).data.structureId == userData.structureId
                      )
                    )
@@ -1217,7 +1310,7 @@ service cloud.firestore {
                  isSuperAdmin() ||
                  (
                    userData != null && 
-                   userData.status in ['admin', 'member', 'membre'] &&
+                   userData.status in ['admin', 'membre'] &&
                    get(/databases/$(database)/documents/missions/$(amendmentData.missionId)).data.structureId == userData.structureId
                  )
                );
@@ -1260,7 +1353,7 @@ service cloud.firestore {
         let userData = getUserData();
         let docData = resource.data;
         return userData != null && 
-               userData.status in ['admin', 'member', 'membre'] &&
+               userData.status in ['admin', 'membre'] &&
                docData.structureId == userData.structureId;
       }
       
@@ -1309,7 +1402,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null && 
-                 userData.status in ['admin', 'member', 'membre'] &&
+                 userData.status in ['admin', 'membre'] &&
                  contactData.structureId == userData.structureId
                ) ||
                (
@@ -1319,7 +1412,7 @@ service cloud.firestore {
                    isSuperAdmin() ||
                    (
                      userData != null && 
-                     userData.status in ['admin', 'member', 'membre'] &&
+                     userData.status in ['admin', 'membre'] &&
                      get(/databases/$(database)/documents/companies/$(contactData.companyId)).data.structureId == userData.structureId
                    )
                  )
@@ -1370,7 +1463,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null && 
-                 userData.status in ['admin', 'member', 'membre'] &&
+                 userData.status in ['admin', 'membre'] &&
                  exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
                  get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == userData.structureId
                ) ||

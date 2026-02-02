@@ -54,6 +54,8 @@ import { useNavigate } from 'react-router-dom';
 import MissionForm, { MissionFormData } from '../components/missions/MissionForm';
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
 import { decryptUsersList } from '../utils/decryptUserUtils';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -162,6 +164,7 @@ interface ChargeData {
 
 const Mission: React.FC = () => {
   const { currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('mission');
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [showNoStructureAlert, setShowNoStructureAlert] = useState(false);
@@ -239,7 +242,7 @@ const Mission: React.FC = () => {
         usersQuery = query(
           usersRef,
           where('structureId', '==', userStructureId),
-          where('status', 'in', ['member', 'admin', 'superadmin'])
+          where('status', 'in', ['membre', 'admin', 'superadmin'])
         );
 
         const usersSnapshot = await getDocs(usersQuery);
@@ -883,6 +886,25 @@ const Mission: React.FC = () => {
     setGeneratedMissionNumber('');
   };
 
+  // Afficher le chargement des permissions
+  if (permissionLoading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        pageName="Missions" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      />
+    );
+  }
+
   return (
     <Box sx={{ p: 3, bgcolor: '#f5f5f7', minHeight: '100vh' }}>
       <Box 
@@ -907,22 +929,24 @@ const Mission: React.FC = () => {
         >
           Missions
         </Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={handleOpenCreateDialog}
-          sx={{
-            bgcolor: '#0066cc',
-            borderRadius: '0.8rem',
-            px: 3,
-            py: 1,
-            '&:hover': {
-              bgcolor: '#0077ed'
-            }
-          }}
-        >
-          Ajouter une mission
-        </Button>
+        {canWrite && (
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={handleOpenCreateDialog}
+            sx={{
+              bgcolor: '#0066cc',
+              borderRadius: '0.8rem',
+              px: 3,
+              py: 1,
+              '&:hover': {
+                bgcolor: '#0077ed'
+              }
+            }}
+          >
+            Ajouter une mission
+          </Button>
+        )}
       </Box>
 
       <Box sx={{ 
@@ -1038,24 +1062,29 @@ const Mission: React.FC = () => {
             Aucune mission dans votre structure
           </Typography>
           <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-            Commencez par ajouter votre première mission en cliquant sur le bouton ci-dessus.
+            {canWrite 
+              ? "Commencez par ajouter votre première mission en cliquant sur le bouton ci-dessous."
+              : "Aucune mission n'a encore été ajoutée à votre structure."
+            }
           </Typography>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={handleOpenCreateDialog}
-            sx={{
-              bgcolor: '#0066cc',
-              borderRadius: '0.8rem',
-              px: 3,
-              py: 1,
-              '&:hover': {
-                bgcolor: '#0077ed'
-              }
-            }}
-          >
-            Ajouter une mission
-          </Button>
+          {canWrite && (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={handleOpenCreateDialog}
+              sx={{
+                bgcolor: '#0066cc',
+                borderRadius: '0.8rem',
+                px: 3,
+                py: 1,
+                '&:hover': {
+                  bgcolor: '#0077ed'
+                }
+              }}
+            >
+              Ajouter une mission
+            </Button>
+          )}
         </Paper>
       ) : (
         <TableContainer 

@@ -109,6 +109,8 @@ import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 import { styled, alpha } from '@mui/material';
 import { fadeIn } from '../styles/animations';
 import Papa from 'papaparse';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 
 // --- STRICT MODE DROPPABLE FIX ---
 // Nécessaire pour React 18 + react-beautiful-dnd
@@ -270,7 +272,7 @@ interface Prospect {
 interface StructureMember {
   id: string;
   displayName: string;
-  role: 'admin' | 'superadmin' | 'member';
+  role: 'admin' | 'superadmin' | 'membre';
   poles?: { poleId: string }[];
   mandat?: string;
 }
@@ -301,6 +303,7 @@ interface CalendarEvent {
 
 const Commercial: React.FC = (): JSX.Element => {
   const { userData, currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('commercial');
   const navigate = useNavigate();
   
   // Data States
@@ -434,7 +437,7 @@ const Commercial: React.FC = (): JSX.Element => {
       const members = snapshot.docs.map(doc => ({
           id: doc.id,
         displayName: doc.data().displayName || doc.data().name || 'Utilisateur',
-        role: doc.data().role || 'member',
+        role: doc.data().role || 'membre',
         poles: doc.data().poles || [],
         mandat: doc.data().mandat
       }));
@@ -2163,7 +2166,17 @@ const Commercial: React.FC = (): JSX.Element => {
 
   // --- MAIN RENDER ---
 
-  if (loading) return <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}><CircularProgress /></Box>;
+  if (loading || permissionLoading) return <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}><CircularProgress /></Box>;
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        pageName="Pilotage Commercial" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      />
+    );
+  }
 
   return (
     <Box sx={{ 
@@ -2186,7 +2199,7 @@ const Commercial: React.FC = (): JSX.Element => {
         </Box>
         
         <Box sx={{ display: 'flex', gap: 2 }}>
-          {selectedProspects.length > 0 && (
+          {canWrite && selectedProspects.length > 0 && (
             <>
           <StyledButton
             variant="outlined"
@@ -2292,43 +2305,47 @@ const Commercial: React.FC = (): JSX.Element => {
               Extension JSConnect
             </StyledButton>
           </Tooltip>
-          <StyledButton 
-            startIcon={<UploadIcon />} 
-            onClick={() => setIsImportDialogOpen(true)}
-            sx={{ color: APPLE_COLORS.primary, bgcolor: 'white' }}
-          >
-            Importer
-          </StyledButton>
-          <StyledButton 
-            variant="contained" 
-            startIcon={<AddIcon />} 
-            onClick={() => setIsCreateDialogOpen(true)}
-            disabled={structureTokens !== null && structureTokens.tokensRemaining === 0}
-            sx={{ 
-              bgcolor: APPLE_COLORS.primary, 
-              color: 'white', 
-              '&:hover': { bgcolor: '#0077ed' },
-              '&:disabled': {
-                bgcolor: '#e5e5ea',
-                color: '#86868b'
-              }
-            }}
-          >
-            Nouveau Dossier
-            {structureTokens !== null && structureTokens.tokensRemaining === 0 && (
-              <Chip 
-                label="Quota atteint" 
-                size="small" 
+          {canWrite && (
+            <>
+              <StyledButton 
+                startIcon={<UploadIcon />} 
+                onClick={() => setIsImportDialogOpen(true)}
+                sx={{ color: APPLE_COLORS.primary, bgcolor: 'white' }}
+              >
+                Importer
+              </StyledButton>
+              <StyledButton 
+                variant="contained" 
+                startIcon={<AddIcon />} 
+                onClick={() => setIsCreateDialogOpen(true)}
+                disabled={structureTokens !== null && structureTokens.tokensRemaining === 0}
                 sx={{ 
-                  ml: 1, 
-                  height: 20, 
-                  fontSize: '0.7rem',
-                  bgcolor: APPLE_COLORS.error,
-                  color: 'white'
-                }} 
-              />
-            )}
-          </StyledButton>
+                  bgcolor: APPLE_COLORS.primary, 
+                  color: 'white', 
+                  '&:hover': { bgcolor: '#0077ed' },
+                  '&:disabled': {
+                    bgcolor: '#e5e5ea',
+                    color: '#86868b'
+                  }
+                }}
+              >
+                Nouveau Dossier
+                {structureTokens !== null && structureTokens.tokensRemaining === 0 && (
+                  <Chip 
+                    label="Quota atteint" 
+                    size="small" 
+                    sx={{ 
+                      ml: 1, 
+                      height: 20, 
+                      fontSize: '0.7rem',
+                      bgcolor: APPLE_COLORS.error,
+                      color: 'white'
+                    }} 
+                  />
+                )}
+              </StyledButton>
+            </>
+          )}
         </Box>
       </Box>
 

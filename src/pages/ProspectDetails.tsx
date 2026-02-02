@@ -132,7 +132,7 @@ interface Prospect {
 interface StructureMember {
   id: string;
   displayName: string;
-  role: 'admin' | 'superadmin' | 'member';
+  role: 'admin' | 'superadmin' | 'membre';
   poles?: { poleId: string }[];
   mandat?: string;
 }
@@ -278,7 +278,7 @@ const ProspectDetails: React.FC = () => {
         const members = snapshot.docs.map(doc => ({
           id: doc.id,
           displayName: doc.data().displayName || doc.data().name || 'Utilisateur',
-          role: doc.data().role || 'member',
+          role: doc.data().role || 'membre',
           poles: doc.data().poles || [],
           mandat: doc.data().mandat
         }));
@@ -390,8 +390,8 @@ const ProspectDetails: React.FC = () => {
             userDocData?.role === 'superadmin' ||
             userDocData?.status === 'admin' ||
             userDocData?.role === 'admin' ||
-            userDocData?.status === 'member' ||
-            userDocData?.role === 'member'
+            userDocData?.status === 'membre' ||
+            userDocData?.role === 'membre'
           );
         }
       } catch (error) {
@@ -566,9 +566,9 @@ const ProspectDetails: React.FC = () => {
       // Vérifier les permissions
       const isSuperAdmin = userDocData?.status === 'superadmin' || userDocData?.role === 'superadmin';
       const isInSameStructure = prospectData.structureId === userDocData.structureId;
-      const hasCorrectStatus = userDocData?.status === 'member' || 
+      const hasCorrectStatus = userDocData?.status === 'membre' || 
                              userDocData?.status === 'admin' || 
-                             userDocData?.role === 'member' || 
+                             userDocData?.role === 'membre' || 
                              userDocData?.role === 'admin';
 
       console.log('Vérification des permissions:', {

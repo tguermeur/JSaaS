@@ -1,8 +1,8 @@
-export type UserStatus = 'superadmin' | 'admin' | 'member' | 'etudiant';
+export type UserStatus = 'superadmin' | 'admin' | 'membre' | 'etudiant';
 
 // Accès aux pages principales (Dashboard, Mission, Entreprises, Organization)
 export const canAccessStructureContent = (userStatus?: string): boolean => {
-  return ['superadmin', 'admin', 'member'].includes(userStatus || '');
+  return ['superadmin', 'admin', 'membre'].includes(userStatus || '');
 };
 
 // Accès aux modifications (réservé aux admin)
@@ -22,7 +22,7 @@ export const canManagePermissions = (userStatus?: string): boolean => {
 
 // Accès aux pages étudiants uniquement
 export const canAccessStudentContent = (userStatus?: string): boolean => {
-  return ['etudiant', 'superadmin', 'admin', 'member'].includes(userStatus || '');
+  return ['etudiant', 'superadmin', 'admin', 'membre'].includes(userStatus || '');
 };
 
 // Interface pour les permissions de page

@@ -46,6 +46,8 @@ import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { useSnackbar } from 'notistack';
 import { FormControl, InputLabel, Select, MenuItem } from '@mui/material';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -773,6 +775,7 @@ type InvoiceTrackingSortConfig = {
 
 const Tresorerie: React.FC = () => {
   const { currentUser, userData } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('tresorerie');
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1658,7 +1661,7 @@ const Tresorerie: React.FC = () => {
     fetchContracts();
   }, [currentUser?.uid]);
 
-  if (loading) {
+  if (loading || permissionLoading) {
     return (
       <Box sx={{ 
         display: 'flex', 
@@ -1668,6 +1671,16 @@ const Tresorerie: React.FC = () => {
       }}>
         <CircularProgress />
       </Box>
+    );
+  }
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        pageName="Trésorerie" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      />
     );
   }
 

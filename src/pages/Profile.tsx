@@ -56,7 +56,7 @@ function TabPanel(props: TabPanelProps) {
 }
 
 const Profile: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, effectiveUserId, isImpersonating } = useAuth();
   const { enqueueSnackbar } = useSnackbar();
   const [searchParams, setSearchParams] = useSearchParams();
   
@@ -68,9 +68,10 @@ const Profile: React.FC = () => {
   const [hasReports, setHasReports] = useState(false);
 
     const fetchUserData = async () => {
-    if (!currentUser) return;
+    if (!currentUser || !effectiveUserId) return;
         try {
-          const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+          // Utiliser effectiveUserId pour l'impersonation
+          const userDoc = await getDoc(doc(db, 'users', effectiveUserId));
           if (userDoc.exists()) {
             let userDataRaw = userDoc.data() as UserData;
             
@@ -83,20 +84,37 @@ const Profile: React.FC = () => {
             if (hasEncryptedData) {
               try {
                 const functions = getFunctions();
-                // Utiliser decryptOwnUserData qui permet de décrypter ses propres données sans 2FA
-                const decryptOwnUserData = httpsCallable(functions, 'decryptOwnUserData');
                 
-                const result = await decryptOwnUserData({});
-                
-                if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
-                  // Fusionner les données déchiffrées avec les données brutes
-                  const decryptedData = (result.data as any).decryptedData;
+                // En mode impersonation, utiliser decryptUserDataForStructure (superadmin a les droits)
+                // Sinon utiliser decryptOwnUserData
+                if (isImpersonating) {
+                  const decryptUserDataForStructure = httpsCallable(functions, 'decryptUserDataForStructure');
+                  const result = await decryptUserDataForStructure({ userId: effectiveUserId });
                   
-                  userDataRaw = {
-                    ...userDataRaw,
-                    ...decryptedData
-                  };
-                  console.log('[Profile] Données déchiffrées avec succès');
+                  if (result.data && (result.data as any).decryptedData) {
+                    const decryptedData = (result.data as any).decryptedData;
+                    userDataRaw = {
+                      ...userDataRaw,
+                      ...decryptedData
+                    };
+                    console.log('[Profile] Données déchiffrées avec succès (mode impersonation)');
+                  }
+                } else {
+                  // Utiliser decryptOwnUserData qui permet de décrypter ses propres données sans 2FA
+                  const decryptOwnUserData = httpsCallable(functions, 'decryptOwnUserData');
+                  
+                  const result = await decryptOwnUserData({});
+                  
+                  if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
+                    // Fusionner les données déchiffrées avec les données brutes
+                    const decryptedData = (result.data as any).decryptedData;
+                    
+                    userDataRaw = {
+                      ...userDataRaw,
+                      ...decryptedData
+                    };
+                    console.log('[Profile] Données déchiffrées avec succès');
+                  }
                 }
               } catch (decryptError: any) {
                 // Si le déchiffrement échoue, essayer avec decryptUserData (avec 2FA)
@@ -107,7 +125,7 @@ const Profile: React.FC = () => {
                   const decryptUserData = httpsCallable(functions, 'decryptUserData');
                   
                   const result = await decryptUserData({ 
-                    userId: currentUser.uid,
+                    userId: effectiveUserId,
                     deviceId: localStorage.getItem('deviceId') || undefined
                   });
                   
@@ -135,13 +153,13 @@ const Profile: React.FC = () => {
   };
 
   const fetchMissions = async () => {
-    if (!currentUser || !userData) return;
+    if (!currentUser || !userData || !effectiveUserId) return;
     setLoadingMissions(true);
     try {
       if (userData.status === 'entreprise') {
         // Pour les entreprises : récupérer les missions où companyId correspond
         const missionsRef = collection(db, 'missions');
-        const q = query(missionsRef, where('companyId', '==', currentUser.uid));
+        const q = query(missionsRef, where('companyId', '==', effectiveUserId));
         const querySnapshot = await getDocs(q);
         const fetchedMissions = querySnapshot.docs.map(doc => ({
           id: doc.id,
@@ -153,7 +171,7 @@ const Profile: React.FC = () => {
         const applicationsRef = collection(db, 'applications');
         const applicationsQuery = query(
           applicationsRef,
-          where('userId', '==', currentUser.uid)
+          where('userId', '==', effectiveUserId)
         );
         const applicationsSnapshot = await getDocs(applicationsQuery);
         
@@ -220,10 +238,10 @@ const Profile: React.FC = () => {
   };
 
   const checkReports = async () => {
-    if (!currentUser) return;
+    if (!currentUser || !effectiveUserId) return;
     try {
         const reportsRef = collection(db, 'reports');
-        const q = query(reportsRef, where('userId', '==', currentUser.uid), limit(1));
+        const q = query(reportsRef, where('userId', '==', effectiveUserId), limit(1));
         const snapshot = await getDocs(q);
         setHasReports(!snapshot.empty);
     } catch (e) {
@@ -234,7 +252,7 @@ const Profile: React.FC = () => {
   useEffect(() => {
     fetchUserData();
     checkReports();
-  }, [currentUser]);
+  }, [currentUser, effectiveUserId]);
 
   useEffect(() => {
     if (userData) {

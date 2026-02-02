@@ -53,7 +53,9 @@ import {
   Work as WorkIcon,
   Assessment as AssessmentIcon,
   AttachMoney as AttachMoneyIcon,
-  Lock as LockIcon
+  Lock as LockIcon,
+  HelpOutline as HelpIcon,
+  Info as InfoIcon
 } from '@mui/icons-material';
 import { 
   canAccessPage, 
@@ -64,6 +66,8 @@ import {
 import { collection, query, where, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
+import { usePermission } from '../../hooks/usePermission';
+import AccessDenied from '../../components/common/AccessDenied';
 
 // Pôles par défaut
 const DEFAULT_POLES = [
@@ -77,11 +81,77 @@ const DEFAULT_POLES = [
   { id: 'vice', name: 'Vice-président' }
 ];
 
+/**
+ * Configuration par défaut recommandée pour les permissions
+ * Cette configuration représente une organisation typique d'une Junior Entreprise / Job Service
+ */
+const DEFAULT_PERMISSIONS_CONFIG: Record<string, {
+  write: { roles: string[], poles: string[] };
+  read: { roles: string[], poles: string[] };
+  description: string;
+}> = {
+  dashboard: {
+    write: { roles: ['admin'], poles: [] },
+    read: { roles: ['membre', 'admin'], poles: [] },
+    description: 'Accessible en lecture à tous les membres'
+  },
+  organization: {
+    write: { roles: ['admin'], poles: [] },
+    read: { roles: ['membre', 'admin'], poles: [] },
+    description: 'Modification réservée aux admins, lecture pour tous'
+  },
+  mission: {
+    write: { roles: ['admin'], poles: ['dev', 'com'] },
+    read: { roles: ['membre', 'admin'], poles: [] },
+    description: 'Modification par admins et pôle commercial'
+  },
+  entreprises: {
+    write: { roles: ['admin'], poles: ['dev', 'com'] },
+    read: { roles: ['membre', 'admin'], poles: [] },
+    description: 'Modification par admins et pôle commercial'
+  },
+  commercial: {
+    write: { roles: ['admin'], poles: ['dev', 'com'] },
+    read: { roles: ['admin'], poles: ['dev', 'com'] },
+    description: 'Réservé au pôle commercial et développement'
+  },
+  audit: {
+    write: { roles: ['admin'], poles: ['aq'] },
+    read: { roles: ['admin'], poles: ['aq'] },
+    description: 'Réservé au pôle audit/qualité'
+  },
+  tresorerie: {
+    write: { roles: ['admin'], poles: ['tre'] },
+    read: { roles: ['admin'], poles: ['tre', 'pre'] },
+    description: 'Écriture pôle trésorerie, lecture étendue au président'
+  },
+  rh: {
+    write: { roles: ['admin'], poles: ['rh'] },
+    read: { roles: ['admin'], poles: ['rh'] },
+    description: 'Réservé au pôle RH'
+  },
+  users: {
+    write: { roles: ['admin'], poles: [] },
+    read: { roles: ['admin'], poles: [] },
+    description: 'Réservé aux administrateurs'
+  },
+  permissions: {
+    write: { roles: ['admin'], poles: [] },
+    read: { roles: ['admin'], poles: [] },
+    description: 'Réservé aux administrateurs'
+  },
+  'encrypted-data': {
+    write: { roles: ['admin'], poles: [] },
+    read: { roles: ['admin'], poles: ['rh'] },
+    description: 'Données sensibles, accès restreint'
+  }
+};
+
 interface StructureMember {
   id: string;
   displayName: string;
   email: string;
-  status: 'admin' | 'member' | 'etudiant' | 'superadmin';
+  status: 'admin' | 'membre' | 'etudiant' | 'superadmin';
   structureId: string;
   photoURL?: string;
   poles?: Array<{
@@ -121,6 +191,7 @@ interface PagePermissionWithReadAccess {
 const Authorizations: React.FC = () => {
   const theme = useTheme();
   const { currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('permissions');
   
   // Définition des pages après la déclaration de theme
   const PAGES: Page[] = [
@@ -262,7 +333,7 @@ const Authorizations: React.FC = () => {
         const userData = userDoc.data();
         setIsAdmin(userData?.status === 'admin');
         setIsSuperAdmin(userData?.status === 'superadmin');
-        setIsMember(userData?.status === 'member');
+        setIsMember(userData?.status === 'membre');
       } catch (error) {
         console.error("Erreur lors de la vérification du statut:", error);
       }
@@ -311,7 +382,7 @@ const Authorizations: React.FC = () => {
           id: doc.id,
           ...doc.data()
         } as StructureMember))
-        .filter(user => user.status === 'member' || user.status === 'membre' || user.status === 'admin');
+        .filter(user => user.status === 'membre' || user.status === 'admin');
 
       setMembers(membersList);
     } catch (error) {
@@ -366,25 +437,22 @@ const Authorizations: React.FC = () => {
     }
   };
 
-  // Si l'utilisateur n'est pas admin, superadmin ou membre, afficher un message d'accès refusé
-  if (!isAdmin && !isSuperAdmin && !isMember) {
+  // Afficher le chargement des permissions
+  if (permissionLoading) {
     return (
-      <Box sx={{ 
-        width: '100%', 
-        px: { xs: 2, sm: 3, md: 4 },
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '60vh'
-      }}>
-        <Typography variant="h5" color="error" sx={{ mb: 2 }}>
-          Accès refusé
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Vous n'avez pas les permissions nécessaires pour accéder à cette page.
-        </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+        <CircularProgress />
       </Box>
+    );
+  }
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        pageName="Gestion des autorisations" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      />
     );
   }
 
@@ -501,7 +569,7 @@ const Authorizations: React.FC = () => {
 
         // Pour le tableau de bord, s'assurer que tous les membres ont accès en lecture
         const readPermissionsData = editingPage.pageId === 'dashboard' ? {
-          allowedRoles: ['member', 'membre', 'admin', 'superadmin'] as UserStatus[],
+          allowedRoles: ['membre', 'admin', 'superadmin'] as UserStatus[],
           allowedPoles: [] as string[],
           allowedMembers: [] as string[],
           updatedAt: new Date(),
@@ -566,9 +634,9 @@ const Authorizations: React.FC = () => {
     const access: PageAccess[] = [];
 
     // Si "Tous les membres" est sélectionné, on n'affiche que cette permission
-    if (permissions.allowedRoles.includes('member')) {
+    if (permissions.allowedRoles.includes('membre')) {
       access.push({ 
-        id: 'member', 
+        id: 'membre', 
         name: 'Tous les membres', 
         role: 'Accès général', 
         icon: <GroupIcon />,
@@ -695,12 +763,12 @@ const Authorizations: React.FC = () => {
   // Fonction pour vérifier si la liste des membres doit être désactivée
   const isMembersListDisabled = accessTab === 0 
     ? editingPage?.allowedRoles?.includes('admin' as UserStatus) ?? false
-    : editingPage?.readAccess?.allowedRoles?.includes('member' as UserStatus) ?? false;
+    : editingPage?.readAccess?.allowedRoles?.includes('membre' as UserStatus) ?? false;
 
   // Fonction pour vérifier si la liste des pôles et des membres individuels doit être désactivée
   const isPolesAndMembersDisabled = accessTab === 0
-    ? editingPage?.allowedRoles?.includes('member' as UserStatus) ?? false
-    : editingPage?.readAccess?.allowedRoles?.includes('member' as UserStatus) ?? false;
+    ? editingPage?.allowedRoles?.includes('membre' as UserStatus) ?? false
+    : editingPage?.readAccess?.allowedRoles?.includes('membre' as UserStatus) ?? false;
 
   // Fonction pour vérifier si un rôle est sélectionné
   const isRoleSelected = (role: UserStatus) => {
@@ -732,11 +800,11 @@ const Authorizations: React.FC = () => {
 
     if (accessTab === 0) {
       // Modification des permissions de modification
-      if (role === 'member') {
+      if (role === 'membre') {
         // Si on sélectionne "Tous les membres", on sélectionne aussi admin
         const newRoles = editingPage.allowedRoles.includes(role)
           ? [] // Si on désélectionne, on retire tout
-          : ['member' as UserStatus, 'admin' as UserStatus]; // Si on sélectionne, on ajoute member + admin
+          : ['membre' as UserStatus, 'admin' as UserStatus]; // Si on sélectionne, on ajoute membre + admin
         const newPoles = editingPage.allowedRoles.includes(role)
           ? [] // Si on désélectionne, on retire tout
           : poles.map(pole => pole.id); // Si on sélectionne, on ajoute tous les pôles
@@ -764,11 +832,11 @@ const Authorizations: React.FC = () => {
         editingPage.readAccess = { allowedRoles: [], allowedPoles: [] };
       }
 
-      if (role === 'member') {
+      if (role === 'membre') {
         // Si on sélectionne "Tous les membres", on sélectionne aussi admin
         const newRoles = editingPage.readAccess.allowedRoles.includes(role)
           ? [] // Si on désélectionne, on retire tout
-          : ['member' as UserStatus, 'admin' as UserStatus]; // Si on sélectionne, on ajoute member + admin
+          : ['membre' as UserStatus, 'admin' as UserStatus]; // Si on sélectionne, on ajoute membre + admin
         const newPoles = editingPage.readAccess.allowedRoles.includes(role)
           ? [] // Si on désélectionne, on retire tout
           : poles.map(pole => pole.id); // Si on sélectionne, on ajoute tous les pôles
@@ -866,9 +934,36 @@ const Authorizations: React.FC = () => {
         }}>
           Gestion des autorisations
         </Typography>
-        <Typography variant="body1" color="text.secondary">
+        <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
           Gérez les accès aux différentes pages de l'application
         </Typography>
+        
+        {/* Info-bulle explicative */}
+        <Paper
+          elevation={0}
+          sx={{
+            p: 2,
+            borderRadius: 2,
+            backgroundColor: alpha(theme.palette.info.main, 0.08),
+            border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 1.5,
+          }}
+        >
+          <InfoIcon sx={{ color: theme.palette.info.main, mt: 0.2 }} />
+          <Box>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5, color: theme.palette.info.dark }}>
+              Comprendre les niveaux d'accès
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              <strong>Lecture</strong> : Permet de visualiser les données sans pouvoir les modifier.
+              <br />
+              <strong>Modification</strong> : Permet de créer, modifier et supprimer des données. 
+              <em> L'accès en modification inclut automatiquement l'accès en lecture.</em>
+            </Typography>
+          </Box>
+        </Paper>
       </Box>
 
       <Paper 
@@ -886,8 +981,30 @@ const Authorizations: React.FC = () => {
               <TableHead>
                 <TableRow>
                   <TableCell sx={{ width: '25%', fontWeight: 600, py: 2 }}>Page</TableCell>
-                  <TableCell sx={{ width: '30%', fontWeight: 600, py: 2 }}>Permissions de modification</TableCell>
-                  <TableCell sx={{ width: '30%', fontWeight: 600, py: 2 }}>Permissions de lecture</TableCell>
+                  <TableCell sx={{ width: '30%', fontWeight: 600, py: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      Permissions de modification
+                      <Tooltip 
+                        title="Permet de créer, modifier et supprimer des données. Inclut automatiquement l'accès en lecture."
+                        arrow
+                        placement="top"
+                      >
+                        <HelpIcon sx={{ fontSize: 16, color: 'text.secondary', cursor: 'help' }} />
+                      </Tooltip>
+                    </Box>
+                  </TableCell>
+                  <TableCell sx={{ width: '30%', fontWeight: 600, py: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      Permissions de lecture
+                      <Tooltip 
+                        title="Permet uniquement de visualiser les données, sans possibilité de modification."
+                        arrow
+                        placement="top"
+                      >
+                        <HelpIcon sx={{ fontSize: 16, color: 'text.secondary', cursor: 'help' }} />
+                      </Tooltip>
+                    </Box>
+                  </TableCell>
                   <TableCell sx={{ width: '15%', fontWeight: 600, py: 2 }} align="right">Actions</TableCell>
                 </TableRow>
               </TableHead>
@@ -937,7 +1054,7 @@ const Authorizations: React.FC = () => {
                       </Box>
                     </TableCell>
                     <TableCell sx={{ py: 2.5 }} align="right">
-                      {(isAdmin || isSuperAdmin) && (
+                      {canWrite && (
                         <IconButton 
                           size="small" 
                           onClick={() => handleEdit(page.id)}
@@ -1071,7 +1188,7 @@ const Authorizations: React.FC = () => {
                 {/* Tous les membres */}
                 <ListItem
                   button
-                  onClick={() => handleRoleChange('member' as UserStatus)}
+                  onClick={() => handleRoleChange('membre' as UserStatus)}
                   sx={{
                     borderRadius: 1,
                     mb: 1,
@@ -1100,7 +1217,7 @@ const Authorizations: React.FC = () => {
                     }}
                   />
                   <Checkbox
-                    checked={isRoleSelected('member' as UserStatus)}
+                    checked={isRoleSelected('membre' as UserStatus)}
                     edge="end"
                   />
                 </ListItem>

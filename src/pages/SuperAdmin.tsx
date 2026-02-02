@@ -74,6 +74,7 @@ import { toDateFromFirestore } from '../utils/dateUtils';
 import SecurityIcon from '@mui/icons-material/Security';
 import LoginIcon from '@mui/icons-material/Login';
 import HowToRegIcon from '@mui/icons-material/HowToReg';
+import SwitchAccountIcon from '@mui/icons-material/SwitchAccount';
 
 interface StructureData {
   id: string;
@@ -512,7 +513,7 @@ const SuperAdmin: React.FC = () => {
   const [superAdmins, setSuperAdmins] = useState<SuperAdmin[]>([]);
   const [editingStructure, setEditingStructure] = useState<string | null>(null);
   const [editedData, setEditedData] = useState<Partial<StructureData>>({});
-  const { currentUser } = useAuth();
+  const { currentUser, startImpersonation, isImpersonating } = useAuth();
   const navigate = useNavigate();
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState<{
@@ -543,8 +544,17 @@ const SuperAdmin: React.FC = () => {
   const [migrationError, setMigrationError] = useState<string | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
 
+  // États pour la migration member -> membre
+  const [memberMigrationLoading, setMemberMigrationLoading] = useState(false);
+  const [memberMigrationStats, setMemberMigrationStats] = useState<{
+    totalUsers: number;
+    usersToMigrate: number;
+    usersMigrated: number;
+  } | null>(null);
+  const [memberMigrationError, setMemberMigrationError] = useState<string | null>(null);
+
   // Ajouter un nouvel onglet
-  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Connexions & Inscriptions', 'Clients Stripe', 'Migration Chiffrement'];
+  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Connexions & Inscriptions', 'Clients Stripe', 'Migration Chiffrement', 'Migration Données'];
 
   // Ajouter l'état pour le filtre de statut (après les autres états)
   const [reportStatusFilter, setReportStatusFilter] = useState<string>('all');
@@ -554,9 +564,27 @@ const SuperAdmin: React.FC = () => {
   const [selectedStructureForUser, setSelectedStructureForUser] = useState<{id: string, name: string} | null>(null);
 
   // États pour Connexions & Inscriptions
-  const [recentSignups, setRecentSignups] = useState<Array<{id: string; email: string; displayName: string; structureName: string; createdAt: Date}>>([]);
-  const [recentLogins, setRecentLogins] = useState<Array<{id: string; email: string; displayName: string; structureName: string; lastActivity: Date}>>([]);
+  const [recentSignups, setRecentSignups] = useState<Array<{id: string; email: string; displayName: string; structureName: string; createdAt: Date; status?: string}>>([]);
+  const [recentLogins, setRecentLogins] = useState<Array<{id: string; email: string; displayName: string; structureName: string; lastActivity: Date; status?: string}>>([]);
   const [activityLoading, setActivityLoading] = useState(false);
+
+  // Fonction pour démarrer l'impersonation (Run as) - ouvre dans un nouvel onglet
+  const handleRunAs = async (userId: string, userName: string) => {
+    if (window.confirm(`Voulez-vous vraiment vous connecter en tant que "${userName}" ?\n\nUn nouvel onglet va s'ouvrir avec l'application vue comme cet utilisateur.`)) {
+      try {
+        // Préparer l'impersonation sans modifier l'état local (openInNewTab = true)
+        await startImpersonation(userId, true);
+        setMessage({ type: 'success', text: `Mode "Run as" activé pour ${userName} - Nouvel onglet ouvert` });
+        setOpen(true);
+        // Ouvrir dans un nouvel onglet avec un paramètre pour indiquer qu'il faut charger l'impersonation
+        window.open('/app/dashboard?impersonate=true', '_blank');
+      } catch (error) {
+        console.error('Erreur lors du Run as:', error);
+        setMessage({ type: 'error', text: 'Erreur lors de l\'activation du mode "Run as"' });
+        setOpen(true);
+      }
+    }
+  };
 
   // Charger les structures au montage du composant
   useEffect(() => {
@@ -747,6 +775,7 @@ const SuperAdmin: React.FC = () => {
             lastName: data.lastName,
             ecole: data.ecole,
             structureId: data.structureId,
+            status: data.status || '',
             createdAt
           };
         });
@@ -781,6 +810,7 @@ const SuperAdmin: React.FC = () => {
             lastName: data.lastName,
             ecole: data.ecole,
             structureId: data.structureId,
+            status: data.status || '',
             lastActivity
           };
         });
@@ -1314,6 +1344,86 @@ const SuperAdmin: React.FC = () => {
       console.error('Erreur migrateAllEncryption:', err);
     } finally {
       setMigrationLoading(false);
+    }
+  };
+
+  // Fonctions pour la migration member -> membre
+  const checkMemberMigrationStatus = async () => {
+    setMemberMigrationError(null);
+    
+    try {
+      // Compter tous les utilisateurs avec status = 'member'
+      const usersRef = collection(db, 'users');
+      const memberQuery = query(usersRef, where('status', '==', 'member'));
+      const memberSnapshot = await getDocs(memberQuery);
+      
+      // Compter tous les utilisateurs
+      const allUsersSnapshot = await getDocs(usersRef);
+      
+      setMemberMigrationStats({
+        totalUsers: allUsersSnapshot.docs.length,
+        usersToMigrate: memberSnapshot.docs.length,
+        usersMigrated: 0
+      });
+    } catch (err: any) {
+      setMemberMigrationError(err.message || 'Erreur lors de la vérification du statut');
+      console.error('Erreur checkMemberMigrationStatus:', err);
+    }
+  };
+
+  const startMemberMigration = async () => {
+    if (!window.confirm('Êtes-vous sûr de vouloir migrer tous les utilisateurs avec status "member" vers "membre" ? Cette opération est irréversible.')) {
+      return;
+    }
+
+    setMemberMigrationLoading(true);
+    setMemberMigrationError(null);
+    
+    try {
+      // Récupérer tous les utilisateurs avec status = 'member'
+      const usersRef = collection(db, 'users');
+      const memberQuery = query(usersRef, where('status', '==', 'member'));
+      const memberSnapshot = await getDocs(memberQuery);
+      
+      let migratedCount = 0;
+      const totalToMigrate = memberSnapshot.docs.length;
+      
+      // Mettre à jour chaque utilisateur
+      for (const userDoc of memberSnapshot.docs) {
+        try {
+          await updateDoc(doc(db, 'users', userDoc.id), {
+            status: 'membre'
+          });
+          migratedCount++;
+          
+          // Mettre à jour les stats en temps réel
+          setMemberMigrationStats(prev => prev ? {
+            ...prev,
+            usersMigrated: migratedCount
+          } : null);
+        } catch (error) {
+          console.error(`Erreur lors de la migration de l'utilisateur ${userDoc.id}:`, error);
+        }
+      }
+      
+      const message = `Migration terminée !\n\n` +
+        `${migratedCount}/${totalToMigrate} utilisateurs migrés de "member" vers "membre"`;
+      
+      alert(message);
+      
+      // Vérifier le statut après migration
+      await checkMemberMigrationStatus();
+      
+      setMessage({ type: 'success', text: 'Migration des statuts terminée avec succès' });
+      setOpen(true);
+    } catch (err: any) {
+      const errorMsg = err.message || 'Erreur lors de la migration';
+      setMemberMigrationError(errorMsg);
+      setMessage({ type: 'error', text: errorMsg });
+      setOpen(true);
+      console.error('Erreur startMemberMigration:', err);
+    } finally {
+      setMemberMigrationLoading(false);
     }
   };
 
@@ -1936,6 +2046,13 @@ const SuperAdmin: React.FC = () => {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
             Vue d'ensemble des dernières connexions et inscriptions, toutes structures confondues.
           </Typography>
+          
+          {isImpersonating && (
+            <Alert severity="warning" sx={{ mb: 3 }}>
+              Vous êtes actuellement en mode "Run as". Pour utiliser à nouveau cette fonctionnalité, 
+              vous devez d'abord revenir à votre compte en cliquant sur le bouton dans le bandeau rouge en haut de l'écran.
+            </Alert>
+          )}
 
           {activityLoading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -1955,12 +2072,13 @@ const SuperAdmin: React.FC = () => {
                         <TableCell>Utilisateur</TableCell>
                         <TableCell>Structure</TableCell>
                         <TableCell>Date et heure d'inscription</TableCell>
+                        <TableCell align="center">Actions</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {recentSignups.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                          <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                             Aucune inscription récente
                           </TableCell>
                         </TableRow>
@@ -1974,6 +2092,18 @@ const SuperAdmin: React.FC = () => {
                             <TableCell>{user.structureName}</TableCell>
                             <TableCell>
                               {formatDateTime(user.createdAt)}
+                            </TableCell>
+                            <TableCell align="center">
+                              <Tooltip title={`Se connecter en tant que ${user.displayName}`}>
+                                <IconButton
+                                  size="small"
+                                  color="primary"
+                                  onClick={() => handleRunAs(user.id, user.displayName)}
+                                  disabled={isImpersonating}
+                                >
+                                  <SwitchAccountIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
                             </TableCell>
                           </TableRow>
                         ))
@@ -1994,12 +2124,13 @@ const SuperAdmin: React.FC = () => {
                         <TableCell>Utilisateur</TableCell>
                         <TableCell>Structure</TableCell>
                         <TableCell>Date et heure de dernière connexion</TableCell>
+                        <TableCell align="center">Actions</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {recentLogins.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                          <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                             Aucune connexion récente
                           </TableCell>
                         </TableRow>
@@ -2013,6 +2144,18 @@ const SuperAdmin: React.FC = () => {
                             <TableCell>{user.structureName}</TableCell>
                             <TableCell>
                               {formatDateTime(user.lastActivity)}
+                            </TableCell>
+                            <TableCell align="center">
+                              <Tooltip title={`Se connecter en tant que ${user.displayName}`}>
+                                <IconButton
+                                  size="small"
+                                  color="primary"
+                                  onClick={() => handleRunAs(user.id, user.displayName)}
+                                  disabled={isImpersonating}
+                                >
+                                  <SwitchAccountIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
                             </TableCell>
                           </TableRow>
                         ))
@@ -2146,6 +2289,130 @@ const SuperAdmin: React.FC = () => {
                   </Grid>
                 ))}
               </Grid>
+            </Box>
+          )}
+        </Paper>
+      ) : tabValue === 7 ? (
+        <Paper sx={{ p: 3, mt: 3 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
+            <PersonAddIcon color="primary" sx={{ fontSize: 40 }} />
+            <Box>
+              <Typography variant="h5" gutterBottom>
+                Migration des Statuts Utilisateurs
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Migrer les utilisateurs de "member" vers "membre" pour harmoniser la base de données
+              </Typography>
+            </Box>
+          </Box>
+
+          <Alert severity="warning" sx={{ mb: 3 }}>
+            <Typography variant="subtitle2" gutterBottom>
+              Attention : Cette migration est irréversible
+            </Typography>
+            <List dense>
+              <ListItem>
+                <ListItemText 
+                  primary="Tous les utilisateurs avec status='member' seront migrés vers status='membre'"
+                />
+              </ListItem>
+              <ListItem>
+                <ListItemText 
+                  primary="Cette opération est nécessaire pour assurer la cohérence du système de permissions"
+                />
+              </ListItem>
+              <ListItem>
+                <ListItemText 
+                  primary="Les nouveaux membres sont déjà créés avec le statut 'membre'"
+                />
+              </ListItem>
+            </List>
+          </Alert>
+
+          {memberMigrationError && (
+            <Alert severity="error" sx={{ mb: 3 }} onClose={() => setMemberMigrationError(null)}>
+              {memberMigrationError}
+            </Alert>
+          )}
+
+          <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+            <Button
+              variant="outlined"
+              startIcon={<LockIcon />}
+              onClick={checkMemberMigrationStatus}
+              disabled={memberMigrationLoading}
+            >
+              Vérifier le Statut
+            </Button>
+            <Button
+              variant="contained"
+              color="warning"
+              startIcon={memberMigrationLoading ? <CircularProgress size={20} color="inherit" /> : <PersonAddIcon />}
+              onClick={startMemberMigration}
+              disabled={memberMigrationLoading || (memberMigrationStats?.usersToMigrate === 0)}
+            >
+              {memberMigrationLoading ? 'Migration en cours...' : 'Migrer "member" → "membre"'}
+            </Button>
+          </Box>
+
+          {memberMigrationLoading && (
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Migration en cours, veuillez patienter...
+              </Typography>
+              <LinearProgress sx={{ mt: 1 }} />
+              {memberMigrationStats && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  Progression : {memberMigrationStats.usersMigrated} / {memberMigrationStats.usersToMigrate}
+                </Typography>
+              )}
+            </Box>
+          )}
+
+          {memberMigrationStats && (
+            <Box>
+              <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>
+                Statut de la migration
+              </Typography>
+              
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2, bgcolor: 'background.default', textAlign: 'center' }}>
+                    <Typography variant="h3" color="primary">
+                      {memberMigrationStats.totalUsers}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Utilisateurs totaux
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2, bgcolor: memberMigrationStats.usersToMigrate > 0 ? 'warning.light' : 'success.light', textAlign: 'center' }}>
+                    <Typography variant="h3" color={memberMigrationStats.usersToMigrate > 0 ? 'warning.dark' : 'success.dark'}>
+                      {memberMigrationStats.usersToMigrate}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {memberMigrationStats.usersToMigrate > 0 ? 'À migrer (status="member")' : 'Tous migrés !'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2, bgcolor: 'success.light', textAlign: 'center' }}>
+                    <Typography variant="h3" color="success.dark">
+                      {memberMigrationStats.usersMigrated}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Migrés cette session
+                    </Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
+
+              {memberMigrationStats.usersToMigrate === 0 && (
+                <Alert severity="success" sx={{ mt: 3 }}>
+                  Tous les utilisateurs utilisent déjà le statut "membre". Aucune migration nécessaire.
+                </Alert>
+              )}
             </Box>
           )}
         </Paper>

@@ -19,7 +19,8 @@ import {
   Alert,
   Tabs,
   Tab,
-  Chip
+  Chip,
+  CircularProgress
 } from '@mui/material';
 import { 
   Logout as LogoutIcon,
@@ -44,6 +45,8 @@ import { collection, query, where, getDocs, addDoc, Timestamp, getDoc, doc, orde
 import { db } from '../firebase/config';
 import { Document, Folder } from '../types/document';
 import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -128,6 +131,7 @@ const useCountAnimation = (targetValue: number, duration: number = 2000) => {
 
 export default function Dashboard(): JSX.Element {
   const { currentUser, userData, isContactWithAccess, contactPermissions } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('dashboard');
   const navigate = useNavigate();
   const location = useLocation();
   
@@ -1607,6 +1611,29 @@ export default function Dashboard(): JSX.Element {
       </Box>
     );
   };
+
+  // Vérification des permissions (pour les utilisateurs non-entreprise et non-étudiant)
+  // Les entreprises et étudiants ont leur propre dashboard et ne sont pas soumis aux permissions
+  if (!isEntreprise && !isEtudiant && !isContactWithAccess) {
+    // Afficher le chargement des permissions
+    if (permissionLoading) {
+      return (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+          <CircularProgress />
+        </Box>
+      );
+    }
+
+    // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+    if (!canRead) {
+      return (
+        <AccessDenied 
+          pageName="Tableau de bord" 
+          message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+        />
+      );
+    }
+  }
 
   // Dashboard simplifié pour les Entreprises
   if (isEntreprise) {

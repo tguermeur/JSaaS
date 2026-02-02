@@ -162,9 +162,18 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
       return date;
     }
     
-    // Si c'est un Timestamp Firestore
+    // Si c'est un Timestamp Firestore avec méthode toDate()
     if (typeof date.toDate === 'function') {
       return date.toDate().toLocaleDateString('fr-FR');
+    }
+    
+    // Si c'est un objet Timestamp Firestore sérialisé (sans méthode toDate)
+    // Ces objets ont des propriétés 'seconds' et 'nanoseconds'
+    if (date && typeof date === 'object' && 'seconds' in date && typeof date.seconds === 'number') {
+      const dateObj = new Date(date.seconds * 1000);
+      if (!isNaN(dateObj.getTime())) {
+        return dateObj.toLocaleDateString('fr-FR');
+      }
     }
     
     // Si c'est une Date
@@ -598,11 +607,15 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
                  <Button size="small" onClick={() => handleSave('prefs')} sx={{ ml: 2 }}>Enregistrer</Button>
              )}
              
-            {(userData.acceptsElectronicDocumentsDate || formData.acceptsElectronicDocumentsDate) && (
-              <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1, ml: 7 }}>
-                Accepté le : {formatDate(userData.acceptsElectronicDocumentsDate || formData.acceptsElectronicDocumentsDate)}
-              </Typography>
-            )}
+            {(() => {
+              const dateValue = userData.acceptsElectronicDocumentsDate || formData.acceptsElectronicDocumentsDate;
+              const formattedDate = dateValue ? formatDate(dateValue) : '';
+              return formattedDate ? (
+                <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 1, ml: 7 }}>
+                  Accepté le : {formattedDate}
+                </Typography>
+              ) : null;
+            })()}
         </Box>
       </Paper>
 

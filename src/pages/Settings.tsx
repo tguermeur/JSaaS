@@ -74,7 +74,7 @@ const Settings: React.FC = () => {
       label: 'Accès',
       path: '/app/settings/authorizations',
       icon: <SecurityIcon />,
-      visible: isSuperAdmin || isAdmin || userData?.status === 'member'
+      visible: isSuperAdmin || isAdmin || userData?.status === 'membre'
     },
     {
       label: 'Types de mission',

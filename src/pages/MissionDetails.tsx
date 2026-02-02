@@ -1793,7 +1793,7 @@ const MissionDetails: React.FC = () => {
           photoURL: m.photoURL || '',
           firstName: m.firstName || '',
           lastName: m.lastName || '',
-          role: m.status || 'member'
+          role: m.status || 'membre'
         }));
         setAvailableUsersForTagging(taggingUsers);
       } catch (error) {
@@ -4127,7 +4127,7 @@ const MissionDetails: React.FC = () => {
                 console.log('  - User structureId:', userDataFromFirestore.structureId);
                 console.log('  - StructureId match:', userDataFromFirestore.structureId === mission.structureId);
                 console.log('  - Is superadmin:', userDataFromFirestore.status === 'superadmin' || userDataFromFirestore.role === 'superadmin');
-                console.log('  - Is admin/member:', userDataFromFirestore.status && ['admin', 'member', 'admin_structure'].includes(userDataFromFirestore.status));
+                console.log('  - Is admin/membre:', userDataFromFirestore.status && ['admin', 'membre', 'admin_structure'].includes(userDataFromFirestore.status));
                 console.log('  - Is creator:', mission.createdBy === currentUser.uid);
                 if (mission.permissions) {
                   console.log('  - In viewers:', mission.permissions.viewers?.includes(currentUser.uid));
@@ -5932,7 +5932,7 @@ const MissionDetails: React.FC = () => {
       }
 
       // Vérifier le statut de l'utilisateur
-      const allowedStatuses = ['admin', 'member', 'membre', 'admin_structure'];
+      const allowedStatuses = ['admin', 'membre', 'admin_structure'];
       if (!allowedStatuses.includes(freshUserData.status)) {
         return { 
           canUpload: false, 

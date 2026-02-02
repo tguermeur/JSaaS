@@ -179,7 +179,7 @@ interface PagePermission {
 const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentUser, userData, logoutUser } = useAuth();
+  const { currentUser, userData, logoutUser, effectiveUserId, isImpersonating } = useAuth();
   const [structureType, setStructureType] = useState<'jobservice' | 'junior'>('jobservice');
   const [selectedSection, setSelectedSection] = useState<string>('crm');
   const [detailSidebarOpen, setDetailSidebarOpen] = useState<boolean>(false);
@@ -216,8 +216,11 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       }
 
       try {
-        // Récupérer le structureId de l'utilisateur
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        // Utiliser effectiveUserId pour l'impersonation, sinon currentUser.uid
+        const userIdToLoad = effectiveUserId || currentUser.uid;
+        
+        // Récupérer le structureId de l'utilisateur (effectif si en impersonation)
+        const userDoc = await getDoc(doc(db, 'users', userIdToLoad));
         const structureId = userDoc.data()?.structureId;
 
         if (structureId) {
@@ -238,7 +241,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     };
 
     loadStructureData();
-  }, [currentUser, isEntreprise]);
+  }, [currentUser, isEntreprise, effectiveUserId]);
 
   // Charger les permissions des pages depuis Firestore
   useEffect(() => {
@@ -324,8 +327,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       return true;
     }
     
-    // Vérifier si 'membre' ou 'member' est autorisé (gérer l'incohérence)
-    if (isMember && (readPermission.allowedRoles.includes('membre') || readPermission.allowedRoles.includes('member'))) {
+    // Vérifier si 'membre' est autorisé
+    if (isMember && readPermission.allowedRoles.includes('membre')) {
       return true;
     }
     
@@ -901,6 +904,11 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
           <MenuItem onClick={async () => {
             setUserMenuAnchorEl(null);
             try {
+              // Si en mode impersonation, d'abord nettoyer les storages
+              if (isImpersonating) {
+                localStorage.removeItem('superadmin_impersonation');
+                sessionStorage.removeItem('superadmin_impersonation_session');
+              }
               await logoutUser();
               navigate('/login');
             } catch (error) {

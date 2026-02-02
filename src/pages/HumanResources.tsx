@@ -51,6 +51,8 @@ import { canAccessPage, type UserStatus } from '../utils/permissions';
 import { fetchDecryptFile, is2FARequiredError } from '../utils/decryptFileUtils';
 import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 import { Template } from '../types/templates';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 import * as PDFLib from 'pdf-lib';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Document } from '../types/document';
@@ -114,6 +116,7 @@ interface UserDetails {
 
 const HumanResources = () => {
   const { currentUser, updateLastActivity } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('rh');
   const navigate = useNavigate();
   const [users, setUsers] = useState<UserDetails[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -2424,6 +2427,25 @@ const HumanResources = () => {
       }
     }
   }, [searchParams, users]);
+
+  // Afficher le chargement des permissions
+  if (permissionLoading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        pageName="Ressources Humaines" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      />
+    );
+  }
 
   return (
     <Box sx={{ 

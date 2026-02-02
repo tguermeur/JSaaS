@@ -53,6 +53,8 @@ import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setD
 import { useNavigate } from 'react-router-dom';
 import MissionForm, { MissionFormData } from '../components/missions/MissionForm';
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 
 // Animations
 const fadeIn = keyframes`
@@ -139,6 +141,7 @@ interface ChargeData {
 
 const Etude: React.FC = () => {
   const { currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('audit');
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [showNoStructureAlert, setShowNoStructureAlert] = useState(false);
@@ -211,7 +214,7 @@ const Etude: React.FC = () => {
         usersQuery = query(
           usersRef,
           where('structureId', '==', userStructureId),
-          where('status', 'in', ['member', 'admin', 'superadmin'])
+          where('status', 'in', ['membre', 'admin', 'superadmin'])
         );
 
         const usersSnapshot = await getDocs(usersQuery);
@@ -757,6 +760,25 @@ const Etude: React.FC = () => {
     navigate(`/app/etude/${etude.numeroEtude}`);
   };
 
+  // Afficher le chargement des permissions
+  if (permissionLoading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
+  if (!canRead) {
+    return (
+      <AccessDenied 
+        pageName="Études" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      />
+    );
+  }
+
   return (
     <Box sx={{ p: 3, bgcolor: '#f5f5f7', minHeight: '100vh' }}>
       <Box 
@@ -781,22 +803,24 @@ const Etude: React.FC = () => {
         >
           Études
         </Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => setCreateDialogOpen(true)}
-          sx={{
-            bgcolor: '#0066cc',
-            borderRadius: '0.8rem',
-            px: 3,
-            py: 1,
-            '&:hover': {
-              bgcolor: '#0077ed'
-            }
-          }}
-        >
-          Ajouter une étude
-        </Button>
+        {canWrite && (
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => setCreateDialogOpen(true)}
+            sx={{
+              bgcolor: '#0066cc',
+              borderRadius: '0.8rem',
+              px: 3,
+              py: 1,
+              '&:hover': {
+                bgcolor: '#0077ed'
+              }
+            }}
+          >
+            Ajouter une étude
+          </Button>
+        )}
       </Box>
 
       <Box sx={{ 

@@ -211,7 +211,7 @@ const Etude: React.FC = () => {
         usersQuery = query(
           usersRef,
           where('structureId', '==', userStructureId),
-          where('status', 'in', ['member', 'admin', 'superadmin'])
+          where('status', 'in', ['membre', 'admin', 'superadmin'])
         );
 
         const usersSnapshot = await getDocs(usersQuery);
