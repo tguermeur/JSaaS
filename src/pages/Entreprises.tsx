@@ -39,6 +39,7 @@ import {
   Close as CloseIcon
 } from '@mui/icons-material';
 import { collection, getDocs, addDoc, deleteDoc, doc, updateDoc, query, where, Timestamp, deleteField, getDoc } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
@@ -190,10 +191,13 @@ interface Mission {
   priceHT: number;
 }
 
+const isEncrypted = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
+
 const Entreprises: React.FC = () => {
   const { currentUser } = useAuth();
   const { canRead, canWrite, loading: permissionLoading } = usePermission('entreprises');
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [decryptedCompanies, setDecryptedCompanies] = useState<Record<string, Partial<Pick<Company, 'name' | 'city'>>>>({});
   const [loading, setLoading] = useState(true);
   const [openDialog, setOpenDialog] = useState(false);
   const [openEditDialog, setOpenEditDialog] = useState(false);
@@ -310,9 +314,10 @@ const Entreprises: React.FC = () => {
         const companiesQuery = query(companiesRef, where('structureId', '==', userStructureId));
         const companiesSnapshot = await getDocs(companiesQuery);
         
-        // Récupérer toutes les missions pour toutes les entreprises
+        // Récupérer les missions de la structure uniquement (évite permission-denied sur toute la collection)
         const missionsRef = collection(db, 'missions');
-        const missionsSnapshot = await getDocs(missionsRef);
+        const missionsQuery = query(missionsRef, where('structureId', '==', userStructureId));
+        const missionsSnapshot = await getDocs(missionsQuery);
         const missionsByCompany = missionsSnapshot.docs.reduce((acc, doc) => {
           const data = doc.data();
           const companyId = data.companyId;
@@ -363,6 +368,31 @@ const Entreprises: React.FC = () => {
 
     fetchCompanies();
   }, [currentUser?.uid]);
+
+  // Déchiffrer les infos entreprise (nom, ville) pour l'affichage de la liste
+  useEffect(() => {
+    if (!companies.length || !canRead) return;
+    const run = async () => {
+      const next: Record<string, Partial<Pick<Company, 'name' | 'city'>>> = {};
+      const functions = getFunctions();
+      const decryptCompany = httpsCallable(functions, 'decryptCompanyDataForStructure');
+      for (const company of companies) {
+        if (isEncrypted(company.name) || isEncrypted(company.city)) {
+          try {
+            const res = await decryptCompany({ companyId: company.id });
+            const dec = (res.data as { decryptedData?: Partial<Company> })?.decryptedData;
+            if (dec && (dec.name != null || dec.city != null)) {
+              next[company.id] = { name: dec.name, city: dec.city };
+            }
+          } catch {
+            // ignorer si déchiffrement échoue
+          }
+        }
+      }
+      if (Object.keys(next).length) setDecryptedCompanies(prev => ({ ...prev, ...next }));
+    };
+    run();
+  }, [companies, canRead]);
 
   const handleOpenDialog = () => {
     setOpenDialog(true);
@@ -701,7 +731,9 @@ const Entreprises: React.FC = () => {
             </Paper>
           </Grid>
         ) : (
-          companies.map((company) => (
+          companies.map((company) => {
+            const displayCompany = { ...company, ...decryptedCompanies[company.id] };
+            return (
             <Grid item xs={12} sm={6} md={4} lg={3} key={company.id}>
               <StyledCard 
                 onClick={() => handleCardClick(company.id)}
@@ -723,7 +755,7 @@ const Entreprises: React.FC = () => {
                     {company.logo ? (
                       <StyledAvatar
                         src={company.logo}
-                        alt={company.name}
+                        alt={displayCompany.name}
                         sx={{ mb: 1 }}
                       />
                     ) : (
@@ -754,10 +786,10 @@ const Entreprises: React.FC = () => {
                         mb: 0.5
                       }}
                     >
-                      {company.name}
+                      {displayCompany.name}
                     </Typography>
                     
-                    {company.city && (
+                    {(displayCompany.city ?? company.city) && (
                       <Typography 
                         variant="body2" 
                         sx={{ 
@@ -766,7 +798,7 @@ const Entreprises: React.FC = () => {
                           fontSize: '0.875rem'
                         }}
                       >
-                        {company.city}
+                        {displayCompany.city ?? company.city}
                       </Typography>
                     )}
                   </Box>
@@ -832,7 +864,8 @@ const Entreprises: React.FC = () => {
                 </Box>
               </StyledCard>
             </Grid>
-          ))
+          );
+          })
         )}
       </Grid>
 

@@ -41,6 +41,7 @@ import { AmbassadorEventForm } from '../components/missions/AmbassadorEventForm'
 import { useAuth } from '../contexts/AuthContext';
 import { getAmbassadorUsers } from '../services/ambassadorService';
 import { registerAmbassadorToSlot } from '../services/missionService';
+import { decryptUsersList } from '../utils/decryptUserUtils';
 
 const appleFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 
@@ -73,7 +74,7 @@ export const AmbassadorEventDetails: React.FC = () => {
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
   const [missionNumber, setMissionNumber] = useState('');
   const [selectedChargeId, setSelectedChargeId] = useState('');
-  const [availableCharges, setAvailableCharges] = useState<Array<{ id: string; displayName: string; photoURL?: string }>>([]);
+  const [availableCharges, setAvailableCharges] = useState<Array<{ id: string; displayName: string; firstName?: string; lastName?: string; photoURL?: string }>>([]);
   const [convertedMissionId, setConvertedMissionId] = useState<string | null>(null);
   const [addAmbassadorDialogOpen, setAddAmbassadorDialogOpen] = useState(false);
   const [availableAmbassadors, setAvailableAmbassadors] = useState<Array<{ id: string; email?: string; displayName?: string }>>([]);
@@ -254,20 +255,28 @@ export const AmbassadorEventDetails: React.FC = () => {
         const searchTitle = missionData.campaignName || missionData.title;
         if (searchTitle) {
           try {
-            let convertedMissionsQuery;
+            let convertedMissionsQuery: ReturnType<typeof query> | null = null;
             if (isContactWithAccess && userData?.companyId) {
               convertedMissionsQuery = query(
                 collection(db, 'missions'),
                 where('title', '==', searchTitle),
                 where('companyId', '==', userData.companyId)
               );
-            } else {
+            } else if (userData?.structureId) {
+              convertedMissionsQuery = query(
+                collection(db, 'missions'),
+                where('title', '==', searchTitle),
+                where('structureId', '==', userData.structureId)
+              );
+            } else if (userData?.status === 'superadmin') {
               convertedMissionsQuery = query(
                 collection(db, 'missions'),
                 where('title', '==', searchTitle)
               );
             }
-            const convertedMissionsSnapshot = await getDocs(convertedMissionsQuery);
+            const convertedMissionsSnapshot = convertedMissionsQuery
+              ? await getDocs(convertedMissionsQuery)
+              : { docs: [] } as { docs: { id: string; data: () => any }[] };
             
             // Trouver une mission qui n'est pas un événement ambassadeur
             for (const convertedMissionDoc of convertedMissionsSnapshot.docs) {
@@ -307,35 +316,37 @@ export const AmbassadorEventDetails: React.FC = () => {
       );
       const applicationsSnapshot = await getDocs(applicationsQuery);
       
-      console.log(`[AmbassadorEventDetails] Recherche candidatures pour eventId: ${eventId}`);
-      console.log(`[AmbassadorEventDetails] Nombre de candidatures trouvées: ${applicationsSnapshot.docs.length}`);
-      
       // Si aucune candidature n'est trouvée pour l'événement original, chercher dans les missions converties
       // On cherche les missions qui ont été converties depuis cet événement (même titre/campaignName)
       let allApplications = [...applicationsSnapshot.docs];
       
       if (applicationsSnapshot.docs.length === 0 && (missionData.campaignName || missionData.title)) {
-        console.log(`[AmbassadorEventDetails] Aucune candidature trouvée, recherche dans les missions converties...`);
         // Chercher les missions converties avec le même titre/campaignName
         // Pour les contacts avec accès, filtrer par companyId
         const searchTitle = missionData.campaignName || missionData.title;
         try {
-          let convertedMissionsQuery;
+          let convertedMissionsQueryForCandidatures: ReturnType<typeof query> | null = null;
           if (isContactWithAccess && userData?.companyId) {
-            convertedMissionsQuery = query(
+            convertedMissionsQueryForCandidatures = query(
               collection(db, 'missions'),
               where('title', '==', searchTitle),
               where('companyId', '==', userData.companyId)
             );
-          } else {
-            convertedMissionsQuery = query(
+          } else if (userData?.structureId) {
+            convertedMissionsQueryForCandidatures = query(
+              collection(db, 'missions'),
+              where('title', '==', searchTitle),
+              where('structureId', '==', userData.structureId)
+            );
+          } else if (userData?.status === 'superadmin') {
+            convertedMissionsQueryForCandidatures = query(
               collection(db, 'missions'),
               where('title', '==', searchTitle)
             );
           }
-          const convertedMissionsSnapshot = await getDocs(convertedMissionsQuery);
-        
-        console.log(`[AmbassadorEventDetails] Missions converties trouvées avec le titre "${searchTitle}": ${convertedMissionsSnapshot.docs.length}`);
+          const convertedMissionsSnapshot = convertedMissionsQueryForCandidatures
+            ? await getDocs(convertedMissionsQueryForCandidatures)
+            : { docs: [] } as { docs: { id: string; data: () => any }[] };
         
         // Pour chaque mission convertie, récupérer les candidatures
         for (const convertedMissionDoc of convertedMissionsSnapshot.docs) {
@@ -351,7 +362,6 @@ export const AmbassadorEventDetails: React.FC = () => {
             where('missionId', '==', convertedMissionId)
           );
           const convertedApplicationsSnapshot = await getDocs(convertedApplicationsQuery);
-          console.log(`[AmbassadorEventDetails] Candidatures trouvées pour mission convertie ${convertedMissionId}: ${convertedApplicationsSnapshot.docs.length}`);
           allApplications = [...allApplications, ...convertedApplicationsSnapshot.docs];
         }
           } catch (error) {
@@ -364,12 +374,6 @@ export const AmbassadorEventDetails: React.FC = () => {
       
       allApplications.forEach(docSnap => {
         const appData = docSnap.data();
-        console.log(`[AmbassadorEventDetails] Candidature trouvée:`, {
-          id: docSnap.id,
-          userId: appData.userId,
-          missionId: appData.missionId,
-          status: appData.status
-        });
         // Si plusieurs candidatures pour le même utilisateur, garder la plus récente
         const existing = applicationsMap.get(appData.userId);
         const appSubmittedAt = appData.submittedAt ? toDate(appData.submittedAt) : new Date();
@@ -385,8 +389,6 @@ export const AmbassadorEventDetails: React.FC = () => {
         }
         userIds.add(appData.userId);
       });
-      
-      console.log(`[AmbassadorEventDetails] Nombre d'utilisateurs uniques: ${userIds.size}`);
 
       // Récupérer aussi le statut de validation du dossier depuis l'utilisateur (pour synchronisation)
       const usersValidationMap = new Map<string, boolean>();
@@ -452,17 +454,42 @@ export const AmbassadorEventDetails: React.FC = () => {
       setStudents(studentList);
 
       const docsRef = collection(db, 'generatedDocuments');
+      const structureIdForDocs = (missionData as any).structureId || userData?.structureId;
       let docsSnap;
-      try {
-        const q = query(
-          docsRef,
-          where('missionId', '==', eventId),
-          orderBy('createdAt', 'desc')
-        );
-        docsSnap = await getDocs(q);
-      } catch {
-        const q = query(docsRef, where('missionId', '==', eventId));
-        docsSnap = await getDocs(q);
+      if (structureIdForDocs) {
+        try {
+          const q = query(
+            docsRef,
+            where('structureId', '==', structureIdForDocs),
+            where('missionId', '==', eventId),
+            orderBy('createdAt', 'desc')
+          );
+          docsSnap = await getDocs(q);
+        } catch {
+          const q = query(
+            docsRef,
+            where('structureId', '==', structureIdForDocs),
+            where('missionId', '==', eventId)
+          );
+          docsSnap = await getDocs(q);
+        }
+      } else {
+        // Sans structureId (ex. superadmin) : requête sans filtre structure
+        if (userData?.status === 'superadmin') {
+          try {
+            const q = query(
+              docsRef,
+              where('missionId', '==', eventId),
+              orderBy('createdAt', 'desc')
+            );
+            docsSnap = await getDocs(q);
+          } catch {
+            const q = query(docsRef, where('missionId', '==', eventId));
+            docsSnap = await getDocs(q);
+          }
+        } else {
+          docsSnap = { docs: [] } as { docs: { id: string; data: () => any }[] };
+        }
       }
       const docs = docsSnap.docs.map((d) => {
         const data = d.data();
@@ -527,14 +554,17 @@ export const AmbassadorEventDetails: React.FC = () => {
     fetchData(); // Recharger les données
   };
 
-  // Charger les ambassadeurs disponibles
+  // Charger les ambassadeurs disponibles (prénoms/noms déchiffrés)
   const loadAvailableAmbassadors = async () => {
     try {
       const structureId = userData?.structureId;
       const ambassadors = await getAmbassadorUsers(structureId);
+      const ambassadorsDecrypted = await decryptUsersList(
+        ambassadors as Array<{ id: string; displayName?: string; firstName?: string; lastName?: string }>
+      );
       // Filtrer les ambassadeurs déjà inscrits
       const registeredIds = new Set(students.map(s => s.id));
-      const available = ambassadors.filter(a => !registeredIds.has(a.id));
+      const available = ambassadorsDecrypted.filter(a => !registeredIds.has(a.id));
       setAvailableAmbassadors(available);
     } catch (error) {
       console.error('Erreur lors du chargement des ambassadeurs:', error);
@@ -580,22 +610,10 @@ export const AmbassadorEventDetails: React.FC = () => {
       // Mettre à jour la mission dans Firestore
       const missionRef = doc(db, 'missions', mission.id);
       try {
-        // Log pour debug
-        console.log('[handleAddAmbassadors] Données de debug:', {
-          userId: userData?.id,
-          userStatus: userData?.status,
-          userCompanyId: userData?.companyId,
-          missionCompanyId: mission.companyId,
-          missionType: mission.type,
-          isContactWithAccess,
-          contactPermissions
-        });
-        
         await updateDoc(missionRef, {
           slots: updatedSlots,
           updatedAt: new Date()
         });
-        console.log('[handleAddAmbassadors] Mission mise à jour avec succès');
       } catch (updateError) {
         console.error('[handleAddAmbassadors] Erreur lors de la mise à jour de la mission:', updateError);
         throw new Error('Impossible de mettre à jour la mission: ' + (updateError as Error).message);
@@ -627,7 +645,6 @@ export const AmbassadorEventDetails: React.FC = () => {
                 status: 'Acceptée',
                 isFromManualAdd: true
               });
-              console.log(`[handleAddAmbassadors] Candidature créée pour ${ambassadorId}`);
             } catch (createError) {
               console.error(`[handleAddAmbassadors] Erreur lors de la création de la candidature pour ${ambassadorId}:`, createError);
               throw new Error('Impossible de créer la candidature: ' + (createError as Error).message);
@@ -640,7 +657,6 @@ export const AmbassadorEventDetails: React.FC = () => {
                 status: 'Acceptée',
                 isFromManualAdd: true
               });
-              console.log(`[handleAddAmbassadors] Candidature mise à jour pour ${ambassadorId}`);
             } catch (updateError) {
               console.error(`[handleAddAmbassadors] Erreur lors de la mise à jour de la candidature pour ${ambassadorId}:`, updateError);
               throw new Error('Impossible de mettre à jour la candidature: ' + (updateError as Error).message);
@@ -711,9 +727,6 @@ export const AmbassadorEventDetails: React.FC = () => {
       
       // Générer le numéro final: YYMMNN
       const nextMissionNumber = `${yearStr}${monthStr}${sequenceStr}`;
-      
-      console.log(`Numéro de mission généré: ${nextMissionNumber} (${currentMonthMissions.length} missions ce mois)`);
-      
       return nextMissionNumber;
     } catch (error) {
       console.error('Erreur lors de la génération du numéro de mission:', error);
@@ -751,37 +764,43 @@ export const AmbassadorEventDetails: React.FC = () => {
         
         const usersSnapshot = await getDocs(usersQuery);
         
-        const charges = usersSnapshot.docs.map(doc => ({
-          id: doc.id,
-          displayName: doc.data().displayName || [doc.data().firstName, doc.data().lastName].filter(Boolean).join(' ') || doc.data().email || 'Inconnu',
-          photoURL: doc.data().photoURL
-        }));
+        const chargesRaw = usersSnapshot.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            displayName: data.displayName || [data.firstName, data.lastName].filter(Boolean).join(' ') || data.email || 'Inconnu',
+            firstName: data.firstName,
+            lastName: data.lastName,
+            photoURL: data.photoURL
+          };
+        });
         
         // Créer l'entrée pour l'utilisateur actuel
         const currentUserCharge = {
           id: userData?.id || '',
           displayName: userData?.displayName || [userData?.firstName, userData?.lastName].filter(Boolean).join(' ') || userData?.email || 'Moi',
+          firstName: userData?.firstName,
+          lastName: userData?.lastName,
           photoURL: userData?.photoURL
         };
 
         // Vérifier si l'utilisateur actuel est déjà dans la liste
-        const currentUserInList = charges.find(c => c.id === userData?.id);
+        const currentUserInList = chargesRaw.find(c => c.id === userData?.id);
         
         // Construire la liste finale : utilisateur actuel en premier, puis les autres
-        let finalChargesList;
+        let finalChargesList: Array<{ id: string; displayName: string; firstName?: string; lastName?: string; photoURL?: string }>;
         if (userData?.id && !currentUserInList) {
-          // Si l'utilisateur actuel n'est pas dans la liste filtrée, l'ajouter en premier
-          finalChargesList = [currentUserCharge, ...charges];
+          finalChargesList = [currentUserCharge, ...chargesRaw];
         } else if (userData?.id && currentUserInList) {
-          // Si l'utilisateur actuel est dans la liste, le mettre en premier
-          const otherCharges = charges.filter(c => c.id !== userData.id);
+          const otherCharges = chargesRaw.filter(c => c.id !== userData.id);
           finalChargesList = [currentUserCharge, ...otherCharges];
         } else {
-          // Si pas d'utilisateur actuel, utiliser la liste telle quelle
-          finalChargesList = charges;
+          finalChargesList = chargesRaw;
         }
         
-        setAvailableCharges(finalChargesList);
+        // Décrypter les prénoms/noms des chargés de mission
+        const finalChargesDecrypted = await decryptUsersList(finalChargesList);
+        setAvailableCharges(finalChargesDecrypted);
         
         // S'assurer que l'utilisateur actuel est toujours sélectionné
         if (userData?.id) {
@@ -806,11 +825,15 @@ export const AmbassadorEventDetails: React.FC = () => {
         // En cas d'erreur, s'assurer que l'utilisateur actuel est quand même sélectionné
         if (userData?.id) {
           setSelectedChargeId(userData.id);
-          setAvailableCharges([{
+          const fallback = [{
             id: userData.id,
             displayName: userData.displayName || [userData.firstName, userData.lastName].filter(Boolean).join(' ') || userData.email || 'Moi',
+            firstName: userData.firstName,
+            lastName: userData.lastName,
             photoURL: userData.photoURL
-          }]);
+          }];
+          const decrypted = await decryptUsersList(fallback);
+          setAvailableCharges(decrypted);
         }
       }
     };
@@ -887,7 +910,6 @@ export const AmbassadorEventDetails: React.FC = () => {
         where('status', 'in', ['Acceptée', 'En attente'])
       );
       const applicationsSnapshot = await getDocs(applicationsQuery);
-      console.log(`[Conversion] Nombre de candidatures trouvées (Acceptée/En attente): ${applicationsSnapshot.docs.length}`);
       
       const acceptedApps = applicationsSnapshot.docs.filter(doc => doc.data().status === 'Acceptée');
       const acceptedStudentIds = acceptedApps.map(doc => doc.data().userId);
@@ -1044,12 +1066,9 @@ export const AmbassadorEventDetails: React.FC = () => {
 
       // Créer de nouvelles candidatures pour la nouvelle mission (copies des candidatures acceptées et en attente)
       // Ne pas modifier les candidatures originales pour qu'elles restent liées à l'événement ambassadeur
-      console.log(`[Conversion] Début de la copie des ${applicationsSnapshot.docs.length} candidatures`);
       for (const appDoc of applicationsSnapshot.docs) {
         const appData = appDoc.data();
-        console.log(`[Conversion] Traitement candidature ${appDoc.id}, statut: ${appData.status}`);
         if (appData.status === 'Acceptée' || appData.status === 'En attente') {
-          console.log(`[Conversion] Copie de la candidature pour user ${appData.userId} (statut: ${appData.status})`);
           // Créer une nouvelle candidature pour la nouvelle mission
           await addDoc(collection(db, 'applications'), {
             missionId: newMissionId,

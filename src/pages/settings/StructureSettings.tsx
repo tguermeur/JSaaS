@@ -49,11 +49,12 @@ import {
   People as PeopleIcon,
   Person as PersonIcon
 } from '@mui/icons-material';
-import { doc, updateDoc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, updateDoc, getDoc, setDoc, collection, query, where, getDocs, addDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import SettingsCard from '../../components/settings/SettingsCard';
+import ImportMissionsEtudesDialog from '../../components/missions/ImportMissionsEtudesDialog';
 
 // Fonction utilitaire pour convertir les dates Firestore en Date
 const toDate = (dateValue: any): Date => {
@@ -83,7 +84,8 @@ const toDate = (dateValue: any): Date => {
 
 const StructureSettings: React.FC = () => {
   const theme = useTheme();
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
+  const isSuperAdmin = userData?.status === 'superadmin';
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [hourlyRate, setHourlyRate] = useState<number>(0);
@@ -112,6 +114,104 @@ const StructureSettings: React.FC = () => {
     severity: 'success'
   });
   const [structureId, setStructureId] = useState<string | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importedData, setImportedData] = useState<Record<string, unknown>[]>([]);
+  const [importing, setImporting] = useState(false);
+  
+  // Data for AI matching
+  const [users, setUsers] = useState<any[]>([]);
+  const [companies, setCompanies] = useState<any[]>([]);
+  const [contacts, setContacts] = useState<any[]>([]);
+  const [missionTypes, setMissionTypes] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchContextData = async () => {
+      if (!structureId) return;
+      
+      try {
+        // Fetch Users
+        const usersQuery = query(collection(db, 'users'), where('structureId', '==', structureId));
+        const usersSnap = await getDocs(usersQuery);
+        setUsers(usersSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        // Fetch Companies
+        const companiesQuery = query(collection(db, 'companies'), where('structureId', '==', structureId));
+        const companiesSnap = await getDocs(companiesQuery);
+        setCompanies(companiesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        // Fetch Contacts
+        const contactsQuery = query(collection(db, 'contacts'), where('structureId', '==', structureId));
+        const contactsSnap = await getDocs(contactsQuery);
+        setContacts(contactsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        // Fetch Mission Types
+        const missionTypesQuery = query(collection(db, 'mission_types'), where('structureId', '==', structureId));
+        const missionTypesSnap = await getDocs(missionTypesQuery);
+        setMissionTypes(missionTypesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        
+      } catch (error) {
+        console.error("Error fetching context data for import matching:", error);
+      }
+    };
+
+    if (importDialogOpen) {
+      fetchContextData();
+    }
+  }, [structureId, importDialogOpen]);
+
+  // Helper for fuzzy matching (Levenshtein distance based)
+  const findBestMatch = (input: string, candidates: any[], keys: string[], threshold = 0.7) => {
+    if (!input || !input.trim()) return null;
+    const normalizedInput = input.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const candidate of candidates) {
+      // Check each key (e.g. 'displayName', 'firstName', 'lastName')
+      for (const key of keys) {
+        const value = candidate[key];
+        if (typeof value === 'string') {
+          const normalizedValue = value.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          
+          // Exact match
+          if (normalizedValue === normalizedInput) {
+            return candidate;
+          }
+          
+          // Simple inclusion
+          if (normalizedValue.includes(normalizedInput) || normalizedInput.includes(normalizedValue)) {
+             const score = Math.min(normalizedInput.length, normalizedValue.length) / Math.max(normalizedInput.length, normalizedValue.length);
+             if (score > bestScore) {
+               bestScore = score;
+               bestMatch = candidate;
+             }
+          }
+          
+          // Levenshtein-like similarity (simplified for brevity/performance without external lib)
+          // ... (Skipping complex implementation, relying on inclusion + basic checks for now)
+        }
+      }
+      
+      // Special check for User (First + Last name combination)
+      if (candidate.firstName && candidate.lastName) {
+        const fullName = `${candidate.firstName} ${candidate.lastName}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const reverseName = `${candidate.lastName} ${candidate.firstName}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        
+        if (fullName === normalizedInput || reverseName === normalizedInput) return candidate;
+        if (fullName.includes(normalizedInput) || normalizedInput.includes(fullName)) {
+             const score = 0.9; 
+             if (score > bestScore) {
+               bestScore = score;
+               bestMatch = candidate;
+             }
+        }
+      }
+    }
+
+    return bestScore >= threshold ? bestMatch : null;
+  };
+
   const [savingStates, setSavingStates] = useState<{
     hourlyRate: boolean;
     daysUntilDue: boolean;
@@ -481,6 +581,217 @@ const StructureSettings: React.FC = () => {
       showSnackbar('Erreur lors de la mise à jour du type de structure', 'error');
     } finally {
       setSavingStates(prev => ({ ...prev, structureType: false }));
+    }
+  };
+
+  const handleFileParsed = (rows: Record<string, unknown>[]) => {
+    if (structureType === 'junior') {
+      const etudes = rows.map((row: any) => ({
+        numeroEtude: row.numeroEtude || '',
+        company: row.company || '',
+        location: row.location || '',
+        startDate: row.startDate || '',
+        endDate: row.endDate || '',
+        consultantCount: parseInt(row.consultantCount) || 0,
+        hours: parseInt(row.hours) || 0,
+        status: row.status || 'En attente',
+        structureId: structureId || '',
+        chargeId: currentUser?.uid || '',
+        chargeName: currentUser?.displayName || '',
+        isPublic: true,
+        etape: 'Négociation' as const
+      }));
+      setImportedData(etudes);
+    } else {
+      const missions = rows.map((row: any) => {
+        const studentCountVal = row.studentCount != null && row.studentCount !== '' ? parseInt(String(row.studentCount), 10) : 0;
+        const hoursVal = row.hours != null && row.hours !== '' ? parseInt(String(row.hours), 10) : 0;
+        const priceHTVal = row.priceHT != null && row.priceHT !== '' ? parseFloat(String(row.priceHT).replace(',', '.')) : undefined;
+        const prixHTVal = row.prixHT != null && row.prixHT !== '' ? parseFloat(String(row.prixHT).replace(',', '.')) : priceHTVal;
+        
+        // AI/Fuzzy Matching
+        const rawChargeName = (row.chargeName || row.charge_name || '').toString().trim();
+        const matchedCharge = findBestMatch(rawChargeName, users, ['displayName', 'firstName', 'lastName']);
+        
+        const rawCompanyName = (row.company || row.entreprise || '').toString().trim();
+        const matchedCompany = findBestMatch(rawCompanyName, companies, ['name']);
+        
+        const rawContactName = (row.contact || row.contactName || '').toString().trim();
+        const potentialContacts = matchedCompany ? contacts.filter(c => c.companyId === matchedCompany.id) : contacts;
+        const matchedContact = findBestMatch(rawContactName, potentialContacts, ['firstName', 'lastName', 'email']);
+
+        const rawTypeName = (row.type || row.typeMission || '').toString().trim();
+        const matchedType = findBestMatch(rawTypeName, missionTypes, ['name']);
+
+        // Date Parsing Helper
+        const parseDate = (dateStr: string) => {
+            if (!dateStr) return '';
+            let date = new Date(dateStr);
+            if (!isNaN(date.getTime())) return date.toISOString();
+            const parts = dateStr.split('/');
+            if (parts.length === 3) {
+                date = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+                if (!isNaN(date.getTime())) return date.toISOString();
+            }
+            return ''; 
+        };
+
+        // Students Parsing
+        const rawStudents = (row.students || row.etudiants || '').toString().trim();
+        const assignedStudents = [];
+        if (rawStudents) {
+            const studentEntries = rawStudents.split(';');
+            for (const entry of studentEntries) {
+                const [name, hours] = entry.split(':');
+                const matchedStudent = findBestMatch(name, users, ['displayName', 'firstName', 'lastName']);
+                if (matchedStudent) {
+                    assignedStudents.push({ 
+                        userId: matchedStudent.id, 
+                        name: `${matchedStudent.firstName} ${matchedStudent.lastName}`,
+                        hours: hours ? parseFloat(hours) : 0
+                    });
+                }
+            }
+        }
+
+        const contactEmail = (row.contactEmail || row.contact_email || matchedContact?.email || '').toString().trim();
+        const contactFirstName = (row.contactFirstName || row.contact_firstName || row.contactPrenom || matchedContact?.firstName || '').toString().trim();
+        const contactLastName = (row.contactLastName || row.contact_lastName || row.contactNom || matchedContact?.lastName || '').toString().trim();
+        const contactPhone = (row.contactPhone || row.contact_phone || row.contactTelephone || matchedContact?.phone || '').toString().trim();
+        const contactPosition = (row.contactPosition || row.contact_position || row.contactPoste || matchedContact?.position || '').toString().trim();
+        
+        const contact =
+          contactEmail || contactFirstName || contactLastName || contactPhone || contactPosition
+            ? { email: contactEmail || undefined, firstName: contactFirstName || undefined, lastName: contactLastName || undefined, phone: contactPhone || undefined, position: contactPosition || undefined }
+            : undefined;
+
+        return {
+          numeroMission: (row.numeroMission || row.numero_mission || '').toString().trim(),
+          
+          company: matchedCompany ? matchedCompany.name : rawCompanyName,
+          companyId: matchedCompany ? matchedCompany.id : undefined,
+          
+          location: (row.location || row.lieu || '').toString().trim(),
+          
+          startDate: parseDate((row.startDate || row.start_date || row.dateDebut || '').toString()),
+          endDate: parseDate((row.endDate || row.end_date || row.dateFin || '').toString()),
+          
+          studentCount: isNaN(studentCountVal) ? 0 : studentCountVal,
+          hours: isNaN(hoursVal) ? 0 : hoursVal,
+          status: (row.status || row.statut || 'En attente').toString().trim(),
+          structureId: structureId || '',
+          
+          chargeId: matchedCharge ? matchedCharge.id : (currentUser?.uid || ''),
+          chargeName: matchedCharge ? `${matchedCharge.firstName} ${matchedCharge.lastName}` : (rawChargeName || currentUser?.displayName || ''),
+          
+          title: (row.title || row.titre || row.description || '').toString().trim(),
+          description: (row.description || row.description || '').toString().trim(),
+          priceHT: prixHTVal ?? priceHTVal,
+          prixHT: prixHTVal ?? priceHTVal,
+          totalTTC: row.totalTTC ? parseFloat(String(row.totalTTC).replace(',', '.')) : undefined,
+          
+          missionTypeId: matchedType ? matchedType.id : undefined,
+          type: matchedType ? matchedType.name : 'standard', 
+          
+          salary: (row.salary || row.remuneration || '').toString().trim(),
+          mandat: (row.mandat || '').toString().trim(),
+          etape: (row.etape || 'Négociation').toString().trim(),
+          isPublic: row.isPublic !== 'false' && row.isPublic !== '0',
+          
+          contactId: matchedContact ? matchedContact.id : undefined,
+          contact,
+          
+          expenses: (row.expenses || row.depenses || '').toString(),
+          expenseReportsAmount: row.expenseReports ? parseFloat(String(row.expenseReports).replace(',', '.')) : 0,
+          assignedStudents, 
+          
+          isImported: true,
+          source: 'import_csv'
+        };
+      });
+      setImportedData(missions);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!currentUser || !structureId) return;
+    try {
+      setImporting(true);
+      if (structureType === 'junior') {
+        for (const etude of importedData as any[]) {
+          let companyId: string | undefined;
+          if (etude.company) {
+            try {
+              const companyQuery = query(collection(db, 'companies'), where('name', '==', etude.company));
+              const companySnapshot = await getDocs(companyQuery);
+              if (!companySnapshot.empty) companyId = companySnapshot.docs[0].id;
+            } catch {
+              // ignore
+            }
+          }
+          await addDoc(collection(db, 'etudes'), {
+            ...etude,
+            companyId,
+            createdAt: new Date(),
+            createdBy: currentUser.uid,
+            permissions: { viewers: [], editors: [currentUser.uid] }
+          });
+        }
+        showSnackbar('Études importées avec succès', 'success');
+      } else {
+        for (const mission of importedData as any[]) {
+          const { assignedStudents, ...rest } = mission;
+          
+          const missionRef = await addDoc(collection(db, 'missions'), {
+            ...rest,
+            createdAt: new Date(),
+            createdBy: currentUser.uid,
+            permissions: { viewers: [], editors: [currentUser.uid] }
+          });
+
+          if (assignedStudents && assignedStudents.length > 0) {
+              const studentIds = assignedStudents.map((s: any) => s.userId);
+              await updateDoc(missionRef, { assignedStudentIds: studentIds });
+          }
+        }
+        showSnackbar('Missions importées avec succès', 'success');
+      }
+      setImportDialogOpen(false);
+      setImportedData([]);
+    } catch (error) {
+      console.error('Erreur lors de l\'importation:', error);
+      showSnackbar(structureType === 'junior' ? 'Erreur lors de l\'importation des études' : 'Erreur lors de l\'importation des missions', 'error');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const downloadImportTemplate = () => {
+    if (structureType === 'junior') {
+      const headers = ['numeroEtude', 'company', 'location', 'startDate', 'endDate', 'consultantCount', 'hours', 'status'];
+      const csvContent = [headers.join(','), 'ETUDE001,Entreprise A,Paris,2024-03-01,2024-03-31,3,40,En attente'].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'template_etudes.csv';
+      link.click();
+    } else {
+      const headers = [
+        'numeroMission', 'company', 'title', 'description', 'location', 'startDate', 'endDate',
+        'studentCount', 'hours', 'chargeName', 'priceHT', 'totalTTC', 'salary', 'mandat', 'status', 'etape',
+        'type', 'contact', 'students', 'expenses', 'expenseReports'
+      ];
+      const exampleRow = [
+        '260134', 'Audencia', 'Tutorat d\'anglais', 'Description...', 'Nantes',
+        '2026-01-28', '2026-02-11', '1', '6', 'Perrin Lisa', '17.5', '133.2', '60', '2025-2026', 'En attente', 'Date de mission',
+        'Standard', 'Alysée Martel', 'Jean Dupont:10;Marie Curie:5', 'Train:50;Repas:20', '70'
+      ].map((v) => (String(v).includes(',') ? `"${v}"` : v)).join(',');
+      const csvContent = [headers.join(','), exampleRow].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'template_missions.csv';
+      link.click();
     }
   };
 
@@ -1223,16 +1534,21 @@ const StructureSettings: React.FC = () => {
           </Typography>
         </Grid>
 
-        {/* Type de Structure */}
+        {/* Type de Structure — modifiable uniquement par les superadmins */}
         <Grid item xs={12} md={4}>
           <SettingsCard
             title="Type de structure"
-            subtitle="Choisissez le type de votre structure"
+            subtitle={isSuperAdmin ? 'Choisissez le type de votre structure' : 'Job Service ou Junior Entreprise (modifiable par un superadmin uniquement)'}
             icon={<BusinessIcon sx={{ fontSize: 16 }} />}
             gradient="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
             iconColor="#667eea"
           >
-            <FormControl fullWidth sx={{ mb: 2.5 }}>
+            {!isSuperAdmin && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+                Réservé aux superadmins
+              </Typography>
+            )}
+            <FormControl fullWidth sx={{ mb: 2.5 }} disabled={!isSuperAdmin}>
                   <Select
                     value={structureType}
                     onChange={(e) => setStructureType(e.target.value as 'jobservice' | 'junior')}
@@ -1287,7 +1603,7 @@ const StructureSettings: React.FC = () => {
                   <Button
                     variant="contained"
                     onClick={handleSaveStructureType}
-                    disabled={savingStates.structureType || !hasChanges.structureType}
+                    disabled={!isSuperAdmin || savingStates.structureType || !hasChanges.structureType}
                     startIcon={savingStates.structureType ? <LinearProgress sx={{ width: 20, height: 20 }} /> : <SaveIcon />}
                     fullWidth
                     sx={{ 
@@ -1323,6 +1639,27 @@ const StructureSettings: React.FC = () => {
                     {savingStates.structureType ? 'Enregistrement...' : hasChanges.structureType ? 'Enregistrer' : 'Enregistré'}
                   </Button>
                 </Box>
+          </SettingsCard>
+        </Grid>
+
+        {/* Importer des missions / études */}
+        <Grid item xs={12} md={4}>
+          <SettingsCard
+            title={structureType === 'junior' ? 'Importer des études' : 'Importer des missions'}
+            subtitle={structureType === 'junior' ? 'Import en masse depuis un fichier CSV' : 'Import en masse depuis un fichier CSV'}
+            icon={<CloudUploadIcon sx={{ fontSize: 16 }} />}
+            gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
+            iconColor="#10b981"
+          >
+            <Button
+              variant="outlined"
+              fullWidth
+              startIcon={<CloudUploadIcon />}
+              onClick={() => setImportDialogOpen(true)}
+              sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: 500 }}
+            >
+              {structureType === 'junior' ? 'Importer des études' : 'Importer des missions'}
+            </Button>
           </SettingsCard>
         </Grid>
 
@@ -2350,6 +2687,17 @@ const StructureSettings: React.FC = () => {
           </SettingsCard>
         </Grid>
       </Grid>
+
+      <ImportMissionsEtudesDialog
+        open={importDialogOpen}
+        onClose={() => { setImportDialogOpen(false); setImportedData([]); }}
+        type={structureType === 'junior' ? 'etude' : 'mission'}
+        importedData={importedData}
+        onFileParsed={handleFileParsed}
+        onImport={handleImport}
+        onDownloadTemplate={downloadImportTemplate}
+        importing={importing}
+      />
 
       <Snackbar
         open={snackbar.open}

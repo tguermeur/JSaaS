@@ -450,6 +450,7 @@ const Organization = () => {
       await updateDoc(doc(db, 'users', memberToRemove.id), {
         status: 'etudiant', // Passer de membre/admin à etudiant au lieu de supprimer
         poles: [], // On supprime quand même les pôles
+        poleIds: [], // Pour les règles Firestore (accès par pôle)
         bureauRole: null // Et le rôle au bureau
       });
 
@@ -635,12 +636,7 @@ const Organization = () => {
 
   const fetchAvailableUsers = async () => {
     try {
-      if (!currentUser) {
-        console.log('Pas d\'utilisateur connecté');
-        return;
-      }
-
-      console.log('Début de fetchAvailableUsers');
+      if (!currentUser) return;
 
       // 1. Récupérer les données de l'utilisateur courant
       const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
@@ -681,11 +677,7 @@ const Organization = () => {
         where('ecole', '==', structureData.ecole)
       );
 
-      console.log('Requête Firestore créée');
-
       const usersSnapshot = await getDocs(usersQuery);
-      console.log('Requête exécutée avec succès');
-      console.log('Nombre d\'utilisateurs trouvés:', usersSnapshot.size);
 
       const rawUsers = usersSnapshot.docs.map(doc => {
         const userData = doc.data();
@@ -702,37 +694,19 @@ const Organization = () => {
           status: userData.status || ''
         };
       });
-      
-      console.log('Utilisateurs bruts avant filtrage:', rawUsers);
 
       const users = rawUsers.filter(user => {
-        // Exclure l'utilisateur courant
         const notCurrentUser = user.id !== currentUser.uid;
-        // Inclure seulement les utilisateurs sans structure ou avec structure mais pas membre
         const hasNoStructure = !user.structureId;
         const hasSameStructureButNotMember = (
-          user.structureId === userData.structureId && 
+          user.structureId === userData.structureId &&
           (user.status === 'etudiant' || (!['membre', 'admin'].includes(user.status || '')))
         );
-        
-        const shouldInclude = notCurrentUser && (hasNoStructure || hasSameStructureButNotMember);
-        
-        console.log(`Utilisateur ${user.displayName} (${user.id}):`);
-        console.log(` - Est utilisateur courant: ${!notCurrentUser}`);
-        console.log(` - N'a pas de structure: ${hasNoStructure}`);
-        console.log(` - Même structure mais pas membre: ${hasSameStructureButNotMember}`);
-        console.log(` - Inclus: ${shouldInclude}`);
-        
-        return shouldInclude;
+        return notCurrentUser && (hasNoStructure || hasSameStructureButNotMember);
       });
-
-      console.log('Utilisateurs filtrés:', users);
-      console.log('Nombre d\'utilisateurs après filtrage:', users.length);
 
       const decrypted = await decryptUsersList(users);
       setAvailableUsers(decrypted);
-      console.log('État availableUsers mis à jour');
-
     } catch (error) {
       console.error('Erreur détaillée dans fetchAvailableUsers:', error);
       setSnackbar({
@@ -743,16 +717,9 @@ const Organization = () => {
     }
   };
 
-  // Dans le useEffect, ajoutons un appel explicite
   useEffect(() => {
-    console.log('UseEffect déclenché - Chargement des utilisateurs');
     fetchAvailableUsers();
   }, [currentUser]);
-
-  // Ajouter un useEffect pour surveiller les changements dans availableUsers
-  useEffect(() => {
-    console.log('Mise à jour de availableUsers:', availableUsers);
-  }, [availableUsers]);
 
   // Gérer le changement de rôle
   const handleChangeRole = (user: User) => {
@@ -938,7 +905,8 @@ const Organization = () => {
         }));
 
       await updateDoc(doc(db, 'users', selectedUserForPole.id), {
-        poles: userPoles
+        poles: userPoles,
+        poleIds: userPoles.map((p: { poleId: string }) => p.poleId)
       });
 
       // Mise à jour de l'état local
@@ -1021,6 +989,7 @@ const Organization = () => {
       // Mettre à jour l'utilisateur avec les pôles sélectionnés et l'ajouter à la structure
       await updateDoc(doc(db, 'users', selectedUserId), {
         poles: selectedPolesList,
+        poleIds: selectedPolesList.map((p: { poleId: string }) => p.poleId),
         structureId: structureId,
         status: 'membre',
         bureauRole: selectedBureauRole || null,
@@ -1233,9 +1202,7 @@ const Organization = () => {
                   Sélection des pôles
                 </Typography>
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  {(() => {
-                    console.log('[Organization] Pôles dans le sélecteur d\'ajout membre:', poles);
-                    return poles.map((pole) => (
+                  {poles.map((pole) => (
                     <Paper 
                       key={pole.id} 
                       variant="outlined" 
@@ -1319,8 +1286,7 @@ const Organization = () => {
                         )}
                       </Box>
                     </Paper>
-                  ));
-                  })()}
+                  ))}
                 </Box>
               </>
             )}
@@ -1836,6 +1802,7 @@ const Organization = () => {
 
       await updateDoc(userRef, {
         poles: updatedPoles,
+        poleIds: updatedPoles.map((p: { poleId: string }) => p.poleId),
         mandat: selectedMandat || null
       });
 
@@ -3889,9 +3856,7 @@ const Organization = () => {
               Sélection des pôles
             </Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {(() => {
-              console.log('[Organization] Pôles dans le sélecteur d\'édition pôles:', poles);
-              return poles.map((pole) => (
+            {poles.map((pole) => (
               <Paper 
                 key={pole.id} 
                 variant="outlined" 
@@ -3988,8 +3953,7 @@ const Organization = () => {
                   )}
                 </Box>
               </Paper>
-            ));
-            })()}
+            ))}
             </Box>
           </Box>
         </DialogContent>

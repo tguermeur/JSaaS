@@ -48,6 +48,7 @@ import { useSnackbar } from 'notistack';
 import { FormControl, InputLabel, Select, MenuItem } from '@mui/material';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
+import { decryptUserDisplayData } from '../utils/decryptUserUtils';
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -1497,17 +1498,21 @@ const Tresorerie: React.FC = () => {
             // Récupérer les informations de l'utilisateur
             const userDoc = await getDoc(doc(db, 'users', applicationData.userId));
             const userDataFromDB = userDoc.data();
-            
+            const decryptedDisplay = await decryptUserDisplayData(applicationData.userId, {
+              displayName: userDataFromDB?.displayName,
+              firstName: userDataFromDB?.firstName,
+              lastName: userDataFromDB?.lastName
+            });
             const extendedUserData: ExtendedUserData = {
-              firstName: userDataFromDB?.firstName || '',
-              lastName: userDataFromDB?.lastName || '',
+              firstName: decryptedDisplay.firstName || '',
+              lastName: decryptedDisplay.lastName || '',
               socialSecurityNumber: userDataFromDB?.socialSecurityNumber || '',
               birthPlace: userDataFromDB?.birthPlace || '',
               birthPostalCode: userDataFromDB?.birthPostalCode || '',
               nationality: userDataFromDB?.nationality || '',
               address: userDataFromDB?.address || '',
               email: userDataFromDB?.email || '',
-              displayName: userDataFromDB?.displayName || 'Utilisateur inconnu'
+              displayName: decryptedDisplay.displayName || 'Utilisateur inconnu'
             };
 
             // Récupérer les heures de travail

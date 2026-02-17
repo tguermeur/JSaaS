@@ -33,8 +33,6 @@ import {
 } from '@mui/material';
 import {
   Add as AddIcon,
-  CloudUpload as CloudUploadIcon,
-  Download as DownloadIcon,
   Edit as EditIcon,
   Save as SaveIcon,
   Cancel as CancelIcon,
@@ -46,7 +44,6 @@ import {
   ArrowDownward as ArrowDownwardIcon,
   WorkHistory as WorkHistoryIcon
 } from '@mui/icons-material';
-import Papa from 'papaparse';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase/config';
 import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setDoc, deleteDoc, orderBy, limit } from 'firebase/firestore';
@@ -55,6 +52,7 @@ import MissionForm, { MissionFormData } from '../components/missions/MissionForm
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
+import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 
 // Animations
 const fadeIn = keyframes`
@@ -148,16 +146,12 @@ const Etude: React.FC = () => {
   const [etudes, setEtudes] = useState<EtudeData[]>([]);
   const [filteredEtudes, setFilteredEtudes] = useState<EtudeData[]>([]);
   const [favoriteEtudes, setFavoriteEtudes] = useState<string[]>([]);
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [importedData, setImportedData] = useState<EtudeData[]>([]);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
     severity: 'success' as 'success' | 'error'
   });
-  const [editingRow, setEditingRow] = useState<number | null>(null);
-  const [editedData, setEditedData] = useState<EtudeData | null>(null);
   const [loading, setLoading] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [etudeToEdit, setEtudeToEdit] = useState<EtudeData | null>(null);
@@ -218,14 +212,22 @@ const Etude: React.FC = () => {
         );
 
         const usersSnapshot = await getDocs(usersQuery);
-        const chargesList = usersSnapshot.docs.map(doc => {
+        const chargesListRaw = usersSnapshot.docs.map(doc => {
           const userData = doc.data() as UserData;
           return {
             id: doc.id,
             displayName: userData.displayName || 'Utilisateur sans nom',
+            firstName: userData.firstName,
+            lastName: userData.lastName,
             photoURL: userData.photoURL
           };
         });
+        const chargesListDecrypted = await decryptUsersList(chargesListRaw);
+        const chargesList = chargesListDecrypted.map(u => ({
+          id: u.id,
+          displayName: u.displayName || 'Utilisateur sans nom',
+          photoURL: (chargesListRaw.find(r => r.id === u.id) as any)?.photoURL
+        }));
         setAvailableCharges(chargesList);
 
         const etudesRef = collection(db, 'etudes');
@@ -416,118 +418,9 @@ const Etude: React.FC = () => {
     });
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    Papa.parse(file, {
-      header: true,
-      complete: (results) => {
-        const etudes = results.data.map((row: any) => ({
-          numeroEtude: row.numeroEtude || '',
-          company: row.company || '',
-          location: row.location || '',
-          startDate: row.startDate || '',
-          endDate: row.endDate || '',
-          consultantCount: parseInt(row.consultantCount) || 0,
-          hours: parseInt(row.hours) || 0,
-          status: row.status || 'En attente',
-          structureId: userStructureId || '',
-          chargeId: currentUser?.uid || '',
-          chargeName: currentUser?.displayName || '',
-          isPublic: true,
-          etape: 'Négociation' as const
-        }));
-        setImportedData(etudes);
-      },
-      error: (error) => {
-        console.error('Erreur lors du parsing du fichier:', error);
-        setSnackbar({
-          open: true,
-          message: 'Erreur lors de la lecture du fichier',
-          severity: 'error',
-        });
-      }
-    });
-  };
-
   const handleEditRow = (etude: EtudeData) => {
     setEtudeToEdit(etude);
     setEditDialogOpen(true);
-  };
-
-  const handleImportEtude = async () => {
-    if (!currentUser || !userStructureId) return;
-
-    try {
-      for (const etude of importedData) {
-        // Récupérer l'ID de l'entreprise si elle existe
-        let companyId: string | undefined;
-        if (etude.company) {
-          try {
-            const companiesRef = collection(db, 'companies');
-            const companyQuery = query(companiesRef, where('name', '==', etude.company));
-            const companySnapshot = await getDocs(companyQuery);
-            
-            if (!companySnapshot.empty) {
-              companyId = companySnapshot.docs[0].id;
-            }
-          } catch (error) {
-            console.warn('Erreur lors de la récupération de l\'ID de l\'entreprise:', error);
-          }
-        }
-
-        await addDoc(collection(db, 'etudes'), {
-          ...etude,
-          companyId: companyId,
-          createdAt: new Date(),
-          createdBy: currentUser.uid,
-          permissions: {
-            viewers: [],
-            editors: [currentUser.uid]
-          }
-        });
-      }
-
-      setImportDialogOpen(false);
-      setImportedData([]);
-      setSnackbar({
-        open: true,
-        message: 'Études importées avec succès',
-        severity: 'success',
-      });
-    } catch (error) {
-      console.error('Erreur lors de l\'importation:', error);
-      setSnackbar({
-        open: true,
-        message: 'Erreur lors de l\'importation des études',
-        severity: 'error',
-      });
-    }
-  };
-
-  const downloadTemplate = () => {
-    const headers = [
-      'numeroEtude',
-      'company',
-      'location',
-      'startDate',
-      'endDate',
-      'consultantCount',
-      'hours',
-      'status'
-    ];
-
-    const csvContent = [
-      headers.join(','),
-      'ETUDE001,Entreprise A,Paris,2024-03-01,2024-03-31,3,40,En attente'
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'template_etudes.csv';
-    link.click();
   };
 
   const handleSaveEdit = async () => {
@@ -577,7 +470,7 @@ const Etude: React.FC = () => {
         const userDoc = await getDoc(doc(db, 'users', updatedData.chargeId));
         if (userDoc.exists()) {
           const userData = userDoc.data();
-          updatedData.chargeName = userData.displayName || '';
+          updatedData.chargeName = await getDecryptedUserDisplayName(updatedData.chargeId, userData || null);
           updatedData.chargePhotoURL = userData.photoURL || null;
         }
       }
@@ -1067,173 +960,6 @@ const Etude: React.FC = () => {
           </Table>
         </TableContainer>
       )}
-
-      <Dialog
-        open={importDialogOpen}
-        onClose={() => setImportDialogOpen(false)}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>Importer des études</DialogTitle>
-        <DialogContent>
-          <Box sx={{ p: 2 }}>
-            <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center' }}>
-              <Button
-                variant="outlined"
-                startIcon={<DownloadIcon />}
-                onClick={downloadTemplate}
-              >
-                Télécharger le modèle CSV
-              </Button>
-              <Typography variant="body2" color="textSecondary">
-                ou
-              </Typography>
-              <input
-                type="file"
-                onChange={handleFileUpload}
-                accept=".csv"
-                style={{ flexGrow: 1 }}
-              />
-            </Box>
-            
-            {importedData.length > 0 && (
-              <TableContainer component={Paper} sx={{ mt: 2 }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Numéro</TableCell>
-                      <TableCell>Nom CP</TableCell>
-                      <TableCell>Date</TableCell>
-                      <TableCell>Lieu</TableCell>
-                      <TableCell>Entreprise</TableCell>
-                      <TableCell>Prix HT</TableCell>
-                      <TableCell>Actions</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {importedData.map((data, index) => (
-                      <TableRow key={index}>
-                        {editingRow === index ? (
-                          <>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.numeroEtude || ''}
-                                onChange={(e) => handleEditField('numeroEtude', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.nomConsultant || ''}
-                                onChange={(e) => handleEditField('nomConsultant', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                type="date"
-                                value={editedData?.date || ''}
-                                onChange={(e) => handleEditField('date', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.lieu || ''}
-                                onChange={(e) => handleEditField('lieu', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.entreprise || ''}
-                                onChange={(e) => handleEditField('entreprise', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                type="number"
-                                value={editedData?.prixHT || 0}
-                                onChange={(e) => handleEditField('prixHT', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Box sx={{ display: 'flex', gap: 1 }}>
-                                <Tooltip title="Sauvegarder">
-                                  <IconButton
-                                    size="small"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleSaveEdit();
-                                    }}
-                                    color="primary"
-                                  >
-                                    <SaveIcon />
-                                  </IconButton>
-                                </Tooltip>
-                                <Tooltip title="Annuler">
-                                  <IconButton
-                                    size="small"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleCancelEdit();
-                                    }}
-                                    color="error"
-                                  >
-                                    <CancelIcon />
-                                  </IconButton>
-                                </Tooltip>
-                              </Box>
-                            </TableCell>
-                          </>
-                        ) : (
-                          <>
-                            <TableCell>{data.numeroEtude}</TableCell>
-                            <TableCell>{data.nomConsultant}</TableCell>
-                            <TableCell>{data.date}</TableCell>
-                            <TableCell>{data.lieu}</TableCell>
-                            <TableCell>{data.entreprise}</TableCell>
-                            <TableCell>{`${data.prixHT?.toFixed(2) || '0.00'} €`}</TableCell>
-                            <TableCell>
-                              <Box sx={{ display: 'flex', gap: 1 }}>
-                                <Tooltip title="Modifier">
-                                  <IconButton
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleEditRow(data);
-                                    }}
-                                  >
-                                    <EditIcon />
-                                  </IconButton>
-                                </Tooltip>
-                                <Tooltip title="Importer">
-                                  <IconButton
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleImportEtude();
-                                    }}
-                                  >
-                                    <SaveIcon />
-                                  </IconButton>
-                                </Tooltip>
-                              </Box>
-                            </TableCell>
-                          </>
-                        )}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            )}
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setImportDialogOpen(false)}>Fermer</Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog
         open={editDialogOpen}

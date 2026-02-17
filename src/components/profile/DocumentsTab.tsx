@@ -118,9 +118,6 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
   
   // Debug: Surveiller les changements de viewerUrl et viewerOpen
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:107',message:'useEffect viewerUrl/viewerOpen changé',data:{viewerUrl:viewerUrl?.substring(0,50)+'...'||'null',viewerOpen,viewerLoading,viewerError},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-    // #endregion
   }, [viewerUrl, viewerOpen, viewerLoading, viewerError]);
   
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2402,9 +2399,6 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
       <Dialog
         open={viewerOpen}
         onClose={() => {
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2645',message:'Dialog onClose appelé',data:{viewerUrl:viewerUrl?.substring(0,50)+'...'||'null',isBlob:viewerUrl?.startsWith('blob:')||false},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-          // #endregion
           setViewerOpen(false);
           if (viewerUrl && viewerUrl.startsWith('blob:')) {
             URL.revokeObjectURL(viewerUrl);
@@ -2446,9 +2440,6 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
         </DialogTitle>
         <DialogContent sx={{ p: 0, position: 'relative', height: '100%', minHeight: '400px' }}>
           {(() => {
-            // #region agent log
-            fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2659',message:'DialogContent rendu - état du viewer',data:{viewerOpen,viewerUrl:viewerUrl?.substring(0,50)+'...'||'null',viewerLoading,viewerError,willShowLoading:viewerLoading,willShowError:viewerError&&!viewerLoading,willShowContent:viewerUrl&&!viewerLoading&&!viewerError},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-            // #endregion
             return null;
           })()}
           {viewerLoading && (
@@ -2501,9 +2492,6 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
               bgcolor: '#f5f5f5'
             }}>
               {(() => {
-                // #region agent log
-                fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2695',message:'Rendu du viewer - état actuel',data:{viewerUrl:viewerUrl.substring(0,50)+'...',viewerLoading,viewerError,isBlob:viewerUrl.startsWith('blob:')},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-                // #endregion
                 console.log('🔍 Affichage du document, URL:', viewerUrl.substring(0, 100) + '...');
                 const isBlob = viewerUrl.startsWith('blob:');
                 console.log('📄 Type d\'URL:', isBlob ? 'Blob' : 'Firebase Storage');
@@ -2512,9 +2500,6 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
               {viewerUrl.startsWith('blob:') ? (
                 // Pour les blobs (fichiers déchiffrés), utiliser un embed avec fallback iframe
                 (() => {
-                  // #region agent log
-                  fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2728',message:'Rendu de l\'élément embed pour blob',data:{viewerUrl:viewerUrl.substring(0,50)+'...',willRenderEmbed:true},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'D'})}).catch(()=>{});
-                  // #endregion
                   return (
                     <Box sx={{ 
                       height: '100%', 
@@ -2537,15 +2522,9 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                           minHeight: '500px'
                         }}
                         onLoad={() => {
-                          // #region agent log
-                          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2748',message:'Embed blob onLoad déclenché',data:{viewerUrl:viewerUrl.substring(0,50)+'...'},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'D'})}).catch(()=>{});
-                          // #endregion
                           console.log('✅ Embed blob chargé avec succès');
                         }}
                         onError={(e) => {
-                          // #region agent log
-                          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2753',message:'Embed blob onError déclenché',data:{viewerUrl:viewerUrl.substring(0,50)+'...',errorType:e?.type||'unknown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'D'})}).catch(()=>{});
-                          // #endregion
                           console.error('❌ Erreur chargement embed blob:', e);
                         }}
                       />
@@ -2588,15 +2567,9 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                   }}
                   title="Document viewer"
                   onLoad={() => {
-                    // #region agent log
-                    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2750',message:'Iframe onLoad déclenché',data:{viewerUrl:viewerUrl.substring(0,50)+'...'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                    // #endregion
                     console.log('✅ Iframe chargée avec succès');
                   }}
                   onError={(e) => {
-                    // #region agent log
-                    fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DocumentsTab.tsx:2755',message:'Iframe onError déclenché',data:{viewerUrl:viewerUrl.substring(0,50)+'...',errorType:e?.type||'unknown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                    // #endregion
                     console.error('❌ Erreur chargement iframe:', e);
                     setViewerError('Impossible de charger le document. Il est peut-être chiffré.');
                   }}

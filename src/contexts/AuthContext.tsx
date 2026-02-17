@@ -176,6 +176,19 @@ export function AuthProvider({ children }) {
           
           // Si c'est la première fois, toujours mettre à jour
           if (!previousData) {
+            // Synchroniser poleIds pour les règles Firestore (accès par pôle) si l'utilisateur a poles mais pas poleIds
+            const poles = newUserData.poles;
+            if (Array.isArray(poles) && poles.length > 0 && (!Array.isArray(newUserData.poleIds) || newUserData.poleIds.length === 0)) {
+              const poleIds = poles.map((p: any) => p && p.poleId).filter(Boolean);
+              if (poleIds.length > 0) {
+                try {
+                  await updateDoc(userDocRef, { poleIds });
+                } catch (err) {
+                  console.warn('Sync poleIds (règles Firestore):', (err as Error).message);
+                }
+              }
+            }
+
             const extendedUser = {
               ...user,
               displayName: newUserData.displayName || user.displayName,
@@ -283,7 +296,6 @@ export function AuthProvider({ children }) {
           } else {
                 // Pas de changement significatif - juste lastActivity qui a changé
                 // Ne pas mettre à jour l'état pour éviter les re-renders inutiles
-                console.log("Changement ignoré (lastActivity uniquement)");
               }
             } else {
               // Document inexistant : essayer de le créer

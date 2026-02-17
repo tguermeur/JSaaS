@@ -47,10 +47,15 @@ import {
   WorkHistory as WorkHistoryIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 import { auditService, Mission } from '../services/auditService';
 import { AuditDocument, AuditAssignment } from '../types/audit';
 import { collection, query, where, getDocs, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from '../firebase/config';
+
+const isEncrypted = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -92,14 +97,16 @@ interface StructureMember {
 }
 
 const Audit: React.FC = () => {
+  const { currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('audit');
+  const navigate = useNavigate();
   const [missions, setMissions] = useState<Mission[]>([]);
   const [selectedMission, setSelectedMission] = useState<Mission | null>(null);
   const [documents, setDocuments] = useState<AuditDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { currentUser } = useAuth();
-  const navigate = useNavigate();
   const [structureMembers, setStructureMembers] = useState<StructureMember[]>([]);
+  const [decryptedUserNames, setDecryptedUserNames] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [auditorFilter, setAuditorFilter] = useState<string>('all');
   const [mandatFilter, setMandatFilter] = useState<string>('all');
@@ -123,62 +130,33 @@ const Audit: React.FC = () => {
 
       try {
         setLoading(true);
-        console.log("Début de la récupération des missions");
-        console.log("UID de l'utilisateur:", currentUser.uid);
 
-        // Récupérer d'abord les données de l'utilisateur
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
         if (!userDoc.exists()) {
-          console.error("Document utilisateur non trouvé");
           setLoading(false);
           return;
         }
 
         const userData = userDoc.data();
-        console.log("Données utilisateur récupérées:", userData);
-
         const userStructureId = userData?.structureId;
-        console.log("StructureId de l'utilisateur:", userStructureId);
 
-        // Récupérer les missions de la structure
         const missionsRef = collection(db, 'missions');
         const missionsQuery = query(missionsRef, where('structureId', '==', userStructureId));
         const missionsSnapshot = await getDocs(missionsQuery);
-        
-        console.log("Nombre total de missions trouvées:", missionsSnapshot.docs.length);
-        
+
         const missionsData = await Promise.all(missionsSnapshot.docs.map(async (missionDoc) => {
           const data = missionDoc.data();
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:151',message:'Processing mission',data:{missionId:missionDoc.id,chargeId:data.chargeId,structureId:data.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
-          console.log("Mission trouvée:", {
-            id: missionDoc.id,
-            structureId: data.structureId,
-            userStructureId,
-            match: data.structureId === userStructureId
-          });
-          
-          // Récupérer le mandat du chargé de mission si la mission a un chargeId
+
           let missionMandat: string | undefined;
           if (data.chargeId) {
             try {
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:163',message:'Before getDoc call',data:{chargeId:data.chargeId,docType:typeof doc},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-              // #endregion
               const chargeDoc = await getDoc(doc(db, 'users', data.chargeId));
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:164',message:'After getDoc call',data:{chargeDocExists:chargeDoc.exists()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-              // #endregion
               if (chargeDoc.exists()) {
                 const chargeData = chargeDoc.data();
                 missionMandat = chargeData.mandat || undefined;
               }
-            } catch (error) {
-              // #region agent log
-              fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Audit.tsx:169',message:'Error getting charge doc',data:{error:error instanceof Error ? error.message : String(error),errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-              // #endregion
-              console.error('Erreur lors de la récupération du mandat du chargé de mission:', error);
+            } catch {
+              missionMandat = undefined;
             }
           }
           
@@ -276,6 +254,35 @@ const Audit: React.FC = () => {
   useEffect(() => {
     fetchStructureMembers();
   }, [currentUser]);
+
+  // Déchiffrer les noms (auditeurs, chargés de mission) pour l'affichage
+  useEffect(() => {
+    if (!canRead || (!structureMembers.length && !missions.length)) return;
+    const userIds = new Set<string>();
+    structureMembers.forEach(m => userIds.add(m.id));
+    missions.forEach(m => {
+      if (m.chargeId) userIds.add(m.chargeId);
+    });
+    const run = async () => {
+      const functions = getFunctions();
+      const decryptUser = httpsCallable(functions, 'decryptUserDataForStructure');
+      const next: Record<string, string> = {};
+      for (const uid of userIds) {
+        try {
+          const res = await decryptUser({ userId: uid });
+          const dec = (res.data as { decryptedData?: { firstName?: string; lastName?: string; displayName?: string } })?.decryptedData;
+          if (dec) {
+            const name = dec.displayName || (dec.firstName && dec.lastName ? `${dec.firstName} ${dec.lastName}`.trim() : '') || '';
+            if (name) next[uid] = name;
+          }
+        } catch {
+          // ignorer
+        }
+      }
+      if (Object.keys(next).length) setDecryptedUserNames(prev => ({ ...prev, ...next }));
+    };
+    run();
+  }, [canRead, structureMembers, missions]);
 
   // Fonction pour mettre à jour l'auditeur d'une mission
   const handleAuditorChange = async (missionId: string, newAuditorId: string) => {
@@ -477,11 +484,20 @@ const Audit: React.FC = () => {
     setFilteredMissions(result);
   }, [missions, searchTerm, auditorFilter, mandatFilter, auditStatusFilter]);
 
-  if (loading) {
+  if (loading || permissionLoading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="80vh">
         <CircularProgress />
       </Box>
+    );
+  }
+
+  if (!canRead) {
+    return (
+      <AccessDenied
+        title="Accès refusé"
+        message="Vous n'avez pas les permissions nécessaires pour accéder à l'Audit. Contactez votre administrateur pour obtenir l'accès."
+      />
     );
   }
 
@@ -1140,6 +1156,7 @@ const Audit: React.FC = () => {
                               onChange={(e) => handleAuditorChange(mission.id, e.target.value)}
                               displayEmpty
                               variant="outlined"
+                              disabled={!canWrite}
                               sx={{
                                 fontSize: '0.875rem',
                                 '& .MuiSelect-select': {
@@ -1184,14 +1201,14 @@ const Audit: React.FC = () => {
                                       maxWidth: '120px'
                                     }}
                                   >
-                                    {member.displayName || member.email}
+                                    {decryptedUserNames[member.id] || member.displayName || member.email}
                                   </Typography>
                                 </MenuItem>
                               ))}
                             </Select>
                           </FormControl>
                         </TableCell>
-                        <TableCell>{mission.missionManager || 'Non assigné'}</TableCell>
+                        <TableCell>{decryptedUserNames[mission.chargeId] || mission.missionManager || 'Non assigné'}</TableCell>
                         <TableCell>{mission.company}</TableCell>
                       </TableRow>
                     ))}

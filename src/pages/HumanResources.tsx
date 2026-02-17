@@ -49,7 +49,7 @@ import axios from 'axios';
 import TwoFactorDialog from '../components/common/TwoFactorDialog';
 import { canAccessPage, type UserStatus } from '../utils/permissions';
 import { fetchDecryptFile, is2FARequiredError } from '../utils/decryptFileUtils';
-import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
+import { decryptUsersList, getDecryptedUserDisplayName, decryptUserDisplayData } from '../utils/decryptUserUtils';
 import { Template } from '../types/templates';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
@@ -1078,11 +1078,15 @@ const HumanResources = () => {
             });
 
             const mostRecentPresident = sortedPresidents[0];
-            // Construire le nom complet : prénom + nom ou displayName
-            if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
-              presidentFullName = `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
-            } else if (mostRecentPresident.displayName) {
-              presidentFullName = mostRecentPresident.displayName;
+            const presidentDecrypted = await decryptUserDisplayData(mostRecentPresident.id, {
+              displayName: mostRecentPresident.displayName,
+              firstName: mostRecentPresident.firstName,
+              lastName: mostRecentPresident.lastName
+            });
+            if (presidentDecrypted.firstName && presidentDecrypted.lastName) {
+              presidentFullName = `${presidentDecrypted.firstName} ${presidentDecrypted.lastName}`.trim();
+            } else if (presidentDecrypted.displayName) {
+              presidentFullName = presidentDecrypted.displayName;
             }
           }
         } catch (error) {
@@ -1848,15 +1852,6 @@ const HumanResources = () => {
                    hasDecryptionAccess || // Personnes ayant accès au décryptage
                    (currentUser && currentUser.email?.includes('admin')); // Fallback pour les admins
     
-    console.log("Permissions d'édition:", { 
-      currentUserStatus,
-      isAdmin, 
-      isHRMember, 
-      isSuperAdmin,
-      hasDecryptionAccess,
-      canEdit,
-      currentUserEmail: currentUser?.email
-    });
     return canEdit;
   };
 

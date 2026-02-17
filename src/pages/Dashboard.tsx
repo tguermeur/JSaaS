@@ -131,6 +131,7 @@ const useCountAnimation = (targetValue: number, duration: number = 2000) => {
 
 export default function Dashboard(): JSX.Element {
   const { currentUser, userData, isContactWithAccess, contactPermissions } = useAuth();
+  // Dashboard : lecture et modification sont équivalents → accès basique à la page
   const { canRead, canWrite, loading: permissionLoading } = usePermission('dashboard');
   const navigate = useNavigate();
   const location = useLocation();
@@ -486,12 +487,7 @@ export default function Dashboard(): JSX.Element {
 
       try {
         // Utiliser directement userData du contexte au lieu de faire une requête
-        if (!userData) {
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:480',message:'No userData in context',data:{currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-          // #endregion
-          return;
-        }
+        if (!userData) return;
         
         const userStatus = userData.status;
         
@@ -501,15 +497,7 @@ export default function Dashboard(): JSX.Element {
         }
         
         const userStructureId = userData.structureId;
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:497',message:'Using userData from context',data:{currentUserId:currentUser?.uid,userStatus,userStructureId,hasStructureId:!!userStructureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
-        
-        // Vérifier que structureId existe avant de continuer
         if (!userStructureId) {
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:500',message:'No structureId found',data:{currentUserId:currentUser?.uid,userStatus},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-          // #endregion
           console.error('Aucun structureId trouvé pour cet utilisateur');
           return;
         }
@@ -709,9 +697,6 @@ export default function Dashboard(): JSX.Element {
         // Ajouter les événements de relance aux événements du calendrier
         setCalendarEvents([...eventsList, ...relanceEvents]);
       } catch (error) {
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:524',message:'Error in fetchData',data:{errorCode:error?.code,errorMessage:error?.message,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
         console.error("Erreur lors du chargement des données:", error);
       }
     };
@@ -1297,12 +1282,7 @@ export default function Dashboard(): JSX.Element {
 
       try {
         // Utiliser directement userData du contexte au lieu de faire une requête
-        if (!userData) {
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:780',message:'No userData in context - fetchConnectedUsers',data:{currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-          // #endregion
-          return;
-        }
+        if (!userData) return;
         
         const userStatus = userData.status;
         
@@ -1312,31 +1292,11 @@ export default function Dashboard(): JSX.Element {
         }
         
         const userStructureId = userData.structureId;
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:792',message:'Using userData from context - fetchConnectedUsers',data:{currentUserId:currentUser?.uid,userStatus,userStructureId,hasStructureId:!!userStructureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
-        
-        // Vérifier que structureId existe avant de continuer
-        if (!userStructureId) {
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:795',message:'No structureId found - fetchConnectedUsers',data:{currentUserId:currentUser?.uid,userStatus},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-          // #endregion
-          return;
-        }
+        if (!userStructureId) return;
 
-        // Récupérer tous les utilisateurs de la structure
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:793',message:'Before users query - fetchConnectedUsers',data:{currentUserId:currentUser?.uid,userStructureId,userStatus},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         const usersRef = collection(db, 'users');
         const usersQuery = query(usersRef, where('structureId', '==', userStructureId));
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:796',message:'Executing users query - fetchConnectedUsers',data:{queryType:'getDocs',structureId:userStructureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
         const usersSnapshot = await getDocs(usersQuery);
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:798',message:'After users query - fetchConnectedUsers',data:{success:true,docCount:usersSnapshot.docs.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
 
         const now = new Date();
         const threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
@@ -1367,9 +1327,6 @@ export default function Dashboard(): JSX.Element {
         const decrypted = await decryptUsersList(users.slice(0, 5));
         setConnectedUsers(decrypted);
       } catch (error) {
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:614',message:'Error in fetchConnectedUsers',data:{errorCode:error?.code,errorMessage:error?.message,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
         console.error("Erreur lors du chargement des utilisateurs connectés:", error);
       }
     };

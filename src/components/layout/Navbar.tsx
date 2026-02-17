@@ -53,6 +53,7 @@ import { uploadErrorImage } from '../../firebase/storage';
 import { doc, getDoc, collection, query as firestoreQuery, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { getUserRecentActivity } from '../../services/userActivityService';
+import { decryptUsersList } from '../../utils/decryptUserUtils';
 import NotificationBadge from '../ui/NotificationBadge';
 import NotificationList from '../ui/NotificationList';
 import { useSnackbar } from 'notistack';
@@ -427,14 +428,29 @@ const Navbar: React.FC<NavbarProps> = () => {
         );
         
         const usersSnapshot = await getDocs(usersQuery);
-        const users = usersSnapshot.docs.map(doc => ({
-          id: doc.id,
-          type: 'user' as const,
-          title: doc.data().displayName || '',
-          subtitle: doc.data().email || '',
-          avatar: doc.data().photoURL,
-          icon: <Person fontSize="small" />
-        }));
+        const usersRaw = usersSnapshot.docs.map(doc => {
+          const d = doc.data();
+          return {
+            id: doc.id,
+            displayName: d.displayName || '',
+            firstName: d.firstName,
+            lastName: d.lastName,
+            email: d.email || '',
+            photoURL: d.photoURL
+          };
+        });
+        const usersDecrypted = await decryptUsersList(usersRaw);
+        const users = usersDecrypted.map((u) => {
+          const raw = usersRaw.find(r => r.id === u.id);
+          return {
+            id: u.id,
+            type: 'user' as const,
+            title: u.displayName || '',
+            subtitle: raw?.email || '',
+            avatar: raw?.photoURL,
+            icon: <Person fontSize="small" />
+          };
+        });
 
         // Rechercher les entreprises de la structure
         const companiesQuery = firestoreQuery(
@@ -908,6 +924,11 @@ const Navbar: React.FC<NavbarProps> = () => {
                             <Avatar 
                               src={user.avatar} 
                               sx={{ width: 32, height: 32 }}
+                              onError={(e) => {
+                                const target = e.currentTarget as HTMLImageElement;
+                                target.src = '';
+                                target.style.display = 'none';
+                              }}
                             >
                               {!user.avatar && <Person fontSize="small" />}
                             </Avatar>
@@ -1105,6 +1126,11 @@ const Navbar: React.FC<NavbarProps> = () => {
                 height: 32,
                 bgcolor: 'primary.main',
                 fontSize: '0.875rem'
+              }}
+              onError={(e) => {
+                const target = e.currentTarget as HTMLImageElement;
+                target.src = '';
+                target.style.display = 'none';
               }}
             >
               {!currentUser?.photoURL && getInitials()}

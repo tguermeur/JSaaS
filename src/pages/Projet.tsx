@@ -53,6 +53,7 @@ import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setD
 import { useNavigate } from 'react-router-dom';
 import MissionForm, { MissionFormData } from '../components/missions/MissionForm';
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
+import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 
 // Animations
 const fadeIn = keyframes`
@@ -215,14 +216,22 @@ const Etude: React.FC = () => {
         );
 
         const usersSnapshot = await getDocs(usersQuery);
-        const chargesList = usersSnapshot.docs.map(doc => {
+        const chargesListRaw = usersSnapshot.docs.map(doc => {
           const userData = doc.data() as UserData;
           return {
             id: doc.id,
             displayName: userData.displayName || 'Utilisateur sans nom',
+            firstName: userData.firstName,
+            lastName: userData.lastName,
             photoURL: userData.photoURL
           };
         });
+        const chargesListDecrypted = await decryptUsersList(chargesListRaw);
+        const chargesList = chargesListDecrypted.map(u => ({
+          id: u.id,
+          displayName: u.displayName || 'Utilisateur sans nom',
+          photoURL: (chargesListRaw.find(r => r.id === u.id) as any)?.photoURL
+        }));
         setAvailableCharges(chargesList);
 
         const etudesRef = collection(db, 'etudes');
@@ -574,7 +583,7 @@ const Etude: React.FC = () => {
         const userDoc = await getDoc(doc(db, 'users', updatedData.chargeId));
         if (userDoc.exists()) {
           const userData = userDoc.data();
-          updatedData.chargeName = userData.displayName || '';
+          updatedData.chargeName = await getDecryptedUserDisplayName(updatedData.chargeId, userData || null);
           updatedData.chargePhotoURL = userData.photoURL || null;
         }
       }

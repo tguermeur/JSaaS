@@ -291,7 +291,7 @@ app.post('/gemini/extract-profile', async (req, res) => {
       `6. Si un champ est absent ou non visible, mets "".\n` +
       `7. IMPORTANT: Le JSON doit être complet et valide. Ne tronque pas les chaînes.\n`;
 
-    const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiKey}`;
+    const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
     const parts: any[] = [{ text: prompt }];
     for (const img of images) {
       parts.push({
@@ -1120,6 +1120,7 @@ export {
   encryptContactData,
   decryptContactData,
   decryptContactDataForStructure,
+  decryptProspectDataForStructure,
   encryptText,
   decryptText
 } from './encryptionFunctions';
@@ -1148,3 +1149,11 @@ export {
 
 // Exporter le trigger de chiffrement automatique des users
 export { encryptUserOnWrite } from './firestoreTriggers';
+
+// Exporter les fonctions de scoring IA (prospects, relances, analyse clients)
+export {
+  computeProspectScores,
+  getRelanceSuggestions,
+  analyzePastClients,
+  generateContactMessage,
+} from './scoring';

@@ -63,13 +63,17 @@ export function usePermission(pageId: string): UsePermissionReturn {
     return (userData?.poles || []).map((pole: any) => pole.poleId);
   }, [userData?.poles]);
 
-  // Vérifier si l'utilisateur est admin ou superadmin (accès total)
-  const isAdminOrSuperAdmin = useMemo(() => {
-    return userStatus === 'superadmin' || userStatus === 'admin';
-  }, [userStatus]);
+  // Seul le superadmin contourne les permissions. L'admin de structure est soumis aux docs Réglages > Accès.
+  const isSuperAdmin = useMemo(() => userStatus === 'superadmin', [userStatus]);
 
   // Écouter les permissions d'écriture
+  // Note: On ne fait pas de requête Firestore si l'utilisateur est superadmin uniquement
   useEffect(() => {
+    if (isSuperAdmin) {
+      setLoadingWrite(false);
+      return;
+    }
+
     if (!structureId || !pageId) {
       setLoadingWrite(false);
       return;
@@ -100,10 +104,15 @@ export function usePermission(pageId: string): UsePermissionReturn {
     );
 
     return () => unsubscribe();
-  }, [structureId, pageId]);
+  }, [structureId, pageId, isSuperAdmin]);
 
   // Écouter les permissions de lecture
   useEffect(() => {
+    if (isSuperAdmin) {
+      setLoadingRead(false);
+      return;
+    }
+
     if (!structureId || !pageId) {
       setLoadingRead(false);
       return;
@@ -134,7 +143,7 @@ export function usePermission(pageId: string): UsePermissionReturn {
     );
 
     return () => unsubscribe();
-  }, [structureId, pageId]);
+  }, [structureId, pageId, isSuperAdmin]);
 
   /**
    * Vérifie si l'utilisateur a une permission spécifique
@@ -165,25 +174,17 @@ export function usePermission(pageId: string): UsePermissionReturn {
     return poleMatch;
   };
 
-  // Calculer les permissions finales
+  // Calculer les permissions finales (avec logs à chaque résolution)
   const canWrite = useMemo(() => {
-    // Admin/SuperAdmin ont toujours accès en écriture
-    if (isAdminOrSuperAdmin) return true;
-    
-    // Vérifier les permissions d'écriture
+    if (isSuperAdmin) return true;
     return hasPermission(writePermission);
-  }, [isAdminOrSuperAdmin, writePermission, userStatus, userId, userPoles]);
+  }, [isSuperAdmin, writePermission, userStatus, userId, userPoles, pageId, structureId]);
 
   const canRead = useMemo(() => {
-    // Admin/SuperAdmin ont toujours accès en lecture
-    if (isAdminOrSuperAdmin) return true;
-    
-    // Si l'utilisateur peut écrire, il peut forcément lire
+    if (isSuperAdmin) return true;
     if (canWrite) return true;
-    
-    // Vérifier les permissions de lecture
     return hasPermission(readPermission);
-  }, [isAdminOrSuperAdmin, canWrite, readPermission, userStatus, userId, userPoles]);
+  }, [isSuperAdmin, canWrite, readPermission, userStatus, userId, userPoles, pageId, structureId]);
 
   const loading = loadingWrite || loadingRead || !userData;
 

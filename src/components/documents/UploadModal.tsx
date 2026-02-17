@@ -20,6 +20,7 @@ import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/fires
 import { db, auth } from '../../firebase/config';
 import { getAuth } from 'firebase/auth';
 import { Document } from '../../types/document';
+import { getDecryptedUserDisplayName } from '../../utils/decryptUserUtils';
 
 interface UploadModalProps {
   open: boolean;
@@ -73,10 +74,10 @@ const UploadModal: React.FC<UploadModalProps> = ({
       console.log('[DEBUG] UploadModal.tsx:60 - handleUpload started', {currentUserId,structureId,fileCount:files.length,hypothesisId:'A'});
       // #endregion
       
-      // Récupérer le nom de l'utilisateur pour l'affichage
+      // Récupérer le nom de l'utilisateur pour l'affichage (décrypté si nécessaire)
       const userDoc = await getDoc(doc(db, 'users', currentUserId));
       const userData = userDoc.data();
-      const uploadedByName = userData?.displayName || userData?.firstName + ' ' + userData?.lastName || 'Inconnu';
+      const uploadedByName = await getDecryptedUserDisplayName(currentUserId, userData || null);
 
       // #region agent log
       console.log('[DEBUG] UploadModal.tsx:73 - User data retrieved', {userId:currentUserId,structureId:userData?.structureId,status:userData?.status,expectedStructureId:structureId,hypothesisId:'B'});

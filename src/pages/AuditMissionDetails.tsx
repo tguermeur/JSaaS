@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -65,7 +65,10 @@ import {
   Close as CloseIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 import { auditService, Mission } from '../services/auditService';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { DocumentType, DOCUMENT_TYPES } from '../types/templates';
 import { collection, query, where, orderBy, getDocs, doc, deleteDoc, getDoc, updateDoc, addDoc } from 'firebase/firestore';
 import { db, storage, getStorageInstance } from '../firebase/config';
@@ -143,6 +146,7 @@ interface TaggedUser {
 const AuditMissionDetails: React.FC = () => {
   const { missionId } = useParams<{ missionId: string }>();
   const navigate = useNavigate();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('audit');
   const [mission, setMission] = useState<Mission | null>(null);
   const [generatedDocuments, setGeneratedDocuments] = useState<GeneratedDocument[]>([]);
   const [loading, setLoading] = useState(true);
@@ -186,10 +190,6 @@ const AuditMissionDetails: React.FC = () => {
     if (!missionId) return;
 
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:188',message:'Before fetchGeneratedDocuments query',data:{missionId,currentUserId:currentUser?.uid,userStructureId:userData?.structureId,userStatus:userData?.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      
       if (!userData?.structureId) {
         console.warn('StructureId non disponible pour filtrer les documents');
         setGeneratedDocuments([]);
@@ -210,9 +210,6 @@ const AuditMissionDetails: React.FC = () => {
       } catch (error: any) {
         // Si l'index composite n'existe pas, essayer sans orderBy
         if (error?.code === 'failed-precondition' || error?.message?.includes('index')) {
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:207',message:'Index composite manquant, essai sans orderBy',data:{error:error.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-          // #endregion
           const documentsQueryWithoutOrder = query(
             collection(db, 'generatedDocuments'),
             where('missionId', '==', missionId),
@@ -229,9 +226,6 @@ const AuditMissionDetails: React.FC = () => {
           throw error;
         }
       }
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:195',message:'After getDocs call',data:{docCount:snapshot.docs.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       const documents = snapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -255,47 +249,40 @@ const AuditMissionDetails: React.FC = () => {
         await fetchUserNames(userIds);
       }
     } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:218',message:'Error in fetchGeneratedDocuments',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       console.error('Erreur lors de la récupération des documents générés:', error);
       setError('Erreur lors de la récupération des documents générés');
     }
   };
 
-  // Fonction pour récupérer les informations des utilisateurs
+  // Fonction pour récupérer les noms d'utilisateurs (déchiffrés via Cloud Function)
   const fetchUserNames = async (userIds: string[]) => {
+    const uniqueIds = [...new Set(userIds)].filter(Boolean);
+    if (uniqueIds.length === 0) return;
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:225',message:'Before fetchUserNames',data:{userIds,currentUserId:currentUser?.uid},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      const uniqueIds = [...new Set(userIds)];
-      const userPromises = uniqueIds.map(async (userId) => {
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:229',message:'Before getDoc for user',data:{userId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
-        const userDoc = await getDoc(doc(db, 'users', userId));
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:230',message:'After getDoc for user',data:{userId,exists:userDoc.exists()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          return { id: userId, name: userData.displayName || 'Utilisateur inconnu' };
+      const functions = getFunctions();
+      const decryptUser = httpsCallable(functions, 'decryptUserDataForStructure');
+      const next: Record<string, string> = {};
+      for (const uid of uniqueIds) {
+        try {
+          const res = await decryptUser({ userId: uid });
+          const dec = (res.data as { decryptedData?: { firstName?: string; lastName?: string; displayName?: string } })?.decryptedData;
+          if (dec) {
+            const name = dec.displayName || (dec.firstName && dec.lastName ? `${dec.firstName} ${dec.lastName}`.trim() : '') || '';
+            if (name) next[uid] = name;
+          }
+        } catch {
+          // fallback: lecture Firestore si pas de déchiffrement
+          const userDoc = await getDoc(doc(db, 'users', uid));
+          if (userDoc.exists()) {
+            const d = userDoc.data();
+            next[uid] = d.displayName || `${d.firstName || ''} ${d.lastName || ''}`.trim() || 'Utilisateur inconnu';
+          } else {
+            next[uid] = 'Utilisateur inconnu';
+          }
         }
-        return { id: userId, name: 'Utilisateur inconnu' };
-      });
-
-      const users = await Promise.all(userPromises);
-      const userNamesMap = users.reduce((acc, user) => {
-        acc[user.id] = user.name;
-        return acc;
-      }, {} as { [key: string]: string });
-
-      setUserNames(userNamesMap);
+      }
+      setUserNames(prev => ({ ...prev, ...next }));
     } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:245',message:'Error in fetchUserNames',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       console.error('Erreur lors de la récupération des noms d\'utilisateurs:', error);
     }
   };
@@ -303,10 +290,6 @@ const AuditMissionDetails: React.FC = () => {
   // Fonction pour récupérer les utilisateurs disponibles pour le tagging
   const fetchAvailableUsers = async () => {
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:271',message:'Before fetchAvailableUsers',data:{currentUserId:currentUser?.uid,userStructureId:userData?.structureId,userStatus:userData?.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      
       if (!userData?.structureId) {
         console.warn('StructureId non disponible pour filtrer les utilisateurs');
         setAvailableUsers([]);
@@ -319,9 +302,6 @@ const AuditMissionDetails: React.FC = () => {
         where('structureId', '==', userData.structureId)
       );
       const usersSnapshot = await getDocs(usersQuery);
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:280',message:'After getDocs for users',data:{userCount:usersSnapshot.docs.length,structureId:userData.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       const users = usersSnapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -336,9 +316,6 @@ const AuditMissionDetails: React.FC = () => {
       });
       setAvailableUsers(users);
     } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:288',message:'Error in fetchAvailableUsers',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       console.error('Erreur lors de la récupération des utilisateurs:', error);
     }
   };
@@ -561,6 +538,7 @@ const AuditMissionDetails: React.FC = () => {
 
   // Fonction pour obtenir le libellé du type de document
   const getDocumentTypeLabel = (type: string): string => {
+    if (type === 'autre') return 'Autre';
     return DOCUMENT_TYPES[type as DocumentType] || type;
   };
 
@@ -572,7 +550,8 @@ const AuditMissionDetails: React.FC = () => {
     'convention_etudiant',
     'avenant',
     'facture',
-    'note_frais'
+    'note_frais',
+    'autre'
   ];
 
   const handleTabChange = useCallback((event: React.SyntheticEvent, newValue: number) => {
@@ -778,6 +757,8 @@ const AuditMissionDetails: React.FC = () => {
         // Trier les notes par date de création (les plus récentes en premier)
         notes.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         setDocumentNotes(notes);
+        const createdByIds = notes.map(n => n.createdBy).filter(Boolean);
+        if (createdByIds.length) fetchUserNames(createdByIds);
       } catch (error) {
         console.error('Erreur lors du chargement des notes:', error);
       }
@@ -832,6 +813,8 @@ const AuditMissionDetails: React.FC = () => {
 
         console.log('Notes organisées finales:', organizedNotes);
         setMissionNotesList(organizedNotes);
+        const createdByIds = organizedNotes.map(n => n.createdBy).filter(Boolean);
+        if (createdByIds.length) fetchUserNames(createdByIds);
       } catch (error) {
         console.error('Erreur lors du chargement des notes de mission:', error);
       }
@@ -1083,9 +1066,6 @@ const AuditMissionDetails: React.FC = () => {
     if (!missionId || !missionNotes.trim()) return;
 
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1082',message:'Before handleSaveMissionNote',data:{missionId,currentUserId:currentUser?.uid,userDataStatus:userData?.status,userDataStructureId:userData?.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       const noteData = {
         content: missionNotes.trim(),
         missionId,
@@ -1098,14 +1078,8 @@ const AuditMissionDetails: React.FC = () => {
         isReply: false,
         replyToNoteId: ''
       };
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1099',message:'Before addDoc',data:{noteData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       const docRef = await addDoc(collection(db, 'notes'), noteData);
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1100',message:'After addDoc success',data:{docId:docRef.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
-      
+
       const newNote = {
         id: docRef.id,
         ...noteData
@@ -1144,9 +1118,6 @@ const AuditMissionDetails: React.FC = () => {
 
       enqueueSnackbar('Note ajoutée avec succès', { variant: 'success' });
     } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AuditMissionDetails.tsx:1138',message:'Error in handleSaveMissionNote',data:{error:error instanceof Error ? error.message : String(error),errorCode:error instanceof Error && 'code' in error ? (error as any).code : undefined,errorStack:error instanceof Error ? error.stack : undefined,missionId,currentUserId:currentUser?.uid,userDataStatus:userData?.status,userDataStructureId:userData?.structureId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       console.error('Erreur lors de l\'ajout de la note:', error);
       enqueueSnackbar('Erreur lors de l\'ajout de la note', { variant: 'error' });
     }
@@ -1448,11 +1419,20 @@ const AuditMissionDetails: React.FC = () => {
     }
   };
 
-  if (loading) {
+  if (loading || permissionLoading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="80vh">
         <CircularProgress />
       </Box>
+    );
+  }
+
+  if (!canRead) {
+    return (
+      <AccessDenied
+        title="Accès refusé"
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page d'audit. Contactez votre administrateur."
+      />
     );
   }
 
@@ -1520,7 +1500,7 @@ const AuditMissionDetails: React.FC = () => {
               >
                 Retour à l'audit
               </Button>
-              {!mission?.isArchived && (
+              {!mission?.isArchived && canWrite && (
                 <Button
                   variant="outlined"
                   color="primary"
@@ -1550,7 +1530,17 @@ const AuditMissionDetails: React.FC = () => {
               alignItems: 'center',
               gap: 2
             }}>
-              Mission #{mission?.numeroMission}
+              <Link
+                component={RouterLink}
+                to={missionId ? `/app/mission/${missionId}` : '#'}
+                sx={{
+                  color: 'inherit',
+                  textDecoration: 'none',
+                  '&:hover': { textDecoration: 'underline', color: '#007AFF' }
+                }}
+              >
+                Mission #{mission?.numeroMission}
+              </Link>
               {mission?.isArchived && (
                 <Chip
                   label="Archivée"
@@ -1772,7 +1762,7 @@ const AuditMissionDetails: React.FC = () => {
                 variant="contained"
                 startIcon={<AddIcon />}
                 onClick={handleAddDocument}
-                disabled={mission?.isArchived}
+                disabled={mission?.isArchived || !canWrite}
                 sx={{
                   opacity: mission?.isArchived ? 0.5 : 1,
                   '&.Mui-disabled': {
@@ -2032,7 +2022,7 @@ const AuditMissionDetails: React.FC = () => {
                                     opacity: note.isClosed ? 0.7 : 1
                                   }}
                                 >
-                                  {note.createdByName.charAt(0)}
+                                  {(userNames[note.createdBy] || note.createdByName).charAt(0)}
                                 </Avatar>
                                 <Typography 
                                   component="span" 
@@ -2042,7 +2032,7 @@ const AuditMissionDetails: React.FC = () => {
                                     color: note.isClosed ? '#86868b' : '#1d1d1f'
                                   }}
                                 >
-                                  {note.createdByName}
+                                  {userNames[note.createdBy] || note.createdByName}
                                 </Typography>
                                 <Typography 
                                   component="span" 
@@ -2099,7 +2089,7 @@ const AuditMissionDetails: React.FC = () => {
                                   }}>
                                     <ReplyIcon sx={{ fontSize: 16 }} />
                                     <Typography variant="caption">
-                                      Réponse de {reply.createdByName}
+                                      Réponse de {userNames[reply.createdBy] || reply.createdByName}
                                     </Typography>
                                   </Box>
                                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -2112,7 +2102,7 @@ const AuditMissionDetails: React.FC = () => {
                                           opacity: reply.isClosed ? 0.7 : 1
                                         }}
                                       >
-                                        {reply.createdByName.charAt(0)}
+                                        {(userNames[reply.createdBy] || reply.createdByName).charAt(0)}
                                       </Avatar>
                                       <Typography 
                                         component="span" 
@@ -2211,7 +2201,7 @@ const AuditMissionDetails: React.FC = () => {
                               src={note.createdByPhotoURL}
                               sx={{ width: 24, height: 24 }}
                             >
-                              {note.createdByName.charAt(0)}
+                              {(userNames[note.createdBy] || note.createdByName).charAt(0)}
                             </Avatar>
                             <Typography 
                               component="span" 
@@ -2221,7 +2211,7 @@ const AuditMissionDetails: React.FC = () => {
                                 color: '#1d1d1f'
                               }}
                             >
-                              {note.createdByName}
+                              {userNames[note.createdBy] || note.createdByName}
                             </Typography>
                             <Typography 
                               component="span" 
@@ -2266,7 +2256,7 @@ const AuditMissionDetails: React.FC = () => {
             <TaggingInput
               value={missionNotes}
               onChange={setMissionNotes}
-              placeholder={mission?.isArchived ? "Impossible d'ajouter des notes à une mission archivée" : "Ajouter une note générale..."}
+              placeholder={mission?.isArchived ? "Impossible d'ajouter des notes à une mission archivée" : !canWrite ? "Vous n'avez pas les droits d'écriture pour ajouter une note" : "Ajouter une note générale..."}
               multiline={true}
               rows={4}
               availableUsers={availableUsers}
@@ -2277,7 +2267,7 @@ const AuditMissionDetails: React.FC = () => {
               fullWidth
               variant="contained"
               onClick={handleSaveMissionNote}
-              disabled={!missionNotes.trim() || mission?.isArchived}
+              disabled={!missionNotes.trim() || mission?.isArchived || !canWrite}
               sx={{
                 mt: 2, // Ajouter du padding au-dessus du bouton
                 backgroundColor: '#007AFF',
@@ -2311,32 +2301,32 @@ const AuditMissionDetails: React.FC = () => {
           }
         }}
       >
-        <MenuItem onClick={handleNoteClick} sx={{ py: 1.5 }} disabled={mission?.isArchived}>
+        <MenuItem onClick={handleNoteClick} sx={{ py: 1.5 }} disabled={mission?.isArchived || !canWrite}>
           <ListItemIcon>
-            <NoteAddIcon fontSize="small" sx={{ color: mission?.isArchived ? '#86868b' : '#007AFF' }} />
+            <NoteAddIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? '#86868b' : '#007AFF' }} />
           </ListItemIcon>
           <ListItemText>Ajouter une note</ListItemText>
         </MenuItem>
-        <MenuItem onClick={handleRenameClick} sx={{ py: 1.5 }} disabled={mission?.isArchived}>
+        <MenuItem onClick={handleRenameClick} sx={{ py: 1.5 }} disabled={mission?.isArchived || !canWrite}>
           <ListItemIcon>
-            <EditIcon fontSize="small" sx={{ color: mission?.isArchived ? '#86868b' : '#007AFF' }} />
+            <EditIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? '#86868b' : '#007AFF' }} />
           </ListItemIcon>
           <ListItemText>Renommer</ListItemText>
         </MenuItem>
         <MenuItem 
           onClick={handleMarkAsSigned} 
           sx={{ py: 1.5 }}
-          disabled={selectedDocument?.isSigned || mission?.isArchived}
+          disabled={selectedDocument?.isSigned || mission?.isArchived || !canWrite}
         >
           <ListItemIcon>
-            <CheckCircleOutlineIcon fontSize="small" sx={{ color: mission?.isArchived ? '#86868b' : '#34C759' }} />
+            <CheckCircleOutlineIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? '#86868b' : '#34C759' }} />
           </ListItemIcon>
           <ListItemText>
             {selectedDocument?.isSigned ? 'Document signé' : 'Marquer comme signé'}
           </ListItemText>
         </MenuItem>
         <Divider />
-        <MenuItem onClick={handleDeleteClick} sx={{ py: 1.5, color: '#FF3B30' }} disabled={mission?.isArchived}>
+        <MenuItem onClick={handleDeleteClick} sx={{ py: 1.5, color: '#FF3B30' }} disabled={mission?.isArchived || !canWrite}>
           <ListItemIcon>
             <DeleteIcon fontSize="small" sx={{ color: mission?.isArchived ? '#86868b' : '#FF3B30' }} />
           </ListItemIcon>
@@ -2466,10 +2456,10 @@ const AuditMissionDetails: React.FC = () => {
                             src={note.createdByPhotoURL}
                             sx={{ width: 24, height: 24 }}
                           >
-                            {note.createdByName.charAt(0)}
+                            {(userNames[note.createdBy] || note.createdByName).charAt(0)}
                           </Avatar>
                           <Typography component="span" variant="subtitle2" sx={{ fontWeight: 500 }}>
-                            {note.createdByName}
+                            {userNames[note.createdBy] || note.createdByName}
                           </Typography>
                           <Typography component="span" variant="caption" sx={{ color: '#86868b' }}>
                             {note.createdAt.toLocaleDateString()}
@@ -2590,6 +2580,7 @@ const AuditMissionDetails: React.FC = () => {
                 <MenuItem value="avenant">Avenant</MenuItem>
                 <MenuItem value="note_frais">Note de frais</MenuItem>
                 <MenuItem value="facture">Facture</MenuItem>
+                <MenuItem value="autre">Autre</MenuItem>
               </Select>
             </FormControl>
 
@@ -2719,7 +2710,7 @@ const AuditMissionDetails: React.FC = () => {
         }}
       >
         {selectedNote?.isClosed ? [
-          !selectedNote.isReply && !mission?.isArchived && (
+          !selectedNote.isReply && !mission?.isArchived && canWrite && (
             <MenuItem key="reopen" onClick={handleReopenNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
                 <CheckCircleOutlineIcon fontSize="small" sx={{ color: '#34C759' }} />
@@ -2728,7 +2719,7 @@ const AuditMissionDetails: React.FC = () => {
             </MenuItem>
           )
         ] : [
-          selectedNote?.createdBy === currentUser?.uid && !selectedNote.isReply && !mission?.isArchived && (
+          selectedNote?.createdBy === currentUser?.uid && !selectedNote.isReply && !mission?.isArchived && canWrite && (
             <MenuItem key="edit" onClick={handleEditNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
                 <EditIcon fontSize="small" sx={{ color: '#007AFF' }} />
@@ -2736,7 +2727,7 @@ const AuditMissionDetails: React.FC = () => {
               <ListItemText>Modifier</ListItemText>
             </MenuItem>
           ),
-          !mission?.isArchived && (
+          !mission?.isArchived && canWrite && (
             <MenuItem key="reply" onClick={handleReplyNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
                 <ReplyIcon fontSize="small" sx={{ color: '#007AFF' }} />
@@ -2744,7 +2735,7 @@ const AuditMissionDetails: React.FC = () => {
               <ListItemText>Répondre</ListItemText>
             </MenuItem>
           ),
-          !selectedNote?.isReply && !mission?.isArchived && (
+          !selectedNote?.isReply && !mission?.isArchived && canWrite && (
             <MenuItem key="close" onClick={handleCloseNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
                 <CloseIcon fontSize="small" sx={{ color: '#007AFF' }} />
@@ -2753,7 +2744,7 @@ const AuditMissionDetails: React.FC = () => {
             </MenuItem>
           ),
           <Divider key="divider" />,
-          !mission?.isArchived && (
+          !mission?.isArchived && canWrite && (
             <MenuItem 
               key="delete"
               onClick={() => selectedNote && handleDeleteNote(selectedNote.id)} 

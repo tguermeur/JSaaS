@@ -33,10 +33,15 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   useEffect(() => {
     const checkAccess = async () => {
       if (!currentUser || !userId) {
+        console.log('[ProtectedRoute] Pas d’utilisateur connecté → accès refusé');
         setHasAccess(false);
         setLoading(false);
         return;
       }
+
+      const logCtx = requiredPermission
+        ? { pageId: requiredPermission.pageId, accessType: requiredPermission.accessType }
+        : { requiresStructureAccess };
 
       try {
         // Utiliser userData du contexte si disponible, sinon récupérer depuis Firestore
@@ -47,8 +52,9 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
         }
         const finalUserStatus = finalUserData?.status || userStatus;
 
-        // Si l'utilisateur est superadmin, il a toujours accès
+        // Seul le superadmin contourne les permissions. L'admin de structure est soumis aux docs Réglages > Accès.
         if (finalUserStatus === 'superadmin') {
+          console.log('[ProtectedRoute] Accès accordé (superadmin)', { ...logCtx, status: finalUserStatus });
           setHasAccess(true);
           setLoading(false);
           return;
@@ -56,66 +62,92 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
         // Vérifier l'accès basé sur le type de contenu (ancien système)
         if (requiresStructureAccess !== undefined) {
-          if (requiresStructureAccess) {
-            setHasAccess(canAccessStructureContent(finalUserStatus));
-          } else {
-            setHasAccess(canAccessStudentContent(finalUserStatus) || canAccessStructureContent(finalUserStatus));
-          }
+          const structureAccess = requiresStructureAccess
+            ? canAccessStructureContent(finalUserStatus)
+            : canAccessStudentContent(finalUserStatus) || canAccessStructureContent(finalUserStatus);
+          console.log('[ProtectedRoute] Vérification accès structure', {
+            ...logCtx,
+            requiresStructureAccess,
+            hasAccess: structureAccess,
+            status: finalUserStatus,
+          });
+          setHasAccess(structureAccess);
           setLoading(false);
           return;
         }
 
-        // Vérifier l'accès basé sur les permissions (nouveau système)
-        // Pour les contacts avec accès (statut 'entreprise' avec companyId), on skip la vérification des permissions
-        // car ils n'ont pas de structureId et utilisent un système de permissions différent
+        // Contacts avec accès (entreprise + companyId) : permissions gérées côté contact
         if (isContactWithAccess && finalUserData?.status === 'entreprise' && finalUserData?.companyId) {
-          // Les contacts avec accès ont leurs propres permissions gérées via contactAccess
-          // On leur donne accès si requiredPermission n'est pas défini ou si c'est une page accessible
+          console.log('[ProtectedRoute] Accès accordé (contact avec accès)', logCtx);
           setHasAccess(true);
           setLoading(false);
           return;
         }
-        
+
+        // Vérification permissions par page (read/write)
         if (requiredPermission && finalUserData?.structureId) {
+          const docId =
+            requiredPermission.accessType === 'read'
+              ? `${requiredPermission.pageId}_read`
+              : requiredPermission.pageId;
+          const docPath = `structures/${finalUserData.structureId}/permissions/${docId}`;
+          console.log('[ProtectedRoute] Vérification permission Firestore', {
+            pageId: requiredPermission.pageId,
+            accessType: requiredPermission.accessType,
+            docPath,
+          });
+
           try {
             const permissionsRef = doc(
-              db, 
-              'structures', 
-              finalUserData.structureId, 
-              'permissions', 
-              requiredPermission.accessType === 'read' 
-                ? `${requiredPermission.pageId}_read` 
-                : requiredPermission.pageId
+              db,
+              'structures',
+              finalUserData.structureId,
+              'permissions',
+              docId
             );
-            
             const permissionsDoc = await getDoc(permissionsRef);
             const permissions = permissionsDoc.data();
 
-            if (!permissions) {
+            if (!permissions || !permissionsDoc.exists()) {
+              console.log('[ProtectedRoute] Accès refusé (document permission absent ou vide)', {
+                pageId: requiredPermission.pageId,
+                accessType: requiredPermission.accessType,
+              });
               setHasAccess(false);
               setLoading(false);
               return;
             }
 
-            // Vérifier si l'utilisateur a accès
             const hasRoleAccess = permissions.allowedRoles?.includes(finalUserStatus as UserStatus);
-            const hasPoleAccess = finalUserData.poles?.some(pole => 
+            const hasPoleAccess = (finalUserData.poles ?? []).some((pole: { poleId: string }) =>
               permissions.allowedPoles?.includes(pole.poleId)
             );
             const hasMemberAccess = permissions.allowedMembers?.includes(userId);
+            const hasAccessResult = hasRoleAccess || hasPoleAccess || hasMemberAccess;
 
-            // Nouvelle logique : les rôles dominent sur les pôles
-            setHasAccess(hasRoleAccess || hasPoleAccess || hasMemberAccess);
+            console.log('[ProtectedRoute] Résultat vérification permission', {
+              pageId: requiredPermission.pageId,
+              accessType: requiredPermission.accessType,
+              hasAccess: hasAccessResult,
+              role: hasRoleAccess,
+              pole: hasPoleAccess,
+              member: hasMemberAccess,
+              status: finalUserStatus,
+            });
+            setHasAccess(hasAccessResult);
           } catch (permissionError) {
-            console.error("Erreur lors de la vérification des permissions:", permissionError);
+            console.error('[ProtectedRoute] Erreur lors de la vérification des permissions:', permissionError);
             setHasAccess(false);
             setLoading(false);
           }
-        } else {
-          setHasAccess(true);
+          return;
         }
+
+        // Aucune permission requise (route sans requiredPermission)
+        console.log('[ProtectedRoute] Accès accordé (aucune permission requise)', logCtx);
+        setHasAccess(true);
       } catch (error) {
-        console.error("Erreur lors de la vérification des permissions:", error);
+        console.error('[ProtectedRoute] Erreur lors de la vérification des permissions:', error);
         setHasAccess(false);
       } finally {
         setLoading(false);

@@ -103,12 +103,16 @@ try {
 // Initialiser les services avec gestion d'erreur
 export const auth = app ? getAuth(app) : null;
 
-// Configuration Firestore avec persistance et gestion des onglets
+// Configuration Firestore avec persistance et gestion des onglets.
+// En dev (Vite) ou sur localhost, on force le long polling pour éviter les erreurs
+// "access control checks" sur les canaux Listen/Write (CORS / WebChannel bloqué).
+const isLocalhost = typeof window !== 'undefined' && /localhost|127\.0\.0\.1|^0\.0\.0\.0$/.test(window.location?.hostname ?? '');
+const isDev = import.meta.env.DEV === true;
 export const db = app ? initializeFirestore(app, {
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
-  })
-  // experimentalForceLongPolling retiré pour éviter les problèmes CORS/Proxy
+  }),
+  ...(isLocalhost || isDev ? { experimentalForceLongPolling: true } : {})
 }) : null;
 
 // Configuration pour la production - pas d'émulateurs

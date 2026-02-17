@@ -95,7 +95,7 @@ export const AmbassadorEventsMap: React.FC = () => {
 
   useEffect(() => {
     fetchEvents();
-  }, [isContactWithAccess, userData?.companyId]);
+  }, [isContactWithAccess, userData?.companyId, userData?.structureId]);
 
   useEffect(() => {
     // Récupérer la clé API depuis les variables d'environnement
@@ -132,8 +132,7 @@ export const AmbassadorEventsMap: React.FC = () => {
     try {
       setLoading(true);
       
-      // Pour les contacts avec accès, filtrer par companyId
-      // Pour les admins, charger tous les événements
+      // Filtrer par structureId pour les admins (règles Firestore)
       let eventsQuery;
       if (isContactWithAccess && userData?.companyId) {
         eventsQuery = query(
@@ -141,10 +140,16 @@ export const AmbassadorEventsMap: React.FC = () => {
           where('type', '==', 'ambassadeur_event'),
           where('companyId', '==', userData.companyId)
         );
-      } else {
+      } else if (userData?.structureId) {
         eventsQuery = query(
           collection(db, 'missions'),
           where('type', '==', 'ambassadeur_event'),
+          where('structureId', '==', userData.structureId)
+        );
+      } else {
+        eventsQuery = query(
+          collection(db, 'missions'),
+          where('type', '==', 'ambassadeur_event')
         );
       }
 

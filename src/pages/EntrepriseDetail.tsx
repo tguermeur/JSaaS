@@ -25,6 +25,7 @@ import {
   Alert,
   Snackbar,
   CircularProgress,
+  LinearProgress,
   Link,
   InputBase,
   Menu,
@@ -55,6 +56,9 @@ import {
 import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, serverTimestamp, deleteDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { Company, Contact, ContactNote } from './Entreprises';
 import { uploadCompanyLogo } from '../firebase/storage';
 import { DocumentType, TemplateAssignment } from '../types/templates';
@@ -210,11 +214,16 @@ const convertMissionData = async (data: any): Promise<Mission> => {
   };
 };
 
+const isEncrypted = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
+
 const EntrepriseDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { currentUser } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('entreprises');
   const [company, setCompany] = useState<Company | null>(null);
+  const [decryptedCompany, setDecryptedCompany] = useState<Partial<Company> | null>(null);
+  const [decryptedContacts, setDecryptedContacts] = useState<Record<string, { firstName?: string; lastName?: string; email?: string }>>({});
   const [missions, setMissions] = useState<Mission[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -387,6 +396,47 @@ const EntrepriseDetail: React.FC = () => {
     fetchCompanyData();
   }, [id]);
 
+  // Déchiffrer les infos entreprise et contacts pour l'affichage (tous champs sensibles backend)
+  useEffect(() => {
+    if (!company || !canRead) return;
+    const run = async () => {
+      try {
+        const functions = getFunctions();
+        const companyEncrypted =
+          isEncrypted(company.name) || isEncrypted(company.email) || isEncrypted(company.phone) ||
+          isEncrypted(company.address) || isEncrypted(company.nSiret) ||
+          isEncrypted((company as any).companyAddress) || isEncrypted((company as any).siret) || isEncrypted((company as any).tvaIntra);
+        if (companyEncrypted) {
+          const decryptCompany = httpsCallable(functions, 'decryptCompanyDataForStructure');
+          const res = await decryptCompany({ companyId: company.id });
+          const dec = (res.data as any)?.decryptedData;
+          if (dec) setDecryptedCompany(dec);
+        }
+        const contacts = company.contacts || [];
+        if (contacts.length > 0) {
+          const decryptContact = httpsCallable(functions, 'decryptContactDataForStructure');
+          const next: Record<string, { firstName?: string; lastName?: string; email?: string; phone?: string }> = {};
+          for (const c of contacts) {
+            const contactEncrypted = isEncrypted(c.firstName) || isEncrypted(c.lastName) || isEncrypted(c.email) || isEncrypted(c.phone);
+            if (contactEncrypted) {
+              try {
+                const res = await decryptContact({ contactId: c.id });
+                const dec = (res.data as any)?.decryptedData;
+                if (dec) next[c.id] = { firstName: dec.firstName, lastName: dec.lastName, email: dec.email, phone: dec.phone };
+              } catch {
+                // ignorer si déchiffrement échoue
+              }
+            }
+          }
+          if (Object.keys(next).length) setDecryptedContacts(prev => ({ ...prev, ...next }));
+        }
+      } catch (e) {
+        console.warn('Déchiffrement entreprise/contacts ignoré:', e);
+      }
+    };
+    run();
+  }, [company?.id, canRead, company?.name, company?.email, company?.phone, company?.address, company?.nSiret, company?.contacts]);
+
   // Récupérer la structure de l'utilisateur et le template de convention
   useEffect(() => {
     const fetchUserStructureAndTemplate = async () => {
@@ -540,8 +590,19 @@ const EntrepriseDetail: React.FC = () => {
   };
 
   // Fonction pour remplacer les balises par leurs valeurs (adaptée pour les données d'entreprise)
-  const replaceTags = async (text: string, structureData?: any, tempDataOverride?: { [key: string]: string }): Promise<string> => {
+  // companyOverride et contactsOverride permettent d'injecter les données déchiffrées (ex: génération convention)
+  const replaceTags = async (
+    text: string,
+    structureData?: any,
+    tempDataOverride?: { [key: string]: string },
+    companyOverride?: Partial<Company>,
+    contactsOverride?: Array<Partial<Contact> & { id: string }>
+  ): Promise<string> => {
     if (!text || !company) return text;
+
+    const co = companyOverride ? { ...company, ...companyOverride } : company;
+    const contactList: Array<Partial<Contact> & { id: string }> = contactsOverride ?? (company.contacts || []).map(c => ({ ...c, id: c.id }));
+    const defaultContact = contactList.find(c => c.isDefault) || contactList[0];
 
     try {
       // Récupérer les données de la structure si nécessaire
@@ -556,9 +617,6 @@ const EntrepriseDetail: React.FC = () => {
           console.error('Erreur lors de la récupération de la structure:', error);
         }
       }
-
-      // Récupérer le contact principal de l'entreprise
-      const defaultContact = company.contacts?.find(c => c.isDefault) || company.contacts?.[0];
 
       // Récupérer le président du mandat le plus récent
       let presidentFullName = '[Président non disponible]';
@@ -579,29 +637,46 @@ const EntrepriseDetail: React.FC = () => {
             displayName: doc.data().displayName || ''
           }));
 
-          // Filtrer les présidents (via bureauRole ou pôle 'pre')
+          // Filtrer les présidents (via bureauRole ou pôle 'pre') et trier par mandat le plus récent
           const presidents = members.filter(member => {
-            const hasPresidentRole = member.bureauRole === 'president' || 
+            const hasPresidentRole = member.bureauRole === 'president' ||
               member.poles?.some((p: any) => p.poleId === 'pre');
             return hasPresidentRole && member.mandat;
+          }).sort((a, b) => {
+            if (!a.mandat || !b.mandat) return 0;
+            const aYear = parseInt(String(a.mandat).split('-')[0]);
+            const bYear = parseInt(String(b.mandat).split('-')[0]);
+            return bYear - aYear;
           });
 
           if (presidents.length > 0) {
-            // Trier les mandats pour trouver le plus récent
-            const sortedPresidents = presidents.sort((a, b) => {
-              if (!a.mandat || !b.mandat) return 0;
-              // Comparer les années de début des mandats (format: "2024-2025")
-              const aYear = parseInt(a.mandat.split('-')[0]);
-              const bYear = parseInt(b.mandat.split('-')[0]);
-              return bYear - aYear; // Plus récent en premier
-            });
+            const mostRecentPresident = presidents[0];
+            let presidentFirstName = mostRecentPresident.firstName || '';
+            let presidentLastName = mostRecentPresident.lastName || '';
+            let presidentDisplayName = mostRecentPresident.displayName || '';
 
-            const mostRecentPresident = sortedPresidents[0];
+            // Déchiffrer le nom du président si nécessaire (pour la convention)
+            if (isEncrypted(mostRecentPresident.firstName) || isEncrypted(mostRecentPresident.lastName) || isEncrypted(mostRecentPresident.displayName)) {
+              try {
+                const functions = getFunctions();
+                const decryptUser = httpsCallable(functions, 'decryptUserDataForStructure');
+                const res = await decryptUser({ userId: mostRecentPresident.id });
+                const dec = (res.data as { decryptedData?: { firstName?: string; lastName?: string; displayName?: string } })?.decryptedData;
+                if (dec) {
+                  presidentFirstName = dec.firstName ?? presidentFirstName;
+                  presidentLastName = dec.lastName ?? presidentLastName;
+                  presidentDisplayName = dec.displayName ?? presidentDisplayName;
+                }
+              } catch (e) {
+                console.warn('Déchiffrement président ignoré:', e);
+              }
+            }
+
             // Construire le nom complet : prénom + nom ou displayName
-            if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
-              presidentFullName = `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
-            } else if (mostRecentPresident.displayName) {
-              presidentFullName = mostRecentPresident.displayName;
+            if (presidentFirstName && presidentLastName) {
+              presidentFullName = `${presidentFirstName} ${presidentLastName}`.trim();
+            } else if (presidentDisplayName) {
+              presidentFullName = presidentDisplayName;
             }
           }
         } catch (error) {
@@ -609,80 +684,56 @@ const EntrepriseDetail: React.FC = () => {
         }
       }
 
-      // Extraire le SIREN du nSiret (9 premiers chiffres)
-      // S'assurer que le nSiret est une chaîne de caractères
-      // IMPORTANT: Si le nSiret est stocké comme nombre dans Firestore, il pourrait être tronqué
-      // lors de la conversion. On doit s'assurer de récupérer la valeur complète.
+      // Extraire le SIREN du nSiret (9 premiers chiffres) — utiliser co (données éventuellement déchiffrées)
       let nSiretString = '';
-      if (company.nSiret) {
-        // Si c'est déjà une string, l'utiliser directement
-        if (typeof company.nSiret === 'string') {
-          nSiretString = company.nSiret;
+      const rawNSiret = co.nSiret;
+      if (rawNSiret && typeof rawNSiret === 'string' && !rawNSiret.startsWith('ENC:')) {
+        nSiretString = rawNSiret;
+      } else if (rawNSiret && typeof rawNSiret !== 'string') {
+        const nSiretNum = Number(rawNSiret);
+        if (!isNaN(nSiretNum) && isFinite(nSiretNum)) {
+          nSiretString = nSiretNum.toLocaleString('fr-FR', { useGrouping: false, maximumFractionDigits: 0 });
         } else {
-          // Si c'est un nombre, le convertir en string en préservant tous les chiffres
-          // Utiliser toFixed(0) pour éviter la notation scientifique pour les grands nombres
-          const nSiretNum = Number(company.nSiret);
-          if (!isNaN(nSiretNum) && isFinite(nSiretNum)) {
-            // Pour les grands nombres, utiliser toLocaleString puis retirer les séparateurs
-            nSiretString = nSiretNum.toLocaleString('fr-FR', { useGrouping: false, maximumFractionDigits: 0 });
-          } else {
-            // Fallback: convertir directement en string
-            nSiretString = String(company.nSiret);
-          }
+          nSiretString = String(rawNSiret);
         }
       }
-      
-      // Vérifier que le nSiret n'a pas été tronqué
       if (nSiretString && nSiretString.length < 14 && /^\d+$/.test(nSiretString)) {
-        console.warn(`[replaceTags] ⚠️ ATTENTION: nSiret potentiellement tronqué! Longueur: ${nSiretString.length}, Valeur: "${nSiretString}"`);
-        console.warn(`[replaceTags] ⚠️ nSiret original (type ${typeof company.nSiret}): ${company.nSiret}`);
+        console.warn(`[replaceTags] ⚠️ nSiret potentiellement tronqué! Longueur: ${nSiretString.length}, Valeur: "${nSiretString}"`);
       }
-      
       const siren = nSiretString ? nSiretString.substring(0, 9) : '';
-      
-      console.log(`[replaceTags] nSiret complet de la DB: ${company.nSiret}, Type: ${typeof company.nSiret}`);
-      console.log(`[replaceTags] nSiret converti en string: "${nSiretString}", Longueur: ${nSiretString.length}`);
-      console.log(`[replaceTags] SIREN extrait: ${siren}`);
 
-      // Dictionnaire de remplacements pour toutes les balises
+      // Dictionnaire de remplacements (co = entreprise éventuellement déchiffrée, defaultContact = contact éventuellement déchiffré)
       const replacements: { [key: string]: string } = {
-        // Balises de l'entreprise
-        '<entreprise_nom>': company.name || '[Nom entreprise non disponible]',
+        '<entreprise_nom>': co.name || '[Nom entreprise non disponible]',
         '<entreprise_siren>': siren || '[SIREN non disponible]',
         '<entreprise_nsiret>': nSiretString || '[nSiret non disponible]',
-        '<entreprise_adresse>': company.address || '[Adresse entreprise non disponible]',
-        '<entreprise_ville>': company.city || '[Ville entreprise non disponible]',
-        '<entreprise_code_postal>': company.postalCode || '[Code postal non disponible]',
-        '<entreprise_pays>': company.country || '[Pays entreprise non disponible]',
-        '<entreprise_telephone>': company.phone || '[Téléphone entreprise non disponible]',
-        '<entreprise_email>': company.email || '[Email entreprise non disponible]',
-        '<entreprise_site_web>': company.website || '[Site web entreprise non disponible]',
-        '<entreprise_description>': company.description || '[Description entreprise non disponible]',
-        
-        // Balises alternatives pour l'entreprise (format avec underscore)
-        '<company_nom>': company.name || '[Nom entreprise non disponible]',
+        '<entreprise_adresse>': co.address || '[Adresse entreprise non disponible]',
+        '<entreprise_ville>': co.city || '[Ville entreprise non disponible]',
+        '<entreprise_code_postal>': co.postalCode || '[Code postal non disponible]',
+        '<entreprise_pays>': co.country || '[Pays entreprise non disponible]',
+        '<entreprise_telephone>': co.phone || '[Téléphone entreprise non disponible]',
+        '<entreprise_email>': co.email || '[Email entreprise non disponible]',
+        '<entreprise_site_web>': co.website || '[Site web entreprise non disponible]',
+        '<entreprise_description>': co.description || '[Description entreprise non disponible]',
+        '<company_nom>': co.name || '[Nom entreprise non disponible]',
         '<company_siren>': siren || '[SIREN non disponible]',
         '<company_nsiret>': nSiretString || '[nSiret non disponible]',
-        '<company_adresse>': company.address || '[Adresse entreprise non disponible]',
-        '<company_ville>': company.city || '[Ville entreprise non disponible]',
-        '<company_telephone>': company.phone || '[Téléphone entreprise non disponible]',
-        '<company_email>': company.email || '[Email entreprise non disponible]',
-        
-        // Balises alternatives pour l'entreprise (format camelCase)
-        '<companyName>': company.name || '[Nom entreprise non disponible]',
+        '<company_adresse>': co.address || '[Adresse entreprise non disponible]',
+        '<company_ville>': co.city || '[Ville entreprise non disponible]',
+        '<company_telephone>': co.phone || '[Téléphone entreprise non disponible]',
+        '<company_email>': co.email || '[Email entreprise non disponible]',
+        '<companyName>': co.name || '[Nom entreprise non disponible]',
         '<siren>': siren || '[SIREN non disponible]',
         '<nsiret>': nSiretString || '[nSiret non disponible]',
-        '<companyAddress>': company.address || '[Adresse entreprise non disponible]',
-        '<companyCity>': company.city || '[Ville entreprise non disponible]',
-        '<companyPostalCode>': company.postalCode || '[Code postal non disponible]',
-        '<country>': company.country || '[Pays entreprise non disponible]',
-        '<companyPhone>': company.phone || '[Téléphone entreprise non disponible]',
-        '<companyEmail>': company.email || '[Email entreprise non disponible]',
-        '<website>': company.website || '[Site web entreprise non disponible]',
-        '<companyDescription>': company.description || '[Description entreprise non disponible]',
-        
-        // Balises de mission qui peuvent référencer l'entreprise (pour compatibilité avec les templates)
-        '<mission_entreprise>': company.name || '[Nom entreprise non disponible]',
+        '<companyAddress>': co.address || '[Adresse entreprise non disponible]',
+        '<companyCity>': co.city || '[Ville entreprise non disponible]',
+        '<companyPostalCode>': co.postalCode || '[Code postal non disponible]',
+        '<country>': co.country || '[Pays entreprise non disponible]',
+        '<companyPhone>': co.phone || '[Téléphone entreprise non disponible]',
+        '<companyEmail>': co.email || '[Email entreprise non disponible]',
+        '<website>': co.website || '[Site web entreprise non disponible]',
+        '<companyDescription>': co.description || '[Description entreprise non disponible]',
+        '<mission_entreprise>': co.name || '[Nom entreprise non disponible]',
         '<mission_date_generation>': new Date().toLocaleDateString('fr-FR'),
         '<mission_date_generation_plus_1_an>': (() => {
           const today = new Date();
@@ -707,13 +758,12 @@ const EntrepriseDetail: React.FC = () => {
         '<contact_position>': defaultContact?.position || '[Poste du contact non disponible]',
         '<contact_linkedin>': defaultContact?.linkedin || '[LinkedIn du contact non disponible]',
 
-        // Balises du contact principal
+        // Balises du contact principal (contact_linkedin déjà défini ci-dessus)
         '<contact_nom>': defaultContact?.lastName || '[Nom du contact non disponible]',
         '<contact_prenom>': defaultContact?.firstName || '[Prénom du contact non disponible]',
         '<contact_email>': defaultContact?.email || '[Email du contact non disponible]',
         '<contact_telephone>': defaultContact?.phone || '[Téléphone du contact non disponible]',
         '<contact_poste>': defaultContact?.position || '[Poste du contact non disponible]',
-        '<contact_linkedin>': defaultContact?.linkedin || '[LinkedIn du contact non disponible]',
         '<contact_nom_complet>': defaultContact ? `${defaultContact.firstName || ''} ${defaultContact.lastName || ''}`.trim() : '[Nom complet du contact non disponible]',
 
         // Balises de la structure
@@ -731,18 +781,11 @@ const EntrepriseDetail: React.FC = () => {
         '<structure_apeCode>': structureInfo?.apeCode || '[Code APE de la structure non disponible]',
         '<structure_president_nom_complet>': presidentFullName,
 
-        // Balises système
+        // Balises système (mission_date_* déjà définis ci-dessus)
         '<generationDate>': new Date().toLocaleDateString('fr-FR'),
         '<currentDate>': new Date().toLocaleDateString('fr-FR'),
         '<currentYear>': new Date().getFullYear().toString(),
         '<currentMonth>': new Date().toLocaleDateString('fr-FR', { month: 'long' }),
-        '<mission_date_generation>': new Date().toLocaleDateString('fr-FR'),
-        '<mission_date_generation_plus_1_an>': (() => {
-          const today = new Date();
-          const oneYearLater = new Date(today);
-          oneYearLater.setDate(today.getDate() + 365);
-          return oneYearLater.toLocaleDateString('fr-FR');
-        })(),
       };
       
       console.log(`[replaceTags] Nombre de remplacements disponibles: ${Object.keys(replacements).length}`);
@@ -874,7 +917,16 @@ const EntrepriseDetail: React.FC = () => {
   };
 
   const handleEditClick = () => {
-    setEditedCompany(company || {});
+    // Initialiser avec les données déchiffrées pour afficher SIRET, adresse, téléphone en clair
+    const dec = decryptedCompany || {};
+    const toEdit = company ? {
+      ...company,
+      ...dec,
+      address: (dec.address ?? (dec as any).companyAddress ?? company.address) as string | undefined,
+      phone: (dec.phone ?? company.phone) as string | undefined,
+      nSiret: (dec.nSiret ?? (dec as any).siret ?? company.nSiret) as string | undefined,
+    } : {};
+    setEditedCompany(toEdit);
     setEditMode(true);
   };
 
@@ -1048,7 +1100,7 @@ const EntrepriseDetail: React.FC = () => {
     }
   };
 
-  // Fonction pour générer la convention entreprise
+  // Fonction pour générer la convention entreprise (utilise données déchiffrées)
   const handleGenerateConvention = async () => {
     if (!company || !conventionTemplate) {
       setSnackbar({
@@ -1058,6 +1110,16 @@ const EntrepriseDetail: React.FC = () => {
       });
       return;
     }
+
+    const decConv = decryptedCompany || {};
+    const displayCompanyForConv = {
+      ...company,
+      ...decConv,
+      address: decConv.address ?? (decConv as any).companyAddress ?? company.address,
+      phone: decConv.phone ?? company.phone,
+      nSiret: decConv.nSiret ?? (decConv as any).siret ?? company.nSiret,
+    };
+    const displayContactsForConv = (company.contacts || []).map(c => ({ ...c, ...decryptedContacts[c.id] }));
 
     setGeneratingConvention(true);
     try {
@@ -1105,8 +1167,8 @@ const EntrepriseDetail: React.FC = () => {
             valueToReplace = '';
           }
 
-          // Utiliser la fonction replaceTags locale qui gère toutes les balises d'entreprise
-          const value = await replaceTags(valueToReplace);
+          // Utiliser replaceTags avec les données déchiffrées (entreprise + contacts)
+          const value = await replaceTags(valueToReplace, undefined, undefined, displayCompanyForConv, displayContactsForConv);
           console.log(`[Convention] Variable: ${variable.variableId}, Balise: ${valueToReplace} -> Valeur: "${value}"`);
           console.log(`[Convention] Longueur de la valeur: ${value?.length || 0} caractères`);
           
@@ -1114,7 +1176,7 @@ const EntrepriseDetail: React.FC = () => {
           if (variable.variableId === 'nSiret' || variable.variableId === 'nsiret' || valueToReplace.includes('nsiret')) {
             console.log(`[Convention] ⚠️ nSiret DÉTECTÉ - Variable ID: ${variable.variableId}, Balise: ${valueToReplace}`);
             console.log(`[Convention] ⚠️ nSiret - Valeur complète: "${value}", Longueur: ${value?.length || 0}`);
-            console.log(`[Convention] ⚠️ nSiret - nSiret de la company: "${company.nSiret}", Type: ${typeof company.nSiret}`);
+            console.log(`[Convention] ⚠️ nSiret - nSiret (déchiffré): "${displayCompanyForConv.nSiret}", Type: ${typeof displayCompanyForConv.nSiret}`);
             if (value && value.length < 14) {
               console.error(`[Convention] ❌ ERREUR: nSiret tronqué! Longueur attendue: 14, Longueur actuelle: ${value.length}`);
             }
@@ -1347,8 +1409,9 @@ const EntrepriseDetail: React.FC = () => {
       // 3. Sauvegarder le PDF modifié
       const modifiedPdfBytes = await pdfDoc.save();
       
-      // Créer le nom du fichier
-      const fileName = `Convention_${company.name.replace(/\s+/g, '_')}.pdf`;
+      // Créer le nom du fichier (nom d'entreprise déchiffré)
+      const companyNameForFile = (displayCompanyForConv.name || company.name || 'Entreprise').replace(/\s+/g, '_');
+      const fileName = `Convention_${companyNameForFile}.pdf`;
 
       // Uploader le fichier modifié
       const blob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
@@ -1639,6 +1702,14 @@ const EntrepriseDetail: React.FC = () => {
     // Suppression de la fonction
   };
 
+  if (permissionLoading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', bgcolor: '#f5f5f7' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
   if (!company) {
     return (
       <Box sx={{ 
@@ -1653,8 +1724,50 @@ const EntrepriseDetail: React.FC = () => {
     );
   }
 
+  if (!canRead) {
+    return (
+      <AccessDenied
+        pageName="Détail entreprise"
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette entreprise."
+      />
+    );
+  }
+
+  // Fusionner les données déchiffrées en mappant les clés backend (companyAddress -> address, siret -> nSiret)
+  const dec = decryptedCompany || {};
+  const displayCompany = {
+    ...company,
+    ...dec,
+    address: (dec.address ?? (dec as any).companyAddress ?? company.address) as string | undefined,
+    phone: (dec.phone ?? company.phone) as string | undefined,
+    nSiret: (dec.nSiret ?? (dec as any).siret ?? company.nSiret) as string | undefined,
+  };
+  const displayContacts = (company.contacts || []).map(c => ({ ...c, ...decryptedContacts[c.id] }));
+
   return (
     <Box sx={{ bgcolor: '#f5f5f7', minHeight: '100vh' }}>
+      {/* Barre de chargement pendant la génération de la convention */}
+      {generatingConvention && (
+        <Box
+          sx={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 9999,
+            bgcolor: 'white',
+            boxShadow: 1,
+          }}
+        >
+          <LinearProgress color="primary" sx={{ height: 6 }} />
+          <Box sx={{ py: 1, textAlign: 'center' }}>
+            <Typography variant="body2" color="primary.main" fontWeight={600}>
+              Génération de la convention en cours...
+            </Typography>
+          </Box>
+        </Box>
+      )}
+
       {/* Header */}
       <Box 
         sx={{ 
@@ -1677,11 +1790,11 @@ const EntrepriseDetail: React.FC = () => {
           }}
         >
           <Box sx={{ position: 'relative' }}>
-            {company.logo ? (
+            {displayCompany.logo ? (
               <Box
                 component="img"
-                src={company.logo}
-                alt={company.name}
+                src={displayCompany.logo}
+                alt={displayCompany.name}
                 sx={{
                   width: 100,
                   height: 100,
@@ -1701,34 +1814,36 @@ const EntrepriseDetail: React.FC = () => {
                 <BusinessIcon sx={{ fontSize: 50 }} />
               </Avatar>
             )}
-            <Button
-              component="label"
-              variant="outlined"
-              size="small"
-              startIcon={<CloudUploadIcon />}
-              sx={{
-                position: 'absolute',
-                bottom: -10,
-                right: -10,
-                minWidth: 'auto',
-                p: 1,
-                borderRadius: '50%',
-                bgcolor: 'white',
-                borderColor: '#d2d2d7',
-                '&:hover': {
-                  bgcolor: '#f5f5f7',
-                  borderColor: '#86868b'
-                }
-              }}
-            >
-              <input
-                type="file"
-                hidden
-                accept="image/*"
-                ref={fileInputRef}
-                onChange={handleLogoChange}
-              />
-            </Button>
+            {canWrite && (
+              <Button
+                component="label"
+                variant="outlined"
+                size="small"
+                startIcon={<CloudUploadIcon />}
+                sx={{
+                  position: 'absolute',
+                  bottom: -10,
+                  right: -10,
+                  minWidth: 'auto',
+                  p: 1,
+                  borderRadius: '50%',
+                  bgcolor: 'white',
+                  borderColor: '#d2d2d7',
+                  '&:hover': {
+                    bgcolor: '#f5f5f7',
+                    borderColor: '#86868b'
+                  }
+                }}
+              >
+                <input
+                  type="file"
+                  hidden
+                  accept="image/*"
+                  ref={fileInputRef}
+                  onChange={handleLogoChange}
+                />
+              </Button>
+            )}
           </Box>
           
           <Box sx={{ flex: 1 }}>
@@ -1740,12 +1855,12 @@ const EntrepriseDetail: React.FC = () => {
                 mb: 1
               }}
             >
-              {company.name}
+              {displayCompany.name}
             </Typography>
             <Stack direction="row" spacing={2}>
-              {company.nSiret && (
+              {(displayCompany.nSiret && !String(displayCompany.nSiret).startsWith('ENC:')) && (
                 <Chip 
-                  label={`nSiret: ${company.nSiret}`}
+                  label={`nSiret: ${displayCompany.nSiret}`}
                   sx={{ 
                     bgcolor: '#f5f5f7',
                     color: '#1d1d1f',
@@ -1765,49 +1880,53 @@ const EntrepriseDetail: React.FC = () => {
           </Box>
           
           <Stack direction="row" spacing={2}>
-            <Button
-              startIcon={<EditIcon />}
-              onClick={handleEditClick}
-              sx={{
-                color: '#0066cc',
-                '&:hover': {
-                  bgcolor: 'transparent',
-                  color: '#0077ed'
-                }
-              }}
-            >
-              Modifier
-            </Button>
-            <Button
-              startIcon={<DeleteIcon />}
-              onClick={handleDeleteClick}
-              sx={{
-                color: '#ff3b30',
-                '&:hover': {
-                  bgcolor: 'transparent',
-                  color: '#ff453a'
-                }
-              }}
-            >
-              Supprimer
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={generatingConvention ? <CircularProgress size={20} /> : <AssignmentIcon />}
-              onClick={handleGenerateConvention}
-              disabled={generatingConvention || !conventionTemplate}
-              sx={{
-                bgcolor: '#0066cc',
-                '&:hover': {
-                  bgcolor: '#0077ed'
-                },
-                '&.Mui-disabled': {
-                  bgcolor: '#86868b'
-                }
-              }}
-            >
-              {generatingConvention ? 'Génération...' : 'Générer la convention'}
-            </Button>
+            {canWrite && (
+              <>
+                <Button
+                  startIcon={<EditIcon />}
+                  onClick={handleEditClick}
+                  sx={{
+                    color: '#0066cc',
+                    '&:hover': {
+                      bgcolor: 'transparent',
+                      color: '#0077ed'
+                    }
+                  }}
+                >
+                  Modifier
+                </Button>
+                <Button
+                  startIcon={<DeleteIcon />}
+                  onClick={handleDeleteClick}
+                  sx={{
+                    color: '#ff3b30',
+                    '&:hover': {
+                      bgcolor: 'transparent',
+                      color: '#ff453a'
+                    }
+                  }}
+                >
+                  Supprimer
+                </Button>
+                <Button
+                  variant="contained"
+                  startIcon={generatingConvention ? <CircularProgress size={20} /> : <AssignmentIcon />}
+                  onClick={handleGenerateConvention}
+                  disabled={generatingConvention || !conventionTemplate}
+                  sx={{
+                    bgcolor: '#0066cc',
+                    '&:hover': {
+                      bgcolor: '#0077ed'
+                    },
+                    '&.Mui-disabled': {
+                      bgcolor: '#86868b'
+                    }
+                  }}
+                >
+                  {generatingConvention ? 'Génération...' : 'Générer la convention'}
+                </Button>
+              </>
+            )}
           </Stack>
         </Box>
 
@@ -1862,43 +1981,43 @@ const EntrepriseDetail: React.FC = () => {
                 </Typography>
                 
                 <Grid container spacing={3}>
-                  {company.address && (
+                  {displayCompany.address && !String(displayCompany.address).startsWith('ENC:') && (
                     <Grid item xs={12}>
                       <Box sx={{ display: 'flex', gap: 2 }}>
                         <LocationIcon sx={{ color: '#86868b' }} />
                         <Typography>
-                          {company.address}
-                          {company.postalCode && company.city && `, ${company.postalCode} ${company.city}`}
-                          {company.city && !company.postalCode && `, ${company.city}`}
-                          {company.country && `, ${company.country}`}
+                          {displayCompany.address}
+                          {displayCompany.postalCode && displayCompany.city && `, ${displayCompany.postalCode} ${displayCompany.city}`}
+                          {displayCompany.city && !displayCompany.postalCode && `, ${displayCompany.city}`}
+                          {displayCompany.country && `, ${displayCompany.country}`}
                         </Typography>
                       </Box>
                     </Grid>
                   )}
                   
-                  {company.phone && (
+                  {displayCompany.phone && !String(displayCompany.phone).startsWith('ENC:') && (
                     <Grid item xs={12} sm={6}>
                       <Box sx={{ display: 'flex', gap: 2 }}>
                         <PhoneIcon sx={{ color: '#86868b' }} />
-                        <Typography>{company.phone}</Typography>
+                        <Typography>{displayCompany.phone}</Typography>
                       </Box>
                     </Grid>
                   )}
                   
-                  {company.email && (
+                  {displayCompany.email && (
                     <Grid item xs={12} sm={6}>
                       <Box sx={{ display: 'flex', gap: 2 }}>
                         <EmailIcon sx={{ color: '#86868b' }} />
-                        <Typography>{company.email}</Typography>
+                        <Typography>{displayCompany.email}</Typography>
                       </Box>
                     </Grid>
                   )}
                   
-                  {company.website && (
+                  {displayCompany.website && (
                     <Grid item xs={12}>
                       <Box sx={{ display: 'flex', gap: 2 }}>
                         <LanguageIcon sx={{ color: '#86868b' }} />
-                        <Typography>{company.website}</Typography>
+                        <Typography>{displayCompany.website}</Typography>
                       </Box>
                     </Grid>
                   )}
@@ -2231,7 +2350,7 @@ const EntrepriseDetail: React.FC = () => {
             </Box>
             
             <List sx={{ p: 0 }}>
-              {company.contacts?.map((contact, index) => (
+              {displayContacts.map((contact, index) => (
                 <React.Fragment key={contact.id}>
                   <ListItem 
                     sx={{ 
@@ -2239,7 +2358,7 @@ const EntrepriseDetail: React.FC = () => {
                       '&:hover': {
                         bgcolor: '#f9f9f9',
                         borderRadius: index === 0 ? '1.2rem 1.2rem 0 0' : 
-                                     index === (company.contacts?.length || 0) - 1 ? '0 0 1.2rem 1.2rem' : 
+                                     index === displayContacts.length - 1 ? '0 0 1.2rem 1.2rem' : 
                                      '0'
                       }
                     }}
@@ -2473,18 +2592,20 @@ const EntrepriseDetail: React.FC = () => {
                             </Box>
                           }
                         />
-                        <IconButton
-                          onClick={() => handleDeleteNote(note.id)}
-                          sx={{
-                            color: '#86868b',
-                            '&:hover': {
-                              bgcolor: 'transparent',
-                              color: '#ff3b30'
-                            }
-                          }}
-                        >
-                          <DeleteIcon />
-                        </IconButton>
+                        {canWrite && (
+                          <IconButton
+                            onClick={() => handleDeleteNote(note.id)}
+                            sx={{
+                              color: '#86868b',
+                              '&:hover': {
+                                bgcolor: 'transparent',
+                                color: '#ff3b30'
+                              }
+                            }}
+                          >
+                            <DeleteIcon />
+                          </IconButton>
+                        )}
                       </ListItem>
                       {index < notes.length - 1 && (
                         <Divider />
@@ -2509,59 +2630,61 @@ const EntrepriseDetail: React.FC = () => {
               </Paper>
             </Grid>
 
-            <Grid item xs={12} md={4}>
-              <Paper 
-                sx={{ 
-                  p: 3, 
-                  borderRadius: '1.2rem',
-                  border: '1px solid #e5e5e7'
-                }}
-              >
-                <Typography 
-                  variant="h6" 
+            {canWrite && (
+              <Grid item xs={12} md={4}>
+                <Paper 
                   sx={{ 
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    mb: 2
+                    p: 3, 
+                    borderRadius: '1.2rem',
+                    border: '1px solid #e5e5e7'
                   }}
                 >
-                  Ajouter une note
-                </Typography>
-                
-                <TaggingInput
-                  value={newNote}
-                  onChange={setNewNote}
-                  placeholder="Écrivez votre note ici..."
-                  multiline={true}
-                  rows={4}
-                  availableUsers={availableUsers}
-                  onTaggedUsersChange={setTaggedUsers}
-                />
-                
-                <Box sx={{ mb: 2 }} />
-                
-                <Button
-                  fullWidth
-                  variant="contained"
-                  startIcon={<SaveIcon />}
-                  onClick={handleSaveNote}
-                  disabled={!newNote.trim()}
-                  sx={{
-                    bgcolor: '#0066cc',
-                    borderRadius: '0.8rem',
-                    py: 1,
-                    '&:hover': {
-                      bgcolor: '#0077ed'
-                    },
-                    '&.Mui-disabled': {
-                      bgcolor: '#86868b'
-                    }
-                  }}
-                >
-                  Enregistrer
-                </Button>
-              </Paper>
-            </Grid>
+                  <Typography 
+                    variant="h6" 
+                    sx={{ 
+                      color: '#1d1d1f',
+                      fontWeight: 600,
+                      mb: 2
+                    }}
+                  >
+                    Ajouter une note
+                  </Typography>
+                  
+                  <TaggingInput
+                    value={newNote}
+                    onChange={setNewNote}
+                    placeholder="Écrivez votre note ici..."
+                    multiline={true}
+                    rows={4}
+                    availableUsers={availableUsers}
+                    onTaggedUsersChange={setTaggedUsers}
+                  />
+                  
+                  <Box sx={{ mb: 2 }} />
+                  
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    startIcon={<SaveIcon />}
+                    onClick={handleSaveNote}
+                    disabled={!newNote.trim()}
+                    sx={{
+                      bgcolor: '#0066cc',
+                      borderRadius: '0.8rem',
+                      py: 1,
+                      '&:hover': {
+                        bgcolor: '#0077ed'
+                      },
+                      '&.Mui-disabled': {
+                        bgcolor: '#86868b'
+                      }
+                    }}
+                  >
+                    Enregistrer
+                  </Button>
+                </Paper>
+              </Grid>
+            )}
           </Grid>
         </TabPanel>
 

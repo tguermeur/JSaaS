@@ -33,8 +33,6 @@ import {
 } from '@mui/material';
 import {
   Add as AddIcon,
-  CloudUpload as CloudUploadIcon,
-  Download as DownloadIcon,
   Edit as EditIcon,
   Save as SaveIcon,
   Cancel as CancelIcon,
@@ -46,7 +44,6 @@ import {
   ArrowDownward as ArrowDownwardIcon,
   WorkHistory as WorkHistoryIcon
 } from '@mui/icons-material';
-import Papa from 'papaparse';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../firebase/config';
 import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setDoc, deleteDoc, orderBy, limit } from 'firebase/firestore';
@@ -171,16 +168,12 @@ const Mission: React.FC = () => {
   const [missions, setMissions] = useState<MissionData[]>([]);
   const [filteredMissions, setFilteredMissions] = useState<MissionData[]>([]);
   const [favoriteMissions, setFavoriteMissions] = useState<string[]>([]);
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [importedData, setImportedData] = useState<MissionData[]>([]);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
     severity: 'success' as 'success' | 'error'
   });
-  const [editingRow, setEditingRow] = useState<number | null>(null);
-  const [editedData, setEditedData] = useState<MissionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [missionToEdit, setMissionToEdit] = useState<MissionData | null>(null);
@@ -202,32 +195,20 @@ const Mission: React.FC = () => {
 
       try {
         setLoading(true);
-        console.log("Début de la récupération des missions");
-        console.log("UID de l'utilisateur:", currentUser.uid);
 
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
         if (!userDoc.exists()) {
-          console.error("Document utilisateur non trouvé");
           setLoading(false);
           return;
         }
 
         const userData = userDoc.data();
-        console.log("Données complètes de l'utilisateur:", userData);
-
         const userStatus = userData?.status;
         const userStructureId = userData?.structureId;
-
-        console.log("Données utilisateur:", { 
-          userStatus, 
-          userStructureId,
-          email: userData?.email 
-        });
 
         setUserStructureId(userStructureId);
 
         if (!userStructureId && userStatus !== 'superadmin') {
-          console.error("Aucune structure associée à l'utilisateur");
           setShowNoStructureAlert(true);
           setLoading(false);
           return;
@@ -262,46 +243,25 @@ const Mission: React.FC = () => {
         setAvailableCharges(decryptedCharges);
 
         const missionsRef = collection(db, 'missions');
-        let missionsQuery;
-
-        console.log("Filtrage des missions pour la structure:", userStructureId);
-        missionsQuery = query(
+        const missionsQuery = query(
           missionsRef,
           where('structureId', '==', userStructureId)
         );
 
-        console.log("Exécution de la requête Firestore");
         const snapshot = await getDocs(missionsQuery);
-        console.log("Nombre total de missions trouvées:", snapshot.docs.length);
-        
         const missionsData = snapshot.docs.map(doc => {
           const data = doc.data() as FirestoreMissionData;
-          console.log("Mission trouvée:", {
-            id: doc.id,
-            numeroMission: data.numeroMission,
-            structureId: data.structureId,
-            userStructureId,
-            match: data.structureId === userStructureId,
-            createdAt: data.createdAt
-          });
           return {
             id: doc.id,
             ...data
           } as MissionData;
         });
 
-        // Trier les missions par date de création
         missionsData.sort((a, b) => {
           const dateA = a.createdAt?.toDate?.() || new Date(0);
           const dateB = b.createdAt?.toDate?.() || new Date(0);
           return dateB.getTime() - dateA.getTime();
         });
-
-        console.log("Missions triées:", missionsData.map(m => ({
-          id: m.id,
-          numeroMission: m.numeroMission,
-          createdAt: m.createdAt
-        })));
 
         setMissions(missionsData);
         setLoading(false);
@@ -329,8 +289,8 @@ const Mission: React.FC = () => {
           const favoritesData = favoritesDoc.data();
           setFavoriteMissions(favoritesData.missionIds || []);
         }
-      } catch (error) {
-        console.error('Erreur lors du chargement des favoris:', error);
+      } catch {
+        setFavoriteMissions([]);
       }
     };
 
@@ -358,7 +318,6 @@ const Mission: React.FC = () => {
 
   useEffect(() => {
     let result = [...missions];
-    console.log("Début du filtrage des missions. Total initial:", result.length);
     
     if (searchTerm) {
       result = result.filter(mission => 
@@ -367,29 +326,24 @@ const Mission: React.FC = () => {
         mission.location?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         mission.chargeName?.toLowerCase().includes(searchTerm.toLowerCase())
       );
-      console.log("Après filtrage par recherche. Total:", result.length);
     }
     
     if (statusFilter !== 'all') {
       result = result.filter(mission => mission.status === statusFilter);
-      console.log("Après filtrage par statut. Total:", result.length);
     }
     
     if (showFavoritesOnly) {
       result = result.filter(mission => favoriteMissions.includes(mission.id || ''));
-      console.log("Après filtrage par favoris. Total:", result.length);
     }
 
     if (archiveFilter !== 'all') {
       result = result.filter(mission => 
         archiveFilter === 'archived' ? mission.isArchived : !mission.isArchived
       );
-      console.log("Après filtrage par archivage. Total:", result.length);
     }
 
     if (mandatFilter !== 'all') {
       result = result.filter(mission => mission.mandat === mandatFilter);
-      console.log("Après filtrage par mandat. Total:", result.length);
     }
     
     result.sort((a, b) => {
@@ -419,9 +373,6 @@ const Mission: React.FC = () => {
       
       return sortOrder === 'asc' ? comparison : -comparison;
     });
-    
-    console.log("Résultat final après tri. Total:", result.length);
-    console.log("Première mission:", result[0]);
     
     setFilteredMissions(result);
   }, [missions, searchTerm, statusFilter, sortBy, sortOrder, showFavoritesOnly, favoriteMissions, archiveFilter, mandatFilter]);
@@ -473,101 +424,9 @@ const Mission: React.FC = () => {
     });
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    Papa.parse(file, {
-      header: true,
-      complete: (results) => {
-        const missions = results.data.map((row: any) => ({
-          numeroMission: row.numeroMission || '',
-          company: row.company || '',
-          location: row.location || '',
-          startDate: row.startDate || '',
-          endDate: row.endDate || '',
-          studentCount: parseInt(row.studentCount) || 0,
-          hours: parseInt(row.hours) || 0,
-          status: row.status || 'En attente',
-          structureId: userStructureId || '',
-          chargeId: currentUser?.uid || '',
-          chargeName: currentUser?.displayName || '',
-          isPublic: true,
-          etape: 'Négociation' as const
-        }));
-        setImportedData(missions);
-      },
-      error: (error) => {
-        console.error('Erreur lors du parsing du fichier:', error);
-        setSnackbar({
-          open: true,
-          message: 'Erreur lors de la lecture du fichier',
-          severity: 'error',
-        });
-      }
-    });
-  };
-
   const handleEditRow = (mission: MissionData) => {
     setMissionToEdit(mission);
     setEditDialogOpen(true);
-  };
-
-  const handleImportMission = async () => {
-    if (!currentUser || !userStructureId) return;
-
-    try {
-      for (const mission of importedData) {
-        await addDoc(collection(db, 'missions'), {
-          ...mission,
-          createdAt: new Date(),
-          createdBy: currentUser.uid,
-          permissions: {
-            viewers: [],
-            editors: [currentUser.uid]
-          }
-        });
-      }
-
-      setImportDialogOpen(false);
-      setImportedData([]);
-      setSnackbar({
-        open: true,
-        message: 'Missions importées avec succès',
-        severity: 'success',
-      });
-    } catch (error) {
-      console.error('Erreur lors de l\'importation:', error);
-      setSnackbar({
-        open: true,
-        message: 'Erreur lors de l\'importation des missions',
-        severity: 'error',
-      });
-    }
-  };
-
-  const downloadTemplate = () => {
-    const headers = [
-      'numeroMission',
-      'company',
-      'location',
-      'startDate',
-      'endDate',
-      'studentCount',
-      'hours',
-      'status'
-    ];
-
-    const csvContent = [
-      headers.join(','),
-      'MISSION001,Entreprise A,Paris,2024-03-01,2024-03-31,20,40,En attente'
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'template_missions.csv';
-    link.click();
   };
 
   const handleSaveEdit = async () => {
@@ -734,9 +593,6 @@ const Mission: React.FC = () => {
       
       // Générer le numéro final: YYMMNN
       const nextMissionNumber = `${yearStr}${monthStr}${sequenceStr}`;
-      
-      console.log(`Numéro de mission généré: ${nextMissionNumber} (${currentMonthMissions.length} missions ce mois)`);
-      
       return nextMissionNumber;
     } catch (error) {
       console.error('Erreur lors de la génération du numéro de mission:', error);
@@ -752,13 +608,7 @@ const Mission: React.FC = () => {
     try {
       if (!currentUser) return;
 
-      console.log("Début de la création de la mission avec les données:", formData);
-      console.log("Structure ID de l'utilisateur:", userStructureId);
-      console.log("CompanyId reçu:", formData.companyId);
-      console.log("CompanyName reçu:", formData.companyName);
-
       if (!userStructureId) {
-        console.error("Pas de structure ID disponible");
         setSnackbar({
           open: true,
           message: 'Erreur: Aucune structure associée',
@@ -794,7 +644,6 @@ const Mission: React.FC = () => {
 
       const existingMission = await checkMissionNumberExists(formData.number);
       if (existingMission) {
-        console.log("Le numéro de mission existe déjà:", formData.number);
         setSnackbar({
           open: true,
           message: 'Ce numéro de mission existe déjà',
@@ -827,20 +676,10 @@ const Mission: React.FC = () => {
         mandat: missionMandat
       };
 
-      console.log("Nouvelle mission à créer:", newMission);
-
       const docRef = await addDoc(collection(db, 'missions'), newMission);
-      console.log("Mission créée avec l'ID:", docRef.id);
-
       const createdMission = { ...newMission, id: docRef.id };
-      console.log("Mission créée complète:", createdMission);
 
-      setMissions(prev => {
-        console.log("Anciennes missions:", prev);
-        const newMissions = [...prev, createdMission];
-        console.log("Nouvelles missions:", newMissions);
-        return newMissions;
-      });
+      setMissions(prev => [...prev, createdMission]);
 
       setCreateDialogOpen(false);
       
@@ -1258,173 +1097,6 @@ const Mission: React.FC = () => {
       )}
 
       <Dialog
-        open={importDialogOpen}
-        onClose={() => setImportDialogOpen(false)}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>Importer des missions</DialogTitle>
-        <DialogContent>
-          <Box sx={{ p: 2 }}>
-            <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center' }}>
-              <Button
-                variant="outlined"
-                startIcon={<DownloadIcon />}
-                onClick={downloadTemplate}
-              >
-                Télécharger le modèle CSV
-              </Button>
-              <Typography variant="body2" color="textSecondary">
-                ou
-              </Typography>
-              <input
-                type="file"
-                onChange={handleFileUpload}
-                accept=".csv"
-                style={{ flexGrow: 1 }}
-              />
-            </Box>
-            
-            {importedData.length > 0 && (
-              <TableContainer component={Paper} sx={{ mt: 2 }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Numéro</TableCell>
-                      <TableCell>Nom CDM</TableCell>
-                      <TableCell>Date</TableCell>
-                      <TableCell>Lieu</TableCell>
-                      <TableCell>Entreprise</TableCell>
-                      <TableCell>Prix HT</TableCell>
-                      <TableCell>Actions</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {importedData.map((data, index) => (
-                      <TableRow key={index}>
-                        {editingRow === index ? (
-                          <>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.numeroMission || ''}
-                                onChange={(e) => handleEditField('numeroMission', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.nomCDM || ''}
-                                onChange={(e) => handleEditField('nomCDM', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                type="date"
-                                value={editedData?.date || ''}
-                                onChange={(e) => handleEditField('date', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.lieu || ''}
-                                onChange={(e) => handleEditField('lieu', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                value={editedData?.entreprise || ''}
-                                onChange={(e) => handleEditField('entreprise', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <TextField
-                                size="small"
-                                type="number"
-                                value={editedData?.prixHT || 0}
-                                onChange={(e) => handleEditField('prixHT', e.target.value)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Box sx={{ display: 'flex', gap: 1 }}>
-                                <Tooltip title="Sauvegarder">
-                                  <IconButton
-                                    size="small"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleSaveEdit();
-                                    }}
-                                    color="primary"
-                                  >
-                                    <SaveIcon />
-                                  </IconButton>
-                                </Tooltip>
-                                <Tooltip title="Annuler">
-                                  <IconButton
-                                    size="small"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleCancelEdit();
-                                    }}
-                                    color="error"
-                                  >
-                                    <CancelIcon />
-                                  </IconButton>
-                                </Tooltip>
-                              </Box>
-                            </TableCell>
-                          </>
-                        ) : (
-                          <>
-                            <TableCell>{data.numeroMission}</TableCell>
-                            <TableCell>{data.nomCDM}</TableCell>
-                            <TableCell>{data.date}</TableCell>
-                            <TableCell>{data.lieu}</TableCell>
-                            <TableCell>{data.entreprise}</TableCell>
-                            <TableCell>{`${data.prixHT?.toFixed(2) || '0.00'} €`}</TableCell>
-                            <TableCell>
-                              <Box sx={{ display: 'flex', gap: 1 }}>
-                                <Tooltip title="Modifier">
-                                  <IconButton
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleEditRow(data);
-                                    }}
-                                  >
-                                    <EditIcon />
-                                  </IconButton>
-                                </Tooltip>
-                                <Tooltip title="Importer">
-                                  <IconButton
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleImportMission();
-                                    }}
-                                  >
-                                    <SaveIcon />
-                                  </IconButton>
-                                </Tooltip>
-                              </Box>
-                            </TableCell>
-                          </>
-                        )}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            )}
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setImportDialogOpen(false)}>Fermer</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
         open={editDialogOpen}
         onClose={() => setEditDialogOpen(false)}
         maxWidth="md"
@@ -1500,7 +1172,12 @@ const Mission: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditDialogOpen(false)}>Annuler</Button>
-          <Button onClick={handleSaveMissionEdit} variant="contained" color="primary">
+          <Button
+            onClick={handleSaveMissionEdit}
+            variant="contained"
+            color="primary"
+            disabled={!canWrite}
+          >
             Enregistrer
           </Button>
         </DialogActions>

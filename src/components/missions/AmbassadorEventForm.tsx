@@ -528,9 +528,6 @@ export const AmbassadorEventForm: React.FC<AmbassadorEventFormProps> = ({
 
       if (isEditing && initialEvent) {
         // Mode édition - mettre à jour l'événement existant
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AmbassadorEventForm.tsx:530',message:'Données événement initial',data:{eventId:initialEvent.id,eventType:initialEvent.type,hasNumeroMission:!!initialEvent.numeroMission,numeroMission:initialEvent.numeroMission,hasCreatedBy:!!initialEvent.createdBy,hasCreatedAt:!!(initialEvent as any).createdAt,eventCompanyId:initialEvent.companyId,userStatus:userData?.status,userCompanyId:userData?.companyId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         // Récupérer le companyId si l'événement n'en a pas encore
         let companyId: string | undefined = initialEvent.companyId;
         
@@ -564,19 +561,10 @@ export const AmbassadorEventForm: React.FC<AmbassadorEventFormProps> = ({
           updatedAt: new Date(),
           type: 'ambassadeur_event' // CRITIQUE: Doit être présent pour que les règles Firestore fonctionnent
         };
-        
-        // #region agent log
-        const affectedKeys = Object.keys(updateData);
-        const hasCriticalFields = affectedKeys.includes('numeroMission') || affectedKeys.includes('createdBy') || affectedKeys.includes('createdAt');
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AmbassadorEventForm.tsx:551',message:'updateData avant envoi',data:{eventId:initialEvent.id,updateDataKeys:affectedKeys,hasType:!!updateData.type,hasCriticalFields,userStatus:userData?.status,userCompanyId:userData?.companyId,eventCompanyId:initialEvent.companyId,eventType:initialEvent.type,eventNumeroMission:initialEvent.numeroMission},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
-        
+
         // Ajouter le companyId si disponible et si l'événement n'en a pas encore
         if (companyId && !initialEvent.companyId) {
           updateData.companyId = companyId;
-          // #region agent log
-          fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AmbassadorEventForm.tsx:567',message:'companyId ajouté à updateData',data:{companyId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
         }
 
         // Ajouter les coordonnées seulement si elles sont disponibles et valides
@@ -586,15 +574,7 @@ export const AmbassadorEventForm: React.FC<AmbassadorEventFormProps> = ({
           updateData.locationCoordinates = location.coordinates;
         }
 
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AmbassadorEventForm.tsx:576',message:'Tentative updateDoc',data:{eventId:initialEvent.id,updateDataKeys:Object.keys(updateData),updateData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
-        
         await updateDoc(doc(db, 'missions', initialEvent.id), updateData);
-        
-        // #region agent log
-        fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AmbassadorEventForm.tsx:578',message:'updateDoc réussi',data:{eventId:initialEvent.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
 
         if (onSuccess) {
           onSuccess();
@@ -641,6 +621,11 @@ export const AmbassadorEventForm: React.FC<AmbassadorEventFormProps> = ({
           slots: slots
         };
         
+        // structureId requis par les règles Firestore pour les admins/membres
+        if (userData?.structureId) {
+          missionData.structureId = userData.structureId;
+        }
+        
         // Ajouter le companyId si disponible
         if (companyId) {
           missionData.companyId = companyId;
@@ -662,9 +647,6 @@ export const AmbassadorEventForm: React.FC<AmbassadorEventFormProps> = ({
         }
       }
     } catch (error: any) {
-      // #region agent log
-      fetch('http://127.0.0.1:7243/ingest/510b90a4-d51b-412b-a016-9c30453a7b93',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'AmbassadorEventForm.tsx:660',message:'Erreur updateDoc',data:{errorCode:error?.code,errorMessage:error?.message,isEditing,eventId:initialEvent?.id,userStatus:userData?.status,userCompanyId:userData?.companyId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       console.error(`Erreur ${isEditing ? 'modification' : 'création'} événement:`, error);
       alert(`Erreur lors de ${isEditing ? 'la modification' : 'la création'} de l'événement.`);
     } finally {

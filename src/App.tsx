@@ -20,6 +20,7 @@ import TagLibrary from './pages/TagLibrary';
 import TemplateAssignment from './pages/settings/TemplateAssignment';
 import StructureSettings from './pages/settings/StructureSettings';
 import MissionDescriptions from './pages/settings/MissionDescriptions';
+import ScoringSettings from './pages/settings/ScoringSettings';
 import Storage from './pages/settings/Storage';
 import Billing from './pages/settings/Billing';
 import BillingPage from './pages/BillingPage';
@@ -189,7 +190,7 @@ function App(): JSX.Element {
                       } />
                       <Route path="etude" element={
                         <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
-                          <ProtectedRoute requiredPermission={{ pageId: 'etude', accessType: 'read' }}>
+                          <ProtectedRoute requiredPermission={{ pageId: 'audit', accessType: 'read' }}>
                             <Etude />
                           </ProtectedRoute>
                         </RequireRole>
@@ -307,6 +308,11 @@ function App(): JSX.Element {
                         <Route path="mission-descriptions" element={
                           <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
                             <MissionDescriptions />
+                          </RequireRole>
+                        } />
+                        <Route path="scoring" element={
+                          <RequireRole allowedRoles={['admin_structure', 'admin', 'membre', 'superadmin']}>
+                            <ScoringSettings />
                           </RequireRole>
                         } />
                         <Route path="storage" element={

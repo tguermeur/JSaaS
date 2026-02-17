@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 import { AmbassadorEventsList } from '../components/missions/AmbassadorEventsList';
 import { AmbassadorListTab } from '../components/missions/AmbassadorListTab';
 import { AddAmbassadorDialog } from '../components/missions/AddAmbassadorDialog';
@@ -11,6 +13,7 @@ import { CircularProgress, Box } from '@mui/material';
 
 const Ambassadors: React.FC = () => {
   const { userData, loading: authLoading } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('ambassadors');
   const [tabIndex, setTabIndex] = useState(0);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [createEventDialogOpen, setCreateEventDialogOpen] = useState(false);
@@ -28,7 +31,9 @@ const Ambassadors: React.FC = () => {
   // Si contactPermissions est null, cela peut signifier "pas encore chargé" ou "pas de permissions"
   // On attend que permissionsLoaded soit true avant de vérifier
   const canAccessContact = isContactWithAccess && permissionsLoaded && (contactPermissions?.canViewEvents || contactPermissions?.canManageAmbassadors);
-  const canAccess = isStructureAdmin || (isCompany && (canAccessContact || (!isContactWithAccess && permissionsLoaded)));
+  // Structure : accès si admin/membre ET permission de lecture sur la page Ambassadeurs
+  const canAccessStructure = isStructureAdmin && canRead;
+  const canAccess = canAccessStructure || (isCompany && (canAccessContact || (!isContactWithAccess && permissionsLoaded)));
 
   // Attendre que les permissions soient chargées pour les contacts entreprise
   useEffect(() => {
@@ -60,7 +65,7 @@ const Ambassadors: React.FC = () => {
   }, [isStructureAdmin, isCompany, isContactWithAccess]);
 
   // Afficher un loader pendant le chargement des permissions
-  if (authLoading || (isCompany && !permissionsLoaded)) {
+  if (authLoading || (isCompany && !permissionsLoaded) || (isStructureAdmin && permissionLoading)) {
     return (
       <Box sx={{ 
         display: 'flex', 
@@ -74,7 +79,17 @@ const Ambassadors: React.FC = () => {
     );
   }
 
-  // Rediriger les étudiants vers available-missions
+  // Pour les membres de la structure : afficher Accès refusé si pas la permission de lecture
+  if (isStructureAdmin && !canRead) {
+    return (
+      <AccessDenied 
+        pageName="Ambassadeurs" 
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page. Configurez l'accès dans Paramètres > Accès."
+      />
+    );
+  }
+
+  // Rediriger les étudiants et autres vers available-missions
   if (!canAccess) {
     return <Navigate to="/app/available-missions" replace />;
   }
@@ -127,8 +142,8 @@ const Ambassadors: React.FC = () => {
               </p>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
-              {/* Bouton créer un événement - visible pour tous ceux qui ont accès */}
-              {(isStructureAdmin || (isContactWithAccess && contactPermissions?.canViewEvents)) && (
+              {/* Bouton créer un événement - structure : permission modification ; entreprise : contactPermissions */}
+              {((isStructureAdmin && canWrite) || (isContactWithAccess && contactPermissions?.canViewEvents)) && (
                 <button
                   onClick={() => setCreateEventDialogOpen(true)}
                   style={{
@@ -163,8 +178,8 @@ const Ambassadors: React.FC = () => {
                   <span>Créer un événement</span>
                 </button>
               )}
-              {/* Bouton ajouter un ambassadeur - visible pour tous, mais avec popup pour contacts avec accès */}
-              {(isStructureAdmin || (isContactWithAccess && contactPermissions?.canManageAmbassadors)) && (
+              {/* Bouton ajouter un ambassadeur - structure : permission modification ; entreprise : contactPermissions */}
+              {((isStructureAdmin && canWrite) || (isContactWithAccess && contactPermissions?.canManageAmbassadors)) && (
                 <button
                   onClick={() => setAddDialogOpen(true)}
                   style={{

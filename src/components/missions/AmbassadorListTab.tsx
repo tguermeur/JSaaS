@@ -7,6 +7,7 @@ import {
   deleteAmbassadorInvite,
   removeAmbassadorFromUser,
 } from '../../services/ambassadorService';
+import { decryptUsersList } from '../../utils/decryptUserUtils';
 import {
   Person as PersonIcon,
   Mail as MailIcon,
@@ -62,7 +63,8 @@ export const AmbassadorListTab: React.FC = () => {
           getAmbassadorUsers(structureId),
           getAmbassadorInvites(structureId, structureId ? undefined : invitedBy),
         ]);
-        setUsers(usersList);
+        const usersDecrypted = await decryptUsersList(usersList as Array<{ id: string; displayName?: string; firstName?: string; lastName?: string }>);
+        setUsers(usersDecrypted as AmbassadorUser[]);
 
         const emails = invitesList.map((i) => i.email);
         const existing = await getExistingUserEmails(emails);

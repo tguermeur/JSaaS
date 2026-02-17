@@ -8,6 +8,7 @@
     "shell": "npm run build && firebase functions:shell",
     "start": "node lib/index.js",
     "deploy": "firebase deploy --only functions",
+    "deploy:scoring": "firebase deploy --only functions:analyzePastClients,functions:generateContactMessage,functions:computeProspectScores,functions:getRelanceSuggestions",
     "logs": "firebase functions:log"
   },
   "engines": {

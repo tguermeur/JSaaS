@@ -33,12 +33,19 @@ export const AmbassadorEventsList: React.FC = () => {
   // Charger les candidatures acceptées pour chaque événement
   useEffect(() => {
     // Définir la query pour les événements (utilisée dans loadApplications et onSnapshot)
+    // Admins/membres : filtrer par structureId pour respecter les règles Firestore
     let eventsQuery;
     if (isContactWithAccess && userData?.companyId) {
       eventsQuery = query(
         collection(db, 'missions'),
         where('type', '==', 'ambassadeur_event'),
         where('companyId', '==', userData.companyId)
+      );
+    } else if (userData?.structureId) {
+      eventsQuery = query(
+        collection(db, 'missions'),
+        where('type', '==', 'ambassadeur_event'),
+        where('structureId', '==', userData.structureId)
       );
     } else {
       eventsQuery = query(
@@ -49,16 +56,18 @@ export const AmbassadorEventsList: React.FC = () => {
     
     const loadApplications = async () => {
       try {
+        // Ne pas requêter sans structureId pour admin/membre (évite permission-denied)
+        if (!isContactWithAccess && userData?.status !== 'superadmin' && !userData?.structureId) {
+          setApplicationsByEvent(new Map());
+          return;
+        }
         const eventsSnapshot = await getDocs(eventsQuery);
         
-        // Récupérer les IDs des événements pour filtrer les applications
         const eventIds = eventsSnapshot.docs.map(doc => doc.id);
         
-        // Pour les contacts avec accès, filtrer les applications par les missions de leur entreprise
+        // Toujours filtrer les applications par missionId (évite permission-denied sur toute la collection)
         let applicationsSnapshot;
-        if (isContactWithAccess && userData?.companyId && eventIds.length > 0) {
-          // Récupérer les applications liées aux événements de leur entreprise
-          // Note: Firestore ne supporte pas 'in' avec plus de 10 éléments, donc on doit faire plusieurs requêtes si nécessaire
+        if (eventIds.length > 0) {
           const applicationsQueries: any[] = [];
           for (let i = 0; i < eventIds.length; i += 10) {
             const batch = eventIds.slice(i, i + 10);
@@ -66,33 +75,23 @@ export const AmbassadorEventsList: React.FC = () => {
               query(collection(db, 'applications'), where('missionId', 'in', batch))
             );
           }
-          
-          // Exécuter toutes les requêtes en parallèle
           const applicationsSnapshots = await Promise.all(
             applicationsQueries.map(q => getDocs(q))
           );
-          // Combiner tous les résultats
           const allApplications: any[] = [];
           applicationsSnapshots.forEach(snapshot => {
             snapshot.docs.forEach(doc => {
               allApplications.push({ id: doc.id, data: doc.data() });
             });
           });
-          
-          // Créer un snapshot factice pour la compatibilité
           applicationsSnapshot = {
             docs: allApplications.map((app, idx) => ({
               id: app.id || `temp-${idx}`,
               data: () => app.data
             }))
           } as any;
-        } else if (isContactWithAccess && userData?.companyId && eventIds.length === 0) {
-          // Pas d'événements, donc pas d'applications
-          applicationsSnapshot = { docs: [] } as any;
         } else {
-          // Pour les admins, récupérer toutes les applications
-          const applicationsQuery = query(collection(db, 'applications'));
-          applicationsSnapshot = await getDocs(applicationsQuery);
+          applicationsSnapshot = { docs: [] } as any;
         }
         
         // Créer une map des convertedMissionId par eventId
@@ -113,29 +112,26 @@ export const AmbassadorEventsList: React.FC = () => {
           }
         });
         
-        // Récupérer toutes les missions converties avec leurs titres
-        // Pour les contacts avec accès, filtrer par companyId
+        // Récupérer les missions de la structure (évite permission-denied sur toute la collection)
         let allMissionsSnapshot;
         if (isContactWithAccess && userData?.companyId) {
-          try {
-            const allMissionsQuery = query(
-              collection(db, 'missions'),
-              where('companyId', '==', userData.companyId)
-            );
-            allMissionsSnapshot = await getDocs(allMissionsQuery);
-          } catch (error: any) {
-            // Si la requête échoue (permissions), essayer sans filtre et filtrer côté client
-            console.warn('Erreur lors de la requête filtrée, récupération de toutes les missions:', error);
-            const allMissionsQuery = query(collection(db, 'missions'));
-            const allMissions = await getDocs(allMissionsQuery);
-            // Filtrer côté client
-            allMissionsSnapshot = {
-              docs: allMissions.docs.filter(doc => doc.data().companyId === userData.companyId)
-            } as any;
-          }
-        } else {
+          const allMissionsQuery = query(
+            collection(db, 'missions'),
+            where('companyId', '==', userData.companyId)
+          );
+          allMissionsSnapshot = await getDocs(allMissionsQuery);
+        } else if (userData?.structureId) {
+          const allMissionsQuery = query(
+            collection(db, 'missions'),
+            where('structureId', '==', userData.structureId)
+          );
+          allMissionsSnapshot = await getDocs(allMissionsQuery);
+        } else if (userData?.status === 'superadmin') {
           const allMissionsQuery = query(collection(db, 'missions'));
           allMissionsSnapshot = await getDocs(allMissionsQuery);
+        } else {
+          // Admin/membre sans structureId encore chargé : ne pas requêter toute la collection
+          allMissionsSnapshot = { docs: [] } as any;
         }
         const missionsByTitle = new Map<string, string[]>();
         
@@ -201,140 +197,36 @@ export const AmbassadorEventsList: React.FC = () => {
     // Charger les applications une première fois
     loadApplications();
     
-    // Pour les contacts avec accès, on ne peut pas utiliser onSnapshot sur toutes les applications
-    // car on ne peut pas filtrer efficacement. On va écouter les événements et recharger les applications
-    if (isContactWithAccess && userData?.companyId) {
-      // Pour les contacts avec accès, recharger les applications quand les événements changent
-      const unsubscribeEvents = onSnapshot(eventsQuery, async () => {
-        // Recharger les applications quand les événements changent
-        await loadApplications();
-      });
-      return () => unsubscribeEvents();
-    }
-    
-    // Pour les admins, utiliser onSnapshot sur toutes les applications
-    const applicationsQuery = query(collection(db, 'applications'));
-    const unsubscribeApplications = onSnapshot(
-      applicationsQuery,
-      async (snapshot) => {
-        try {
-          // Récupérer les événements à chaque mise à jour (utiliser la même query)
-          const eventsSnapshot = await getDocs(eventsQuery);
-          
-          const convertedMissionsMap = new Map<string, string>();
-          const eventTitlesMap = new Map<string, string>();
-          
-          eventsSnapshot.docs.forEach(eventDoc => {
-            const eventData = eventDoc.data();
-            const eventId = eventDoc.id;
-            const convertedMissionId = (eventData as any).convertedMissionId;
-            const title = eventData.title || eventData.campaignName;
-            
-            if (convertedMissionId) {
-              convertedMissionsMap.set(eventId, convertedMissionId);
-            }
-            if (title) {
-              eventTitlesMap.set(eventId, title);
-            }
-          });
-          
-          // Pour les contacts avec accès, filtrer par companyId
-          let allMissionsSnapshot;
-          if (isContactWithAccess && userData?.companyId) {
-            try {
-              const allMissionsQuery = query(
-                collection(db, 'missions'),
-                where('companyId', '==', userData.companyId)
-              );
-              allMissionsSnapshot = await getDocs(allMissionsQuery);
-            } catch (error: any) {
-              // Si la requête échoue (permissions), essayer sans filtre et filtrer côté client
-              console.warn('Erreur lors de la requête filtrée, récupération de toutes les missions:', error);
-              const allMissionsQuery = query(collection(db, 'missions'));
-              const allMissions = await getDocs(allMissionsQuery);
-              // Filtrer côté client
-              allMissionsSnapshot = {
-                docs: allMissions.docs.filter(doc => doc.data().companyId === userData.companyId)
-              } as any;
-            }
-          } else {
-            const allMissionsQuery = query(collection(db, 'missions'));
-            allMissionsSnapshot = await getDocs(allMissionsQuery);
-          }
-          
-          const acceptedByEvent = new Map<string, number>();
-          
-          snapshot.docs.forEach(doc => {
-            const appData = doc.data();
-            if (appData.status === 'Acceptée' && appData.missionId) {
-              const missionId = appData.missionId;
-              
-              const directEventId = eventsSnapshot.docs.find(e => e.id === missionId)?.id;
-              if (directEventId) {
-                const current = acceptedByEvent.get(directEventId) || 0;
-                acceptedByEvent.set(directEventId, current + 1);
-              } else {
-                for (const [eventId, convertedId] of convertedMissionsMap.entries()) {
-                  if (convertedId === missionId) {
-                    const current = acceptedByEvent.get(eventId) || 0;
-                    acceptedByEvent.set(eventId, current + 1);
-                    break;
-                  }
-                }
-                
-                const missionDoc = allMissionsSnapshot.docs.find(m => m.id === missionId);
-                if (missionDoc) {
-                  const missionTitle = missionDoc.data().title;
-                  if (missionTitle) {
-                    for (const [eventId, eventTitle] of eventTitlesMap.entries()) {
-                      if (eventTitle === missionTitle && !convertedMissionsMap.has(eventId)) {
-                        const current = acceptedByEvent.get(eventId) || 0;
-                        acceptedByEvent.set(eventId, current + 1);
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          });
-          
-          setApplicationsByEvent(acceptedByEvent);
-        } catch (error) {
-          console.error('Erreur lors de l\'écoute des candidatures:', error);
-        }
-      },
-      (error) => {
-        console.error('Erreur lors de l\'écoute des candidatures:', error);
-      }
-    );
+    // Écouter les événements et recharger les applications à chaque mise à jour
+    // (évite onSnapshot sur toute la collection applications, refusé par les règles Firestore)
+    const unsubscribeEvents = onSnapshot(eventsQuery, async () => {
+      await loadApplications();
+    });
 
-    return () => unsubscribeApplications();
-  }, [isContactWithAccess, userData?.companyId]);
+    return () => unsubscribeEvents();
+  }, [isContactWithAccess, userData?.companyId, userData?.structureId]);
 
   useEffect(() => {
     // Utiliser onSnapshot pour avoir des mises à jour en temps réel
-    // Pour les contacts avec accès, filtrer par companyId
+    // Filtrer par structureId pour les admins (règles Firestore)
     let eventsQuery;
-    console.log('🔍 Configuration de la requête événements:', {
-      isContactWithAccess,
-      companyId: userData?.companyId,
-      userStatus: userData?.status
-    });
-    
     if (isContactWithAccess && userData?.companyId) {
       eventsQuery = query(
         collection(db, 'missions'),
         where('type', '==', 'ambassadeur_event'),
         where('companyId', '==', userData.companyId)
       );
-      console.log('✅ Requête filtrée par companyId:', userData.companyId);
+    } else if (userData?.structureId) {
+      eventsQuery = query(
+        collection(db, 'missions'),
+        where('type', '==', 'ambassadeur_event'),
+        where('structureId', '==', userData.structureId)
+      );
     } else {
       eventsQuery = query(
         collection(db, 'missions'),
         where('type', '==', 'ambassadeur_event')
       );
-      console.log('✅ Requête sans filtre companyId (admin)');
     }
     
     const unsubscribe = onSnapshot(
@@ -348,21 +240,8 @@ export const AmbassadorEventsList: React.FC = () => {
           
           // Pour les contacts avec accès, filtrer côté client si nécessaire
           if (isContactWithAccess && userData?.companyId) {
-            const beforeFilter = eventsData.length;
             eventsData = eventsData.filter(event => event.companyId === userData.companyId);
-            console.log('🔍 Filtrage côté client:', {
-              avant: beforeFilter,
-              apres: eventsData.length,
-              companyId: userData.companyId
-            });
           }
-          
-          console.log('📅 Événements chargés:', {
-            count: eventsData.length,
-            isContactWithAccess: !!isContactWithAccess,
-            companyId: userData?.companyId,
-            events: eventsData.map(e => ({ id: e.id, title: e.title || e.campaignName, companyId: e.companyId }))
-          });
           
           setEvents(eventsData);
           setError(null);
@@ -377,7 +256,6 @@ export const AmbassadorEventsList: React.FC = () => {
         console.error("Error fetching events:", err);
         // Si la requête échoue pour un contact avec accès, essayer sans filtre et filtrer côté client
         if (isContactWithAccess && userData?.companyId && err?.code === 'permission-denied') {
-          console.warn('⚠️ Requête filtrée échouée, tentative sans filtre...');
           const fallbackQuery = query(
             collection(db, 'missions'),
             where('type', '==', 'ambassadeur_event')
@@ -390,11 +268,6 @@ export const AmbassadorEventsList: React.FC = () => {
                 ...doc.data()
               })) as Mission[];
               const filteredEvents = allEvents.filter(event => event.companyId === userData.companyId);
-              console.log('✅ Événements chargés avec fallback:', {
-                total: allEvents.length,
-                filtres: filteredEvents.length,
-                companyId: userData.companyId
-              });
               setEvents(filteredEvents);
               setError(null);
               setLoading(false);
@@ -414,7 +287,7 @@ export const AmbassadorEventsList: React.FC = () => {
     );
 
     return () => unsubscribe();
-  }, [isContactWithAccess, userData?.companyId]);
+  }, [isContactWithAccess, userData?.companyId, userData?.structureId]);
 
   const getTotalSlots = (event: Mission) => {
     return event.slots?.length || 0;

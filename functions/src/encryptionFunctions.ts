@@ -499,6 +499,53 @@ export const decryptContactDataForStructure = onCall(functionConfig, async (requ
 });
 
 /**
+ * Déchiffre les données d'un prospect pour les membres de la structure (sans 2FA)
+ * Permet aux admins/membres de voir les données des prospects de leur structure
+ */
+export const decryptProspectDataForStructure = onCall(functionConfig, async (request) => {
+  if (!request.auth) {
+    throw new Error('Non autorisé');
+  }
+
+  try {
+    const { prospectId } = request.data;
+    const requestingUserId = request.auth.uid;
+
+    if (!prospectId) {
+      throw new Error('prospectId requis');
+    }
+
+    const [prospectDoc, userDoc] = await Promise.all([
+      admin.firestore().collection('prospects').doc(prospectId).get(),
+      admin.firestore().collection('users').doc(requestingUserId).get()
+    ]);
+
+    if (!prospectDoc.exists) {
+      throw new Error('Prospect non trouvé');
+    }
+
+    const prospectData = prospectDoc.data();
+    const userData = userDoc.data();
+    const userStatus = userData?.status;
+    const userStructureId = userData?.structureId;
+    const prospectStructureId = prospectData?.structureId;
+
+    const canAccess = userStatus === 'superadmin' ||
+      (userStructureId && prospectStructureId === userStructureId && ['admin', 'admin_structure', 'membre', 'member'].includes(userStatus || ''));
+
+    if (!canAccess) {
+      throw new Error('Non autorisé : accès réservé aux membres de la structure');
+    }
+
+    const decrypted = await decryptSensitiveFields(prospectData!, SENSITIVE_FIELDS.PROSPECT);
+    return { success: true, decryptedData: decrypted };
+  } catch (error: any) {
+    console.error('Erreur lors du déchiffrement des données prospect (structure):', error);
+    throw new Error(error.message || 'Erreur lors du déchiffrement des données');
+  }
+});
+
+/**
  * Chiffre les champs sensibles d'un contact
  */
 export const encryptContactData = onCall(functionConfig, async (request) => {

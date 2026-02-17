@@ -90,6 +90,8 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import { decryptUsersList, decryptUserDisplayData, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 import { createFilterOptions } from '@mui/material';
 import { PDFDocument } from 'pdf-lib';
 import { getDownloadURL, ref, uploadBytes, deleteObject } from 'firebase/storage';
@@ -921,6 +923,7 @@ const MissionDetails: React.FC = () => {
   const { missionId } = useParams<{ missionId: string }>();
   const navigate = useNavigate();
   const { currentUser, userData } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('mission');
   const [mission, setMission] = useState<Mission | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1370,12 +1373,6 @@ const MissionDetails: React.FC = () => {
   };
 
   useEffect(() => {
-    // Vérifier l'état de Firebase au démarrage
-    console.log('🔍 Vérification de l\'état Firebase:');
-    console.log('  - storage:', storage ? '✅ Initialisé' : '❌ Non initialisé');
-    console.log('  - db:', db ? '✅ Initialisé' : '❌ Non initialisé');
-    console.log('  - currentUser:', currentUser ? '✅ Connecté' : '❌ Non connecté');
-
     const fetchMissionDetails = async () => {
       if (!currentUser) {
         setError("Veuillez vous connecter pour accéder à cette page");
@@ -1403,7 +1400,6 @@ const MissionDetails: React.FC = () => {
         // Les entreprises ne peuvent pas accéder à la page MissionDetails
         // Elles doivent être redirigées vers le Dashboard
         if (isEntreprise) {
-          console.log('🚫 Accès refusé : les entreprises ne peuvent pas accéder à cette page');
           setError("Les entreprises ne peuvent pas accéder à cette page. Vous pouvez voir le statut de vos missions depuis le tableau de bord.");
           setLoading(false);
           setTimeout(() => {
@@ -1420,13 +1416,6 @@ const MissionDetails: React.FC = () => {
         if (!missionId) {
           throw new Error("ID de mission manquant");
         }
-
-        console.log('🔍 Recherche de la mission par ID:', {
-          missionId,
-          userStatus,
-          userStructureId,
-          isEntreprise
-        });
 
         // Chercher directement la mission par son ID
         const missionDoc = await getDoc(doc(db, 'missions', missionId));
@@ -1449,13 +1438,6 @@ const MissionDetails: React.FC = () => {
           throw new Error("Mission non trouvée ou accès non autorisé");
         }
 
-        console.log('✅ Mission trouvée par ID:', {
-          id: missionDoc.id,
-          numeroMission: missionData.numeroMission,
-          structureId: missionData.structureId,
-          userStructureId
-        });
-        
         const typedMissionData = missionData as {
           structureId?: string;
           contactId?: string;
@@ -1502,16 +1484,6 @@ const MissionDetails: React.FC = () => {
           structureId: typedMissionData.structureId || userStructureId,
           missionTypeId: typedMissionData.missionTypeId || null
         } as Mission;
-
-        console.log("Mission trouvée avec structure:", {
-          id: mission.id,
-          numeroMission: mission.numeroMission,
-          structureId: mission.structureId,
-          userStructureId,
-          missionTypeId: mission.missionTypeId,
-          companyId: mission.companyId,
-          company: mission.company
-        });
 
         // Si la mission n'a pas de mandat mais a un chargeId, récupérer le mandat du chargé de mission
         if (!mission.mandat && mission.chargeId) {
@@ -1822,11 +1794,9 @@ const MissionDetails: React.FC = () => {
 
       try {
         setLoadingApplications(true);
-        console.log(`[MissionDetails] Fetching applications for mission ${mission.id}`);
         const applicationsRef = collection(db, 'applications');
         const q = query(applicationsRef, where('missionId', '==', mission.id));
         const snapshot = await getDocs(q);
-        console.log(`[MissionDetails] Found ${snapshot.docs.length} applications`);
         
         // Récupérer tous les IDs des applications
         const applicationIds = snapshot.docs.map(doc => doc.id);
@@ -2323,45 +2293,25 @@ const MissionDetails: React.FC = () => {
   };
 
   const getAssignedTemplate = async (documentType: string) => {
-    console.log('🔍 getAssignedTemplate appelé avec:', documentType);
-    console.log('📋 Mission structureId:', mission?.structureId);
-    
-    if (!mission?.structureId) {
-      console.log('❌ Pas de structureId, retour null');
-      return null;
-    }
+    if (!mission?.structureId) return null;
 
     try {
-      // Chercher dans templateAssignments pour cette structure et ce type de document
       const assignmentsQuery = query(
         collection(db, 'templateAssignments'),
         where('structureId', '==', mission.structureId),
         where('documentType', '==', documentType)
       );
 
-      console.log('🔍 Recherche dans templateAssignments...');
       const assignmentsSnapshot = await getDocs(assignmentsQuery);
-      console.log('📋 Assignations trouvées:', assignmentsSnapshot.size);
-      
-      if (assignmentsSnapshot.empty) {
-        console.log('❌ Aucune assignation trouvée pour ce type de document');
-        return null;
-      }
+      if (assignmentsSnapshot.empty) return null;
 
       const assignmentDoc = assignmentsSnapshot.docs[0];
       const assignmentData = assignmentDoc.data();
-      console.log('🎯 Assignation trouvée:', assignmentData);
       
-      // Récupérer les détails de la template
       const templateDoc = await getDoc(doc(db, 'templates', assignmentData.templateId));
-      if (!templateDoc.exists()) {
-        console.log('❌ Template non trouvée');
-        return null;
-      }
+      if (!templateDoc.exists()) return null;
 
       const templateData = templateDoc.data();
-      console.log('✅ Template data récupéré:', templateData);
-      
       return {
         ...templateData,
         id: templateDoc.id,
@@ -2405,10 +2355,14 @@ const MissionDetails: React.FC = () => {
       setTimeout(() => {
         setDownloadProgress(null);
       }, 500);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('❌ Erreur lors du téléchargement du PDF template:', error);
       setDownloadProgress(null);
-      enqueueSnackbar('Erreur lors du téléchargement du template', { variant: 'error' });
+      const isPermissionDenied = error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'permission-denied';
+      const message = isPermissionDenied
+        ? 'Accès refusé. Vérifiez que votre compte a les accès "Missions" dans Réglages > Accès.'
+        : 'Erreur lors du téléchargement du template';
+      enqueueSnackbar(message, { variant: 'error' });
     }
   };
 
@@ -4202,17 +4156,21 @@ const MissionDetails: React.FC = () => {
 
       if (application) {
         documentData.applicationId = application.id;
-        documentData.applicationUserName = application.userDisplayName;
-        documentData.applicationUserEmail = application.userEmail;
+        documentData.applicationUserName = application.userDisplayName ?? '';
+        documentData.applicationUserEmail = application.userEmail ?? '';
       }
 
       if (expenseNote) {
         documentData.expenseNoteId = expenseNote.id;
       }
 
-        const docRef = await addDoc(collection(db, 'generatedDocuments'), documentData);
+        // Firestore n'accepte pas undefined : retirer les champs undefined
+        const sanitizedData = Object.fromEntries(
+          Object.entries(documentData).filter(([, v]) => v !== undefined)
+        ) as Omit<GeneratedDocument, 'id'>;
+        const docRef = await addDoc(collection(db, 'generatedDocuments'), sanitizedData);
         console.log('📊 Document créé dans Firestore, ID:', docRef.id);
-        const newDocument = { id: docRef.id, ...documentData };
+        const newDocument = { id: docRef.id, ...sanitizedData };
         setGeneratedDocuments(prev => [newDocument, ...prev]);
         console.log('✅ Document sauvegardé dans Firestore et ajouté à la liste');
       } else {
@@ -4234,11 +4192,15 @@ const MissionDetails: React.FC = () => {
       console.log('✅ Document téléchargé avec succès');
 
       enqueueSnackbar('Document généré avec succès', { variant: 'success' });
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('❌ Erreur lors de la génération du document:', error);
       console.error('❌ Stack trace:', error instanceof Error ? error.stack : 'Pas de stack trace');
       setDownloadProgress(null);
-      enqueueSnackbar('Erreur lors de la génération du document', { variant: 'error' });
+      const isPermissionDenied = error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'permission-denied';
+      const message = isPermissionDenied
+        ? 'Accès refusé. Vérifiez : 1) Réglages > Accès > Missions (lecture + modification) 2) Votre profil a bien le champ status ou role (membre/admin) et structureId identique à la mission.'
+        : 'Erreur lors de la génération du document';
+      enqueueSnackbar(message, { variant: 'error' });
       throw error;
     } finally {
       console.log('🏁 Fin de la génération du document');
@@ -4788,7 +4750,7 @@ const MissionDetails: React.FC = () => {
     }
   };
 
-  const ApplicationCard = ({ application }: { application: Application }) => {
+  const ApplicationCard = ({ application, canWrite: canWriteApplication }: { application: Application; canWrite: boolean }) => {
     const isExpanded = expandedApplication === application.id;
 
     return (
@@ -4896,7 +4858,7 @@ const MissionDetails: React.FC = () => {
               </Box>
             )}
 
-            {application.status === 'Acceptée' && (
+            {canWriteApplication && application.status === 'Acceptée' && (
               <Box sx={{ mt: 2, mb: 2 }}>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                   État du dossier
@@ -4943,7 +4905,7 @@ const MissionDetails: React.FC = () => {
               </Box>
             )}
 
-            {application.status === 'En attente' && (
+            {canWriteApplication && application.status === 'En attente' && (
               <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
                 <Button
                   size="small"
@@ -4970,7 +4932,7 @@ const MissionDetails: React.FC = () => {
               </Box>
             )}
 
-            {application.status === 'Refusée' && (
+            {canWriteApplication && application.status === 'Refusée' && (
               <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end', mt: 2 }}>
                 <Button
                   size="small"
@@ -5069,7 +5031,6 @@ const MissionDetails: React.FC = () => {
           studyLevel: data.studyLevel
         } as ExtendedUser;
       });
-      console.log('Utilisateurs chargés:', usersList); // Debug
       setAvailableUsers(usersList);
     } catch (error) {
       console.error("Erreur lors du chargement des utilisateurs:", error);
@@ -5211,16 +5172,20 @@ const MissionDetails: React.FC = () => {
     if (!mission?.id || !currentUser || !newNote.trim()) return;
 
     try {
-      const noteData: Omit<MissionNote, 'id'> = {
+      const noteDataRaw: Omit<MissionNote, 'id'> = {
         content: newNote.trim(),
         createdAt: new Date(),
         updatedAt: new Date(),
         createdBy: currentUser.uid,
         createdByName: currentUser.displayName || currentUser.email || 'Utilisateur',
-        createdByPhotoURL: currentUser.photoURL || undefined,
+        createdByPhotoURL: currentUser.photoURL ?? null,
         missionId: mission.id,
         missionNumber: mission.numeroMission
       };
+      // Firestore n'accepte pas undefined : ne garder que les champs définis
+      const noteData = Object.fromEntries(
+        Object.entries(noteDataRaw).filter(([, v]) => v !== undefined)
+      ) as Omit<MissionNote, 'id'>;
 
       // Ajouter la note dans Firestore
       const docRef = await addDoc(collection(db, 'notes'), noteData);
@@ -5478,12 +5443,17 @@ const MissionDetails: React.FC = () => {
     if (!mission?.id && !mission?.numeroMission) return;
 
     try {
-      console.log('Fetching documents for mission:', mission.id, 'numero:', mission.numeroMission);
-      
+      // Filtrer par structureId pour respecter les règles Firestore
+      const structureId = mission.structureId;
+      if (!structureId) {
+        setGeneratedDocuments([]);
+        return;
+      }
+
       // Chercher les documents par missionId OU par missionNumber
-      // Cela permet de récupérer les documents même s'ils ont été créés depuis une étude
       const documentsQuery = query(
         collection(db, 'generatedDocuments'),
+        where('structureId', '==', structureId),
         where('missionNumber', '==', mission.numeroMission),
         orderBy('createdAt', 'desc')
       );
@@ -5493,16 +5463,14 @@ const MissionDetails: React.FC = () => {
         snapshot = await getDocs(documentsQuery);
       } catch (error: any) {
         // Si la requête échoue (index manquant), essayer avec missionId
-        console.log('Tentative avec missionId...');
         const documentsQueryById = query(
           collection(db, 'generatedDocuments'),
+          where('structureId', '==', structureId),
           where('missionId', '==', mission.id),
           orderBy('createdAt', 'desc')
         );
         snapshot = await getDocs(documentsQueryById);
       }
-
-      console.log('Documents snapshot:', snapshot.docs.length, 'documents found');
 
       const documents = snapshot.docs.map(doc => {
         const data = doc.data();
@@ -5529,7 +5497,6 @@ const MissionDetails: React.FC = () => {
   // Ajouter un useEffect pour surveiller les changements de mission.id ou missionNumber
   useEffect(() => {
     if (mission?.id || mission?.numeroMission) {
-      console.log('Mission changed, fetching documents...');
       fetchGeneratedDocuments();
     }
   }, [mission?.id, mission?.numeroMission]);
@@ -7265,7 +7232,7 @@ const MissionDetails: React.FC = () => {
     }
   );
 
-  if (loading) {
+  if (loading || permissionLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
         <CircularProgress />
@@ -7285,6 +7252,15 @@ const MissionDetails: React.FC = () => {
           Retour aux missions
         </Button>
       </Box>
+    );
+  }
+
+  if (!canRead) {
+    return (
+      <AccessDenied
+        pageName="Détail de la mission"
+        message="Vous n'avez pas les permissions nécessaires pour accéder à cette mission."
+      />
     );
   }
 
@@ -7329,7 +7305,7 @@ const MissionDetails: React.FC = () => {
               >
                 Retour aux missions
               </Button>
-              {mission && (
+              {mission && canWrite && (
                 <Box sx={{ display: 'flex', gap: 1 }}>
                   {!isEditing ? (
                     <>
@@ -8369,39 +8345,41 @@ const MissionDetails: React.FC = () => {
                                                   />
                                                 </Box>
                                               </Box>
-                                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
-                                                <IconButton
-                                                  size="small"
-                                                  onClick={() => handleSaveExpense(index)}
-                                                  disabled={isSaving || !expense.name || expense.priceHT <= 0}
-                                                  sx={{ 
-                                                    color: '#34C759',
-                                                    '&:hover': { backgroundColor: 'rgba(52, 199, 89, 0.1)' },
-                                                    '&.Mui-disabled': { color: '#c7c7cc' }
-                                                  }}
-                                                >
-                                                  <SaveIcon fontSize="small" />
-                                                </IconButton>
-                                                <IconButton
-                                                  size="small"
-                                                  onClick={() => {
-                                                    const updatedExpenses = expenses.filter((_, i) => i !== index);
-                                                    setExpenses(updatedExpenses);
-                                                    // Recalculer les totaux
-                                                    if (mission) {
-                                                      const { totalHT, totalTTC } = calculatePrices(priceHT, mission.hours, updatedExpenses);
-                                                      setTotalHT(totalHT);
-                                                      setTotalTTC(totalTTC);
-                                                    }
-                                                  }}
-                                                  sx={{ 
-                                                    color: '#FF3B30',
-                                                    '&:hover': { backgroundColor: 'rgba(255, 59, 48, 0.1)' }
-                                                  }}
-                                                >
-                                                  <DeleteIcon fontSize="small" />
-                                                </IconButton>
-                                              </Box>
+                                              {canWrite && (
+                                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
+                                                  <IconButton
+                                                    size="small"
+                                                    onClick={() => handleSaveExpense(index)}
+                                                    disabled={isSaving || !expense.name || expense.priceHT <= 0}
+                                                    sx={{ 
+                                                      color: '#34C759',
+                                                      '&:hover': { backgroundColor: 'rgba(52, 199, 89, 0.1)' },
+                                                      '&.Mui-disabled': { color: '#c7c7cc' }
+                                                    }}
+                                                  >
+                                                    <SaveIcon fontSize="small" />
+                                                  </IconButton>
+                                                  <IconButton
+                                                    size="small"
+                                                    onClick={() => {
+                                                      const updatedExpenses = expenses.filter((_, i) => i !== index);
+                                                      setExpenses(updatedExpenses);
+                                                      // Recalculer les totaux
+                                                      if (mission) {
+                                                        const { totalHT, totalTTC } = calculatePrices(priceHT, mission.hours, updatedExpenses);
+                                                        setTotalHT(totalHT);
+                                                        setTotalTTC(totalTTC);
+                                                      }
+                                                    }}
+                                                    sx={{ 
+                                                      color: '#FF3B30',
+                                                      '&:hover': { backgroundColor: 'rgba(255, 59, 48, 0.1)' }
+                                                    }}
+                                                  >
+                                                    <DeleteIcon fontSize="small" />
+                                                  </IconButton>
+                                                </Box>
+                                              )}
                                             </>
                                           )}
                                         </Box>
@@ -8457,7 +8435,7 @@ const MissionDetails: React.FC = () => {
                     <Divider />
                     
                     <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-                      {!isPriceSaved && (
+                      {canWrite && !isPriceSaved && (
                         <Button
                           variant="contained"
                           onClick={handleSavePrice}
@@ -8479,56 +8457,58 @@ const MissionDetails: React.FC = () => {
                           )}
                         </Button>
                       )}
-                      <Button
-                        variant="contained"
-                        color="primary"
-                        startIcon={<DescriptionIcon />}
-                        onClick={async () => {
-                          if (!mission?.id) {
-                            enqueueSnackbar('Mission non trouvée', { variant: 'error' });
-                            return;
-                          }
+                      {canWrite && (
+                        <Button
+                          variant="contained"
+                          color="primary"
+                          startIcon={<DescriptionIcon />}
+                          onClick={async () => {
+                            if (!mission?.id) {
+                              enqueueSnackbar('Mission non trouvée', { variant: 'error' });
+                              return;
+                            }
 
-                          console.log('🔍 Début de la recherche de template');
-                          console.log('Mission ID:', mission.id);
-                          console.log('Structure ID:', mission.structureId);
+                            console.log('🔍 Début de la recherche de template');
+                            console.log('Mission ID:', mission.id);
+                            console.log('Structure ID:', mission.structureId);
 
-                          try {
-                            // Récupérer la template assignée pour les propositions commerciales
-                            const assignedTemplate = await getAssignedTemplate('proposition_commerciale');
-                            console.log('📋 Template assignée trouvée:', assignedTemplate);
-                            
-                            if (assignedTemplate) {
-                              console.log('🎯 Template trouvée avec ID:', assignedTemplate.id);
-                              console.log('🎯 Type de génération:', assignedTemplate.generationType);
+                            try {
+                              // Récupérer la template assignée pour les propositions commerciales
+                              const assignedTemplate = await getAssignedTemplate('proposition_commerciale');
+                              console.log('📋 Template assignée trouvée:', assignedTemplate);
                               
-                              if (assignedTemplate.generationType === 'template') {
-                                // Télécharger le PDF template
-                                await downloadTemplatePDF('proposition_commerciale');
+                              if (assignedTemplate) {
+                                console.log('🎯 Template trouvée avec ID:', assignedTemplate.id);
+                                console.log('🎯 Type de génération:', assignedTemplate.generationType);
+                                
+                                if (assignedTemplate.generationType === 'template') {
+                                  // Télécharger le PDF template
+                                  await downloadTemplatePDF('proposition_commerciale');
+                                } else {
+                                  // Rediriger vers QuoteBuilder avec l'ID de la template
+                                  const url = `/app/mission/${mission.id}/quote?template=${assignedTemplate.id}`;
+                                  console.log('🚀 Redirection vers:', url);
+                                  navigate(url);
+                                }
                               } else {
-                                // Rediriger vers QuoteBuilder avec l'ID de la template
-                                const url = `/app/mission/${mission.id}/quote?template=${assignedTemplate.id}`;
-                                console.log('🚀 Redirection vers:', url);
-                                navigate(url);
+                                console.log('⚠️ Aucune template assignée, redirection sans template');
+                                navigate(`/app/mission/${mission.id}/quote`);
                               }
-                            } else {
-                              console.log('⚠️ Aucune template assignée, redirection sans template');
+                            } catch (error) {
+                              console.error('❌ Erreur lors de la récupération de la template:', error);
+                              // En cas d'erreur, rediriger sans template
                               navigate(`/app/mission/${mission.id}/quote`);
                             }
-                          } catch (error) {
-                            console.error('❌ Erreur lors de la récupération de la template:', error);
-                            // En cas d'erreur, rediriger sans template
-                            navigate(`/app/mission/${mission.id}/quote`);
-                          }
-                        }}
-                        sx={{
-                          borderRadius: '10px',
-                          textTransform: 'none',
-                          fontWeight: '500'
-                        }}
-                      >
-                        {pcButtonText}
-                      </Button>
+                          }}
+                          sx={{
+                            borderRadius: '10px',
+                            textTransform: 'none',
+                            fontWeight: '500'
+                          }}
+                        >
+                          {pcButtonText}
+                        </Button>
+                      )}
                       {downloadProgress && (
                         <Box sx={{ width: '100%', mt: 2 }}>
                           <LinearProgress 
@@ -8680,24 +8660,26 @@ const MissionDetails: React.FC = () => {
                         <Typography variant="body2" color="text.secondary">
                           {applications.length} candidature{applications.length > 1 ? 's' : ''}
                         </Typography>
-                        <Button
-                          variant="outlined"
-                          startIcon={<PersonAddIcon />}
-                          onClick={() => setOpenAddCandidateDialog(true)}
-                          sx={{
-                            borderRadius: '10px',
-                            textTransform: 'none',
-                            fontWeight: '500',
-                            borderColor: '#007AFF',
-                            color: '#007AFF',
-                            '&:hover': {
-                              borderColor: '#0A84FF',
-                              backgroundColor: 'rgba(0, 122, 255, 0.04)'
-                            }
-                          }}
-                        >
-                          Ajouter des candidats
-                        </Button>
+                        {canWrite && (
+                          <Button
+                            variant="outlined"
+                            startIcon={<PersonAddIcon />}
+                            onClick={() => setOpenAddCandidateDialog(true)}
+                            sx={{
+                              borderRadius: '10px',
+                              textTransform: 'none',
+                              fontWeight: '500',
+                              borderColor: '#007AFF',
+                              color: '#007AFF',
+                              '&:hover': {
+                                borderColor: '#0A84FF',
+                                backgroundColor: 'rgba(0, 122, 255, 0.04)'
+                              }
+                            }}
+                          >
+                            Ajouter des candidats
+                          </Button>
+                        )}
                       </Box>
                     </Box>
 
@@ -8712,7 +8694,7 @@ const MissionDetails: React.FC = () => {
                     ) : (
                       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         {applications.map((application) => (
-                          <ApplicationCard key={application.id} application={application} />
+                          <ApplicationCard key={application.id} application={application} canWrite={canWrite} />
                         ))}
                       </Box>
                     )}
@@ -8798,8 +8780,8 @@ const MissionDetails: React.FC = () => {
                           <TableBody>
                             {applications
                               .filter(app => app.status === 'Acceptée')
-                              .map((application) => (
-                                <React.Fragment key={application.id}>
+                              .map((application, index) => (
+                                <React.Fragment key={application.id || `app-accepted-${index}`}>
                                   <TableRow sx={{'&:hover': {backgroundColor: 'rgba(0, 0, 0, 0.02)'}}}>
                                     <TableCell sx={{ borderBottom: '1px solid', borderColor: 'divider', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 } }}>
                                       <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 2 } }}>
@@ -8851,14 +8833,16 @@ const MissionDetails: React.FC = () => {
                                       }
                                     }}>
                                       <Box sx={{ display: 'flex', gap: { xs: 0.5, sm: 1 } }}>
+                                        {canWrite && (
                                         <Tooltip title="Générer LM" arrow>
-                                          <Button
-                                            size="small"
-                                            variant="contained"
-                                            color="primary"
-                                            onClick={() => generateDocument('lettre_mission', application)}
-                                            disabled={!application.isDossierValidated || generatingDoc}
-                                            sx={{ 
+                                          <span style={{ display: 'inline-flex' }}>
+                                            <Button
+                                              size="small"
+                                              variant="contained"
+                                              color="primary"
+                                              onClick={() => generateDocument('lettre_mission', application)}
+                                              disabled={!application.isDossierValidated || generatingDoc}
+                                              sx={{ 
                                               borderRadius: '8px', 
                                               textTransform: 'none', 
                                               fontWeight: '500', 
@@ -8874,8 +8858,10 @@ const MissionDetails: React.FC = () => {
                                             }}
                                           >
                                             {generatingDoc ? <CircularProgress size={20} color="inherit" /> : <DescriptionIcon />}
-                                          </Button>
+                                            </Button>
+                                          </span>
                                         </Tooltip>
+                                        )}
                                       </Box>
                                     </TableCell>
                                   </TableRow>
@@ -8900,14 +8886,16 @@ const MissionDetails: React.FC = () => {
                                               Horaires de travail
                                             </Typography>
                                           </Box>
-                                          <Button
-                                            size="small"
-                                            startIcon={<AddIcon />}
-                                            onClick={() => handleOpenWorkingHours(application)}
-                                            sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: '500', color: '#007AFF', '&:hover': { backgroundColor: 'rgba(0, 122, 255, 0.04)' } }}
-                                          >
-                                            Ajouter une plage horaire
-                                          </Button>
+                                          {canWrite && (
+                                            <Button
+                                              size="small"
+                                              startIcon={<AddIcon />}
+                                              onClick={() => handleOpenWorkingHours(application)}
+                                              sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: '500', color: '#007AFF', '&:hover': { backgroundColor: 'rgba(0, 122, 255, 0.04)' } }}
+                                            >
+                                              Ajouter une plage horaire
+                                            </Button>
+                                          )}
                                         </Box>
                                         <Collapse in={expandedApplication === application.id}>
                                           <Table size="small">
@@ -9023,19 +9011,21 @@ const MissionDetails: React.FC = () => {
                                                         total + calculateWorkingHours(wh.startTime, wh.endTime, wh.breaks)
                                                       , 0).toFixed(2)}h
                                                     </Typography>
-                                                    <Button
-                                                      variant="contained"
-                                                      startIcon={savingWorkingHours[application.id] ? <CircularProgress size={20} sx={{ color: 'white' }} /> : <SaveIcon />}
-                                                      onClick={() => handleSaveWorkingHours(application)}
-                                                      disabled={!unsavedChanges[application.id] || savingWorkingHours[application.id]}
-                                                      sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: '500', boxShadow: 'none', height: '36px', minWidth: unsavedChanges[application.id] ? '200px' : '140px', backgroundColor: unsavedChanges[application.id] ? '#007AFF' : '#f5f5f7', color: unsavedChanges[application.id] ? '#fff' : '#86868b', transition: 'all 0.2s ease-in-out', position: 'relative', '&:hover': { boxShadow: 'none', backgroundColor: unsavedChanges[application.id] ? '#0A84FF' : '#f0f0f0' }, '&:disabled': { backgroundColor: '#f5f5f7', color: '#86868b' } }}
-                                                    >
-                                                      {savingWorkingHours[application.id] ? (
-                                                        "Enregistrement..."
-                                                      ) : (
-                                                        unsavedChanges[application.id] ? "Enregistrer les modifications" : "Horaires à jour"
-                                                      )}
-                                                    </Button>
+                                                    {canWrite && (
+                                                      <Button
+                                                        variant="contained"
+                                                        startIcon={savingWorkingHours[application.id] ? <CircularProgress size={20} sx={{ color: 'white' }} /> : <SaveIcon />}
+                                                        onClick={() => handleSaveWorkingHours(application)}
+                                                        disabled={!unsavedChanges[application.id] || savingWorkingHours[application.id]}
+                                                        sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: '500', boxShadow: 'none', height: '36px', minWidth: unsavedChanges[application.id] ? '200px' : '140px', backgroundColor: unsavedChanges[application.id] ? '#007AFF' : '#f5f5f7', color: unsavedChanges[application.id] ? '#fff' : '#86868b', transition: 'all 0.2s ease-in-out', position: 'relative', '&:hover': { boxShadow: 'none', backgroundColor: unsavedChanges[application.id] ? '#0A84FF' : '#f0f0f0' }, '&:disabled': { backgroundColor: '#f5f5f7', color: '#86868b' } }}
+                                                      >
+                                                        {savingWorkingHours[application.id] ? (
+                                                          "Enregistrement..."
+                                                        ) : (
+                                                          unsavedChanges[application.id] ? "Enregistrer les modifications" : "Horaires à jour"
+                                                        )}
+                                                      </Button>
+                                                    )}
                                                   </Box>
                                                 </TableCell>
                                               </TableRow>
@@ -9065,30 +9055,34 @@ const MissionDetails: React.FC = () => {
                         <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
                           Documents
                         </Typography>
-                        <input
-                          accept="*/*"
-                          style={{ display: 'none' }}
-                          id="upload-document-contrats"
-                          type="file"
-                          onChange={(e) => handleUploadDocument(e, 'contrats')}
-                        />
-                        <label htmlFor="upload-document-contrats">
-                          <IconButton
-                            component="span"
-                            sx={{
-                              width: 36,
-                              height: 36,
-                              backgroundColor: '#007AFF',
-                              color: 'white',
-                              '&:hover': {
-                                backgroundColor: '#0A84FF',
-                              },
-                              boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
-                            }}
-                          >
-                            <AddIcon />
-                          </IconButton>
-                        </label>
+                        {canWrite && (
+                          <>
+                            <input
+                              accept="*/*"
+                              style={{ display: 'none' }}
+                              id="upload-document-contrats"
+                              type="file"
+                              onChange={(e) => handleUploadDocument(e, 'contrats')}
+                            />
+                            <label htmlFor="upload-document-contrats">
+                              <IconButton
+                                component="span"
+                                sx={{
+                                  width: 36,
+                                  height: 36,
+                                  backgroundColor: '#007AFF',
+                                  color: 'white',
+                                  '&:hover': {
+                                    backgroundColor: '#0A84FF',
+                                  },
+                                  boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
+                                }}
+                              >
+                                <AddIcon />
+                              </IconButton>
+                            </label>
+                          </>
+                        )}
                       </Box>
                       <Box sx={{ 
                         maxHeight: '400px',
@@ -9169,19 +9163,21 @@ const MissionDetails: React.FC = () => {
                                       {doc.createdAt.toLocaleDateString()}
                                     </Typography>
                                   </Box>
-                                  <IconButton
-                                    size="small"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDocumentMenuOpen(e, doc);
-                                    }}
-                                    sx={{
-                                      color: '#86868b',
-                                      '&:hover': { color: '#1d1d1f' }
-                                    }}
-                                  >
-                                    <MoreVertIcon fontSize="small" />
-                                  </IconButton>
+                                  {canWrite && (
+                                    <IconButton
+                                      size="small"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDocumentMenuOpen(e, doc);
+                                      }}
+                                      sx={{
+                                        color: '#86868b',
+                                        '&:hover': { color: '#1d1d1f' }
+                                      }}
+                                    >
+                                      <MoreVertIcon fontSize="small" />
+                                    </IconButton>
+                                  )}
                                 </Box>
                               ))}
                           </Box>
@@ -9200,20 +9196,22 @@ const MissionDetails: React.FC = () => {
                       Notes de frais
                     </Typography>
 
-                    <Box sx={{ mb: 2 }}>
-                      <Button
-                        variant="contained"
-                        startIcon={<AddIcon />}
-                        onClick={() => setOpenAddExpenseDialog(true)}
-                        sx={{
-                          borderRadius: '10px',
-                          textTransform: 'none',
-                          fontWeight: '500'
-                        }}
-                      >
-                        Ajouter une note de frais
-                      </Button>
-                    </Box>
+                    {canWrite && (
+                      <Box sx={{ mb: 2 }}>
+                        <Button
+                          variant="contained"
+                          startIcon={<AddIcon />}
+                          onClick={() => setOpenAddExpenseDialog(true)}
+                          sx={{
+                            borderRadius: '10px',
+                            textTransform: 'none',
+                            fontWeight: '500'
+                          }}
+                        >
+                          Ajouter une note de frais
+                        </Button>
+                      </Box>
+                    )}
 
                     <TableContainer component={Paper} sx={{ 
                       borderRadius: '12px',
@@ -9296,13 +9294,15 @@ const MissionDetails: React.FC = () => {
                                         note.status === 'Refusée' ? 'error' : 'default'
                                       }
                                     />
-                                    <IconButton
-                                      size="small"
-                                      onClick={(e) => handleExpenseMenuOpen(e, note)}
-                                      sx={{ color: '#86868b' }}
-                                    >
-                                      <MoreVertIcon fontSize="small" />
-                                    </IconButton>
+                                    {canWrite && (
+                                      <IconButton
+                                        size="small"
+                                        onClick={(e) => handleExpenseMenuOpen(e, note)}
+                                        sx={{ color: '#86868b' }}
+                                      >
+                                        <MoreVertIcon fontSize="small" />
+                                      </IconButton>
+                                    )}
                                   </Box>
                                 </TableCell>
                               </TableRow>
@@ -9335,30 +9335,34 @@ const MissionDetails: React.FC = () => {
                         <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
                           Documents
                         </Typography>
-                        <input
-                          accept="*/*"
-                          style={{ display: 'none' }}
-                          id="upload-document-facturation"
-                          type="file"
-                          onChange={(e) => handleUploadDocument(e, 'facturation')}
-                        />
-                        <label htmlFor="upload-document-facturation">
-                          <IconButton
-                            component="span"
-                            sx={{
-                              width: 36,
-                              height: 36,
-                              backgroundColor: '#007AFF',
-                              color: 'white',
-                              '&:hover': {
-                                backgroundColor: '#0A84FF',
-                              },
-                              boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
-                            }}
-                          >
-                            <AddIcon />
-                          </IconButton>
-                        </label>
+                        {canWrite && (
+                        <>
+                          <input
+                            accept="*/*"
+                            style={{ display: 'none' }}
+                            id="upload-document-facturation"
+                            type="file"
+                            onChange={(e) => handleUploadDocument(e, 'facturation')}
+                          />
+                          <label htmlFor="upload-document-facturation">
+                            <IconButton
+                              component="span"
+                              sx={{
+                                width: 36,
+                                height: 36,
+                                backgroundColor: '#007AFF',
+                                color: 'white',
+                                '&:hover': {
+                                  backgroundColor: '#0A84FF',
+                                },
+                                boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
+                              }}
+                            >
+                              <AddIcon />
+                            </IconButton>
+                          </label>
+                        </>
+                        )}
                       </Box>
 
                       {/* Zone de drag & drop pour les factures - N'afficher que s'il n'y a pas de facture */}
@@ -9527,19 +9531,21 @@ const MissionDetails: React.FC = () => {
                                       </Typography>
                                     )}
                                   </Box>
-                                  <IconButton
-                                    size="small"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDocumentMenuOpen(e, doc);
-                                    }}
-                                    sx={{
-                                      color: '#86868b',
-                                      '&:hover': { color: '#1d1d1f' }
-                                    }}
-                                  >
-                                    <MoreVertIcon fontSize="small" />
-                                  </IconButton>
+                                  {canWrite && (
+                                    <IconButton
+                                      size="small"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDocumentMenuOpen(e, doc);
+                                      }}
+                                      sx={{
+                                        color: '#86868b',
+                                        '&:hover': { color: '#1d1d1f' }
+                                      }}
+                                    >
+                                      <MoreVertIcon fontSize="small" />
+                                    </IconButton>
+                                  )}
                                 </Box>
                               ))}
                           </Box>
@@ -10037,16 +10043,18 @@ const MissionDetails: React.FC = () => {
                           {doc.applicationUserName && ` • ${doc.applicationUserName}`}
                         </Typography>
                       </Box>
-                      <IconButton
-                        size="small"
-                        onClick={(e) => handleDocumentMenuOpen(e, doc)}
-                        sx={{
-                          color: '#86868b',
-                          '&:hover': { color: '#1d1d1f' }
-                        }}
-                      >
-                        <MoreVertIcon fontSize="small" />
-                      </IconButton>
+                      {canWrite && (
+                        <IconButton
+                          size="small"
+                          onClick={(e) => handleDocumentMenuOpen(e, doc)}
+                          sx={{
+                            color: '#86868b',
+                            '&:hover': { color: '#1d1d1f' }
+                          }}
+                        >
+                          <MoreVertIcon fontSize="small" />
+                        </IconButton>
+                      )}
                     </Box>
                   ))}
                 </Box>
@@ -10076,31 +10084,35 @@ const MissionDetails: React.FC = () => {
                 Notes de mission
               </Typography>
 
-              {/* Zone de saisie de nouvelle note */}
-              <TaggingInput
-                value={newNote}
-                onChange={setNewNote}
-                placeholder="Ajouter une note... (utilisez @ pour tagger quelqu'un)"
-                multiline={true}
-                rows={3}
-                availableUsers={availableUsersForTagging}
-                onTaggedUsersChange={handleTaggedUsersChange}
-              />
-              <Button
-                fullWidth
-                variant="contained"
-                onClick={handleAddNote}
-                disabled={!newNote.trim()}
-                sx={{
-                  mt: 2, // padding au-dessus
-                  borderRadius: '10px',
-                  textTransform: 'none',
-                  fontWeight: '500',
-                  mb: 3
-                }}
-              >
-                Ajouter une note
-              </Button>
+              {/* Zone de saisie de nouvelle note (réservée à la modification) */}
+              {canWrite && (
+                <>
+                  <TaggingInput
+                    value={newNote}
+                    onChange={setNewNote}
+                    placeholder="Ajouter une note... (utilisez @ pour tagger quelqu'un)"
+                    multiline={true}
+                    rows={3}
+                    availableUsers={availableUsersForTagging}
+                    onTaggedUsersChange={handleTaggedUsersChange}
+                  />
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    onClick={handleAddNote}
+                    disabled={!newNote.trim()}
+                    sx={{
+                      mt: 2, // padding au-dessus
+                      borderRadius: '10px',
+                      textTransform: 'none',
+                      fontWeight: '500',
+                      mb: 3
+                    }}
+                  >
+                    Ajouter une note
+                  </Button>
+                </>
+              )}
 
               {/* Liste des notes */}
               <Box sx={{ 
@@ -10230,7 +10242,7 @@ const MissionDetails: React.FC = () => {
                                 </Typography>
                               </Box>
                             </Box>
-                            {note.createdBy === currentUser?.uid && (
+                            {canWrite && note.createdBy === currentUser?.uid && (
                               <Box sx={{ display: 'flex', gap: 1 }}>
                                 <IconButton
                                   size="small"
@@ -11009,21 +11021,23 @@ const MissionDetails: React.FC = () => {
                   }}
                 />
               </Grid>
-              <Grid item xs={12} sm={2}>
-                <Button
-                  fullWidth
-                  variant="contained"
-                  onClick={() => handleAddWorkingHour(workingHoursDialog.application?.id || '')}
-                  disabled={mission?.isArchived}
-                  sx={{
-                    height: '100%',
-                    borderRadius: '12px',
-                    textTransform: 'none'
-                  }}
-                >
-                  Ajouter
-                </Button>
-              </Grid>
+              {canWrite && (
+                <Grid item xs={12} sm={2}>
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    onClick={() => handleAddWorkingHour(workingHoursDialog.application?.id || '')}
+                    disabled={mission?.isArchived}
+                    sx={{
+                      height: '100%',
+                      borderRadius: '12px',
+                      textTransform: 'none'
+                    }}
+                  >
+                    Ajouter
+                  </Button>
+                </Grid>
+              )}
             </Grid>
           </Box>
 

@@ -1,3 +1,5 @@
+// Après modification des règles : firebase deploy --only storage
+// (nécessaire pour que structures/{id}/logo soit lisible et éviter les 403)
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
@@ -42,7 +44,7 @@ service firebase.storage {
       return isAuthenticated() && 
              userExists() &&
              getUserData().structureId == structureId &&
-             getUserData().status in ['admin', 'member', 'membre'];
+             getUserData().status in ['admin', 'admin_structure', 'member', 'membre', 'etudiant'];
     }
     
     // Vérifie si l'utilisateur est admin d'une structure
@@ -50,7 +52,7 @@ service firebase.storage {
       return isAuthenticated() && 
              userExists() &&
              getUserData().structureId == structureId &&
-             getUserData().status == 'admin';
+             (getUserData().status == 'admin' || getUserData().status == 'admin_structure');
     }
 
     // =========================================================================
@@ -267,9 +269,9 @@ service firebase.storage {
       allow write: if isOwner(userId);
     }
     
-    // Photos de profil
+    // Photos de profil (lecture publique pour que les URLs utilisées dans <img> fonctionnent sans token Auth)
     match /profilePictures/{userId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow write: if isOwner(userId);
     }
     
@@ -311,9 +313,9 @@ service firebase.storage {
     // RÈGLES POUR LES LOGOS ET IMAGES
     // =========================================================================
     
-    // Logo de structure
+    // Logo de structure : lecture publique (URL de téléchargement utilisée dans <img>, évite 403)
     match /structures/{structureId}/logo {
-      allow read: if isAuthenticated() && isStructureMember(structureId);
+      allow read: if true;
       allow write: if isAuthenticated() && isStructureAdmin(structureId);
     }
     

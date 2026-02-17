@@ -27,7 +27,7 @@ service cloud.firestore {
     
     function isSuperAdmin() {
       let userData = getUserData();
-      return userData != null && userData.status == 'superadmin';
+      return userData != null && (userData.status == 'superadmin' || userData.role == 'superadmin');
     }
 
     function isAdmin() {
@@ -107,68 +107,39 @@ service cloud.firestore {
     }
     
     // =========================================================================
-    // FONCTION RBAC PRINCIPALE - hasPermission
+    // FONCTION RBAC PRINCIPALE - hasPermission (max 10 variables par fonction)
     // =========================================================================
-    // 
-    // Vérifie si l'utilisateur a une permission spécifique sur une page/module
-    // 
-    // @param pageId - L'identifiant de la page (ex: 'entreprises', 'tresorerie')
-    // @param accessType - 'read' ou 'write'
-    // 
-    // Logique:
-    // 1. SuperAdmin/Admin ont toujours accès
-    // 2. Vérifier allowedRoles pour le status de l'utilisateur
-    // 3. Vérifier allowedMembers pour l'uid de l'utilisateur
-    // 4. Vérifier allowedPoles pour les pôles de l'utilisateur
-    // 
+    
+    // Helper pour réduire le nombre de variables dans hasPermission
+    function hasRoleOrMemberAccess(permissionExists, permissionData, effectiveStatus) {
+      let roleOk = permissionExists && permissionData != null && effectiveStatus != null && permissionData.allowedRoles != null &&
+        (permissionData.allowedRoles.hasAny([effectiveStatus]) ||
+         (effectiveStatus == 'membre' && permissionData.allowedRoles.hasAny(['member'])) ||
+         (effectiveStatus == 'member' && permissionData.allowedRoles.hasAny(['membre'])));
+      let memberOk = permissionExists && permissionData != null && permissionData.allowedMembers != null && permissionData.allowedMembers.hasAny([request.auth.uid]);
+      return roleOk || memberOk;
+    }
+    
+    // Accès par pôle : l'utilisateur a poleIds (liste d'ids) et le doc permission a allowedPoles.
+    function hasPoleAccess(permissionExists, permissionData, userData) {
+      return permissionExists && permissionData != null && permissionData.allowedPoles != null &&
+             userData != null && userData.poleIds != null && userData.poleIds.hasAny(permissionData.allowedPoles);
+    }
+    
     function hasPermission(pageId, accessType) {
       let userData = getUserData();
-      
-      // Pas de données utilisateur = pas d'accès
       let hasUserData = userData != null;
-      
-      // SuperAdmin a toujours accès
-      let isSuperAdminUser = hasUserData && userData.status == 'superadmin';
-      
-      // Admin a toujours accès
-      let isAdminUser = hasUserData && userData.status == 'admin';
-      
-      // Déterminer le document de permission à vérifier
+      let effectiveStatus = hasUserData && userData.status != null && userData.status != '' ? userData.status : (hasUserData && userData.role != null ? userData.role : null);
+      // Seul le superadmin contourne les permissions. L'admin de structure est soumis aux docs Réglages > Accès.
+      let isPrivileged = hasUserData && (effectiveStatus == 'superadmin' || userData.role == 'superadmin');
       let docId = accessType == 'read' ? pageId + '_read' : pageId;
       let structureId = hasUserData ? userData.structureId : null;
-      let permissionPath = structureId != null ? 
-        /databases/$(database)/documents/structures/$(structureId)/permissions/$(docId) : 
-        null;
-      
-      // Vérifier si le document de permission existe
+      let permissionPath = structureId != null ? /databases/$(database)/documents/structures/$(structureId)/permissions/$(docId) : null;
       let permissionExists = structureId != null && permissionPath != null && exists(permissionPath);
-      
-      // Récupérer les données de permission si elles existent
       let permissionData = permissionExists ? get(permissionPath).data : null;
-      
-      // Vérifier si le rôle est autorisé (gérer member/membre)
-      let hasRoleAccess = permissionExists && 
-        permissionData.allowedRoles != null && 
-        (
-          permissionData.allowedRoles.hasAny([userData.status]) ||
-          // Gérer l'incohérence member/membre
-          (userData.status == 'membre' && permissionData.allowedRoles.hasAny(['member'])) ||
-          (userData.status == 'member' && permissionData.allowedRoles.hasAny(['membre']))
-        );
-      
-      // Vérifier si l'utilisateur est explicitement autorisé
-      let hasMemberAccess = permissionExists && 
-        permissionData.allowedMembers != null && 
-        permissionData.allowedMembers.hasAny([request.auth.uid]);
-      
-      // Note: La vérification des pôles de l'utilisateur n'est pas possible directement
-      // car on ne peut pas itérer sur userData.poles dans les rules Firestore
-      // Les pôles doivent être gérés via allowedMembers ou un champ poleIds simple
-      
-      return isSuperAdminUser || 
-             isAdminUser || 
-             hasRoleAccess || 
-             hasMemberAccess;
+      let roleOrMember = hasRoleOrMemberAccess(permissionExists, permissionData, effectiveStatus);
+      let poleOk = hasPoleAccess(permissionExists, permissionData, userData);
+      return isPrivileged || roleOrMember || poleOk;
     }
     
     // Wrapper pour vérifier l'accès en lecture
@@ -179,6 +150,14 @@ service cloud.firestore {
     // Wrapper pour vérifier l'accès en écriture  
     function canWritePage(pageId) {
       return hasPermission(pageId, 'write');
+    }
+    
+    // Accès selon les documents de permission (Réglages > Accès). Seul le superadmin contourne.
+    function hasPermissionOrStructureFallback(pageId, accessType, resourceStructureId) {
+      let userData = getUserData();
+      let validInputs = userData != null && resourceStructureId != null && resourceStructureId != '';
+      let sameStructure = validInputs && userData.structureId == resourceStructureId;
+      return hasPermission(pageId, accessType) || (sameStructure && isSuperAdmin());
     }
     
     // =========================================================================
@@ -231,13 +210,24 @@ service cloud.firestore {
       }
       
       function canAccessViaStructure() {
-        return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['admin', 'membre'] &&
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != null &&
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId != '' &&
-               resource.data.structureId != null &&
-               resource.data.structureId != '' &&
-               resource.data.structureId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.structureId;
+        return resource.data.structureId != null && resource.data.structureId != '' &&
+               hasPermissionOrStructureFallback('mission', 'read', resource.data.structureId);
+      }
+      
+      // Lecture missions autorisée aussi avec permission Audit (page Audit)
+      function canAccessViaAudit() {
+        return resource.data.structureId != null && resource.data.structureId != '' &&
+               hasPermissionOrStructureFallback('audit', 'read', resource.data.structureId);
+      }
+      
+      function canWriteViaStructure() {
+        return resource.data.structureId != null && resource.data.structureId != '' &&
+               hasPermissionOrStructureFallback('mission', 'write', resource.data.structureId);
+      }
+      
+      function canCreateViaStructure() {
+        return request.resource.data.structureId != null && request.resource.data.structureId != '' &&
+               hasPermissionOrStructureFallback('mission', 'write', request.resource.data.structureId);
       }
       
       function canAccessAsStudent() {
@@ -272,18 +262,17 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         isSuperAdmin() ||
         resource.data.companyId == request.auth.uid ||
+        canAccessMission() ||
         canAccessViaStructure() ||
+        canAccessViaAudit() ||
         canAccessAsStudent() ||
         canAccessMissionAsStudent() ||
         canAccessAsContactWithAccess()
       );
       
       allow create: if isAuthenticated() && (
-        isSuperAdmin() || 
-        (
-          getUserData().status in ['admin', 'membre'] && 
-          request.resource.data.structureId == getUserData().structureId
-        ) ||
+        isSuperAdmin() ||
+        canCreateViaStructure() ||
         isEnterpriseCreatingOwnMission() ||
         isContactCreatingEvent()
       );
@@ -320,13 +309,10 @@ service cloud.firestore {
       }
       
       allow update: if isAuthenticated() && (
-        isSuperAdmin() || 
+        isSuperAdmin() ||
+        canWriteViaStructure() ||
         (
-          getUserData().status in ['admin', 'membre'] && 
-          resource.data.structureId == getUserData().structureId
-        ) ||
-        (
-          isEntreprise() && 
+          isEntreprise() &&
           resource.data.companyId == request.auth.uid &&
           resource.data.createdByEnterprise == true &&
           request.resource.data.structureId == resource.data.structureId &&
@@ -346,28 +332,42 @@ service cloud.firestore {
       );
       
       allow delete: if isAuthenticated() && (
-        isSuperAdmin() || 
-        (
-          getUserData().status in ['admin', 'membre'] && 
-          resource.data.structureId == getUserData().structureId
-        )
+        isSuperAdmin() ||
+        canWriteViaStructure()
       );
 
-      // Sous-collection generatedDocuments
+      // Sous-collection generatedDocuments (missionId = missionId du parent)
       match /generatedDocuments/{documentId} {
         function isDocumentStudent() {
           let docData = resource.data;
-          return docData.applicationId != null && 
+          return docData.applicationId != null &&
                  exists(/databases/$(database)/documents/applications/$(docData.applicationId)) &&
                  get(/databases/$(database)/documents/applications/$(docData.applicationId)).data.userId == request.auth.uid;
         }
         
+        function getDocStructureId(docData) {
+          return docData.structureId != null && docData.structureId != '' ? docData.structureId : (docData.missionId != null && exists(/databases/$(database)/documents/missions/$(docData.missionId)) ? get(/databases/$(database)/documents/missions/$(docData.missionId)).data.structureId : (exists(/databases/$(database)/documents/missions/$(missionId)) ? get(/databases/$(database)/documents/missions/$(missionId)).data.structureId : null));
+        }
+        
         function canAccessViaStructure() {
-          let userData = getUserData();
           let docData = resource.data;
-          return userData != null && 
-                 userData.status in ['admin', 'membre'] &&
-                 docData.structureId == userData.structureId;
+          let structureId = getDocStructureId(docData);
+          return structureId != null && structureId != '' &&
+                 (hasPermissionOrStructureFallback('mission', 'read', structureId) ||
+                  hasPermissionOrStructureFallback('tresorerie', 'read', structureId));
+        }
+        
+        function canWriteViaStructure() {
+          let docData = resource.data;
+          let structureId = getDocStructureId(docData);
+          return structureId != null && structureId != '' &&
+                 hasPermissionOrStructureFallback('mission', 'write', structureId);
+        }
+        
+        function canCreateViaStructure() {
+          let docData = request.resource.data;
+          return docData.structureId != null && docData.structureId != '' &&
+                 hasPermissionOrStructureFallback('mission', 'write', docData.structureId);
         }
         
         function canAccessAsContactWithAccess() {
@@ -390,17 +390,17 @@ service cloud.firestore {
         
         allow create: if isAuthenticated() && (
           isSuperAdmin() ||
-          canAccessViaStructure()
+          canCreateViaStructure()
         );
         
         allow update: if isAuthenticated() && (
           isSuperAdmin() ||
-          canAccessViaStructure()
+          canWriteViaStructure()
         );
         
         allow delete: if isAuthenticated() && (
           isSuperAdmin() ||
-          canAccessViaStructure()
+          canWriteViaStructure()
         );
       }
     }
@@ -418,20 +418,26 @@ service cloud.firestore {
                resource.id == userData.companyId;
       }
       
-      // Vérifier l'accès en lecture via le système RBAC
+      // Admin/membre : accepter status OU role (compatibilité)
+      function isAdminOrMember(userData) {
+        return userData.status == 'admin' || userData.status == 'membre' ||
+               userData.role == 'admin' || userData.role == 'superadmin';
+      }
+      
       function canReadCompanies() {
         let userData = getUserData();
         return userData != null && 
+               userData.structureId != null &&
                userData.structureId == resource.data.structureId &&
-               canReadPage('entreprises');
+               (isSuperAdmin() || isAdminOrMember(userData));
       }
       
-      // Vérifier l'accès en écriture via le système RBAC
       function canWriteCompanies() {
         let userData = getUserData();
         return userData != null && 
+               userData.structureId != null &&
                userData.structureId == resource.data.structureId &&
-               canWritePage('entreprises');
+               (isSuperAdmin() || isAdminOrMember(userData));
       }
       
       allow read: if isAuthenticated() && (
@@ -447,8 +453,10 @@ service cloud.firestore {
       allow create: if isAuthenticated() && (
         isSuperAdmin() || 
         (
+          getUserData() != null &&
+          getUserData().structureId != null &&
           request.resource.data.structureId == getUserData().structureId &&
-          canWritePage('entreprises')
+          (isSuperAdmin() || isAdminOrMember(getUserData()))
         )
       );
       allow delete: if isAuthenticated() && (
@@ -489,26 +497,58 @@ service cloud.firestore {
       );
     }
 
+    // Paramètres de notation IA (scoring) par structure
+    match /scoringSettings/{settingsId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        resource.data.structureId == getUserData().structureId
+      );
+      allow create, update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (
+          request.resource.data.structureId == getUserData().structureId &&
+          (getUserData().status in ['membre', 'admin', 'admin_structure', 'etudiant'])
+        )
+      );
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (
+          resource.data.structureId == getUserData().structureId &&
+          (getUserData().status in ['membre', 'admin', 'admin_structure'])
+        )
+      );
+    }
+
     // =========================================================================
     // RÈGLES POUR LA COLLECTION APPLICATIONS
     // =========================================================================
     
     match /applications/{applicationId} {
       function canAccessViaMission() {
-        let userData = getUserData();
         let applicationData = resource.data;
         return applicationData.userId == request.auth.uid ||
                (
                  exists(/databases/$(database)/documents/missions/$(applicationData.missionId)) &&
                  (
                    isSuperAdmin() ||
-                   (
-                     userData != null && 
-                     userData.status in ['admin', 'membre'] &&
-                     get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.structureId == userData.structureId
-                   )
+                   hasPermissionOrStructureFallback('mission', 'read', get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.structureId) ||
+                   hasPermissionOrStructureFallback('tresorerie', 'read', get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.structureId)
                  )
                );
+      }
+      
+      function canWriteApplicationViaMission() {
+        let applicationData = resource.data;
+        return exists(/databases/$(database)/documents/missions/$(applicationData.missionId)) &&
+               (isSuperAdmin() ||
+                hasPermissionOrStructureFallback('mission', 'write', get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.structureId));
+      }
+      
+      function canCreateApplicationViaMission() {
+        let applicationData = request.resource.data;
+        return exists(/databases/$(database)/documents/missions/$(applicationData.missionId)) &&
+               (isSuperAdmin() ||
+                hasPermissionOrStructureFallback('mission', 'write', get(/databases/$(database)/documents/missions/$(applicationData.missionId)).data.structureId));
       }
       
       function canAccessAsContactWithAccess() {
@@ -544,7 +584,8 @@ service cloud.firestore {
         (request.resource.data.userId == request.auth.uid &&
          request.resource.data.keys().hasAll(['missionId', 'userId', 'userEmail', 'submittedAt', 'status']) &&
          request.resource.data.status == 'En attente') ||
-        canCreateAsContactWithAccess()
+        canCreateAsContactWithAccess() ||
+        canCreateApplicationViaMission()
       );
 
       function canUpdateAsContactWithAccess() {
@@ -561,11 +602,7 @@ service cloud.firestore {
       
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
-        (
-          getUserData().status in ['admin', 'membre'] &&
-          exists(/databases/$(database)/documents/missions/$(resource.data.missionId)) &&
-          get(/databases/$(database)/documents/missions/$(resource.data.missionId)).data.structureId == getUserData().structureId
-        ) ||
+        canWriteApplicationViaMission() ||
         canUpdateAsContactWithAccess()
       );
 
@@ -579,13 +616,18 @@ service cloud.firestore {
     match /users/{userId} {
       allow create: if request.auth == null || request.auth.uid == userId;
       
-      // Permettre la mise à jour par l'utilisateur lui-même, le superadmin, ou l'admin de la structure
+      // Permettre la mise à jour par l'utilisateur lui-même, le superadmin, l'admin de la structure, ou un membre avec permission organisation (écriture)
       allow update: if request.auth != null && (
         request.auth.uid == userId ||
         isSuperAdmin() ||
         (
           getUserData().status == 'admin' &&
           resource.data.structureId == getUserData().structureId
+        ) ||
+        (
+          getUserData() != null &&
+          resource.data.structureId == getUserData().structureId &&
+          hasPermission('organization', 'write')
         )
       );
       
@@ -614,19 +656,36 @@ service cloud.firestore {
     
     match /structures/{structureId} {
       allow read: if true;
-      allow write: if isAuthenticated() && isSuperAdmin();
+      allow create: if isAuthenticated() && isSuperAdmin();
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData() != null && getUserData().structureId == structureId && hasPermission('organization', 'write'))
+      );
+      allow delete: if isAuthenticated() && isSuperAdmin();
 
       // Sous-collection permissions
       match /permissions/{permissionId} {
+        function canReadPermissions() {
+          let userData = getUserData();
+          return userData != null &&
+                 userData.status in ['admin', 'membre'] &&
+                 userData.structureId == structureId;
+        }
+        
+        function canWritePermissions() {
+          let userData = getUserData();
+          return userData != null &&
+                 userData.status == 'admin' &&
+                 userData.structureId == structureId;
+        }
+        
         allow read: if isAuthenticated() && (
           isSuperAdmin() || 
-          getUserData().status in ['admin', 'membre'] &&
-          getUserData().structureId == structureId
+          canReadPermissions()
         );
         allow write: if isAuthenticated() && (
           isSuperAdmin() || 
-          getUserData().status == 'admin' &&
-          getUserData().structureId == structureId
+          canWritePermissions()
         );
       }
 
@@ -806,20 +865,37 @@ service cloud.firestore {
     // =========================================================================
     
     match /templates/{templateId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null;
-      allow delete: if request.auth != null;
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (isSuperAdmin() || canWritePage('mission'));
+      allow update: if isAuthenticated() && (isSuperAdmin() || canWritePage('mission'));
+      allow delete: if isAuthenticated() && (isSuperAdmin() || canWritePage('mission'));
     }
 
+    match /quoteTemplates/{templateId} {
+      function canAccessQuoteTemplate() {
+        let userData = getUserData();
+        return userData != null &&
+               resource.data.structureId == userData.structureId &&
+               (userData.status in ['admin', 'membre'] || userData.role in ['admin', 'superadmin'] || userData.status == 'superadmin');
+      }
+      allow read, write: if isAuthenticated() && (isSuperAdmin() || canAccessQuoteTemplate());
+    }
+
+    // Lecture ouverte à tout utilisateur authentifié pour la génération de documents
     match /templateAssignments/{assignmentId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null && 
-        request.resource.data.structureId == getUserData().structureId;
-      allow update: if request.auth != null && 
-        resource.data.structureId == getUserData().structureId;
-      allow delete: if request.auth != null && 
-        resource.data.structureId == getUserData().structureId;
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.structureId == getUserData().structureId && hasPermissionOrStructureFallback('mission', 'write', request.resource.data.structureId))
+      );
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (resource.data.structureId == getUserData().structureId && hasPermissionOrStructureFallback('mission', 'write', resource.data.structureId))
+      );
+      allow delete: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (resource.data.structureId == getUserData().structureId && hasPermissionOrStructureFallback('mission', 'write', resource.data.structureId))
+      );
     }
 
     match /templateVariables/{variableId} {
@@ -1120,10 +1196,10 @@ service cloud.firestore {
         let userData = getUserData();
         return (subscriptionId == request.auth.uid) ||
                isSuperAdmin() ||
-               (userData != null && 
-                userData.status == 'admin' &&
-                resource.data.structureId != null &&
-                resource.data.structureId == userData.structureId);
+               (userData != null &&
+                (userData.status == 'admin' || userData.status == 'membre' || userData.role == 'admin') &&
+                (subscriptionId == userData.structureId ||
+                 (resource.data.structureId != null && resource.data.structureId == userData.structureId)));
       }
       
       allow read: if isAuthenticated() && canAccessSubscription();
@@ -1163,45 +1239,44 @@ service cloud.firestore {
     // =========================================================================
     
     match /notes/{noteId} {
-      function canAccessViaMission() {
-        let userData = getUserData();
+      function getNoteMissionStructureId() {
         let noteData = resource.data;
-        return exists(/databases/$(database)/documents/missions/$(noteData.missionId)) &&
-               (
-                 isSuperAdmin() ||
-                 (
-                   userData != null && 
-                   userData.status in ['admin', 'membre'] &&
-                   get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.structureId == userData.structureId
-                 ) ||
-                 (
-                   isEntreprise() &&
-                   get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.companyId == request.auth.uid
-                 )
-               );
+        return exists(/databases/$(database)/documents/missions/$(noteData.missionId)) ?
+               get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.structureId : null;
       }
-      
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission() ||
-        resource.data.createdBy == request.auth.uid
-      );
-      
-      allow create: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission()
-      );
-      
-      allow update: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission() ||
-        resource.data.createdBy == request.auth.uid
-      );
-      
+      function isSameStructureMember(sid) {
+        let userData = getUserData();
+        return userData != null && userData.structureId == sid && userData.status in ['admin', 'membre'];
+      }
+      function canReadNote() {
+        let noteData = resource.data;
+        let sid = getNoteMissionStructureId();
+        return resource.data.createdBy == request.auth.uid ||
+               (isEntreprise() && exists(/databases/$(database)/documents/missions/$(noteData.missionId)) &&
+                get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.companyId == request.auth.uid) ||
+               (sid != null && (isSameStructureMember(sid) || hasPermissionOrStructureFallback('mission', 'read', sid) || hasPermissionOrStructureFallback('audit', 'read', sid)));
+      }
+      function canWriteNote() {
+        let noteData = resource.data;
+        let sid = getNoteMissionStructureId();
+        return (sid != null && (isSameStructureMember(sid) || hasPermissionOrStructureFallback('mission', 'write', sid) || hasPermissionOrStructureFallback('audit', 'write', sid))) ||
+               (isEntreprise() && exists(/databases/$(database)/documents/missions/$(noteData.missionId)) &&
+                get(/databases/$(database)/documents/missions/$(noteData.missionId)).data.companyId == request.auth.uid) ||
+               resource.data.createdBy == request.auth.uid;
+      }
+      allow read: if isAuthenticated() && (isSuperAdmin() || canReadNote());
+      function canCreateNoteForMission(mid) {
+        return mid != null && exists(/databases/$(database)/documents/missions/$(mid)) &&
+         (isSameStructureMember(get(/databases/$(database)/documents/missions/$(mid)).data.structureId) ||
+          hasPermissionOrStructureFallback('mission', 'write', get(/databases/$(database)/documents/missions/$(mid)).data.structureId) ||
+          hasPermissionOrStructureFallback('audit', 'write', get(/databases/$(database)/documents/missions/$(mid)).data.structureId));
+      }
+      allow create: if isAuthenticated() && (isSuperAdmin() || canCreateNoteForMission(request.resource.data.missionId));
+      allow update: if isAuthenticated() && (isSuperAdmin() || canWriteNote());
       allow delete: if isAuthenticated() && (
         isSuperAdmin() ||
-        canAccessViaMission() ||
-        resource.data.createdBy == request.auth.uid
+        resource.data.createdBy == request.auth.uid ||
+        canWriteNote()
       );
     }
 
@@ -1210,45 +1285,34 @@ service cloud.firestore {
     // =========================================================================
     
     match /expenseNotes/{expenseNoteId} {
-      function canAccessViaMission() {
-        let userData = getUserData();
+      function getExpenseNoteMissionStructureId() {
         let expenseNoteData = resource.data;
-        return exists(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)) &&
-               (
-                 isSuperAdmin() ||
-                 (
-                   userData != null && 
-                   userData.status in ['admin', 'membre'] &&
-                   get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.structureId == userData.structureId
-                 ) ||
-                 (
-                   isEntreprise() &&
-                   get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.companyId == request.auth.uid
-                 )
-               );
+        return exists(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)) ?
+               get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.structureId : null;
       }
-      
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission() ||
-        resource.data.createdBy == request.auth.uid
-      );
-      
+      function canReadExpenseNote() {
+        let expenseNoteData = resource.data;
+        let sid = getExpenseNoteMissionStructureId();
+        return resource.data.createdBy == request.auth.uid ||
+               (isEntreprise() && exists(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)) &&
+                get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.companyId == request.auth.uid) ||
+               (sid != null && (hasPermissionOrStructureFallback('mission', 'read', sid) || hasPermissionOrStructureFallback('tresorerie', 'read', sid)));
+      }
+      function canWriteExpenseNote() {
+        let expenseNoteData = resource.data;
+        return (getExpenseNoteMissionStructureId() != null && hasPermissionOrStructureFallback('mission', 'write', getExpenseNoteMissionStructureId())) ||
+               (isEntreprise() && exists(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)) &&
+                get(/databases/$(database)/documents/missions/$(expenseNoteData.missionId)).data.companyId == request.auth.uid) ||
+               resource.data.createdBy == request.auth.uid;
+      }
+      allow read: if isAuthenticated() && (isSuperAdmin() || canReadExpenseNote());
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        canAccessViaMission()
+        (request.resource.data.missionId != null && exists(/databases/$(database)/documents/missions/$(request.resource.data.missionId)) &&
+         hasPermissionOrStructureFallback('mission', 'write', get(/databases/$(database)/documents/missions/$(request.resource.data.missionId)).data.structureId))
       );
-      
-      allow update: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission() ||
-        resource.data.createdBy == request.auth.uid
-      );
-      
-      allow delete: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission()
-      );
+      allow update: if isAuthenticated() && (isSuperAdmin() || canWriteExpenseNote());
+      allow delete: if isAuthenticated() && (isSuperAdmin() || canWriteExpenseNote());
     }
 
     // =========================================================================
@@ -1256,45 +1320,33 @@ service cloud.firestore {
     // =========================================================================
     
     match /workingHours/{workingHourId} {
-      function canAccessViaApplication() {
-        let userData = getUserData();
-        let workingHourData = resource.data;
-        return exists(/databases/$(database)/documents/applications/$(workingHourData.applicationId)) &&
-               (
-                 get(/databases/$(database)/documents/applications/$(workingHourData.applicationId)).data.userId == request.auth.uid ||
-                 (
-                   exists(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(workingHourData.applicationId)).data.missionId)) &&
-                   (
-                     isSuperAdmin() ||
-                     (
-                       userData != null && 
-                       userData.status in ['admin', 'membre'] &&
-                       get(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(workingHourData.applicationId)).data.missionId)).data.structureId == userData.structureId
-                     )
-                   )
-                 )
-               );
+      function getWorkingHoursMissionStructureId() {
+        let appId = resource.data.applicationId;
+        return appId != null && exists(/databases/$(database)/documents/applications/$(appId)) &&
+               get(/databases/$(database)/documents/applications/$(appId)).data.missionId != null &&
+               exists(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(appId)).data.missionId)) ?
+               get(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(appId)).data.missionId)).data.structureId : null;
       }
-      
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaApplication()
-      );
-      
-      allow create: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaApplication()
-      );
-      
-      allow update: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaApplication()
-      );
-      
-      allow delete: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaApplication()
-      );
+      function canReadWorkingHours() {
+        let sid = getWorkingHoursMissionStructureId();
+        return sid != null && (hasPermissionOrStructureFallback('mission', 'read', sid) || hasPermissionOrStructureFallback('tresorerie', 'read', sid));
+      }
+      function canWriteWorkingHours() {
+        let sid = getWorkingHoursMissionStructureId();
+        return sid != null && hasPermissionOrStructureFallback('mission', 'write', sid);
+      }
+      function canCreateWorkingHours() {
+        let reqData = request.resource.data;
+        let appId = reqData.applicationId;
+        return appId != null && exists(/databases/$(database)/documents/applications/$(appId)) &&
+               get(/databases/$(database)/documents/applications/$(appId)).data.missionId != null &&
+               exists(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(appId)).data.missionId)) &&
+               hasPermissionOrStructureFallback('mission', 'write', get(/databases/$(database)/documents/missions/$(get(/databases/$(database)/documents/applications/$(appId)).data.missionId)).data.structureId);
+      }
+      allow read: if isAuthenticated() && (isSuperAdmin() || canReadWorkingHours());
+      allow create: if isAuthenticated() && (isSuperAdmin() || canCreateWorkingHours());
+      allow update: if isAuthenticated() && (isSuperAdmin() || canWriteWorkingHours());
+      allow delete: if isAuthenticated() && (isSuperAdmin() || canWriteWorkingHours());
     }
 
     // =========================================================================
@@ -1302,93 +1354,36 @@ service cloud.firestore {
     // =========================================================================
     
     match /amendments/{amendmentId} {
-      function canAccessViaMission() {
-        let userData = getUserData();
+      function getAmendmentMissionStructureId() {
         let amendmentData = resource.data;
-        return exists(/databases/$(database)/documents/missions/$(amendmentData.missionId)) &&
-               (
-                 isSuperAdmin() ||
-                 (
-                   userData != null && 
-                   userData.status in ['admin', 'membre'] &&
-                   get(/databases/$(database)/documents/missions/$(amendmentData.missionId)).data.structureId == userData.structureId
-                 )
-               );
+        return exists(/databases/$(database)/documents/missions/$(amendmentData.missionId)) ?
+               get(/databases/$(database)/documents/missions/$(amendmentData.missionId)).data.structureId : null;
       }
-      
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission()
-      );
-      
+      function canReadAmendment() {
+        return getAmendmentMissionStructureId() != null &&
+               hasPermissionOrStructureFallback('mission', 'read', getAmendmentMissionStructureId());
+      }
+      function canWriteAmendment() {
+        return getAmendmentMissionStructureId() != null &&
+               hasPermissionOrStructureFallback('mission', 'write', getAmendmentMissionStructureId());
+      }
+      allow read: if isAuthenticated() && (isSuperAdmin() || canReadAmendment());
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        canAccessViaMission()
+        (request.resource.data.missionId != null && exists(/databases/$(database)/documents/missions/$(request.resource.data.missionId)) &&
+         hasPermissionOrStructureFallback('mission', 'write', get(/databases/$(database)/documents/missions/$(request.resource.data.missionId)).data.structureId))
       );
-      
-      allow update: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission()
-      );
-      
-      allow delete: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaMission()
-      );
+      allow update: if isAuthenticated() && (isSuperAdmin() || canWriteAmendment());
+      allow delete: if isAuthenticated() && (isSuperAdmin() || canWriteAmendment());
     }
 
     // =========================================================================
     // RÈGLES POUR LES DOCUMENTS GÉNÉRÉS (COLLECTION PRINCIPALE)
+    // Tout utilisateur authentifié peut lire/écrire pour la génération de documents.
     // =========================================================================
     
     match /generatedDocuments/{documentId} {
-      function isDocumentStudent() {
-        let docData = resource.data;
-        return docData.applicationId != null && 
-               exists(/databases/$(database)/documents/applications/$(docData.applicationId)) &&
-               get(/databases/$(database)/documents/applications/$(docData.applicationId)).data.userId == request.auth.uid;
-      }
-      
-      function canAccessViaStructure() {
-        let userData = getUserData();
-        let docData = resource.data;
-        return userData != null && 
-               userData.status in ['admin', 'membre'] &&
-               docData.structureId == userData.structureId;
-      }
-      
-      function canAccessAsContactWithAccess() {
-        let userData = getUserData();
-        let docData = resource.data;
-        return userData != null &&
-               userData.status == 'entreprise' &&
-               userData.companyId != null &&
-               docData.missionId != null &&
-               exists(/databases/$(database)/documents/missions/$(docData.missionId)) &&
-               get(/databases/$(database)/documents/missions/$(docData.missionId)).data.companyId == userData.companyId;
-      }
-      
-      allow read: if isAuthenticated() && (
-        isSuperAdmin() ||
-        isDocumentStudent() ||
-        canAccessViaStructure() ||
-        canAccessAsContactWithAccess()
-      );
-      
-      allow create: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaStructure()
-      );
-      
-      allow update: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaStructure()
-      );
-      
-      allow delete: if isAuthenticated() && (
-        isSuperAdmin() ||
-        canAccessViaStructure()
-      );
+      allow read, write: if isAuthenticated();
     }
 
     // =========================================================================
@@ -1486,6 +1481,26 @@ service cloud.firestore {
           get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == getUserData().structureId
         )
       );
+    }
+
+    // =========================================================================
+    // RÈGLES POUR AMBASSADOR SETTINGS (entreprise sélectionnée par structure)
+    // =========================================================================
+    
+    match /ambassadorSettings/{structureId} {
+      function canAccessAmbassadorSettings() {
+        let userData = getUserData();
+        return userData != null &&
+               userData.structureId == structureId &&
+               (userData.status == 'admin' || userData.status == 'membre' || userData.status == 'superadmin' ||
+                userData.role == 'admin' || userData.role == 'superadmin');
+      }
+      allow read, write: if isAuthenticated() && (isSuperAdmin() || canAccessAmbassadorSettings());
+    }
+
+    // Favoris missions par utilisateur (Mission, Etude, Projet)
+    match /userFavorites/{userId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
     }
 
     // =========================================================================

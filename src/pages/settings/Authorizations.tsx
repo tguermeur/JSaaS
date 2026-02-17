@@ -55,7 +55,8 @@ import {
   AttachMoney as AttachMoneyIcon,
   Lock as LockIcon,
   HelpOutline as HelpIcon,
-  Info as InfoIcon
+  Info as InfoIcon,
+  RecordVoiceOver as RecordVoiceOverIcon
 } from '@mui/icons-material';
 import { 
   canAccessPage, 
@@ -68,6 +69,7 @@ import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { usePermission } from '../../hooks/usePermission';
 import AccessDenied from '../../components/common/AccessDenied';
+import { decryptUsersList } from '../../utils/decryptUserUtils';
 
 // Pôles par défaut
 const DEFAULT_POLES = [
@@ -129,6 +131,11 @@ const DEFAULT_PERMISSIONS_CONFIG: Record<string, {
     write: { roles: ['admin'], poles: ['rh'] },
     read: { roles: ['admin'], poles: ['rh'] },
     description: 'Réservé au pôle RH'
+  },
+  ambassadors: {
+    write: { roles: ['admin'], poles: ['com'] },
+    read: { roles: ['membre', 'admin'], poles: ['com'] },
+    description: 'Accès par pôle (ex. Communication) : lecture et modification configurables'
   },
   users: {
     write: { roles: ['admin'], poles: [] },
@@ -264,6 +271,15 @@ const Authorizations: React.FC = () => {
       ]
     },
     {
+      id: 'ambassadors',
+      name: 'Ambassadeurs',
+      icon: <RecordVoiceOverIcon />,
+      access: [
+        { id: '1', name: 'Admin', role: 'Modification', icon: <AdminIcon />, color: theme.palette.error.main },
+        { id: '2', name: 'Pôle (ex. Communication)', role: 'Lecture / Modification', icon: <RecordVoiceOverIcon />, color: theme.palette.success.main }
+      ]
+    },
+    {
       id: 'users',
       name: 'Gestion des utilisateurs',
       icon: <PersonIcon />,
@@ -384,7 +400,8 @@ const Authorizations: React.FC = () => {
         } as StructureMember))
         .filter(user => user.status === 'membre' || user.status === 'admin');
 
-      setMembers(membersList);
+      const decrypted = await decryptUsersList(membersList);
+      setMembers(decrypted);
     } catch (error) {
       console.error("Erreur lors du chargement des données:", error);
       setSnackbar({

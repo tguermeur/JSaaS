@@ -486,6 +486,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <BarChartIcon />,
       path: '/app/ambassadeurs',
       section: 'poles',
+      permissionPageId: 'ambassadors',
     },
     // Items de paramètres
     {
@@ -829,6 +830,11 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
             },
           }}
           onClick={(event) => setUserMenuAnchorEl(event.currentTarget)}
+          onError={(e) => {
+            const target = e.currentTarget as HTMLImageElement;
+            target.src = '';
+            target.style.display = 'none';
+          }}
         >
           {!currentUser?.photoURL && getInitials()}
         </Avatar>

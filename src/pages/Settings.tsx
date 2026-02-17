@@ -18,7 +18,8 @@ import {
   Notifications as NotificationsIcon,
   Storage as StorageIcon,
   Settings as SettingsIcon,
-  AccountTree as AccountTreeIcon
+  AccountTree as AccountTreeIcon,
+  Psychology as PsychologyIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -80,6 +81,12 @@ const Settings: React.FC = () => {
       label: 'Types de mission',
       path: '/app/settings/mission-descriptions',
       icon: <TextSnippetIcon />,
+      visible: true
+    },
+    {
+      label: 'IA Commercial',
+      path: '/app/settings/scoring',
+      icon: <PsychologyIcon />,
       visible: true
     },
     {

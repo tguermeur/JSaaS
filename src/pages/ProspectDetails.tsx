@@ -35,7 +35,8 @@ import {
   FormControlLabel,
   Stack,
   Chip as MuiChip,
-  Autocomplete
+  Autocomplete,
+  LinearProgress
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
@@ -64,13 +65,21 @@ import {
   Upload as UploadIcon,
   Link as LinkIcon,
   CheckCircle as CheckCircleIcon,
-  Close as CloseIcon
+  Close as CloseIcon,
+  TrendingUp as TrendingUpIcon,
+  Refresh as RefreshIcon,
+  AutoAwesome as AutoAwesomeIcon,
+  ContentCopy as ContentCopyIcon,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { doc, getDoc, updateDoc, deleteDoc, serverTimestamp, collection, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '../hooks/usePermission';
+import AccessDenied from '../components/common/AccessDenied';
 import { deleteProspect } from '../firebase/prospects';
+import { computeProspectScores, generateContactMessage } from '../services/scoringService';
 import Navbar from '../components/layout/Navbar';
 import Sidebar from '../components/layout/Sidebar';
 import { DateTimePicker } from '@mui/x-date-pickers/DateTimePicker';
@@ -79,6 +88,7 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { fr } from 'date-fns/locale';
 import { uploadFile } from '../firebase/storage';
 import { auth } from '../firebase/config';
+import { decryptUsersList } from '../utils/decryptUserUtils';
 
 interface Experience {
   company?: string;
@@ -127,6 +137,10 @@ interface Prospect {
   companyData?: CompanyData;
   experience?: Experience[];
   extractionMethod?: string;
+  /** Score de priorité IA (0-100) */
+  aiScore?: number;
+  /** Date de dernier calcul du score */
+  aiScoreUpdatedAt?: any;
 }
 
 interface StructureMember {
@@ -239,11 +253,15 @@ const parseDate = (date: any): Date | null => {
   }
 };
 
+const isEncrypted = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
+
 const ProspectDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { userData } = useAuth();
+  const { canRead, canWrite, loading: permissionLoading } = usePermission('commercial');
   const [prospect, setProspect] = useState<Prospect | null>(null);
+  const [decryptedProspect, setDecryptedProspect] = useState<Partial<Prospect> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -266,23 +284,46 @@ const ProspectDetails: React.FC = () => {
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [mailFile, setMailFile] = useState<File | null>(null);
   const [structureMembers, setStructureMembers] = useState<StructureMember[]>([]);
+  const [recomputingScores, setRecomputingScores] = useState(false);
+  const [contactMessageDialogOpen, setContactMessageDialogOpen] = useState(false);
+  const [contactMessageGenerating, setContactMessageGenerating] = useState(false);
+  const [contactMessageText, setContactMessageText] = useState('');
+  const [contactMessageError, setContactMessageError] = useState<string | null>(null);
+  const [contactMessageModificationRequest, setContactMessageModificationRequest] = useState('');
   const creationActivityAdded = useRef(false);
-  
-  // Charger les membres de l'équipe
+
+  useEffect(() => {
+    setContactMessageText('');
+    setContactMessageModificationRequest('');
+  }, [id]);
+
+  // Charger les membres de l'équipe (noms décryptés pour l'affichage propriétaire)
   useEffect(() => {
     const fetchStructureMembers = async () => {
       if (!userData?.structureId) return;
       try {
         const q = query(collection(db, 'users'), where('structureId', '==', userData.structureId));
         const snapshot = await getDocs(q);
-        const members = snapshot.docs.map(doc => ({
-          id: doc.id,
-          displayName: doc.data().displayName || doc.data().name || 'Utilisateur',
-          role: doc.data().role || 'membre',
-          poles: doc.data().poles || [],
-          mandat: doc.data().mandat
-        }));
-        setStructureMembers(members as StructureMember[]);
+        const members = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+          return {
+            id: docSnap.id,
+            displayName: data.displayName || data.name || '',
+            firstName: data.firstName || '',
+            lastName: data.lastName || '',
+            role: (data.role || 'membre') as StructureMember['role'],
+            poles: data.poles || [],
+            mandat: data.mandat
+          };
+        });
+        const decrypted = await decryptUsersList(members);
+        setStructureMembers(decrypted.map(m => ({
+          id: m.id,
+          displayName: m.displayName || `${m.firstName || ''} ${m.lastName || ''}`.trim() || 'Utilisateur',
+          role: m.role,
+          poles: m.poles,
+          mandat: m.mandat
+        })) as StructureMember[]);
       } catch (error) {
         console.error(error);
       }
@@ -340,12 +381,9 @@ const ProspectDetails: React.FC = () => {
             }
           }
 
-          // CRM: Suggestion d'action
-          if (prospectData.statut === 'contacte') {
-             setSuggestedNextStep("Relance suggérée (J+3)");
-          } else if (prospectData.statut === 'nouveau') {
-             setSuggestedNextStep("Premier contact à établir");
-          }
+          // CRM: Suggestion d'action (désactivée par défaut pour éviter la surbrillance à l'ouverture)
+          // if (prospectData.statut === 'contacte') setSuggestedNextStep("Relance suggérée (J+3)");
+          // else if (prospectData.statut === 'nouveau') setSuggestedNextStep("Premier contact à établir");
 
           // Vérifier si c'est une nouvelle création (et ne le faire qu'une fois)
           if (!creationActivityAdded.current) {
@@ -376,6 +414,24 @@ const ProspectDetails: React.FC = () => {
 
     fetchProspect();
   }, [id]);
+
+  // Déchiffrer les infos prospect (téléphone, email, adresse) pour l'affichage
+  useEffect(() => {
+    if (!prospect || !canRead) return;
+    const run = async () => {
+      if (!isEncrypted(prospect.telephone) && !isEncrypted(prospect.email) && !isEncrypted(prospect.adresse)) return;
+      try {
+        const functions = getFunctions();
+        const decryptProspect = httpsCallable(functions, 'decryptProspectDataForStructure');
+        const res = await decryptProspect({ prospectId: prospect.id });
+        const dec = (res.data as { decryptedData?: Partial<Prospect> })?.decryptedData;
+        if (dec) setDecryptedProspect(dec);
+      } catch (e) {
+        console.warn('Déchiffrement prospect ignoré:', e);
+      }
+    };
+    run();
+  }, [prospect?.id, canRead, prospect?.telephone, prospect?.email, prospect?.adresse]);
 
   useEffect(() => {
     const checkDeletePermission = async () => {
@@ -526,6 +582,10 @@ const ProspectDetails: React.FC = () => {
       console.error('ID du prospect manquant');
       return;
     }
+    if (!canWrite) {
+      setError('Vous n\'avez pas les permissions nécessaires pour supprimer ce prospect');
+      return;
+    }
 
     try {
       // Vérifier les permissions avant la suppression
@@ -588,6 +648,84 @@ const ProspectDetails: React.FC = () => {
     } catch (err) {
       console.error('Erreur lors de la suppression du prospect:', err);
       setError('Erreur lors de la suppression du prospect');
+    }
+  };
+
+  const handleRecalculateScores = async () => {
+    if (!userData?.structureId || !id) return;
+    setRecomputingScores(true);
+    try {
+      const { updated } = await computeProspectScores(userData.structureId);
+      const prospectRef = doc(db, 'prospects', id);
+      const prospectDoc = await getDoc(prospectRef);
+      if (prospectDoc.exists()) {
+        const prospectData = { id: prospectDoc.id, ...prospectDoc.data() } as Prospect;
+        setProspect(prospectData);
+        setEditedProspect(prospectData);
+      }
+    } catch (err) {
+      console.error('Erreur lors du recalcul des scores:', err);
+      setError('Erreur lors du recalcul des scores. Vérifiez que les Cloud Functions sont déployées.');
+    } finally {
+      setRecomputingScores(false);
+    }
+  };
+
+  const handleOpenContactMessageDialog = async () => {
+    if (!id || !userData?.structureId) return;
+    setContactMessageError(null);
+    setContactMessageDialogOpen(true);
+    if (contactMessageText.trim()) return;
+    setContactMessageGenerating(true);
+    try {
+      const { message } = await generateContactMessage(id, userData.structureId);
+      setContactMessageText(message);
+    } catch (err: any) {
+      console.error(err);
+      setContactMessageError(err?.message || 'Erreur lors de la génération. Vérifiez que les Cloud Functions sont déployées.');
+    } finally {
+      setContactMessageGenerating(false);
+    }
+  };
+
+  const handleRegenerateContactMessage = async () => {
+    if (!id || !userData?.structureId) return;
+    setContactMessageGenerating(true);
+    setContactMessageError(null);
+    try {
+      const { message } = await generateContactMessage(id, userData.structureId);
+      setContactMessageText(message);
+      setContactMessageModificationRequest('');
+    } catch (err: any) {
+      console.error(err);
+      setContactMessageError(err?.message || 'Erreur lors de la régénération.');
+    } finally {
+      setContactMessageGenerating(false);
+    }
+  };
+
+  const handleCopyContactMessage = () => {
+    if (contactMessageText && navigator.clipboard) {
+      navigator.clipboard.writeText(contactMessageText);
+    }
+  };
+
+  const handleRefineContactMessage = async () => {
+    if (!id || !userData?.structureId || !contactMessageText?.trim() || !contactMessageModificationRequest?.trim()) return;
+    setContactMessageGenerating(true);
+    setContactMessageError(null);
+    try {
+      const { message } = await generateContactMessage(id, userData.structureId, {
+        currentMessage: contactMessageText,
+        modificationRequest: contactMessageModificationRequest,
+      });
+      setContactMessageText(message);
+      setContactMessageModificationRequest('');
+    } catch (err: any) {
+      console.error(err);
+      setContactMessageError(err?.message || 'Erreur lors de la modification.');
+    } finally {
+      setContactMessageGenerating(false);
     }
   };
 
@@ -846,15 +984,23 @@ const ProspectDetails: React.FC = () => {
           overflowX: 'auto'
         }}
       >
-        {loading ? (
+        {loading || permissionLoading ? (
           <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
             <CircularProgress />
           </Box>
+        ) : !canRead ? (
+          <AccessDenied
+            title="Accès refusé"
+            message="Vous n'avez pas les permissions nécessaires pour accéder à cette fiche prospect. Contactez votre administrateur pour obtenir l'accès."
+          />
         ) : error || !prospect ? (
           <Box p={3}>
             <Alert severity="error">{error || 'Prospect non trouvé'}</Alert>
           </Box>
         ) : (
+          (() => {
+            const displayProspect: Prospect = { ...prospect!, ...decryptedProspect };
+            return (
           <Box sx={{ p: { xs: 1, md: 3 } }}>
               {/* Breadcrumbs */}
               <Box sx={{ mb: 1.5 }}>
@@ -878,19 +1024,19 @@ const ProspectDetails: React.FC = () => {
 
               {/* Header */}
               <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                {prospect.photoUrl && (
+                {displayProspect.photoUrl && (
                 <Avatar
-                  src={prospect.photoUrl}
-                    alt={getProspectName(prospect)}
+                  src={displayProspect.photoUrl}
+                    alt={getProspectName(displayProspect)}
                     sx={{ width: 64, height: 64, bgcolor: '#f5f5f7', fontSize: 32, mr: 2, flexShrink: 0 }}
                 >
-                    {getProspectName(prospect).charAt(0)}
+                    {getProspectName(displayProspect).charAt(0)}
                 </Avatar>
                 )}
                 <Box sx={{ flex: 1 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <Typography variant="h4" sx={{ fontWeight: 700, fontSize: '2rem', color: '#000' }}>
-                      {getProspectName(prospect)}
+                      {getProspectName(displayProspect)}
                     </Typography>
                     {isEditing ? (
                       <Select
@@ -974,6 +1120,8 @@ const ProspectDetails: React.FC = () => {
                     )}
                   </Box>
                   <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
+                    {canWrite && (
+                    <>
                     <Tooltip title="Ajouter une activité">
                       <IconButton color="primary" onClick={() => setActivityDialogOpen(true)}>
                         <AssignmentIcon />
@@ -994,6 +1142,9 @@ const ProspectDetails: React.FC = () => {
                         <EmailIcon />
                       </IconButton>
                     </Tooltip>
+                    </>
+                    )}
+                    {canWrite && (
                     <Tooltip title="Supprimer le prospect">
                       <IconButton 
                         color="error" 
@@ -1007,6 +1158,7 @@ const ProspectDetails: React.FC = () => {
                         <DeleteIcon />
                       </IconButton>
                     </Tooltip>
+                    )}
                   </Box>
                   <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
                     <Typography variant="body2" color="textSecondary">
@@ -1087,7 +1239,8 @@ const ProspectDetails: React.FC = () => {
                         <PersonIcon sx={{ color: '#0071e3', mr: 1 }} />
                         <Typography variant="subtitle1" fontWeight={600}>Contact</Typography>
                     </Box>
-                      {!isEditing ? (
+                      {canWrite && (
+                      !isEditing ? (
                         <IconButton 
                           color="primary" 
                           size="small"
@@ -1103,6 +1256,7 @@ const ProspectDetails: React.FC = () => {
                         >
                           <SaveIcon fontSize="small" />
                         </IconButton>
+                      )
                       )}
                     </Box>
                     <Divider sx={{ mb: 1 }} />
@@ -1249,17 +1403,18 @@ const ProspectDetails: React.FC = () => {
                         </>
                       ) : (
                         <>
-                          {renderIf('Nom', prospect.name || prospect.nom)}
-                          {renderIf('Poste', prospect.title)}
-                          {renderIf('Entreprise', capitalizeWords(prospect.entreprise || prospect.company || ''))}
-                          {renderIf('Secteur', prospect.secteur)}
-                          {prospect.linkedinUrl && (
+                          {renderIf('Nom', displayProspect.name || displayProspect.nom)}
+                          {renderIf('Poste', displayProspect.title)}
+                          {renderIf('Entreprise', capitalizeWords(displayProspect.entreprise || displayProspect.company || ''))}
+                          {renderIf('Secteur', displayProspect.secteur)}
+                          {renderIf('Notes', displayProspect.notes)}
+                          {displayProspect.linkedinUrl && (
                             <ListItem>
                               <ListItemText 
                                 primary="LinkedIn" 
                                 secondary={
                                   <a 
-                                    href={prospect.linkedinUrl} 
+                                    href={displayProspect.linkedinUrl} 
                                     target="_blank" 
                                     rel="noopener noreferrer"
                                     style={{ color: '#0071e3', textDecoration: 'none' }}
@@ -1273,13 +1428,13 @@ const ProspectDetails: React.FC = () => {
                           <ListItem>
                             <ListItemText 
                               primary="Téléphone" 
-                              secondary={prospect.telephone || 'Non renseigné'} 
+                              secondary={displayProspect.telephone || 'Non renseigné'} 
                             />
                           </ListItem>
                           <ListItem>
                             <ListItemText 
                               primary="Email" 
-                              secondary={prospect.email || 'Non renseigné'} 
+                              secondary={displayProspect.email || 'Non renseigné'} 
                             />
                           </ListItem>
                         </>
@@ -1601,8 +1756,8 @@ const ProspectDetails: React.FC = () => {
                             </Box>
                           ) : (
                             <ListItem>
-                              <ListItemText 
-                                primary="Statut" 
+                              <ListItemText
+                                primary="Statut"
                                 secondary={
                                   <Box
                                     sx={{
@@ -1619,6 +1774,7 @@ const ProspectDetails: React.FC = () => {
                                        prospect?.statut === 'abandon' ? 'Abandon' :
                                        prospect?.statut === 'deja_client' ? 'Déjà client' : 'Non qualifié'}
                                     </Typography>
+                                    {canWrite && (
                                     <IconButton 
                                       size="small" 
                                       onClick={handleEditStatus}
@@ -1632,19 +1788,22 @@ const ProspectDetails: React.FC = () => {
                                     >
                                       <EditIcon fontSize="small" />
                                     </IconButton>
+                                    )}
                                   </Box>
                                 }
+                                secondaryTypographyProps={{ component: 'div' }}
                               />
                             </ListItem>
                           )}
-                          {renderIf('Valeur potentielle', prospect.valeurPotentielle ? `${prospect.valeurPotentielle} €` : undefined)}
-                          {renderIf('Date d\'ajout', formatDate(prospect.dateCreation))}
-                          {renderIf('Dernière interaction', formatDate(prospect.derniereInteraction))}
-                          {renderIf('Adresse', prospect.adresse)}
-                          {renderIf('Secteur', prospect.secteur)}
-                          {renderIf('Source', prospect.source)}
-                          {renderIf('Extension IA', prospect.extractionMethod === 'ai_server' ? 'Oui' : undefined)}
-                          {prospect.dateRecontact ? (
+                          {renderIf('Valeur potentielle', displayProspect.valeurPotentielle ? `${displayProspect.valeurPotentielle} €` : undefined)}
+                          {renderIf('Date d\'ajout', formatDate(displayProspect.dateCreation))}
+                          {renderIf('Dernière interaction', formatDate(displayProspect.derniereInteraction))}
+                          {renderIf('Adresse', displayProspect.adresse)}
+                          {renderIf('Secteur', displayProspect.secteur)}
+                          {renderIf('Source', displayProspect.source)}
+                          {renderIf('Notes', displayProspect.notes)}
+                          {renderIf('Extension IA', displayProspect.extractionMethod === 'ai_server' ? 'Oui' : undefined)}
+                          {displayProspect.dateRecontact ? (
                             <ListItem>
                               {isEditing ? (
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
@@ -1704,12 +1863,12 @@ const ProspectDetails: React.FC = () => {
                                 <>
                                   <ListItemText 
                                     primary="Date de relance" 
-                                    secondary={formatDate(prospect.dateRecontact)} 
+                                    secondary={formatDate(displayProspect.dateRecontact)} 
                                   />
                                   <IconButton 
                                     size="small"
                                     onClick={() => {
-                                      setEditedProspect(prev => ({ ...prev, dateRecontact: prospect.dateRecontact }));
+                                      setEditedProspect(prev => ({ ...prev, dateRecontact: prospect!.dateRecontact }));
                                     }}
                                     sx={{ opacity: 0, transition: 'opacity 0.2s', '&:hover': { opacity: 1 } }}
                                   >
@@ -1793,8 +1952,202 @@ const ProspectDetails: React.FC = () => {
                       )}
                     </Box>
                   </Paper>
+
+                  {/* Box Notation IA — sous Activité/Détails, avec bouton recalculer */}
+                  <Paper
+                    sx={{
+                      p: 2,
+                      mt: 2,
+                      borderRadius: 3,
+                      border: '1px solid',
+                      borderColor: typeof displayProspect.aiScore === 'number'
+                        ? displayProspect.aiScore >= 70 ? 'rgba(52, 199, 89, 0.4)' : displayProspect.aiScore >= 40 ? 'rgba(255, 159, 10, 0.4)' : 'rgba(142, 142, 147, 0.3)'
+                        : 'divider'
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <TrendingUpIcon sx={{ color: 'text.secondary', fontSize: 22 }} />
+                        <Typography variant="subtitle1" fontWeight={700}>Notation IA</Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={contactMessageDialogOpen && contactMessageGenerating ? <CircularProgress size={16} color="inherit" /> : <AutoAwesomeIcon />}
+                          title={contactMessageText ? 'Ouvrir le message généré' : 'Générer un message personnalisé'}
+                          onClick={handleOpenContactMessageDialog}
+                          disabled={contactMessageGenerating || !userData?.structureId}
+                          sx={{ textTransform: 'none', fontWeight: 600 }}
+                        >
+                          {contactMessageGenerating ? 'Génération...' : 'Message personnalisé'}
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={recomputingScores ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
+                          onClick={handleRecalculateScores}
+                          disabled={recomputingScores || !userData?.structureId}
+                          sx={{ textTransform: 'none', fontWeight: 600 }}
+                        >
+                          {recomputingScores ? 'Recalcul...' : 'Recalculer l\'ensemble'}
+                        </Button>
+                      </Box>
+                    </Box>
+                    <Divider sx={{ mb: 1.5 }} />
+                    {typeof displayProspect.aiScore === 'number' ? (
+                      <>
+                        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.5, mb: 1 }}>
+                          <Typography
+                            component="span"
+                            sx={{
+                              fontSize: '2.75rem',
+                              fontWeight: 800,
+                              lineHeight: 1,
+                              color: displayProspect.aiScore >= 70 ? '#34c759' : displayProspect.aiScore >= 40 ? '#ff9f0a' : '#8e8e93'
+                            }}
+                          >
+                            {displayProspect.aiScore}
+                          </Typography>
+                          <Typography component="span" variant="h6" color="text.secondary" sx={{ fontWeight: 500 }}>
+                            / 100
+                          </Typography>
+                        </Box>
+                        <Box sx={{ mb: 1 }}>
+                          <LinearProgress
+                            variant="determinate"
+                            value={displayProspect.aiScore}
+                            sx={{
+                              height: 8,
+                              borderRadius: 4,
+                              bgcolor: 'rgba(0,0,0,0.06)',
+                              '& .MuiLinearProgress-bar': {
+                                bgcolor: displayProspect.aiScore >= 70 ? '#34c759' : displayProspect.aiScore >= 40 ? '#ff9f0a' : '#8e8e93'
+                              }
+                            }}
+                          />
+                        </Box>
+                        <Typography variant="body2" fontWeight={600} color="text.secondary" sx={{ mb: 0.5 }}>
+                          {displayProspect.aiScore >= 70 ? 'Priorité haute' : displayProspect.aiScore >= 40 ? 'Priorité moyenne' : 'Priorité basse'}
+                        </Typography>
+                        {displayProspect.aiScoreUpdatedAt != null && (
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            Dernière mise à jour : {displayProspect.aiScoreUpdatedAt?.toDate
+                              ? displayProspect.aiScoreUpdatedAt.toDate().toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                              : formatDate(displayProspect.aiScoreUpdatedAt)}
+                          </Typography>
+                        )}
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+                          Score de priorité (0–100) calculé par l&apos;IA selon le profil, l&apos;activité et la pertinence du prospect.
+                        </Typography>
+                      </>
+                    ) : (
+                      <>
+                        <Typography variant="h4" color="text.secondary" fontWeight={700} sx={{ mb: 0.5 }}>
+                          —
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                          Score non calculé. Utilisez le bouton ci-dessus pour lancer un recalcul des scores de tous les prospects de votre structure.
+                        </Typography>
+                      </>
+                    )}
+                  </Paper>
                 </Grid>
               </Grid>
+
+              <Dialog
+                open={contactMessageDialogOpen}
+                onClose={() => { setContactMessageDialogOpen(false); setContactMessageError(null); setContactMessageModificationRequest(''); }}
+                maxWidth="sm"
+                fullWidth
+                PaperProps={{ sx: { borderRadius: 3 } }}
+              >
+                <DialogTitle sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', pr: 1 }}>
+                  <span>Message de contact personnalisé</span>
+                  {contactMessageText && !contactMessageGenerating && (
+                    <Tooltip title="Régénérer un autre message">
+                      <IconButton
+                        size="small"
+                        onClick={handleRegenerateContactMessage}
+                        sx={{ ml: 1 }}
+                        aria-label="Régénérer un autre message"
+                      >
+                        <RefreshIcon />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                </DialogTitle>
+                <DialogContent>
+                  {contactMessageError && (
+                    <Alert severity="error" sx={{ mb: 2 }} onClose={() => setContactMessageError(null)}>
+                      {contactMessageError}
+                    </Alert>
+                  )}
+                  {contactMessageGenerating ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 3 }}>
+                      <CircularProgress size={24} />
+                      <Typography color="text.secondary">L&apos;IA rédige le message...</Typography>
+                    </Box>
+                  ) : (
+                    <>
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={6}
+                        maxRows={14}
+                        value={contactMessageText}
+                        onChange={(e) => setContactMessageText(e.target.value)}
+                        placeholder="Le message apparaîtra ici après génération. Vous pouvez le modifier avant de le copier."
+                        sx={{ mt: 0.5, '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                      />
+                      {contactMessageText && (
+                        <Box sx={{ mt: 2 }}>
+                          <TextField
+                            fullWidth
+                            size="small"
+                            label="Demander une modification à l'IA"
+                            placeholder="Ex : rends-le plus court, ajoute une phrase sur notre expertise, ton plus formel..."
+                            value={contactMessageModificationRequest}
+                            onChange={(e) => setContactMessageModificationRequest(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleRefineContactMessage();
+                              }
+                            }}
+                            sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                          />
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            startIcon={<AutoAwesomeIcon />}
+                            onClick={handleRefineContactMessage}
+                            disabled={!contactMessageModificationRequest.trim()}
+                            sx={{ mt: 1.5, textTransform: 'none', fontWeight: 600 }}
+                          >
+                            Raffiner avec l&apos;IA
+                          </Button>
+                        </Box>
+                      )}
+                    </>
+                  )}
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 2 }}>
+                  <Button onClick={() => { setContactMessageDialogOpen(false); setContactMessageError(null); setContactMessageModificationRequest(''); }} sx={{ textTransform: 'none' }}>
+                    Fermer
+                  </Button>
+                  {contactMessageText && !contactMessageGenerating && (
+                    <Button
+                      variant="contained"
+                      startIcon={<ContentCopyIcon />}
+                      onClick={handleCopyContactMessage}
+                      sx={{ textTransform: 'none', fontWeight: 600 }}
+                    >
+                      Copier
+                    </Button>
+                  )}
+                </DialogActions>
+              </Dialog>
 
               <Dialog
                 open={deleteDialogOpen}
@@ -2177,7 +2530,8 @@ const ProspectDetails: React.FC = () => {
                 `}
               </style>
             </Box>
-          )}
+          );
+          })() )}
         </Box>
       </Box>
   );

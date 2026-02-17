@@ -69,7 +69,7 @@ import { auth } from '../firebase/config';
 import { useNotifications } from '../contexts/NotificationContext';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import LockIcon from '@mui/icons-material/Lock';
-import { decryptActivityUsersList } from '../utils/decryptUserUtils';
+import { decryptActivityUsersList, decryptUsersList } from '../utils/decryptUserUtils';
 import { toDateFromFirestore } from '../utils/dateUtils';
 import SecurityIcon from '@mui/icons-material/Security';
 import LoginIcon from '@mui/icons-material/Login';
@@ -1160,15 +1160,26 @@ const SuperAdmin: React.FC = () => {
     </Dialog>
   );
 
-  // Fonction pour récupérer tous les utilisateurs
+  // Fonction pour récupérer tous les utilisateurs (Prénom/Nom décryptés)
   const fetchAllUsers = async () => {
     try {
       const usersRef = collection(db, 'users');
       const snapshot = await getDocs(usersRef);
-      const usersData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        email: doc.data().email || '',
-        displayName: doc.data().displayName || ''
+      const usersDataRaw = snapshot.docs.map(doc => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          email: d.email || '',
+          displayName: d.displayName || '',
+          firstName: d.firstName,
+          lastName: d.lastName
+        };
+      });
+      const decrypted = await decryptUsersList(usersDataRaw);
+      const usersData = decrypted.map(u => ({
+        id: u.id,
+        email: (usersDataRaw.find(r => r.id === u.id) as any)?.email || '',
+        displayName: u.displayName || ''
       }));
       setUsers(usersData);
     } catch (error) {

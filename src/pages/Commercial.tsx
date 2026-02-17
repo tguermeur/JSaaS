@@ -9,6 +9,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   TextField,
   InputAdornment,
   Chip,
@@ -27,6 +28,7 @@ import {
   ListItem,
   ListItemIcon,
   ListItemText,
+  ListItemButton,
   SelectChangeEvent,
   Checkbox,
   Dialog,
@@ -53,7 +55,8 @@ import {
   Stack,
   Tabs,
   Tab,
-  Autocomplete
+  Autocomplete,
+  Grow
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import AddIcon from '@mui/icons-material/Add';
@@ -96,11 +99,17 @@ import {
   Notifications as NotificationsIcon,
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
-  Info as InfoIcon
+  Info as InfoIcon,
+  ViewColumn as ViewColumnIcon,
+  ArrowUpward as ArrowUpwardIcon,
+  ArrowDownward as ArrowDownwardIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
-import { getProspects, createProspect, deleteProspect } from '../firebase/prospects';
-import { collection, query, where, getDocs, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, addDoc, Timestamp, orderBy } from 'firebase/firestore';
+import { getProspects, createProspect, deleteProspect, updateProspect } from '../firebase/prospects';
+import { getRelanceSuggestions, computeProspectScores, type RelanceSuggestion } from '../services/scoringService';
+import { decryptUsersList } from '../utils/decryptUserUtils';
+import { collection, query, where, getDocs, getDoc, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, addDoc, Timestamp, orderBy } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from '../firebase/config';
 import { getStructureTokens, StructureTokens } from '../services/tokenService';
 import { useNavigate } from 'react-router-dom';
@@ -111,6 +120,25 @@ import { fadeIn } from '../styles/animations';
 import Papa from 'papaparse';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
+import {
+  useReactTable,
+  getCoreRowModel,
+  flexRender,
+  type ColumnDef,
+  type ColumnSizingState,
+  type VisibilityState
+} from '@tanstack/react-table';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent
+} from '@dnd-kit/core';
+import { arrayMove, SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 // --- STRICT MODE DROPPABLE FIX ---
 // Nécessaire pour React 18 + react-beautiful-dnd
@@ -138,6 +166,165 @@ const PIPELINE_STATUSES = [
   'negociation',
   'abandon',
   'deja_client'
+];
+
+// Colonnes du tableau Liste (style Twenty) — Notes tout à gauche
+const TABLE_COLUMNS = [
+  { id: 'notes', label: 'Notes', sortKey: 'notes' },
+  { id: 'nom', label: 'Nom', sortKey: 'nom' },
+  { id: 'entreprise', label: 'Entreprise', sortKey: 'entreprise' },
+  { id: 'statut', label: 'Statut', sortKey: 'statut' },
+  { id: 'aiScore', label: 'Priorité IA', sortKey: 'aiScore' },
+  { id: 'ownerId', label: 'Propriétaire', sortKey: 'ownerId' },
+  { id: 'derniereInteraction', label: 'Dernière activité', sortKey: 'derniereInteraction' }
+] as const;
+
+// --- VUE ENTREPRISES (liste CRM TanStack Table + resize/reorder colonnes) ---
+export interface CompanyRow {
+  id: string;
+  name: string;
+  domain: string;
+  email?: string;
+  telephone?: string;
+  adresse?: string;
+  secteur?: string;
+  accountOwnerId: string;
+  createdById: string;
+  createdAt: string;
+  logo?: string;
+  /** Score IA (priorité) — même donnée que les prospects */
+  aiScore?: number;
+}
+// Métadonnées de toutes les colonnes : visibilité, ordre, redimensionnement (+ Notation = même données que Prospects)
+const ENTREPRISE_COLUMNS_META: { id: string; label: string; minSize: number; defaultSize: number }[] = [
+  { id: 'name', label: 'Nom', minSize: 120, defaultSize: 220 },
+  { id: 'domain', label: 'Domaine', minSize: 120, defaultSize: 180 },
+  { id: 'email', label: 'Email', minSize: 140, defaultSize: 200 },
+  { id: 'telephone', label: 'Téléphone', minSize: 120, defaultSize: 140 },
+  { id: 'adresse', label: 'Adresse', minSize: 140, defaultSize: 220 },
+  { id: 'secteur', label: 'Secteur', minSize: 100, defaultSize: 140 },
+  { id: 'aiScore', label: 'Notation', minSize: 90, defaultSize: 100 },
+  { id: 'accountOwnerId', label: 'Responsable du compte', minSize: 140, defaultSize: 180 },
+  { id: 'createdById', label: 'Créé par', minSize: 120, defaultSize: 140 },
+  { id: 'createdAt', label: 'Date de création', minSize: 120, defaultSize: 140 }
+];
+
+/** Disposition du tableau Commercial sauvegardée par utilisateur (Firestore users/{uid}) */
+export interface CommercialTableLayout {
+  listView?: { visibleColumns: string[] };
+  companiesView?: {
+    visibleColumnIds: string[];
+    columnOrder: string[];
+    columnSizing: Record<string, number>;
+  };
+}
+
+const DEFAULT_LIST_VISIBLE_COLUMNS = TABLE_COLUMNS.map(c => c.id);
+const DEFAULT_COMPANIES_VISIBLE_IDS = ENTREPRISE_COLUMNS_META.map(c => c.id);
+const DEFAULT_COMPANIES_ORDER = ENTREPRISE_COLUMNS_META.map(c => c.id);
+const defaultCompaniesSizing = (): ColumnSizingState => {
+  const s: ColumnSizingState = {};
+  ENTREPRISE_COLUMNS_META.forEach(c => { s[c.id] = c.defaultSize; });
+  return s;
+};
+
+export interface CompanyUser {
+  id: string;
+  name: string;
+  avatar?: string;
+}
+const MOCK_COMPANY_USERS: CompanyUser[] = [
+  { id: 'u1', name: 'Marie Dupont' },
+  { id: 'u2', name: 'Thomas Martin' },
+  { id: 'u3', name: 'Léa Bernard' },
+  { id: 'u4', name: 'Hugo Petit' },
+  { id: 'u5', name: 'Emma Laurent' }
+];
+const MOCK_COMPANIES: CompanyRow[] = [
+  { id: 'c1', name: 'Airbnb', domain: 'airbnb.com', email: 'contact@airbnb.com', telephone: '01 23 45 67 89', adresse: 'Paris', secteur: 'Tech', accountOwnerId: 'u1', createdById: 'u2', createdAt: '2024-01-15T10:00:00Z' },
+  { id: 'c2', name: 'Amazon', domain: 'amazon.com', email: 'partenaires@amazon.fr', telephone: '01 34 56 78 90', adresse: 'Clichy', secteur: 'Retail', accountOwnerId: 'u2', createdById: 'u1', createdAt: '2024-02-20T14:30:00Z' },
+  { id: 'c3', name: 'Apple', domain: 'apple.com', email: 'enterprise@apple.com', telephone: '08 00 94 04 76', adresse: 'Paris', secteur: 'Tech', accountOwnerId: 'u3', createdById: 'u3', createdAt: '2024-03-01T09:00:00Z' },
+  { id: 'c4', name: 'Google', domain: 'google.com', email: 'sales@google.com', telephone: '01 42 68 53 00', adresse: 'Paris', secteur: 'Tech', accountOwnerId: 'u1', createdById: 'u4', createdAt: '2024-03-10T11:20:00Z' },
+  { id: 'c5', name: 'Microsoft', domain: 'microsoft.com', email: 'info@microsoft.com', telephone: '01 55 69 61 00', adresse: 'Issy-les-Moulineaux', secteur: 'Tech', accountOwnerId: 'u4', createdById: 'u2', createdAt: '2024-04-05T08:45:00Z' },
+  { id: 'c6', name: 'Meta', domain: 'meta.com', email: 'business@meta.com', telephone: '', adresse: 'Paris', secteur: 'Tech', accountOwnerId: 'u2', createdById: 'u1', createdAt: '2024-04-12T16:00:00Z' },
+  { id: 'c7', name: 'Netflix', domain: 'netflix.com', email: 'partenaires@netflix.com', telephone: '', adresse: '', secteur: 'Média', accountOwnerId: 'u5', createdById: 'u5', createdAt: '2024-05-01T13:00:00Z' },
+  { id: 'c8', name: 'Salesforce', domain: 'salesforce.com', email: 'contact@salesforce.com', telephone: '01 84 80 29 00', adresse: 'Paris', secteur: 'SaaS', accountOwnerId: 'u3', createdById: 'u3', createdAt: '2024-05-18T10:30:00Z' },
+  { id: 'c9', name: 'Spotify', domain: 'spotify.com', email: 'ads@spotify.com', telephone: '', adresse: 'Paris', secteur: 'Média', accountOwnerId: 'u1', createdById: 'u4', createdAt: '2024-06-02T09:15:00Z' },
+  { id: 'c10', name: 'Stripe', domain: 'stripe.com', email: 'support@stripe.com', telephone: '', adresse: '', secteur: 'Fintech', accountOwnerId: 'u4', createdById: 'u2', createdAt: '2024-06-20T14:00:00Z' },
+  { id: 'c11', name: 'Uber', domain: 'uber.com', email: 'partenaires@uber.com', telephone: '', adresse: 'Paris', secteur: 'Mobilité', accountOwnerId: 'u5', createdById: 'u1', createdAt: '2024-07-08T11:45:00Z' },
+  { id: 'c12', name: 'Slack', domain: 'slack.com', email: 'sales@slack.com', telephone: '', adresse: '', secteur: 'SaaS', accountOwnerId: 'u2', createdById: 'u5', createdAt: '2024-07-25T08:30:00Z' },
+  { id: 'c13', name: 'Zoom', domain: 'zoom.us', email: 'enterprise@zoom.us', telephone: '', adresse: 'Paris', secteur: 'Tech', accountOwnerId: 'u3', createdById: 'u3', createdAt: '2024-08-10T15:20:00Z' },
+  { id: 'c14', name: 'Adobe', domain: 'adobe.com', email: 'contact@adobe.com', telephone: '01 71 19 40 00', adresse: 'Paris', secteur: 'Tech', accountOwnerId: 'u1', createdById: 'u4', createdAt: '2024-08-28T09:00:00Z' },
+  { id: 'c15', name: 'Tesla', domain: 'tesla.com', email: 'fleet@tesla.com', telephone: '', adresse: 'Boulogne', secteur: 'Automobile', accountOwnerId: 'u4', createdById: 'u2', createdAt: '2024-09-12T12:00:00Z' },
+  { id: 'c16', name: 'Notion', domain: 'notion.so', email: 'hello@notion.so', telephone: '', adresse: '', secteur: 'SaaS', accountOwnerId: 'u5', createdById: 'u1', createdAt: '2024-09-30T10:45:00Z' }
+];
+const formatElapsed = (iso: string) => {
+  const d = new Date(iso);
+  const now = new Date();
+  const sec = Math.floor((now.getTime() - d.getTime()) / 1000);
+  if (sec < 60) return 'À l\'instant';
+  if (sec < 3600) return `Il y a ${Math.floor(sec / 60)} min`;
+  if (sec < 86400) return `Il y a ${Math.floor(sec / 3600)} h`;
+  if (sec < 2592000) return `Il y a ${Math.floor(sec / 86400)} j`;
+  if (sec < 31536000) return `Il y a ${Math.floor(sec / 2592000)} mois`;
+  return `Il y a ${Math.floor(sec / 31536000)} an(s)`;
+};
+
+// En-tête de colonne sortable (drag pour réordonnancement) + handle resize
+function SortableTh({ header, title }: { header: any; title: string }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: header.column.id });
+  const style = {
+    width: header.getSize(),
+    minWidth: header.getSize(),
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1
+  };
+  return (
+    <th
+      ref={setNodeRef}
+      className="text-left py-3 px-4 text-xs font-semibold text-gray-600 uppercase tracking-wider relative group border-r border-gray-100 last:border-r-0 bg-gray-50"
+      style={style}
+    >
+      <Tooltip title={title} placement="top">
+        <span
+          className="truncate block pr-2 cursor-grab active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          {flexRender(header.column.columnDef.header, header.getContext())}
+        </span>
+      </Tooltip>
+      <div
+        onMouseDown={header.getResizeHandler()}
+        onTouchStart={header.getResizeHandler()}
+        className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-blue-400 active:bg-blue-500 opacity-0 group-hover:opacity-100"
+        style={{ touchAction: 'none' }}
+      />
+    </th>
+  );
+}
+
+// Données pour génération de prospects de test (superadmin)
+const TEST_PRENOMS = ['Lucas', 'Emma', 'Hugo', 'Chloé', 'Louis', 'Léa', 'Gabriel', 'Manon', 'Raphaël', 'Jade', 'Arthur', 'Camille', 'Jules', 'Sarah', 'Adam', 'Inès', 'Paul', 'Marie', 'Nathan', 'Julie'];
+const TEST_NOMS = ['Martin', 'Bernard', 'Dubois', 'Thomas', 'Robert', 'Richard', 'Petit', 'Durand', 'Leroy', 'Moreau', 'Simon', 'Laurent', 'Lefebvre', 'Michel', 'Garcia', 'David', 'Bertrand', 'Roux', 'Vincent', 'Fournier'];
+const TEST_ENTREPRISES = ['TechVision SAS', 'Innovation & Co', 'Digital Solutions France', 'Groupe Mercier', 'StartUp Lab', 'Consulting Partners', 'Agence Web Pro', 'DataDrive', 'CloudSoft', 'GreenEnergy SA', 'Finance & Stratégie', 'MediaGroup', 'Logistique Express', 'Santé Plus', 'EduFrance'];
+const TEST_SECTEURS = ['Technologie', 'Conseil', 'Finance', 'Santé', 'Industrie', 'Services', 'Retail', 'Énergie', 'Média', 'Logistique', 'Formation', 'Construction', 'Agroalimentaire', 'Automobile', 'Luxe'];
+const TEST_TAILLES = ['1-10', '11-50', '51-200', '201-500', '501-1000', '1000+'];
+const TEST_SOURCES = ['Salon', 'LinkedIn', 'Recommandation', 'Site web', 'Appel entrant', 'Emailing', 'Prospection', 'Partenariat', 'Événement', 'Bouche-à-oreille'];
+const TEST_POSTES = ['Directeur Général', 'DRH', 'DAF', 'Responsable Achats', 'Chef de projet', 'Directeur Commercial', 'Responsable Innovation', 'CEO', 'CTO', 'Responsable Marketing', 'Directeur Opérations'];
+const TEST_VILLES = ['Paris', 'Lyon', 'Marseille', 'Toulouse', 'Nantes', 'Bordeaux', 'Lille', 'Strasbourg', 'Rennes', 'Montpellier', 'Nice', 'Nancy', 'Grenoble', 'Tours', 'Clermont-Ferrand'];
+const TEST_NOTES = [
+  'Intéressé par une démo. À rappeler fin du mois.',
+  'Premier contact au salon. Échange de cartes.',
+  'Demande de devis reçue. En attente de validation budget.',
+  'Très réactif. Souhaite avancer rapidement.',
+  'À recontacter après vacances.',
+  'Projet en interne en cours. Nous recontacter.',
+  'Bon feeling. Prochaine étape : visite sur site.',
+  'Hésitant sur le périmètre. À préciser.',
+  'Décision prévue au prochain CA.',
+  null
 ];
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
@@ -218,9 +405,10 @@ const StyledChip = styled(Chip)(({ theme }) => ({
   fontSize: '0.75rem',
 }));
 
-const StyledTableRow = styled(TableRow)(({ theme }) => ({
+const StyledTableRow = styled(TableRow)<{ selected?: boolean }>(({ theme, selected }) => ({
   transition: 'all 0.2s',
   '&:hover': { backgroundColor: '#f5f5f7' },
+  ...(selected && { backgroundColor: 'rgba(0, 113, 227, 0.08)' }),
 }));
 
 // --- UTILS ---
@@ -234,6 +422,8 @@ const getOwnerDisplayName = (ownerId: string, structureMembers: any[] = []) => {
   const owner = structureMembers.find(m => m.id === ownerId);
   return owner ? owner.displayName : 'Non assigné';
 };
+
+const isEncrypted = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
 
 // --- TYPES ---
 
@@ -267,6 +457,9 @@ interface Prospect {
   location?: string;
   companyLogoUrl?: string;
   dateRecontact?: string;
+  /** Score IA 0-100 (priorité prospect) */
+  aiScore?: number;
+  lastActivityAt?: any;
 }
 
 interface StructureMember {
@@ -305,23 +498,110 @@ const Commercial: React.FC = (): JSX.Element => {
   const { userData, currentUser } = useAuth();
   const { canRead, canWrite, loading: permissionLoading } = usePermission('commercial');
   const navigate = useNavigate();
-  
+  const isSuperAdmin = userData?.status === 'superadmin' || userData?.role === 'superadmin';
+
   // Data States
   const [prospects, setProspects] = useState<Prospect[]>([]);
+  const [decryptedProspects, setDecryptedProspects] = useState<Record<string, Partial<Prospect>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [structureMembers, setStructureMembers] = useState<StructureMember[]>([]);
   
   // UI States
-  const [viewMode, setViewMode] = useState<'pipeline' | 'table' | 'stats'>('pipeline');
+  const [viewMode, setViewMode] = useState<'pipeline' | 'stats' | 'companies'>('companies');
   const [searchTerm, setSearchTerm] = useState('');
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [showSalonMode, setShowSalonMode] = useState(false);
-  
+  // Vue Entreprises : même données que les prospects, affichage tableau par entreprise
+  const [companiesSearch, setCompaniesSearch] = useState('');
+  const [editingCell, setEditingCell] = useState<{ rowId: string; colId: string } | null>(null);
+  const [editingValue, setEditingValue] = useState('');
+  // Colonnes : visibilité (ids visibles), ordre (réordonnancement drag), sizing (largeurs persistées)
+  const [companiesVisibleColumnIds, setCompaniesVisibleColumnIds] = useState<string[]>(() =>
+    ENTREPRISE_COLUMNS_META.map(c => c.id)
+  );
+  const [companiesColumnOrder, setCompaniesColumnOrder] = useState<string[]>(() =>
+    ENTREPRISE_COLUMNS_META.map(c => c.id)
+  );
+  const [companiesColumnSizing, setCompaniesColumnSizing] = useState<ColumnSizingState>(() => {
+    const s: ColumnSizingState = {};
+    ENTREPRISE_COLUMNS_META.forEach(c => { s[c.id] = c.defaultSize; });
+    return s;
+  });
+  const [companiesColumnPickerAnchor, setCompaniesColumnPickerAnchor] = useState<HTMLElement | null>(null);
+
   // Selection & Actions
   const [selectedProspects, setSelectedProspects] = useState<string[]>([]);
   const [actionMenuAnchorEl, setActionMenuAnchorEl] = useState<null | HTMLElement>(null);
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'nom', direction: 'asc' });
+  
+  // Table view (style Twenty): colonnes visibles, filtres, menu ligne, ajout rapide
+  const [visibleTableColumns, setVisibleTableColumns] = useState<string[]>(TABLE_COLUMNS.map(c => c.id));
+  const [tableColumnCustomizeAnchor, setTableColumnCustomizeAnchor] = useState<null | HTMLElement>(null);
+  const [filterTableStatus, setFilterTableStatus] = useState<string>('');
+  const [filterTableOwnerId, setFilterTableOwnerId] = useState<string>('');
+  const [rowMenuAnchorEl, setRowMenuAnchorEl] = useState<null | HTMLElement>(null);
+  const [rowMenuProspectId, setRowMenuProspectId] = useState<string | null>(null);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddName, setQuickAddName] = useState('');
+  const [quickAddSubmitting, setQuickAddSubmitting] = useState(false);
+
+  // Persistance disposition tableau : chargée une fois, puis sauvegardée au changement (par user)
+  const layoutReadyRef = React.useRef(false);
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+    const loadLayout = async () => {
+      try {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const snap = await getDoc(userRef);
+        const data = snap.data();
+        const layout = data?.commercialTableLayout as CommercialTableLayout | undefined;
+        if (layout?.listView?.visibleColumns?.length) {
+          const valid = layout.listView.visibleColumns.filter(id => TABLE_COLUMNS.some(c => c.id === id));
+          if (valid.length) setVisibleTableColumns(valid);
+        }
+        if (layout?.companiesView) {
+          const cv = layout.companiesView;
+          const validIds = (cv.visibleColumnIds || []).filter(id => ENTREPRISE_COLUMNS_META.some(c => c.id === id));
+          const validOrder = (cv.columnOrder || []).filter(id => ENTREPRISE_COLUMNS_META.some(c => c.id === id));
+          if (validIds.length) setCompaniesVisibleColumnIds(validIds);
+          if (validOrder.length) setCompaniesColumnOrder(validOrder);
+          if (cv.columnSizing && typeof cv.columnSizing === 'object') {
+            const s: ColumnSizingState = {};
+            ENTREPRISE_COLUMNS_META.forEach(c => {
+              const v = cv.columnSizing[c.id];
+              if (typeof v === 'number' && v >= c.minSize) s[c.id] = v;
+            });
+            if (Object.keys(s).length) setCompaniesColumnSizing(prev => ({ ...prev, ...s }));
+          }
+        }
+      } catch (e) {
+        console.error('Erreur chargement disposition tableau Commercial:', e);
+      } finally {
+        layoutReadyRef.current = true;
+      }
+    };
+    loadLayout();
+  }, [currentUser?.uid]);
+
+  useEffect(() => {
+    if (!layoutReadyRef.current || !currentUser?.uid) return;
+    const t = setTimeout(() => {
+      const userRef = doc(db, 'users', currentUser.uid);
+      updateDoc(userRef, {
+        commercialTableLayout: {
+          listView: { visibleColumns: visibleTableColumns },
+          companiesView: {
+            visibleColumnIds: companiesVisibleColumnIds,
+            columnOrder: companiesColumnOrder,
+            columnSizing: companiesColumnSizing
+          }
+        },
+        lastCommercialLayoutUpdate: serverTimestamp()
+      }).catch(e => console.error('Erreur sauvegarde disposition tableau:', e));
+    }, 500);
+    return () => clearTimeout(t);
+  }, [currentUser?.uid, visibleTableColumns, companiesVisibleColumnIds, companiesColumnOrder, companiesColumnSizing]);
   
   // Imports
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
@@ -330,6 +610,11 @@ const Commercial: React.FC = (): JSX.Element => {
   
   // Delete Dialog
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+
+  // Génération prospects de test (superadmin)
+  const [isGenerateTestDialogOpen, setIsGenerateTestDialogOpen] = useState(false);
+  const [generateTestCount, setGenerateTestCount] = useState(5);
+  const [generateTestSubmitting, setGenerateTestSubmitting] = useState(false);
   
   // Events (Salon Mode)
   const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -389,6 +674,10 @@ const Commercial: React.FC = (): JSX.Element => {
   const [structureTokens, setStructureTokens] = useState<StructureTokens | null>(null);
   const [tokensLoading, setTokensLoading] = useState(false);
 
+  // Scoring IA : suggestions de relance
+  const [relanceSuggestions, setRelanceSuggestions] = useState<RelanceSuggestion[]>([]);
+  const [relanceSuggestionsLoading, setRelanceSuggestionsLoading] = useState(false);
+
   // Effect to update ownerId when userData is loaded
   useEffect(() => {
     if (userData?.uid && !newProspectData.ownerId) {
@@ -429,23 +718,69 @@ const Commercial: React.FC = (): JSX.Element => {
     }
   }, [userData?.structureId]);
 
+  // Charger les suggestions de relance (à afficher dans le bloc "À relancer")
+  // En cas d'échec (ex. fonctions non déployées), on garde une liste vide sans faire planter la page
+  useEffect(() => {
+    if (!userData?.structureId || !canRead) return;
+    setRelanceSuggestionsLoading(true);
+    getRelanceSuggestions(userData.structureId, 10)
+      .then(setRelanceSuggestions)
+      .catch(() => { setRelanceSuggestions([]); })
+      .finally(() => { setRelanceSuggestionsLoading(false); });
+  }, [userData?.structureId, canRead, prospects.length]);
+
   const fetchStructureMembers = useCallback(async () => {
     if (!userData?.structureId) return;
     try {
       const q = query(collection(db, 'users'), where('structureId', '==', userData.structureId));
       const snapshot = await getDocs(q);
-      const members = snapshot.docs.map(doc => ({
-          id: doc.id,
-        displayName: doc.data().displayName || doc.data().name || 'Utilisateur',
-        role: doc.data().role || 'membre',
-        poles: doc.data().poles || [],
-        mandat: doc.data().mandat
-      }));
-      setStructureMembers(members as StructureMember[]);
+      const members = snapshot.docs.map(docSnap => {
+        const data = docSnap.data();
+        return {
+          id: docSnap.id,
+          displayName: data.displayName || data.name || '',
+          firstName: data.firstName || '',
+          lastName: data.lastName || '',
+          role: (data.role || 'membre') as StructureMember['role'],
+          poles: data.poles || [],
+          mandat: data.mandat
+        };
+      });
+      const decrypted = await decryptUsersList(members);
+      setStructureMembers(decrypted.map(m => ({
+        id: m.id,
+        displayName: m.displayName || `${m.firstName || ''} ${m.lastName || ''}`.trim() || 'Utilisateur',
+        role: m.role,
+        poles: m.poles,
+        mandat: m.mandat
+      })) as StructureMember[]);
     } catch (error) {
       console.error(error);
     }
   }, [userData?.structureId]);
+
+  // Déchiffrer les infos prospects (téléphone, email, adresse) pour l'affichage
+  useEffect(() => {
+    if (!prospects.length || !canRead) return;
+    const run = async () => {
+      const next: Record<string, Partial<Prospect>> = {};
+      const functions = getFunctions();
+      const decryptProspect = httpsCallable(functions, 'decryptProspectDataForStructure');
+      for (const prospect of prospects) {
+        if (isEncrypted(prospect.telephone) || isEncrypted(prospect.email) || isEncrypted(prospect.adresse)) {
+          try {
+            const res = await decryptProspect({ prospectId: prospect.id });
+            const dec = (res.data as { decryptedData?: Partial<Prospect> })?.decryptedData;
+            if (dec) next[prospect.id] = dec;
+          } catch {
+            // ignorer si déchiffrement échoue
+          }
+        }
+      }
+      if (Object.keys(next).length) setDecryptedProspects(prev => ({ ...prev, ...next }));
+    };
+    run();
+  }, [prospects, canRead]);
 
   const fetchStructureTokens = useCallback(async () => {
     if (!userData?.structureId) return;
@@ -1109,8 +1444,8 @@ const Commercial: React.FC = (): JSX.Element => {
 
   const handleSelectAll = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.checked) {
-      const filtered = getFilteredProspects();
-      setSelectedProspects(filtered.map(p => p.id));
+      const list = getFilteredProspects();
+      setSelectedProspects(list.map(p => p.id));
     } else {
       setSelectedProspects([]);
     }
@@ -1232,17 +1567,246 @@ const Commercial: React.FC = (): JSX.Element => {
   };
 
   const getProspectName = (p: Prospect) => p.nom || p.name || 'Sans nom';
+  const getDisplayProspect = (p: Prospect): Prospect => ({ ...p, ...decryptedProspects[p.id] });
   const getProspectCompany = (p: Prospect) => p.entreprise || p.company || 'Sans entreprise';
 
   const getFilteredProspects = () => {
     return prospects.filter(p => {
       const search = searchTerm.toLowerCase();
+      const displayName = getProspectName(getDisplayProspect(p));
       return (
-        (p.nom || '').toLowerCase().includes(search) ||
+        displayName.toLowerCase().includes(search) ||
         (p.entreprise || '').toLowerCase().includes(search) ||
         (p.email || '').toLowerCase().includes(search)
       );
     });
+  };
+
+  // Liste filtrée + triée pour la vue tableau (filtres Statut / Propriétaire + tri colonne)
+  const getFilteredAndSortedProspects = useMemo(() => {
+    let list = prospects.filter(p => {
+      const search = searchTerm.toLowerCase();
+      const displayName = getProspectName(getDisplayProspect(p));
+      const matchSearch =
+        displayName.toLowerCase().includes(search) ||
+        (p.entreprise || '').toLowerCase().includes(search) ||
+        (p.email || '').toLowerCase().includes(search);
+      if (!matchSearch) return false;
+      if (filterTableStatus && p.statut !== filterTableStatus) return false;
+      if (filterTableOwnerId && (p.ownerId || '') !== filterTableOwnerId) return false;
+      return true;
+    });
+    const key = sortConfig.key;
+    const dir = sortConfig.direction === 'asc' ? 1 : -1;
+    list = [...list].sort((a, b) => {
+      let aVal: string | number | undefined = a[key as keyof Prospect];
+      let bVal: string | number | undefined = b[key as keyof Prospect];
+      if (key === 'aiScore') {
+        aVal = a.aiScore ?? 0;
+        bVal = b.aiScore ?? 0;
+        return dir * ((aVal as number) - (bVal as number));
+      }
+      if (key === 'derniereInteraction' || key === 'dateAjout') {
+        aVal = a.derniereInteraction || a.dateAjout || a.dateCreation || '';
+        bVal = b.derniereInteraction || b.dateAjout || b.dateCreation || '';
+      }
+      if (key === 'ownerId') {
+        aVal = getOwnerDisplayName(a.ownerId || '', structureMembers);
+        bVal = getOwnerDisplayName(b.ownerId || '', structureMembers);
+      }
+      if (key === 'nom') {
+        aVal = getProspectName(getDisplayProspect(a));
+        bVal = getProspectName(getDisplayProspect(b));
+      }
+      if (key === 'entreprise') {
+        aVal = getProspectCompany(getDisplayProspect(a));
+        bVal = getProspectCompany(getDisplayProspect(b));
+      }
+      if (key === 'notes') {
+        aVal = getDisplayProspect(a).notes || '';
+        bVal = getDisplayProspect(b).notes || '';
+      }
+      const aStr = String(aVal ?? '');
+      const bStr = String(bVal ?? '');
+      if (key === 'derniereInteraction' || key === 'dateAjout' || key === 'dateCreation') {
+        const aDate = new Date(aVal as string).getTime();
+        const bDate = new Date(bVal as string).getTime();
+        return dir * (aDate - bDate);
+      }
+      return dir * (aStr.localeCompare(bStr, undefined, { sensitivity: 'base' }));
+    });
+    return list;
+  }, [prospects, searchTerm, filterTableStatus, filterTableOwnerId, sortConfig, structureMembers, decryptedProspects]);
+
+  // Données tableau Entreprises = mêmes prospects que Pipeline/Liste, formatées par ligne (une ligne = un prospect/entreprise)
+  const companiesRows = useMemo(() => {
+    const list = getFilteredAndSortedProspects;
+    return list.map(p => {
+      const d = getDisplayProspect(p);
+      const companyName = getProspectCompany(d);
+      const domain = (d.email || '').includes('@') ? (d.email || '').split('@')[1] : '';
+      return {
+        id: p.id,
+        name: companyName,
+        domain: domain || '—',
+        email: d.email || '',
+        telephone: p.telephone || '',
+        adresse: p.adresse || '',
+        secteur: p.secteur || '',
+        accountOwnerId: p.ownerId || '',
+        createdById: p.createdBy || '',
+        createdAt: p.dateAjout || p.dateCreation || '',
+        aiScore: p.aiScore
+      } as CompanyRow;
+    });
+  }, [getFilteredAndSortedProspects, decryptedProspects]);
+
+  const handleSort = (key: string) => {
+    setSortConfig(prev => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const handleQuickAddProspect = async () => {
+    const name = quickAddName.trim();
+    if (!name || !userData?.structureId || !canWrite || quickAddSubmitting) return;
+    setQuickAddSubmitting(true);
+    try {
+      const prospectData = {
+        nom: name,
+        name: name,
+        entreprise: '',
+        email: '',
+        telephone: '',
+        statut: 'non_qualifie',
+        structureId: userData.structureId,
+        createdBy: userData.uid ?? '',
+        dateAjout: new Date().toISOString(),
+        dateCreation: new Date().toISOString(),
+        ownerId: userData.uid ?? ''
+      };
+      await createProspect(prospectData as any);
+      setQuickAddName('');
+      setQuickAddOpen(false);
+      await fetchProspects();
+      await fetchStructureTokens();
+    } catch (err: any) {
+      console.error('Quick add prospect:', err);
+      let msg = err?.message || 'Erreur lors de la création';
+      if (msg.includes('token') || msg.includes('Quota') || msg.includes('quota')) {
+        msg = 'Quota mensuel atteint. Impossible d\'ajouter un prospect.';
+      }
+      setError(msg);
+      setTimeout(() => setError(null), 5000);
+    } finally {
+      setQuickAddSubmitting(false);
+    }
+  };
+
+  const handleRowMenuOpen = (event: React.MouseEvent<HTMLElement>, prospectId: string) => {
+    event.stopPropagation();
+    setRowMenuAnchorEl(event.currentTarget);
+    setRowMenuProspectId(prospectId);
+  };
+
+  const handleRowMenuAssign = () => {
+    if (rowMenuProspectId && rowMenuAnchorEl) {
+      setSelectedProspects([rowMenuProspectId]);
+      setActionMenuAnchorEl(rowMenuAnchorEl);
+      setRowMenuAnchorEl(null);
+      setRowMenuProspectId(null);
+    }
+  };
+
+  const handleRowMenuDelete = () => {
+    if (rowMenuProspectId) {
+      setSelectedProspects([rowMenuProspectId]);
+      setRowMenuAnchorEl(null);
+      setRowMenuProspectId(null);
+      setIsDeleteDialogOpen(true);
+    }
+  };
+
+  const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+  const pickOptional = <T,>(arr: (T | null)[]): T | null => arr[Math.floor(Math.random() * arr.length)];
+
+  const buildTestProspectPayload = (index: number): Record<string, unknown> => {
+    const prenom = pick(TEST_PRENOMS);
+    const nomFamille = pick(TEST_NOMS);
+    const nomComplet = `${prenom} ${nomFamille}`;
+    const entreprise = pick(TEST_ENTREPRISES);
+    const baseEmail = `${prenom.toLowerCase().replace(/\s/g, '')}.${nomFamille.toLowerCase()}${index}`;
+    const domain = ['gmail.com', 'outlook.fr', 'entreprise.fr', 'orange.fr', 'free.fr'][index % 5];
+    const email = `${baseEmail}@${domain}`;
+    const telephone = `0${Math.floor(600000000 + Math.random() * 99999999)}`;
+    const ville = pick(TEST_VILLES);
+    const adresse = `${Math.floor(1 + Math.random() * 120)} rue ${pick(['de la République', 'Victor Hugo', 'Jean Jaurès', 'Gambetta', 'Nationale'])}, ${ville}`;
+    const statut = pick(PIPELINE_STATUSES);
+    const joursOffset = Math.floor(Math.random() * 60) - 20;
+    const dateInteraction = new Date();
+    dateInteraction.setDate(dateInteraction.getDate() + joursOffset);
+    const dateRecontact = statut === 'a_recontacter' ? (() => { const d = new Date(); d.setDate(d.getDate() + Math.floor(Math.random() * 14)); return d.toISOString().split('T')[0]; })() : undefined;
+    return {
+      nom: nomComplet,
+      name: nomComplet,
+      entreprise,
+      company: entreprise,
+      email,
+      telephone,
+      poste: pick(TEST_POSTES),
+      title: pick(TEST_POSTES),
+      adresse,
+      secteur: pick(TEST_SECTEURS),
+      taille: pick(TEST_TAILLES),
+      source: pick(TEST_SOURCES),
+      notes: pickOptional(TEST_NOTES) ?? '',
+      statut,
+      valeurPotentielle: Math.floor(5000 + Math.random() * 45000),
+      linkedinUrl: `https://linkedin.com/in/${baseEmail.replace(/\./g, '-')}`,
+      location: ville,
+      ...(dateRecontact ? { dateRecontact } : {}),
+      dateAjout: dateInteraction.toISOString(),
+      dateCreation: dateInteraction.toISOString(),
+      derniereInteraction: dateInteraction.toISOString(),
+      favori: Math.random() > 0.85,
+      structureId: userData?.structureId || '',
+      createdBy: userData?.uid || '',
+      ownerId: structureMembers.length > 0 ? pick(structureMembers).id : (userData?.uid ?? '')
+    };
+  };
+
+  const handleGenerateTestProspects = async () => {
+    if (!userData?.structureId || !canWrite || generateTestSubmitting) return;
+    const count = Math.min(20, Math.max(1, generateTestCount));
+    setGenerateTestSubmitting(true);
+    setError(null);
+    let created = 0;
+    let failed = 0;
+    try {
+      for (let i = 0; i < count; i++) {
+        try {
+          const raw = buildTestProspectPayload(i);
+          const payload = Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== undefined)) as any;
+          await createProspect(payload);
+          created++;
+        } catch (e) {
+          console.error('Création prospect test:', e);
+          failed++;
+          if (failed >= 3) break;
+        }
+      }
+      setIsGenerateTestDialogOpen(false);
+      await fetchProspects();
+      await fetchStructureTokens();
+      if (created > 0) setError(null);
+      if (failed > 0 && created === 0) setError('Quota de tokens insuffisant ou erreur. Aucun prospect créé.');
+      else if (created < count) setError(`${created} prospect(s) créé(s). ${count - created - failed} non créés (quota ou erreur).`);
+    } catch (err: any) {
+      setError(err?.message || 'Erreur lors de la génération.');
+    } finally {
+      setGenerateTestSubmitting(false);
+    }
   };
 
   // --- ACTIONS ---
@@ -1376,7 +1940,8 @@ const Commercial: React.FC = (): JSX.Element => {
       // Si un événement existe déjà, le mettre à jour au lieu d'en créer un nouveau
       if (!existingEventSnapshot.empty) {
         const existingEventDoc = existingEventSnapshot.docs[0];
-        const prospectName = prospect.nom || prospect.name || 'Contact';
+        const dp = getDisplayProspect(prospect);
+        const prospectName = dp.nom || dp.name || 'Contact';
         const startDateTime = `${relanceDate}T09:00`;
         const endDateTime = `${relanceDate}T09:30`;
 
@@ -1388,12 +1953,13 @@ const Commercial: React.FC = (): JSX.Element => {
           endDate: relanceDate,
           endTime: '09:30',
           end: endDateTime,
-          description: `Relance prévue pour ${prospectName}${prospect.entreprise ? ` - ${prospect.entreprise}` : ''}`,
+          description: `Relance prévue pour ${prospectName}${dp.entreprise ? ` - ${dp.entreprise}` : ''}`,
           updatedAt: serverTimestamp()
         });
       } else {
         // Créer un nouvel événement de calendrier pour la relance
-        const prospectName = prospect.nom || prospect.name || 'Contact';
+        const dp = getDisplayProspect(prospect);
+        const prospectName = dp.nom || dp.name || 'Contact';
         const startDateTime = `${relanceDate}T09:00`;
         const endDateTime = `${relanceDate}T09:30`;
 
@@ -1409,7 +1975,7 @@ const Commercial: React.FC = (): JSX.Element => {
           visibility: 'private',
           ownerId: currentUser.uid,
           invitedUsers: [],
-          description: `Relance prévue pour ${prospectName}${prospect.entreprise ? ` - ${prospect.entreprise}` : ''}`,
+          description: `Relance prévue pour ${prospectName}${dp.entreprise ? ` - ${dp.entreprise}` : ''}`,
           structureId: userData.structureId,
           createdBy: currentUser.uid,
           createdAt: Timestamp.now(),
@@ -1667,11 +2233,11 @@ const Commercial: React.FC = (): JSX.Element => {
                 >
                   <ListItemIcon sx={{ minWidth: 40 }}>
                     <Avatar sx={{ width: 32, height: 32, bgcolor: `${getStatusColor(p.statut)}20`, color: getStatusColor(p.statut), fontSize: '0.8rem', fontWeight: 700 }}>
-                      {(p.nom || '?').charAt(0)}
+                      {getProspectName(getDisplayProspect(p)).charAt(0)}
                     </Avatar>
                   </ListItemIcon>
                   <ListItemText 
-                    primary={<Typography variant="subtitle2" fontWeight={600} noWrap>{getProspectName(p)}</Typography>}
+                    primary={<Typography variant="subtitle2" fontWeight={600} noWrap>{getProspectName(getDisplayProspect(p))}</Typography>}
                     secondary={<Typography variant="caption" color="error.main" fontWeight={500}>Relance requise</Typography>}
                   />
                   <IconButton size="small" sx={{ color: APPLE_COLORS.primary }}>
@@ -2057,22 +2623,39 @@ const Commercial: React.FC = (): JSX.Element => {
                             }
                           }}
                         >
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
                              <Chip 
                               label={getOwnerDisplayName(prospect.ownerId || '', structureMembers)} 
                               size="small" 
                               sx={{ bgcolor: `${getStatusColor(status)}15`, color: getStatusColor(status), fontWeight: 700, fontSize: '0.7rem', height: 20 }} 
                             />
-                            {prospect.favori && <TrophyIcon sx={{ fontSize: 16, color: '#ffd700' }} />}
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                              {typeof prospect.aiScore === 'number' && (
+                                <Chip
+                                  label={prospect.aiScore}
+                                  size="small"
+                                  sx={{ height: 20, minWidth: 28, fontWeight: 700, fontSize: '0.7rem', bgcolor: prospect.aiScore >= 70 ? 'rgba(52, 199, 89, 0.2)' : prospect.aiScore >= 40 ? 'rgba(255, 159, 10, 0.2)' : 'rgba(142, 142, 147, 0.2)', color: prospect.aiScore >= 70 ? '#34c759' : prospect.aiScore >= 40 ? '#ff9f0a' : '#8e8e93' }}
+                                />
+                              )}
+                              {relanceSuggestions.some(r => r.id === prospect.id) && (
+                                <Chip label="Relancer" size="small" sx={{ height: 20, fontWeight: 600, fontSize: '0.65rem', bgcolor: 'rgba(255, 59, 48, 0.15)', color: '#ff3b30' }} />
+                              )}
+                              {prospect.favori && <TrophyIcon sx={{ fontSize: 16, color: '#ffd700' }} />}
                             </Box>
-                          <Typography variant="subtitle2" fontWeight={600} noWrap title={getProspectName(prospect)}>
-                            {getProspectName(prospect)}
-                            </Typography>
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
-                            <BusinessIcon sx={{ fontSize: 14 }} /> {getProspectCompany(prospect)}
+                            </Box>
+                          <Typography variant="subtitle2" fontWeight={600} noWrap title={getProspectName(getDisplayProspect(prospect))}>
+                            {getProspectName(getDisplayProspect(prospect))}
                           </Typography>
-                          
-                          {getDaysSinceInteraction(prospect.derniereInteraction) > 10 && (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                            <BusinessIcon sx={{ fontSize: 14 }} /> {getProspectCompany(getDisplayProspect(prospect))}
+                          </Typography>
+                          {(getDisplayProspect(prospect).notes || '').trim() && (
+                            <Typography variant="caption" sx={{ mt: 1, display: 'block', lineHeight: 1.3 }} color="text.secondary" noWrap title={(getDisplayProspect(prospect).notes || '').trim()}>
+                              {(getDisplayProspect(prospect).notes || '').trim().slice(0, 60)}
+                              {(getDisplayProspect(prospect).notes || '').trim().length > 60 ? '…' : ''}
+                            </Typography>
+                          )}
+                          {getDaysSinceInteraction(prospect.derniereInteraction) > 10 && !relanceSuggestions.some(r => r.id === prospect.id) && (
                              <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 0.5, color: '#ff3b30' }}>
                                <AccessTimeIcon sx={{ fontSize: 12 }} />
                                <Typography variant="caption" fontWeight={600}>Relance requise</Typography>
@@ -2092,61 +2675,171 @@ const Commercial: React.FC = (): JSX.Element => {
       </DragDropContext>
     );
 
+  const filteredSortedList = getFilteredAndSortedProspects;
+  const allSelectedInView = filteredSortedList.length > 0 && selectedProspects.length === filteredSortedList.length;
+  const displayColumns = visibleTableColumns.length > 0 ? visibleTableColumns : TABLE_COLUMNS.map(c => c.id);
+
   const renderTable = () => (
-    <TableContainer>
-      <Table>
+    <TableContainer
+      sx={{
+        borderRadius: '12px',
+        overflow: 'hidden',
+        border: '1px solid #e5e5ea',
+        boxShadow: APPLE_SHADOWS.small
+      }}
+    >
+      <Table size="medium">
         <TableHead>
-          <TableRow>
-            <TableCell padding="checkbox">
+          <TableRow sx={{ bgcolor: '#f5f5f7', borderBottom: '1px solid #d2d2d7' }}>
+            <TableCell padding="checkbox" sx={{ fontWeight: 600, color: '#1d1d1f', borderBottom: '1px solid #d2d2d7' }}>
               <Checkbox
-                indeterminate={selectedProspects.length > 0 && selectedProspects.length < getFilteredProspects().length}
-                checked={getFilteredProspects().length > 0 && selectedProspects.length === getFilteredProspects().length}
+                indeterminate={selectedProspects.length > 0 && selectedProspects.length < filteredSortedList.length}
+                checked={filteredSortedList.length > 0 && allSelectedInView}
                 onChange={handleSelectAll}
               />
             </TableCell>
-            <TableCell>Nom</TableCell>
-            <TableCell>Entreprise</TableCell>
-            <TableCell>Statut</TableCell>
-            <TableCell>Propriétaire</TableCell>
-            <TableCell>Dernière activité</TableCell>
+            {TABLE_COLUMNS.filter(c => displayColumns.includes(c.id)).map(col => (
+              <TableCell
+                key={col.id}
+                sortDirection={sortConfig.key === col.sortKey ? sortConfig.direction : false}
+                sx={{ fontWeight: 600, color: '#1d1d1f', borderBottom: '1px solid #d2d2d7', whiteSpace: 'nowrap' }}
+              >
+                <TableSortLabel
+                  active={sortConfig.key === col.sortKey}
+                  direction={sortConfig.key === col.sortKey ? sortConfig.direction : 'asc'}
+                  onClick={() => handleSort(col.sortKey)}
+                >
+                  {col.id === 'nom' && canWrite ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      <Tooltip title="Ajouter un prospect">
+                        <IconButton
+                          size="small"
+                          onClick={(e) => { e.stopPropagation(); setQuickAddOpen(true); }}
+                          sx={{ p: 0.25, color: APPLE_COLORS.primary }}
+                        >
+                          <AddIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                      {col.label}
+                    </Box>
+                  ) : (
+                    col.label
+                  )}
+                </TableSortLabel>
+              </TableCell>
+            ))}
+            <TableCell padding="checkbox" sx={{ fontWeight: 600, color: '#1d1d1f', borderBottom: '1px solid #d2d2d7', width: 48 }} />
           </TableRow>
         </TableHead>
         <TableBody>
-          {getFilteredProspects().map(p => {
+          {quickAddOpen && canWrite && (
+            <TableRow sx={{ bgcolor: '#f0f8ff', borderBottom: '1px solid #e5e5ea' }}>
+              <TableCell padding="checkbox" />
+              <TableCell colSpan={displayColumns.length}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <TextField
+                    autoFocus
+                    size="small"
+                    placeholder="Nom du prospect (Entrée pour enregistrer)"
+                    value={quickAddName}
+                    onChange={(e) => setQuickAddName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleQuickAddProspect();
+                      if (e.key === 'Escape') { setQuickAddOpen(false); setQuickAddName(''); }
+                    }}
+                    onBlur={() => { if (!quickAddName.trim()) setQuickAddOpen(false); }}
+                    sx={{ flex: 1, maxWidth: 360 }}
+                    InputProps={{ sx: { borderRadius: '8px', bgcolor: 'white' } }}
+                  />
+                  <Button size="small" variant="contained" onClick={handleQuickAddProspect} disabled={!quickAddName.trim() || quickAddSubmitting} sx={{ borderRadius: '8px', bgcolor: APPLE_COLORS.primary }}>
+                    {quickAddSubmitting ? <CircularProgress size={20} color="inherit" /> : 'Ajouter'}
+                  </Button>
+                  <IconButton size="small" onClick={() => { setQuickAddOpen(false); setQuickAddName(''); }}>
+                    <CloseIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              </TableCell>
+              <TableCell padding="checkbox" />
+            </TableRow>
+          )}
+          {filteredSortedList.map(p => {
             const isSelected = selectedProspects.indexOf(p.id) !== -1;
-    return (
-              <StyledTableRow 
-                key={p.id} 
-                onClick={() => navigate(`/prospect/${p.id}`)} 
+            return (
+              <StyledTableRow
+                key={p.id}
+                onClick={() => navigate(`/prospect/${p.id}`)}
                 sx={{ cursor: 'pointer' }}
                 selected={isSelected}
               >
-                <TableCell padding="checkbox">
+                <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
                   <Checkbox
                     checked={isSelected}
-                    onClick={(event) => handleSelectOne(event, p.id)}
+                    onClick={(e) => { e.stopPropagation(); handleSelectOne(e, p.id); }}
                   />
                 </TableCell>
-                <TableCell>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <Avatar sx={{ width: 32, height: 32, bgcolor: '#f0f0f0', color: '#1d1d1f', fontSize: '0.875rem', fontWeight: 600 }}>
-                      {getProspectName(p).charAt(0)}
-                    </Avatar>
-                    <Typography variant="body2" fontWeight={500}>{getProspectName(p)}</Typography>
-      </Box>
-                </TableCell>
-                <TableCell>{getProspectCompany(p)}</TableCell>
-                <TableCell>
-                  <StyledChip 
-                    label={getStatusLabel(p.statut)} 
-                    sx={{ bgcolor: `${getStatusColor(p.statut)}20`, color: getStatusColor(p.statut) }} 
-                  />
-                </TableCell>
-                <TableCell>{getOwnerDisplayName(p.ownerId || '', structureMembers)}</TableCell>
-                <TableCell>
-                  <Typography variant="caption" color="text.secondary">
-                    {new Date(p.derniereInteraction || p.dateAjout || '').toLocaleDateString()}
-                  </Typography>
+                {displayColumns.includes('notes') && (
+                  <TableCell sx={{ maxWidth: 220 }}>
+                    <Tooltip title={(getDisplayProspect(p).notes || '').trim() || '—'} placement="top-start">
+                      <Typography variant="body2" noWrap sx={{ maxWidth: 220 }} color="text.secondary">
+                        {(getDisplayProspect(p).notes || '').trim() || '—'}
+                      </Typography>
+                    </Tooltip>
+                  </TableCell>
+                )}
+                {displayColumns.includes('nom') && (
+                  <TableCell>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                      <Avatar sx={{ width: 32, height: 32, bgcolor: '#f0f0f0', color: '#1d1d1f', fontSize: '0.875rem', fontWeight: 600 }}>
+                        {getProspectName(getDisplayProspect(p)).charAt(0)}
+                      </Avatar>
+                      <Typography variant="body2" fontWeight={500}>{getProspectName(getDisplayProspect(p))}</Typography>
+                    </Box>
+                  </TableCell>
+                )}
+                {displayColumns.includes('entreprise') && (
+                  <TableCell>{getProspectCompany(getDisplayProspect(p))}</TableCell>
+                )}
+                {displayColumns.includes('statut') && (
+                  <TableCell>
+                    <StyledChip
+                      label={getStatusLabel(p.statut)}
+                      sx={{ bgcolor: `${getStatusColor(p.statut)}20`, color: getStatusColor(p.statut) }}
+                    />
+                  </TableCell>
+                )}
+                {displayColumns.includes('aiScore') && (
+                  <TableCell>
+                    {typeof p.aiScore === 'number' ? (
+                      <Chip
+                        size="small"
+                        label={p.aiScore}
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.75rem',
+                          bgcolor: p.aiScore >= 70 ? 'rgba(52, 199, 89, 0.15)' : p.aiScore >= 40 ? 'rgba(255, 159, 10, 0.15)' : 'rgba(142, 142, 147, 0.15)',
+                          color: p.aiScore >= 70 ? '#34c759' : p.aiScore >= 40 ? '#ff9f0a' : '#8e8e93',
+                          borderRadius: '8px',
+                        }}
+                      />
+                    ) : (
+                      <Typography variant="caption" color="text.secondary">—</Typography>
+                    )}
+                  </TableCell>
+                )}
+                {displayColumns.includes('ownerId') && (
+                  <TableCell>{getOwnerDisplayName(p.ownerId || '', structureMembers)}</TableCell>
+                )}
+                {displayColumns.includes('derniereInteraction') && (
+                  <TableCell>
+                    <Typography variant="caption" color="text.secondary">
+                      {new Date(p.derniereInteraction || p.dateAjout || '').toLocaleDateString()}
+                    </Typography>
+                  </TableCell>
+                )}
+                <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                  <IconButton size="small" onClick={(e) => handleRowMenuOpen(e, p.id)} aria-label="Menu">
+                    <MoreVertIcon fontSize="small" />
+                  </IconButton>
                 </TableCell>
               </StyledTableRow>
             );
@@ -2163,6 +2856,265 @@ const Commercial: React.FC = (): JSX.Element => {
     const now = new Date();
     return Math.floor((now.getTime() - date.getTime()) / (1000 * 3600 * 24));
   };
+
+  const getCompanyUser = (id: string) => {
+    const m = structureMembers.find(m => m.id === id);
+    return m ? { id: m.id, name: m.displayName } : { id: '', name: 'Non assigné' };
+  };
+  const saveCompaniesCell = useCallback(async (rowId: string, colId: string, value: string) => {
+    const patch: Partial<Prospect> =
+      colId === 'accountOwnerId' ? { ownerId: value || undefined } :
+      colId === 'email' ? { email: value } :
+      colId === 'telephone' ? { telephone: value } :
+      colId === 'adresse' ? { adresse: value } :
+      colId === 'secteur' ? { secteur: value } : {};
+    if (Object.keys(patch).length === 0) {
+      setEditingCell(null);
+      setEditingValue('');
+      return;
+    }
+    try {
+      await updateProspect(rowId, patch);
+      await fetchProspects();
+    } catch (e) {
+      console.error('Erreur mise à jour prospect:', e);
+    }
+    setEditingCell(null);
+    setEditingValue('');
+  }, [fetchProspects]);
+
+  // Construction des colonnes Entreprises : ordre + visibilité depuis state, avec size/minSize pour resize
+  const companiesColumns = useMemo(() => {
+    const metaById = Object.fromEntries(ENTREPRISE_COLUMNS_META.map(c => [c.id, c]));
+    const orderedIds = companiesColumnOrder.filter(id => companiesVisibleColumnIds.includes(id));
+    const renderCell = (colId: string, row: CompanyRow) => {
+      const isEditing = editingCell?.rowId === row.id && editingCell?.colId === colId;
+      const startEdit = () => { setEditingCell({ rowId: row.id, colId }); setEditingValue(String((row as any)[colId] ?? '')); };
+      if (colId === 'name') {
+        return (
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-600 font-semibold text-sm">{row.name.charAt(0)}</div>
+            <span className="font-medium text-gray-900">{row.name}</span>
+          </div>
+        );
+      }
+      if (colId === 'domain' || colId === 'email' || colId === 'telephone' || colId === 'adresse' || colId === 'secteur') {
+        const val = (row as any)[colId] ?? '';
+        if (isEditing) {
+          return (
+            <input
+              className="w-full px-2 py-1 border-2 border-blue-500 rounded outline-none min-w-0"
+              value={editingValue}
+              onChange={e => setEditingValue(e.target.value)}
+              onBlur={() => saveCompaniesCell(row.id, colId, editingValue)}
+              onKeyDown={e => { if (e.key === 'Enter') saveCompaniesCell(row.id, colId, editingValue); }}
+              onClick={e => e.stopPropagation()}
+              autoFocus
+            />
+          );
+        }
+        return (
+          <div className="cursor-pointer py-1 px-2 rounded hover:bg-gray-50 min-h-[28px] flex items-center truncate" onClick={e => { e.stopPropagation(); startEdit(); }} title={val}>
+            {val || '—'}
+          </div>
+        );
+      }
+      if (colId === 'accountOwnerId') {
+        const owner = getCompanyUser(row.accountOwnerId);
+        if (isEditing) {
+          return (
+            <div className="min-w-[140px]" onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
+              <Autocomplete
+                size="small"
+                options={structureMembers}
+                getOptionLabel={o => o.displayName}
+                value={structureMembers.find(u => u.id === editingValue) ?? { id: row.accountOwnerId, displayName: owner.name, role: 'membre' as const }}
+                onChange={(_, v) => { if (v) saveCompaniesCell(row.id, 'accountOwnerId', v.id); }}
+                onBlur={() => setEditingCell(null)}
+                renderInput={params => <TextField {...params} variant="outlined" sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 } }} />}
+                renderOption={(props, option) => (
+                  <li {...props} key={option.id}><Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}><Avatar sx={{ width: 24, height: 24, fontSize: '0.75rem' }}>{option.displayName.charAt(0)}</Avatar>{option.displayName}</Box></li>
+                )}
+              />
+            </div>
+          );
+        }
+        return (
+          <div className="cursor-pointer py-1 px-2 rounded hover:bg-gray-50 min-h-[28px] flex items-center gap-2" onClick={e => { e.stopPropagation(); startEdit(); }}>
+            <Avatar sx={{ width: 24, height: 24, fontSize: '0.75rem', bgcolor: '#0071e3', color: 'white' }}>{owner.name.charAt(0)}</Avatar>
+            <span className="text-gray-900 truncate">{owner.name}</span>
+          </div>
+        );
+      }
+      if (colId === 'aiScore') {
+        const score = row.aiScore;
+        return typeof score === 'number' ? (
+          <Chip
+            size="small"
+            label={score}
+            sx={{
+              fontWeight: 600,
+              fontSize: '0.75rem',
+              bgcolor: score >= 70 ? 'rgba(52, 199, 89, 0.15)' : score >= 40 ? 'rgba(255, 159, 10, 0.15)' : 'rgba(142, 142, 147, 0.15)',
+              color: score >= 70 ? '#34c759' : score >= 40 ? '#ff9f0a' : '#8e8e93',
+              borderRadius: '8px',
+            }}
+          />
+        ) : (
+          <span className="text-gray-400 text-sm">—</span>
+        );
+      }
+      if (colId === 'createdById') {
+        const creator = getCompanyUser(row.createdById);
+        return (
+          <div className="flex items-center gap-2 py-1">
+            <Avatar sx={{ width: 24, height: 24, fontSize: '0.75rem', bgcolor: '#34c759', color: 'white' }}>{creator.name.charAt(0)}</Avatar>
+            <span className="text-gray-600 truncate">{creator.name}</span>
+          </div>
+        );
+      }
+      if (colId === 'createdAt') return <span className="text-gray-500 text-sm">{formatElapsed(row.createdAt)}</span>;
+      return null;
+    };
+    return orderedIds.map(id => {
+      const meta = metaById[id];
+      if (!meta) return null;
+      return {
+        id: meta.id,
+        header: meta.label,
+        accessorFn: (row: CompanyRow) => (row as any)[meta.id],
+        size: companiesColumnSizing[meta.id] ?? meta.defaultSize,
+        minSize: meta.minSize,
+        enableResizing: true,
+        cell: ({ row }: { row: { original: CompanyRow } }) => renderCell(meta.id, row.original)
+      };
+    }).filter(Boolean) as ColumnDef<CompanyRow, unknown>[];
+  }, [editingCell, editingValue, saveCompaniesCell, companiesVisibleColumnIds, companiesColumnOrder, companiesColumnSizing, structureMembers]);
+
+  const companiesFiltered = useMemo(() => {
+    const q = companiesSearch.toLowerCase().trim();
+    if (!q) return companiesRows;
+    return companiesRows.filter(c =>
+      c.name.toLowerCase().includes(q) || (c.domain || '').toLowerCase().includes(q) ||
+      (c.email || '').toLowerCase().includes(q) || (c.secteur || '').toLowerCase().includes(q)
+    );
+  }, [companiesRows, companiesSearch]);
+
+  const companiesTable = useReactTable({
+    data: companiesFiltered,
+    columns: companiesColumns,
+    getCoreRowModel: getCoreRowModel(),
+    state: {
+      columnOrder: companiesColumnOrder,
+      columnSizing: companiesColumnSizing
+    },
+    onColumnOrderChange: updater => setCompaniesColumnOrder(updater instanceof Function ? updater(companiesColumnOrder) : updater),
+    onColumnSizingChange: updater => setCompaniesColumnSizing(updater instanceof Function ? updater(companiesColumnSizing) : updater),
+    columnResizeMode: 'onChange',
+    enableColumnResizing: true,
+    defaultColumn: { minSize: 60 }
+  });
+
+  const handleCompaniesColumnDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const visibleOrder = companiesColumnOrder.filter(id => companiesVisibleColumnIds.includes(id));
+    const oldIndex = visibleOrder.indexOf(active.id as string);
+    const newIndex = visibleOrder.indexOf(over.id as string);
+    if (oldIndex === -1 || newIndex === -1) return;
+    const newVisibleOrder = arrayMove(visibleOrder, oldIndex, newIndex);
+    const hidden = companiesColumnOrder.filter(id => !companiesVisibleColumnIds.includes(id));
+    setCompaniesColumnOrder([...newVisibleOrder, ...hidden]);
+  };
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor));
+
+  const renderCompaniesView = () => (
+    <Box sx={{ minHeight: '600px', bgcolor: '#fff' }} className="rounded-xl overflow-hidden border border-gray-200 flex flex-col">
+      {/* Barre : recherche + bouton Colonnes (plus de sidebar gauche) */}
+      <div className="flex items-center justify-between gap-3 p-3 border-b border-gray-200 flex-shrink-0">
+        <TextField
+          size="small"
+          placeholder="Recherche globale..."
+          value={companiesSearch}
+          onChange={e => setCompaniesSearch(e.target.value)}
+          InputProps={{
+            startAdornment: <InputAdornment position="start"><SearchIcon sx={{ color: '#6b7280', fontSize: 20 }} /></InputAdornment>,
+            sx: { borderRadius: '8px', bgcolor: '#f9fafb' }
+          }}
+          sx={{ maxWidth: 320 }}
+        />
+        <Tooltip title="Choisir les colonnes à afficher">
+          <Button
+            size="small"
+            startIcon={<ViewColumnIcon />}
+            onClick={e => setCompaniesColumnPickerAnchor(e.currentTarget)}
+            sx={{ textTransform: 'none', fontWeight: 600 }}
+          >
+            Colonnes
+          </Button>
+        </Tooltip>
+      </div>
+      {/* Popover : choix des colonnes (tous les champs DB) */}
+      <Popover
+        open={Boolean(companiesColumnPickerAnchor)}
+        anchorEl={companiesColumnPickerAnchor}
+        onClose={() => setCompaniesColumnPickerAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        PaperProps={{ sx: { borderRadius: '12px', p: 1.5, minWidth: 260 } }}
+      >
+        <Typography variant="subtitle2" fontWeight={700} sx={{ px: 1, py: 0.5, mb: 0.5 }}>Colonnes visibles</Typography>
+        <List dense>
+          {ENTREPRISE_COLUMNS_META.map(col => (
+            <ListItem key={col.id} disablePadding>
+              <ListItemButton dense onClick={() => setCompaniesVisibleColumnIds(prev => prev.includes(col.id) ? prev.filter(c => c !== col.id) : [...prev, col.id].sort((a, b) => companiesColumnOrder.indexOf(a) - companiesColumnOrder.indexOf(b)))}>
+                <Checkbox checked={companiesVisibleColumnIds.includes(col.id)} disableRipple size="small" sx={{ mr: 1 }} />
+                <ListItemText primary={col.label} primaryTypographyProps={{ variant: 'body2' }} />
+              </ListItemButton>
+            </ListItem>
+          ))}
+        </List>
+      </Popover>
+      {/* Table : scroll horizontal, en-têtes sticky, resize au hover, réordonnancement drag */}
+      <div className="flex-1 overflow-x-auto overflow-y-auto">
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleCompaniesColumnDragEnd}>
+          <table className="border-collapse" style={{ minWidth: '100%', tableLayout: 'fixed' }}>
+            <thead className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200">
+              {companiesTable.getHeaderGroups().map(hg => (
+                <tr key={hg.id}>
+                  <SortableContext items={hg.headers.map(h => h.column.id)} strategy={horizontalListSortingStrategy}>
+                    {hg.headers.map(header => (
+                      <SortableTh
+                        key={header.id}
+                        header={header}
+                        title={ENTREPRISE_COLUMNS_META.find(m => m.id === header.column.id)?.label ?? String(header.column.columnDef.header)}
+                      />
+                    ))}
+                  </SortableContext>
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {companiesTable.getRowModel().rows.map(row => (
+                <tr
+                  key={row.id}
+                  className="border-b border-gray-100 hover:bg-gray-50/50 cursor-pointer"
+                  onClick={() => navigate(`/prospect/${row.original.id}`)}
+                >
+                  {row.getVisibleCells().map(cell => (
+                    <td key={cell.id} className="py-2 px-4 align-middle truncate" style={{ width: cell.column.getSize(), minWidth: cell.column.getSize(), maxWidth: cell.column.getSize() }}>
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </DndContext>
+      </div>
+    </Box>
+  );
 
   // --- MAIN RENDER ---
 
@@ -2232,6 +3184,22 @@ const Commercial: React.FC = (): JSX.Element => {
                 Supprimer ({selectedProspects.length})
             </StyledButton>
             </>
+          )}
+          {isSuperAdmin && (
+            <Tooltip title="Générer des prospects de test avec des données complètes (nom, entreprise, email, téléphone, adresse, secteur, etc.). Utilise les tokens de la structure.">
+              <StyledButton
+                variant="outlined"
+                startIcon={<RocketIcon />}
+                onClick={() => setIsGenerateTestDialogOpen(true)}
+                sx={{
+                  borderColor: '#34c759',
+                  color: '#34c759',
+                  '&:hover': { borderColor: '#30b350', bgcolor: 'rgba(52, 199, 89, 0.08)' }
+                }}
+              >
+                Prospects de test
+              </StyledButton>
+            </Tooltip>
           )}
           <Tooltip
             title={
@@ -2363,64 +3331,121 @@ const Commercial: React.FC = (): JSX.Element => {
       {/* KPI Section (Always Visible) */}
       {renderKPIs()}
 
-      {/* Main Grid Layout */}
+      {/* Main Grid Layout (sidebar droite masquée en vue Entreprises) */}
       <Grid container spacing={4}>
-        
-        {/* Main Workspace (Left) */}
-        <Grid item xs={12} lg={9}>
+        <Grid item xs={12} lg={viewMode === 'companies' ? 12 : 9}>
           <StyledCard sx={{ p: 2, minHeight: '600px' }}>
             {/* Toolbar */}
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3, px: 1 }}>
-        <ToggleButtonGroup
-          value={viewMode}
-          exclusive
-                onChange={(_, newMode) => newMode && setViewMode(newMode)}
-          size="small"
-          sx={{
-            '& .MuiToggleButton-root': {
-                    border: 'none', 
-                    borderRadius: '8px !important', 
-                    mx: 0.5,
-                    px: 2,
-                    py: 1,
-                    fontWeight: 600,
-                    textTransform: 'none',
-                    '&.Mui-selected': { bgcolor: '#f5f5f7', color: 'black' }
-                  } 
-                }}
-              >
-                <ToggleButton value="pipeline">
-                  <ViewKanbanIcon sx={{ mr: 1, fontSize: 20 }} /> Pipeline
-          </ToggleButton>
-                <ToggleButton value="table">
-                  <ViewListIcon sx={{ mr: 1, fontSize: 20 }} /> Liste
-                </ToggleButton>
-                <ToggleButton value="stats">
-                  <ShowChartIcon sx={{ mr: 1, fontSize: 20 }} /> Stats
-          </ToggleButton>
-        </ToggleButtonGroup>
-
-          <StyledTextField
-                placeholder="Rechercher..." 
-            size="small"
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 2, mb: 3, px: 1 }}>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 2 }}>
+                <ToggleButtonGroup
+                  value={viewMode}
+                  exclusive
+                  onChange={(_, newMode) => newMode && setViewMode(newMode)}
+                  size="small"
+                  sx={{
+                    '& .MuiToggleButton-root': {
+                      border: 'none',
+                      borderRadius: '8px !important',
+                      mx: 0.5,
+                      px: 2,
+                      py: 1,
+                      fontWeight: 600,
+                      textTransform: 'none',
+                      '&.Mui-selected': { bgcolor: '#f5f5f7', color: 'black' }
+                    }
+                  }}
+                >
+                  <ToggleButton value="companies">
+                    <StoreIcon sx={{ mr: 1, fontSize: 20 }} /> Entreprises
+                  </ToggleButton>
+                  <ToggleButton value="pipeline">
+                    <ViewKanbanIcon sx={{ mr: 1, fontSize: 20 }} /> Pipeline
+                  </ToggleButton>
+                  <ToggleButton value="stats">
+                    <ShowChartIcon sx={{ mr: 1, fontSize: 20 }} /> Stats
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              </Box>
+              <StyledTextField
+                placeholder="Rechercher..."
+                size="small"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-            InputProps={{
+                InputProps={{
                   startAdornment: <SearchIcon sx={{ color: 'text.secondary', mr: 1 }} />
                 }}
+                sx={{ minWidth: 220 }}
               />
-        </Box>
+            </Box>
 
-            {/* View Content */}
-            {viewMode === 'pipeline' ? renderPipeline() : viewMode === 'stats' ? renderStats() : renderTable()}
+            {/* View Content (animation zoom au changement de vue) */}
+            <Grow in key={viewMode} timeout={280} style={{ transformOrigin: 'center top' }}>
+              <Box sx={{ minHeight: 520 }}>
+                {viewMode === 'companies'
+                  ? renderCompaniesView()
+                  : viewMode === 'stats'
+                    ? renderStats()
+                    : (
+                      <>
+                        {/* Bloc À relancer (IA) */}
+                        {relanceSuggestions.length > 0 && (
+                          <Paper
+                            elevation={0}
+                            sx={{
+                              mb: 2,
+                              p: 2,
+                              borderRadius: '16px',
+                              border: '1px solid #ff9f0a',
+                              bgcolor: 'rgba(255, 159, 10, 0.06)',
+                            }}
+                          >
+                            <Typography variant="subtitle2" fontWeight={700} color="#c93400" sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <NotificationsIcon sx={{ fontSize: 20 }} />
+                              À relancer ({relanceSuggestions.length})
+                            </Typography>
+                            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                              {relanceSuggestions.slice(0, 8).map((s) => (
+                                <Chip
+                                  key={s.id}
+                                  label={`${s.nom}${s.entreprise ? ` · ${s.entreprise}` : ''}`}
+                                  onClick={() => navigate(`/prospect/${s.id}`)}
+                                  sx={{
+                                    borderRadius: '10px',
+                                    fontWeight: 500,
+                                    cursor: 'pointer',
+                                    '&:hover': { bgcolor: 'rgba(255, 159, 10, 0.2)' },
+                                  }}
+                                  size="small"
+                                />
+                              ))}
+                              {relanceSuggestions.length > 8 && (
+                                <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
+                                  +{relanceSuggestions.length - 8} autres
+                                </Typography>
+                              )}
+                            </Box>
+                          </Paper>
+                        )}
+                        {relanceSuggestionsLoading && relanceSuggestions.length === 0 && (
+                          <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <CircularProgress size={16} />
+                            <Typography variant="caption" color="text.secondary">Chargement des suggestions de relance...</Typography>
+                          </Box>
+                        )}
+                        {renderPipeline()}
+                      </>
+                    )}
+              </Box>
+            </Grow>
           </StyledCard>
         </Grid>
 
-        {/* Sidebar (Right) */}
-        <Grid item xs={12} lg={3}>
-          {renderSidebar()}
-        </Grid>
-
+        {viewMode !== 'companies' && (
+          <Grid item xs={12} lg={3}>
+            {renderSidebar()}
+          </Grid>
+        )}
       </Grid>
 
       {/* Menu d'assignation */}
@@ -2430,38 +3455,90 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => setActionMenuAnchorEl(null)}
         PaperProps={{ sx: { maxHeight: 400 } }}
       >
-        <MenuItem disabled sx={{ opacity: 1, fontWeight: 700, color: 'text.primary' }}>Assigner à :</MenuItem>
-        <Divider />
-        {assignableMembers.length === 0 ? (
-          <MenuItem disabled>Aucun membre du pôle commercial trouvé</MenuItem>
-        ) : (
-          assignableMembers.reduce((acc, member, index) => {
-            const prevMember = index > 0 ? assignableMembers[index - 1] : null;
-            const currentMandat = member.mandat || 'Autres';
-            const prevMandat = prevMember?.mandat || 'Autres';
-            
-            if (index === 0 || currentMandat !== prevMandat) {
-              acc.push(
-                <ListSubheader key={`header-${currentMandat}`} sx={{ bgcolor: 'white', lineHeight: '32px', fontWeight: 700, color: APPLE_COLORS.primary }}>
-                  {currentMandat === 'Autres' ? 'Autres Mandats' : `Mandat ${currentMandat}`}
-                </ListSubheader>
-              );
-            }
-            
-            acc.push(
-              <MenuItem 
-                key={member.id} 
-                onClick={() => handleAssignProspects(member.id)}
-                sx={{ pl: 4 }}
-              >
-                <Avatar sx={{ width: 24, height: 24, mr: 1, fontSize: '0.7rem' }}>
-                  {member.displayName.charAt(0)}
-                </Avatar>
-                                {member.displayName}
-                              </MenuItem>
-            );
-            return acc;
-          }, [] as React.ReactNode[])
+        {[
+          <MenuItem key="title" disabled sx={{ opacity: 1, fontWeight: 700, color: 'text.primary' }}>Assigner à :</MenuItem>,
+          <Divider key="div" />,
+          ...(assignableMembers.length === 0
+            ? [<MenuItem key="empty" disabled>Aucun membre du pôle commercial trouvé</MenuItem>]
+            : assignableMembers.reduce((acc, member, index) => {
+                const prevMember = index > 0 ? assignableMembers[index - 1] : null;
+                const currentMandat = member.mandat || 'Autres';
+                const prevMandat = prevMember?.mandat || 'Autres';
+                if (index === 0 || currentMandat !== prevMandat) {
+                  acc.push(
+                    <ListSubheader key={`header-${currentMandat}`} sx={{ bgcolor: 'white', lineHeight: '32px', fontWeight: 700, color: APPLE_COLORS.primary }}>
+                      {currentMandat === 'Autres' ? 'Autres Mandats' : `Mandat ${currentMandat}`}
+                    </ListSubheader>
+                  );
+                }
+                acc.push(
+                  <MenuItem key={member.id} onClick={() => handleAssignProspects(member.id)} sx={{ pl: 4 }}>
+                    <Avatar sx={{ width: 24, height: 24, mr: 1, fontSize: '0.7rem' }}>{member.displayName.charAt(0)}</Avatar>
+                    {member.displayName}
+                  </MenuItem>
+                );
+                return acc;
+              }, [] as React.ReactNode[])
+          )
+        ]}
+      </Menu>
+
+      {/* Popover Personnaliser les colonnes (vue Liste) */}
+      <Popover
+        open={Boolean(tableColumnCustomizeAnchor)}
+        anchorEl={tableColumnCustomizeAnchor}
+        onClose={() => setTableColumnCustomizeAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        PaperProps={{ sx: { borderRadius: '12px', p: 1, minWidth: 220 } }}
+      >
+        <Typography variant="subtitle2" fontWeight={700} sx={{ px: 1.5, py: 1 }}>Colonnes visibles</Typography>
+        <List dense>
+          {TABLE_COLUMNS.map(col => (
+            <ListItem key={col.id} disablePadding>
+              <ListItemButton dense onClick={() => setVisibleTableColumns(prev => prev.includes(col.id) ? prev.filter(c => c !== col.id) : [...prev, col.id].sort((a, b) => TABLE_COLUMNS.findIndex(x => x.id === a) - TABLE_COLUMNS.findIndex(x => x.id === b)))}>
+                <Checkbox checked={visibleTableColumns.includes(col.id)} disableRipple size="small" sx={{ mr: 1 }} />
+                <ListItemText primary={col.label} primaryTypographyProps={{ variant: 'body2' }} />
+              </ListItemButton>
+            </ListItem>
+          ))}
+        </List>
+      </Popover>
+
+      {/* Menu contextuel par ligne (vue Liste) */}
+      <Menu
+        anchorEl={rowMenuAnchorEl}
+        open={Boolean(rowMenuAnchorEl)}
+        onClose={() => { setRowMenuAnchorEl(null); setRowMenuProspectId(null); }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        PaperProps={{ sx: { borderRadius: '12px', minWidth: 180 } }}
+      >
+        <MenuItem
+          onClick={() => {
+            if (rowMenuProspectId) navigate(`/prospect/${rowMenuProspectId}`);
+            setRowMenuAnchorEl(null);
+            setRowMenuProspectId(null);
+          }}
+        >
+          <ListItemIcon><VisibilityIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Ouvrir</ListItemText>
+        </MenuItem>
+        {canWrite && (
+          <MenuItem key="assign" onClick={handleRowMenuAssign}>
+            <ListItemIcon><PersonIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Assigner</ListItemText>
+          </MenuItem>
+        )}
+        {canWrite && (
+          <MenuItem
+            key="delete"
+            onClick={handleRowMenuDelete}
+            sx={{ color: APPLE_COLORS.error }}
+          >
+            <ListItemIcon><DeleteIcon fontSize="small" sx={{ color: APPLE_COLORS.error }} /></ListItemIcon>
+            <ListItemText>Supprimer</ListItemText>
+          </MenuItem>
         )}
       </Menu>
 
@@ -3773,6 +4850,58 @@ const Commercial: React.FC = (): JSX.Element => {
             }}
           >
             Supprimer {selectedProspects.length} prospect(s)
+          </StyledButton>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog: Génération prospects de test (superadmin) */}
+      <Dialog
+        open={isGenerateTestDialogOpen}
+        onClose={() => !generateTestSubmitting && setIsGenerateTestDialogOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: '16px' } }}
+      >
+        <DialogTitle sx={{ fontWeight: 700 }}>
+          Générer des prospects de test
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Crée des prospects avec des données complètes : nom, entreprise, email, téléphone, adresse, secteur, poste, source, notes, statut, valeur potentielle, LinkedIn, date de relance, etc.
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            <strong>Attention :</strong> chaque prospect consomme 1 token du quota de la structure.
+          </Typography>
+          <FormControl fullWidth size="small" sx={{ mt: 1 }}>
+            <InputLabel>Nombre de prospects</InputLabel>
+            <Select
+              value={generateTestCount}
+              onChange={(e) => setGenerateTestCount(Number(e.target.value))}
+              label="Nombre de prospects"
+              disabled={generateTestSubmitting}
+            >
+              <MenuItem value={3}>3</MenuItem>
+              <MenuItem value={5}>5</MenuItem>
+              <MenuItem value={10}>10</MenuItem>
+              <MenuItem value={20}>20</MenuItem>
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions sx={{ p: 3 }}>
+          <Button
+            onClick={() => setIsGenerateTestDialogOpen(false)}
+            disabled={generateTestSubmitting}
+          >
+            Annuler
+          </Button>
+          <StyledButton
+            variant="contained"
+            startIcon={generateTestSubmitting ? <CircularProgress size={18} color="inherit" /> : <RocketIcon />}
+            onClick={handleGenerateTestProspects}
+            disabled={generateTestSubmitting}
+            sx={{ bgcolor: '#34c759', '&:hover': { bgcolor: '#30b350' } }}
+          >
+            {generateTestSubmitting ? `Création...` : `Générer ${generateTestCount} prospect(s)`}
           </StyledButton>
         </DialogActions>
       </Dialog>

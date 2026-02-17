@@ -17,6 +17,11 @@ export interface Prospect {
   structureId?: string;
   createdAt?: any;
   updatedAt?: any;
+  /** Score IA 0-100 (priorité prospect) */
+  aiScore?: number;
+  aiScoreUpdatedAt?: any;
+  /** Dernière activité enregistrée (pour scoring et relances) */
+  lastActivityAt?: any;
 }
 
 export const getProspects = async (structureId: string, userStatus?: string): Promise<Prospect[]> => {
