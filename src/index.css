@@ -63,36 +63,46 @@ code {
 
 /* Styles globaux pour les Snackbars - s'assurer qu'ils s'affichent au premier plan */
 .MuiSnackbar-root {
-  z-index: 9999 !important;
+  z-index: 10000 !important;
+  position: fixed !important;
 }
 
 .MuiSnackbar-root .MuiAlert-root {
-  z-index: 9999 !important;
+  z-index: 10000 !important;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15) !important;
+  position: relative !important;
 }
 
 /* S'assurer que les popups de notification sont toujours visibles */
 .MuiSnackbar-root[style*="z-index"] {
-  z-index: 9999 !important;
+  z-index: 10000 !important;
 }
 
 /* S'assurer que les Alert et les popups d'erreur sont toujours visibles */
 .MuiAlert-root {
-  z-index: 9999 !important;
+  z-index: 10000 !important;
 }
 
 .MuiAlert-standardError,
 .MuiAlert-standardWarning,
 .MuiAlert-standardInfo,
 .MuiAlert-standardSuccess {
-  z-index: 9999 !important;
+  z-index: 10000 !important;
   position: relative !important;
 }
 
-/* S'assurer que les popups d'erreur sont au-dessus du header */
-.MuiSnackbar-root {
+/* Notistack Snackbars - s'assurer qu'ils sont aussi au premier plan */
+[class*="SnackbarContainer-root"],
+[class*="SnackbarItem-container"],
+.notistack-SnackbarContainer,
+.notistack-SnackbarItem {
+  z-index: 10000 !important;
   position: fixed !important;
-  z-index: 9999 !important;
+}
+
+/* S'assurer que tous les conteneurs de notifications sont au premier plan */
+[class*="Snackbar"] {
+  z-index: 10000 !important;
 }
 
 /* Styles pour améliorer le rendu Tailwind */

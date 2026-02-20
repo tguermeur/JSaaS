@@ -269,6 +269,8 @@ const MissionDescriptions: React.FC = () => {
                 }
               }}>
                 <ListItemText
+                  primaryTypographyProps={{ component: 'div' }}
+                  secondaryTypographyProps={{ component: 'div' }}
                   primary={
                     <Typography variant="h6" sx={{ fontWeight: 600, color: 'text.primary' }}>
                       {description.title}
@@ -323,6 +325,8 @@ const MissionDescriptions: React.FC = () => {
               py: 4
             }}>
               <ListItemText
+                primaryTypographyProps={{ component: 'div' }}
+                secondaryTypographyProps={{ component: 'div' }}
                 primary={
                   <Typography variant="h6" sx={{ color: 'text.secondary', mb: 1 }}>
                     Aucun type de mission configuré

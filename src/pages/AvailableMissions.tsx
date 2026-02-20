@@ -2374,7 +2374,7 @@ const AvailableMissions: React.FC = () => {
           open={snackbarOpen}
           autoHideDuration={6000}
           onClose={() => setSnackbarOpen(false)}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         >
           <Alert 
             onClose={() => setSnackbarOpen(false)} 

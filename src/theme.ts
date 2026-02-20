@@ -38,6 +38,22 @@ const theme = createTheme({
         },
       },
     },
+    // Snackbars : en bas à gauche, au-dessus du footer et à droite de la sidebar
+    MuiSnackbar: {
+      defaultProps: {
+        anchorOrigin: { vertical: 'bottom', horizontal: 'left' },
+      },
+      styleOverrides: {
+        root: {
+          zIndex: 10000, // z-index très élevé pour être au-dessus de tout (sidebar, footer, modals, etc.)
+          position: 'fixed !important' as any,
+        },
+        anchorOriginBottomLeft: {
+          left: 72,
+          bottom: 56,
+        },
+      },
+    },
   },
 });
 

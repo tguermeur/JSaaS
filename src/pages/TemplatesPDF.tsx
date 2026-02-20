@@ -189,6 +189,42 @@ interface TagMapping {
   example: string;
 }
 
+// Fonction pour filtrer les balises selon le type de structure
+export const getFilteredTags = (structureType: 'junior' | 'jobservice' | null): TagMapping[] => {
+  if (structureType === 'junior') {
+    // Pour les JE, exclure les balises spécifiques aux JS
+    return VARIABLE_TAGS.filter(tag => {
+      // Exclure les balises d'heures de travail
+      if (tag.tag.startsWith('<workingHours') || tag.tag === '<heures_detaillees>') {
+        return false;
+      }
+      // Exclure les balises de nombre d'étudiants (spécifique JS)
+      if (tag.tag === '<mission_nb_etudiants>') {
+        return false;
+      }
+      // Exclure les balises de prix horaire (spécifique JS)
+      if (tag.tag === '<mission_prix_horaire_ht>' || tag.tag === '<mission_prix_total_heures_ht>') {
+        return false;
+      }
+      // Exclure les balises de dépenses (spécifique JS)
+      if (tag.tag.startsWith('<depense')) {
+        return false;
+      }
+      // Exclure les balises de notes de frais (spécifique JS)
+      if (tag.tag.startsWith('<note_frais')) {
+        return false;
+      }
+      // Exclure les balises d'heures de mission (spécifique JS)
+      if (tag.tag === '<mission_heures>') {
+        return false;
+      }
+      return true;
+    });
+  }
+  // Pour les JS, retourner toutes les balises
+  return VARIABLE_TAGS;
+};
+
 // Créer un mapping des balises disponibles basé sur DATABASE_FIELDS
 export const VARIABLE_TAGS: TagMapping[] = [
   // Tags pour les missions
@@ -504,6 +540,7 @@ const TemplatesPDF: React.FC = () => {
   const [defaultTemplates, setDefaultTemplates] = useState<{ [key: string]: string }>({});
   const [selectedPlacedVariable, setSelectedPlacedVariable] = useState<string | null>(null);
   const [selectedVariables, setSelectedVariables] = useState<Set<string>>(new Set()); // Sélection multiple
+  const [structureType, setStructureType] = useState<'junior' | 'jobservice' | null>(null);
 
   // Ajout des états pour la gestion du line-height
   const [lineHeightDialogOpen, setLineHeightDialogOpen] = useState(false);
@@ -590,8 +627,50 @@ const TemplatesPDF: React.FC = () => {
     }
   }, [currentUser]);
 
-  // Sources de données
-  const missionsDataSource = {
+  // Sources de données - adapter selon le type de structure
+  const missionsDataSource = structureType === 'junior' ? {
+    id: 'missions',
+    name: 'Études',
+    description: 'Informations des études',
+    fields: [
+      {
+        id: 'title',
+        name: 'Titre',
+        description: 'Titre de l\'étude',
+        type: 'text'
+      },
+      {
+        id: 'missionTypeName',
+        name: 'Type d\'étude',
+        description: 'Type de l\'étude',
+        type: 'text'
+      },
+      {
+        id: 'generationDate',
+        name: 'Date de génération',
+        description: 'Date à laquelle le document est généré',
+        type: 'date'
+      },
+      {
+        id: 'status',
+        name: 'Statut',
+        description: 'Statut de l\'étude',
+        type: 'text'
+      },
+      {
+        id: 'totalTTC',
+        name: 'Total TTC',
+        description: 'Montant total TTC de l\'étude',
+        type: 'number'
+      },
+      {
+        id: 'etape',
+        name: 'Étape',
+        description: 'Étape actuelle de l\'étude',
+        type: 'text'
+      }
+    ]
+  } : {
     id: 'missions',
     name: 'Missions',
     description: 'Informations des missions',
@@ -1272,6 +1351,10 @@ const TemplatesPDF: React.FC = () => {
       
       console.log('Nouveau template avec ID:', newTemplateWithId);
       setTemplates(prev => [...prev, newTemplateWithId]);
+
+      // Sélectionner automatiquement le nouveau template créé
+      setSelectedTemplate(newTemplateWithId);
+      setPdfLoadError(null); // Réinitialiser l'erreur de chargement
 
       setSnackbar({
         open: true,
@@ -2616,6 +2699,10 @@ const TemplatesPDF: React.FC = () => {
         throw new Error('Structure non trouvée');
       }
 
+      // Définir le type de structure
+      const structureTypeValue = structureData.structureType || 'jobservice';
+      setStructureType(structureTypeValue);
+
       const missionsSnapshot = await getDocs(collection(db, 'missions'));
       const usersSnapshot = await getDocs(collection(db, 'users'));
       const companiesSnapshot = await getDocs(collection(db, 'companies'));
@@ -2625,7 +2712,32 @@ const TemplatesPDF: React.FC = () => {
       if (!missionsSnapshot.empty || !usersSnapshot.empty || !companiesSnapshot.empty || 
           !expenseNotesSnapshot.empty || !workingHoursSnapshot.empty) {
         
-        const missionFields = [
+        // Créer les champs selon le type de structure
+        const missionFields = structureTypeValue === 'junior' ? [
+          // Champs pour les études (JE)
+          { id: 'numeroEtude', name: 'Numéro d\'étude', description: 'Numéro unique de l\'étude', type: 'text' },
+          { id: 'chargeName', name: 'Prénom Nom chargé d\'étude', description: 'Nom du chargé d\'étude', type: 'text' },
+          { id: 'startDate', name: 'Date de début (date seule)', description: 'Date de début de l\'étude (format: jj/mm/aaaa)', type: 'date' },
+          { id: 'endDate', name: 'Date de fin (date seule)', description: 'Date de fin de l\'étude (format: jj/mm/aaaa)', type: 'date' },
+          { id: 'location', name: 'Lieu de l\'étude', description: 'Lieu où se déroule l\'étude', type: 'text' },
+          { id: 'company', name: 'Nom de l\'entreprise', description: 'Entreprise pour laquelle l\'étude est réalisée', type: 'text' },
+          { id: 'missionTypeName', name: 'Type d\'étude', description: 'Type de l\'étude', type: 'text' },
+          { id: 'generationDate', name: 'Date de génération', description: 'Date à laquelle le document est généré', type: 'date' },
+          { id: 'generationDatePlusOneYear', name: 'Date de génération + 1 an', description: 'Date de génération + 365 jours', type: 'date' },
+          { id: 'prixHT', name: 'Prix HT', description: 'Prix hors taxes de l\'étude', type: 'number' },
+          { id: 'description', name: 'Description de l\'étude', description: 'Description détaillée de l\'étude', type: 'text' },
+          { id: 'title', name: 'Titre', description: 'Titre de l\'étude', type: 'text' },
+          { id: 'hours', name: 'Nombre d\'heures', description: 'Nombre total d\'heures de l\'étude', type: 'number' },
+          { id: 'consultantCount', name: 'Nombre de consultants', description: 'Nombre total de consultants sur l\'étude', type: 'number' },
+          { id: 'charge_email', name: 'Email du chargé d\'étude', description: 'Email du chargé d\'étude', type: 'text' },
+          { id: 'charge_phone', name: 'Téléphone du chargé d\'étude', description: 'Téléphone du chargé d\'étude', type: 'text' },
+          { id: 'totalHT', name: 'Total HT', description: 'Montant total hors taxes de l\'étude', type: 'number' },
+          { id: 'totalTTC', name: 'Total TTC', description: 'Montant total toutes taxes comprises de l\'étude', type: 'number' },
+          { id: 'tva', name: 'Montant TVA', description: 'Montant de la TVA calculé sur le total TTC', type: 'number' },
+          { id: 'etape', name: 'Étape', description: 'Étape actuelle de l\'étude (Négociation, Recrutement, Facturation, Audit)', type: 'text' },
+          { id: 'status', name: 'Statut', description: 'Statut de l\'étude', type: 'text' }
+        ] : [
+          // Champs pour les missions (JS)
           { id: 'numeroMission', name: 'Numéro de mission', description: 'Numéro unique de la mission', type: 'text' },
           { id: 'chargeName', name: 'Prénom Nom CDM', description: 'Nom du chef de mission', type: 'text' },
           { id: 'missionDateDebut', name: 'Date de début (date seule)', description: 'Date de début de la mission (format: jj/mm/aaaa)', type: 'date' },
@@ -3630,6 +3742,7 @@ const TemplatesPDF: React.FC = () => {
     if (!selectedTemplate) return [];
     
     const usedTagsSet = new Set<string>();
+    const filteredTags = getFilteredTags(structureType);
     
     selectedTemplate.variables.forEach(variable => {
       if (variable.type === 'raw' && variable.rawText) {
@@ -3639,16 +3752,16 @@ const TemplatesPDF: React.FC = () => {
           matches.forEach(tag => usedTagsSet.add(tag));
         }
       } else if (variable.variableId) {
-        // Trouver la balise correspondante dans VARIABLE_TAGS
-        const tagMapping = VARIABLE_TAGS.find(t => t.variableId === variable.variableId);
+        // Trouver la balise correspondante dans les balises filtrées
+        const tagMapping = filteredTags.find(t => t.variableId === variable.variableId);
         if (tagMapping) {
           usedTagsSet.add(tagMapping.tag);
         }
       }
     });
     
-    // Retourner les TagMapping correspondants
-    return VARIABLE_TAGS.filter(tag => usedTagsSet.has(tag.tag));
+    // Retourner les TagMapping correspondants (filtrés selon le type de structure)
+    return filteredTags.filter(tag => usedTagsSet.has(tag.tag));
   };
 
   // Fonction pour sélectionner une variable correspondant à une balise
@@ -4281,10 +4394,18 @@ return (
                                         </Box>
 
                                         {/* Database Fields Accordions */}
-                                        {Object.keys(databaseFields).map((key) => {
+                                        {Object.keys(databaseFields)
+                                          .filter(key => {
+                                            // Pour les JE, exclure les sources de données spécifiques aux JS
+                                            if (structureType === 'junior') {
+                                              return key !== 'expenseNotes' && key !== 'workingHours';
+                                            }
+                                            return true;
+                                          })
+                                          .map((key) => {
                                             const dataSourceKey = key as keyof DatabaseFields;
                                             const dataSourceName = {
-                                                missions: 'Missions',
+                                                missions: structureType === 'junior' ? 'Études' : 'Missions',
                                                 users: 'Utilisateurs',
                                                 companies: 'Entreprises',
                                                 contacts: 'Contacts',
@@ -4338,17 +4459,26 @@ return (
                                                 );
                                             }
                                             
-                                            // Grouper les balises par catégorie
-                                            const categories = [
-                                                { title: 'Mission', prefix: ['<mission_', '<total_', '<tva>', '<charge_', '<course_', '<mission_learning>', '<student_profile>', '<depense'] },
-                                                { title: 'Utilisateur', prefix: ['<user_'] },
-                                                { title: 'Entreprise', prefix: ['<entreprise_'] },
-                                                { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
-                                                { title: 'Heures de travail', prefix: ['<workingHours', '<heures_detaillees>'] },
-                                                { title: 'Avenants', prefix: ['<amendment'] },
-                                                { title: 'Contacts', prefix: ['<contact'] },
-                                                { title: 'Structure', prefix: ['<structure_'] },
-                                            ];
+                                            // Grouper les balises par catégorie (filtrées selon le type de structure)
+                                            const categories = structureType === 'junior'
+                                              ? [
+                                                  { title: 'Étude', prefix: ['<mission_', '<etude_', '<total_', '<tva>', '<charge_'] },
+                                                  { title: 'Utilisateur', prefix: ['<user_'] },
+                                                  { title: 'Entreprise', prefix: ['<entreprise_'] },
+                                                  { title: 'Avenants', prefix: ['<amendment'] },
+                                                  { title: 'Contacts', prefix: ['<contact'] },
+                                                  { title: 'Structure', prefix: ['<structure_'] },
+                                                ]
+                                              : [
+                                                  { title: 'Mission', prefix: ['<mission_', '<etude_', '<total_', '<tva>', '<charge_', '<course_', '<mission_learning>', '<student_profile>', '<depense'] },
+                                                  { title: 'Utilisateur', prefix: ['<user_'] },
+                                                  { title: 'Entreprise', prefix: ['<entreprise_'] },
+                                                  { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
+                                                  { title: 'Heures de travail', prefix: ['<workingHours', '<heures_detaillees>'] },
+                                                  { title: 'Avenants', prefix: ['<amendment'] },
+                                                  { title: 'Contacts', prefix: ['<contact'] },
+                                                  { title: 'Structure', prefix: ['<structure_'] },
+                                                ];
                                             
                                             return (
                                                 <>
@@ -4641,7 +4771,10 @@ return (
             </IconButton>
           </Box>
           <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {['Mission', 'Utilisateur', 'Entreprise', 'Notes de frais & Dépenses', 'Heures de travail', 'Avenants', 'Contacts', 'Structure'].map((cat) => (
+            {(structureType === 'junior' 
+              ? ['Étude', 'Utilisateur', 'Entreprise', 'Avenants', 'Contacts', 'Structure']
+              : ['Mission', 'Utilisateur', 'Entreprise', 'Notes de frais & Dépenses', 'Heures de travail', 'Avenants', 'Contacts', 'Structure']
+            ).map((cat) => (
               <Chip
                 key={cat}
                 label={cat}
@@ -4663,17 +4796,28 @@ return (
             Cliquez sur une balise pour l'insérer dans votre texte. Ces balises seront remplacées automatiquement lors de la génération du document.
           </Typography>
           
-          {[
-            { title: 'Mission', prefix: ['<mission_', '<total_', '<tva>'] },
-            { title: 'Utilisateur', prefix: ['<user_'] },
-            { title: 'Entreprise', prefix: ['<entreprise_'] },
-            { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
-            { title: 'Heures de travail', prefix: ['<workingHours', '<heures_detaillees>'] },
-            { title: 'Avenants', prefix: ['<amendment'] },
-            { title: 'Contacts', prefix: ['<contact'] },
-            { title: 'Structure', prefix: ['<structure_', '<charge_'] },
-          ].map(category => {
-            const categoryTags = VARIABLE_TAGS.filter(tag => category.prefix.some(p => tag.tag.startsWith(p)));
+          {(structureType === 'junior' 
+            ? [
+                { title: 'Étude', prefix: ['<mission_', '<etude_', '<total_', '<tva>', '<charge_'] },
+                { title: 'Utilisateur', prefix: ['<user_'] },
+                { title: 'Entreprise', prefix: ['<entreprise_'] },
+                { title: 'Avenants', prefix: ['<amendment'] },
+                { title: 'Contacts', prefix: ['<contact'] },
+                { title: 'Structure', prefix: ['<structure_'] },
+              ]
+            : [
+                { title: 'Mission', prefix: ['<mission_', '<etude_', '<total_', '<tva>', '<charge_', '<course_', '<mission_learning>', '<student_profile>', '<depense'] },
+                { title: 'Utilisateur', prefix: ['<user_'] },
+                { title: 'Entreprise', prefix: ['<entreprise_'] },
+                { title: 'Notes de frais & Dépenses', prefix: ['<note_frais_', '<depense'] },
+                { title: 'Heures de travail', prefix: ['<workingHours', '<heures_detaillees>'] },
+                { title: 'Avenants', prefix: ['<amendment'] },
+                { title: 'Contacts', prefix: ['<contact'] },
+                { title: 'Structure', prefix: ['<structure_'] },
+              ]
+          ).map(category => {
+            const filteredTags = getFilteredTags(structureType);
+            const categoryTags = filteredTags.filter(tag => category.prefix.some(p => tag.tag.startsWith(p)));
             
             if (categoryTags.length === 0) return null;
 
@@ -4779,11 +4923,19 @@ return (
         open={snackbar.open} 
         autoHideDuration={6000} 
         onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        sx={{ zIndex: 1500 }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        sx={{ 
+          zIndex: 10000,
+          position: 'fixed !important'
+        }}
       >
         <Alert 
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))} 
           severity={snackbar.severity}
+          sx={{
+            zIndex: 10000,
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+          }}
         >
           {snackbar.message}
         </Alert>

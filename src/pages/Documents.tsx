@@ -79,6 +79,7 @@ import UploadModal from '../components/documents/UploadModal';
 import { trackUserActivity } from '../services/userActivityService';
 import TwoFactorDialog from '../components/common/TwoFactorDialog';
 import { fetchDecryptFile, is2FARequiredError } from '../utils/decryptFileUtils';
+import { decryptUserDisplayData } from '../utils/decryptUserUtils';
 
 const Documents: React.FC = () => {
   const { currentUser, userData } = useAuth();
@@ -481,14 +482,23 @@ const Documents: React.FC = () => {
           // Filtrer les documents qui ont un missionId
           if (!data.missionId) continue;
           
-          // Récupérer le nom de l'utilisateur
+          // Récupérer le nom de l'utilisateur avec décryptage
           let uploadedByName = '';
           try {
             const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
             const userData = userDoc.data();
-            uploadedByName = userData?.displayName || userData?.firstName + ' ' + userData?.lastName || 'Inconnu';
+            if (userData) {
+              // Décrypter les données utilisateur si nécessaire
+              const decryptedData = await decryptUserDisplayData(data.uploadedBy, {
+                displayName: userData.displayName,
+                firstName: userData.firstName,
+                lastName: userData.lastName
+              });
+              uploadedByName = decryptedData.displayName || `${decryptedData.firstName || ''} ${decryptedData.lastName || ''}`.trim() || 'Inconnu';
+            }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
+            uploadedByName = 'Inconnu';
           }
 
           const missionId = data.missionId;
@@ -603,16 +613,25 @@ const Documents: React.FC = () => {
             continue;
           }
           
-          // Récupérer le nom de l'utilisateur
+          // Récupérer le nom de l'utilisateur avec décryptage
           let uploadedByName = '';
           try {
             if (data.uploadedBy) {
-            const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
-            const userData = userDoc.data();
-            uploadedByName = userData?.displayName || userData?.firstName + ' ' + userData?.lastName || 'Inconnu';
+              const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
+              const userData = userDoc.data();
+              if (userData) {
+                // Décrypter les données utilisateur si nécessaire
+                const decryptedData = await decryptUserDisplayData(data.uploadedBy, {
+                  displayName: userData.displayName,
+                  firstName: userData.firstName,
+                  lastName: userData.lastName
+                });
+                uploadedByName = decryptedData.displayName || `${decryptedData.firstName || ''} ${decryptedData.lastName || ''}`.trim() || 'Inconnu';
+              }
             }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
+            uploadedByName = 'Inconnu';
           }
 
           docsList.push({
@@ -654,7 +673,19 @@ const Documents: React.FC = () => {
             
             if (!userData) continue;
             
-            const userName = userData.displayName || `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Inconnu';
+            // Décrypter les données utilisateur si nécessaire
+            let userName = 'Inconnu';
+            try {
+              const decryptedData = await decryptUserDisplayData(userId, {
+                displayName: userData.displayName,
+                firstName: userData.firstName,
+                lastName: userData.lastName
+              });
+              userName = decryptedData.displayName || `${decryptedData.firstName || ''} ${decryptedData.lastName || ''}`.trim() || 'Inconnu';
+            } catch (e) {
+              console.error('Erreur lors du décryptage du nom utilisateur:', e);
+              userName = userData.displayName || `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Inconnu';
+            }
             
             // Fonction helper pour créer un document depuis une URL
             const createDocumentFromUrl = (url: string | undefined, displayName: string, type: string = 'application/pdf'): Document | null => {
@@ -819,14 +850,25 @@ const Documents: React.FC = () => {
           if (folderSnap.id === MISSIONS_FOLDER_ID || folderSnap.id === STUDENTS_DOCUMENTS_FOLDER_ID) continue;
 
           const data = folderSnap.data();
-          // Récupérer le nom de l'utilisateur
+          // Récupérer le nom de l'utilisateur avec décryptage
           let createdByName = '';
           try {
-            const userDoc = await getDoc(doc(db, 'users', data.createdBy));
-            const userData = userDoc.data();
-            createdByName = userData?.displayName || userData?.firstName + ' ' + userData?.lastName || 'Inconnu';
+            if (data.createdBy) {
+              const userDoc = await getDoc(doc(db, 'users', data.createdBy));
+              const userData = userDoc.data();
+              if (userData) {
+                // Décrypter les données utilisateur si nécessaire
+                const decryptedData = await decryptUserDisplayData(data.createdBy, {
+                  displayName: userData.displayName,
+                  firstName: userData.firstName,
+                  lastName: userData.lastName
+                });
+                createdByName = decryptedData.displayName || `${decryptedData.firstName || ''} ${decryptedData.lastName || ''}`.trim() || 'Inconnu';
+              }
+            }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
+            createdByName = 'Inconnu';
           }
 
           foldersList.push({

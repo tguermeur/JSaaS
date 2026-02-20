@@ -59,6 +59,7 @@ const TemplateAssignmentComponent: React.FC = () => {
     severity: 'success'
   });
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
+  const [structureType, setStructureType] = useState<'jobservice' | 'junior' | null>(null);
   const isSuperAdmin = userData?.status === 'superadmin';
   const isAdmin = userData?.status === 'admin';
   const canSave = isSuperAdmin || isAdmin;
@@ -80,6 +81,16 @@ const TemplateAssignmentComponent: React.FC = () => {
 
         const structureId = userDocSnap.data().structureId;
         setUserStructureId(structureId);
+
+        // Récupérer le structureType de la structure
+        if (structureId) {
+          const structureDocRef = doc(db, 'structures', structureId);
+          const structureDocSnap = await getDoc(structureDocRef);
+          if (structureDocSnap.exists()) {
+            const structureData = structureDocSnap.data();
+            setStructureType(structureData.structureType || 'jobservice');
+          }
+        }
 
         // Récupérer les templates de la structure
         const structureTemplatesQuery = query(
@@ -407,7 +418,33 @@ const TemplateAssignmentComponent: React.FC = () => {
         </Box>
       ) : (
         <Grid container spacing={3}>
-          {Object.entries(DOCUMENT_TYPES).map(([type, label]) => (
+          {Object.entries(DOCUMENT_TYPES)
+            .filter(([type]) => {
+              // Filtrer selon le structureType
+              if (!structureType) return true; // Afficher tout si structureType non chargé
+              
+              if (structureType === 'junior') {
+                // Pour les JE, afficher uniquement les types spécifiques
+                return [
+                  'proposition_commerciale',
+                  'convention_etude',
+                  'recapitulatif_mission',
+                  'avenant_convention',
+                  'proces_verbal_recette',
+                  'facture'
+                ].includes(type);
+              } else {
+                // Pour les JS, afficher les types classiques (exclure les types spécifiques JE)
+                return ![
+                  'recapitulatif_mission',
+                  'convention_etude',
+                  'proces_verbal_recette',
+                  'rapport_pedagogique',
+                  'avenant_convention'
+                ].includes(type);
+              }
+            })
+            .map(([type, label]) => (
             <Grid item xs={12} md={6} key={type}>
               <Card 
                 elevation={0}
@@ -527,14 +564,20 @@ const TemplateAssignmentComponent: React.FC = () => {
                       <MenuItem value="">
                         <em>Aucun</em>
                       </MenuItem>
-                      {templates
-                        .filter(template => 
+                      {(() => {
+                        const filtered = templates.filter(template => 
                           template.structureId === userStructureId ||
                           (template.isUniversal && template.universalDocumentType === type)
-                        )
-                        .map((template) => (
+                        );
+                        const seenIds = new Set<string>();
+                        const deduped = filtered.filter(t => {
+                          if (seenIds.has(t.id)) return false;
+                          seenIds.add(t.id);
+                          return true;
+                        });
+                        return deduped.map((template) => (
                           <MenuItem 
-                            key={template.id} 
+                            key={`${type}-${template.id}`}
                             value={template.id}
                             sx={{
                               borderRadius: '8px',
@@ -565,7 +608,8 @@ const TemplateAssignmentComponent: React.FC = () => {
                               </Typography>
                             )}
                           </MenuItem>
-                      ))}
+                        ));
+                      })()}
                     </Select>
                   </FormControl>
 
@@ -679,11 +723,12 @@ const TemplateAssignmentComponent: React.FC = () => {
         open={snackbar.open}
         autoHideDuration={6000}
         onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         sx={{
-          zIndex: 9999,
+          zIndex: 10000,
+          position: 'fixed !important',
           '& .MuiSnackbar-root': {
-            zIndex: 9999
+            zIndex: 10000
           }
         }}
       >
@@ -696,7 +741,7 @@ const TemplateAssignmentComponent: React.FC = () => {
             borderRadius: '12px',
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
             minWidth: '300px',
-            zIndex: 9999,
+            zIndex: 10000,
             '& .MuiAlert-icon': {
               alignItems: 'center'
             }

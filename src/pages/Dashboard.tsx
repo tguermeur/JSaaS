@@ -3281,7 +3281,7 @@ export default function Dashboard(): JSX.Element {
         open={snackbar.open}
         autoHideDuration={6000}
         onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
       >
         <Alert 
           onClose={() => setSnackbar({ ...snackbar, open: false })} 

@@ -3468,10 +3468,21 @@ const Organization = () => {
         open={snackbar.open} 
         autoHideDuration={6000} 
         onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        sx={{ zIndex: 1400 }} // z-index plus élevé que les Dialogues (1300)
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        sx={{ 
+          zIndex: 10000,
+          position: 'fixed !important'
+        }}
       >
-        <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} sx={{ width: '100%' }}>
+        <Alert 
+          onClose={handleCloseSnackbar} 
+          severity={snackbar.severity} 
+          sx={{ 
+            width: '100%',
+            zIndex: 10000,
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+          }}
+        >
           {snackbar.message}
         </Alert>
       </Snackbar>

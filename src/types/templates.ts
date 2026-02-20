@@ -5,7 +5,12 @@ export type DocumentType =
   | 'facture'
   | 'convention_entreprise'
   | 'convention_etudiant'
-  | 'avenant';
+  | 'avenant'
+  | 'recapitulatif_mission'
+  | 'convention_etude'
+  | 'proces_verbal_recette'
+  | 'rapport_pedagogique'
+  | 'avenant_convention';
 
 export interface TemplateAssignment {
   id?: string;
@@ -24,7 +29,12 @@ export const DOCUMENT_TYPES: { [key in DocumentType]: string } = {
   facture: 'Facture',
   convention_entreprise: 'Convention entreprise',
   convention_etudiant: 'Convention étudiante',
-  avenant: 'Avenant'
+  avenant: 'Avenant',
+  recapitulatif_mission: 'Récapitulatif Mission',
+  convention_etude: 'Convention Étude',
+  proces_verbal_recette: 'PV Recette',
+  rapport_pedagogique: 'Rapport Pédagogique',
+  avenant_convention: 'Avenant Convention'
 };
 
 export interface TemplateVariable {
@@ -115,5 +125,11 @@ export const VARIABLE_TAGS: TagMapping[] = [
   { tag: '<workinghours_pauses>', variableId: 'workingHoursPauses', description: 'Pauses pendant les heures de travail', example: '12:00-13:00' },
   { tag: '<workinghours_total>', variableId: 'workingHoursTotal', description: 'Total des heures de travail', example: '8.00' },
   { tag: '<workinghours_creation>', variableId: 'workingHoursCreation', description: 'Date de création des heures de travail', example: '01/01/2024' },
-  { tag: '<workinghours_maj>', variableId: 'workingHoursMaj', description: 'Date de mise à jour des heures de travail', example: '01/01/2024' }
+  { tag: '<workinghours_maj>', variableId: 'workingHoursMaj', description: 'Date de mise à jour des heures de travail', example: '01/01/2024' },
+  
+  // Tags spécifiques aux Junior-Entreprises
+  { tag: '<etude_jeh_total>', variableId: 'etudeJehTotal', description: 'Total des JEH de l\'étude', example: '120' },
+  { tag: '<etude_duree_semaines>', variableId: 'etudeDureeSemaines', description: 'Durée de l\'étude en semaines', example: '12' },
+  { tag: '<phase_liste>', variableId: 'phaseListe', description: 'Liste des phases/budgetItems de l\'étude', example: 'Phase 1: Analyse (20 JEH), Phase 2: Développement (80 JEH)' },
+  { tag: '<etudiant_remuneration_brute_total>', variableId: 'etudiantRemunerationBruteTotal', description: 'Rémunération brute totale de l\'étudiant', example: '2400€' }
 ]; 

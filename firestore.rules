@@ -1159,6 +1159,141 @@ service cloud.firestore {
     }
 
     // =========================================================================
+    // RÈGLES POUR LES NOTES D'ÉTUDE (etudeNotes)
+    // =========================================================================
+    
+    match /etudeNotes/{noteId} {
+      function getNoteEtudeStructureId() {
+        return resource.data.etudeId != null && exists(/databases/$(database)/documents/etudes/$(resource.data.etudeId)) ?
+               get(/databases/$(database)/documents/etudes/$(resource.data.etudeId)).data.structureId : null;
+      }
+      function canAccessEtudeNote() {
+        let userData = getUserData();
+        let sid = getNoteEtudeStructureId();
+        return isSuperAdmin() ||
+               (userData != null && userData.structureId != null && sid != null && sid == userData.structureId && userData.status in ['admin', 'membre']);
+      }
+      allow read: if isAuthenticated() && canAccessEtudeNote();
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.etudeId != null &&
+         exists(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)) &&
+         getUserData() != null &&
+         getUserData().structureId == get(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)).data.structureId &&
+         getUserData().status in ['admin', 'membre'])
+      );
+      allow update, delete: if isAuthenticated() && canAccessEtudeNote();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR L'HISTORIQUE D'ÉTUDE (etudeHistory)
+    // =========================================================================
+    
+    match /etudeHistory/{entryId} {
+      function getHistoryEtudeStructureId() {
+        return resource.data.etudeId != null && exists(/databases/$(database)/documents/etudes/$(resource.data.etudeId)) ?
+               get(/databases/$(database)/documents/etudes/$(resource.data.etudeId)).data.structureId : null;
+      }
+      function canAccessEtudeHistory() {
+        let userData = getUserData();
+        let sid = getHistoryEtudeStructureId();
+        return isSuperAdmin() ||
+               (userData != null && userData.structureId != null && sid != null && sid == userData.structureId && userData.status in ['admin', 'membre']);
+      }
+      allow read: if isAuthenticated() && canAccessEtudeHistory();
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.etudeId != null &&
+         exists(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)) &&
+         getUserData() != null &&
+         getUserData().structureId == get(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)).data.structureId &&
+         getUserData().status in ['admin', 'membre'])
+      );
+      allow update, delete: if isAuthenticated() && canAccessEtudeHistory();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES DOCUMENTS LIÉS AUX ÉTUDES (collection racine "documents")
+    // =========================================================================
+    
+    match /documents/{documentId} {
+      function getDocEtudeStructureId() {
+        return resource.data.etudeId != null && exists(/databases/$(database)/documents/etudes/$(resource.data.etudeId)) ?
+               get(/databases/$(database)/documents/etudes/$(resource.data.etudeId)).data.structureId : null;
+      }
+      function canAccessEtudeDocument() {
+        let userData = getUserData();
+        let sid = getDocEtudeStructureId();
+        return isSuperAdmin() ||
+               (userData != null && userData.structureId != null && sid != null && sid == userData.structureId && userData.status in ['admin', 'membre']);
+      }
+      allow read: if isAuthenticated() && canAccessEtudeDocument();
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.etudeId != null &&
+         exists(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)) &&
+         getUserData() != null &&
+         getUserData().structureId == get(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)).data.structureId &&
+         getUserData().status in ['admin', 'membre'])
+      );
+      allow update, delete: if isAuthenticated() && canAccessEtudeDocument();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES TÂCHES DE PLANNING (planningTasks)
+    // =========================================================================
+    
+    match /planningTasks/{taskId} {
+      function getPlanningEtudeStructureId() {
+        return resource.data.etudeId != null && exists(/databases/$(database)/documents/etudes/$(resource.data.etudeId)) ?
+               get(/databases/$(database)/documents/etudes/$(resource.data.etudeId)).data.structureId : null;
+      }
+      function canAccessPlanningTask() {
+        let userData = getUserData();
+        let sid = getPlanningEtudeStructureId();
+        return isSuperAdmin() ||
+               (userData != null && userData.structureId != null && sid != null && sid == userData.structureId && userData.status in ['admin', 'membre']);
+      }
+      allow read: if isAuthenticated() && canAccessPlanningTask();
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.etudeId != null &&
+         exists(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)) &&
+         getUserData() != null &&
+         getUserData().structureId == get(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)).data.structureId &&
+         getUserData().status in ['admin', 'membre'])
+      );
+      allow update, delete: if isAuthenticated() && canAccessPlanningTask();
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES POSTES DE BUDGET (budgetItems)
+    // =========================================================================
+    
+    match /budgetItems/{itemId} {
+      function getBudgetEtudeStructureId() {
+        return resource.data.etudeId != null && exists(/databases/$(database)/documents/etudes/$(resource.data.etudeId)) ?
+               get(/databases/$(database)/documents/etudes/$(resource.data.etudeId)).data.structureId : null;
+      }
+      function canAccessBudgetItem() {
+        let userData = getUserData();
+        let sid = getBudgetEtudeStructureId();
+        return isSuperAdmin() ||
+               (userData != null && userData.structureId != null && sid != null && sid == userData.structureId && userData.status in ['admin', 'membre']);
+      }
+      allow read: if isAuthenticated() && canAccessBudgetItem();
+      allow create: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (request.resource.data.etudeId != null &&
+         exists(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)) &&
+         getUserData() != null &&
+         getUserData().structureId == get(/databases/$(database)/documents/etudes/$(request.resource.data.etudeId)).data.structureId &&
+         getUserData().status in ['admin', 'membre'])
+      );
+      allow update, delete: if isAuthenticated() && canAccessBudgetItem();
+    }
+
+    // =========================================================================
     // RÈGLES POUR L'HISTORIQUE (LOGS D'ACTIVITÉ)
     // =========================================================================
     

@@ -224,7 +224,13 @@ export const COMPLETE_TAG_LIBRARY: TagMatch[] = [
   { tag: '<aujourd_hui>', variableId: 'currentDate', category: 'Système', description: 'Date du jour', example: '25/01/2024', isDetected: false },
   { tag: '<heure_actuelle>', variableId: 'currentTime', category: 'Système', description: 'Heure actuelle', example: '14:30', isDetected: false },
   { tag: '<annee_actuelle>', variableId: 'currentYear', category: 'Système', description: 'Année en cours', example: '2024', isDetected: false },
-  { tag: '<mois_actuel>', variableId: 'currentMonth', category: 'Système', description: 'Mois en cours', example: 'Janvier', isDetected: false }
+  { tag: '<mois_actuel>', variableId: 'currentMonth', category: 'Système', description: 'Mois en cours', example: 'Janvier', isDetected: false },
+
+  // === BALISES SPÉCIFIQUES JE (Junior-Entreprises) ===
+  { tag: '<etude_jeh_total>', variableId: 'etudeJehTotal', category: 'Étude', description: 'Total des JEH de l\'étude', example: '120', isDetected: false },
+  { tag: '<etude_duree_semaines>', variableId: 'etudeDureeSemaines', category: 'Étude', description: 'Durée de l\'étude en semaines', example: '12', isDetected: false },
+  { tag: '<phase_liste>', variableId: 'phaseListe', category: 'Étude', description: 'Liste des phases/budgetItems de l\'étude', example: 'Phase 1: Analyse (20 JEH), Phase 2: Développement (80 JEH)', isDetected: false },
+  { tag: '<etudiant_remuneration_brute_total>', variableId: 'etudiantRemunerationBruteTotal', category: 'Étudiant', description: 'Rémunération brute totale de l\'étudiant', example: '2400€', isDetected: false }
 ];
 
 const DocumentGenerator: React.FC = () => {

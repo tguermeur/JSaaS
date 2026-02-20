@@ -690,6 +690,10 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   if (isJuniorEntreprise) {
     // Filtrer les items de paramètres selon les permissions
     const filteredAdminMenuItems = adminMenuItems.filter(item => {
+      // Page Ambassadeurs : réservée aux Job Services, pas aux Junior-Entreprises
+      if (item.path === '/app/ambassadeurs' && structureType === 'junior') {
+        return false;
+      }
       // "Plans d'abonnement" seulement pour admin/superadmin
       if (item.path === '/app/settings/billing' && !isAdmin && !isSuperAdmin && !isAdminStructure) {
         return false;

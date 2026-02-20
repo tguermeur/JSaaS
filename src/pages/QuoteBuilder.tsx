@@ -5969,18 +5969,19 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         autoHideDuration={6000}
         onClose={() => setSnackbar({ ...snackbar, open: false })}
         sx={{
-          zIndex: 9999,
+          zIndex: 10000,
+          position: 'fixed !important',
           '& .MuiSnackbar-root': {
-            zIndex: 9999
+            zIndex: 10000
           }
         }}
-        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
       >
         <Alert 
           onClose={() => setSnackbar({ ...snackbar, open: false })} 
           severity={snackbar.severity}
           sx={{
-            zIndex: 9999,
+            zIndex: 10000,
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
             minWidth: '300px'
           }}

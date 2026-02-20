@@ -4508,12 +4508,12 @@ const HumanResources = () => {
         onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         sx={{
-          zIndex: 9999, // z-index très élevé pour être au-dessus de tout (sidebar, dialogs, etc.)
-          position: 'fixed',
+          zIndex: 10000, // z-index très élevé pour être au-dessus de tout (sidebar, dialogs, etc.)
+          position: 'fixed !important',
           bottom: '24px !important',
           left: '80px !important', // Décaler à droite pour éviter la sidebar
           '& .MuiSnackbar-root': {
-            zIndex: 9999
+            zIndex: 10000
           }
         }}
       >
@@ -4522,7 +4522,7 @@ const HumanResources = () => {
           severity={snackbar.severity}
           sx={{
             boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-            zIndex: 9999,
+            zIndex: 10000,
             '& .MuiAlert-message': {
               width: '100%'
             }

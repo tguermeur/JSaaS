@@ -316,6 +316,7 @@ const Authorizations: React.FC = () => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [isMember, setIsMember] = useState(false);
+  const [structureType, setStructureType] = useState<'jobservice' | 'junior' | null>(null);
   const [poles, setPoles] = useState<typeof DEFAULT_POLES>(DEFAULT_POLES);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
@@ -368,7 +369,7 @@ const Authorizations: React.FC = () => {
     if (currentUser) {
       loadPermissions();
     }
-  }, [currentUser]);
+  }, [currentUser, structureType]);
 
   const fetchData = async () => {
     if (!currentUser) return;
@@ -381,12 +382,13 @@ const Authorizations: React.FC = () => {
 
       if (!userData?.structureId) return;
 
-      // Charger les pôles depuis Firestore
+      // Charger les pôles et le type de structure depuis Firestore
       const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
       if (structureDoc.exists()) {
         const structureData = structureDoc.data();
         const savedPoles = structureData.poles || DEFAULT_POLES;
         setPoles(savedPoles);
+        setStructureType(structureData.structureType || 'jobservice');
       }
 
       const usersRef = collection(db, 'users');
@@ -424,8 +426,9 @@ const Authorizations: React.FC = () => {
       if (!userData?.structureId) return;
 
       const permissions: Record<string, any> = {};
+      const pagesToLoad = structureType === 'junior' ? PAGES.filter(p => p.id !== 'ambassadors') : PAGES;
 
-      for (const page of PAGES) {
+      for (const page of pagesToLoad) {
         const writePermissionsRef = doc(db, 'structures', userData.structureId, 'permissions', page.id);
         const readPermissionsRef = doc(db, 'structures', userData.structureId, 'permissions', `${page.id}_read`);
 
@@ -1026,7 +1029,7 @@ const Authorizations: React.FC = () => {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {PAGES.map((page) => (
+                {(structureType === 'junior' ? PAGES.filter(p => p.id !== 'ambassadors') : PAGES).map((page) => (
                   <TableRow
                     key={page.id}
                     sx={{
@@ -1396,7 +1399,7 @@ const Authorizations: React.FC = () => {
         open={snackbar.open}
         autoHideDuration={6000}
         onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
       >
         <Alert 
           onClose={() => setSnackbar({ ...snackbar, open: false })} 

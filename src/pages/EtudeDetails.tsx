@@ -52,7 +52,8 @@ import {
   alpha,
   Menu,
   FormControlLabel,
-  Checkbox
+  Checkbox,
+  Portal
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
@@ -90,15 +91,25 @@ import {
   DragIndicator as DragIndicatorIcon,
   MoreVert as MoreVertIcon,
   CalendarMonth as CalendarMonthIcon,
-  AutoAwesome as AutoIcon
+  AutoAwesome as AutoIcon,
+  Description as DescriptionIconJE,
+  CheckCircle as CheckCircleIcon,
+  School as SchoolIcon,
+  Receipt as ReceiptIcon,
+  FileUpload as FileUploadIcon,
+  PlayArrow as PlayArrowIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
-import { db } from '../firebase/config';
+import { decryptUserDisplayData } from '../utils/decryptUserUtils';
+import { db, storage } from '../firebase/config';
 import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, deleteDoc, deleteField, writeBatch } from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes, deleteObject } from 'firebase/storage';
 import { keyframes } from '@mui/system';
 import { styled } from '@mui/material';
 import { uploadCompanyLogo } from '../firebase/storage';
 import DocumentGeneratorDialog from '../components/DocumentGeneratorDialog';
+import { DocumentType, TemplateVariable } from '../types/templates';
+import { PDFDocument } from 'pdf-lib';
 
 // Animations
 const fadeInUp = keyframes`
@@ -483,6 +494,10 @@ const EtudeDetails: React.FC = () => {
   const [documentGeneratorOpen, setDocumentGeneratorOpen] = useState(false);
   const [companyFullData, setCompanyFullData] = useState<any>(null);
   const [structureFullData, setStructureFullData] = useState<any>(null);
+  const [selectedStudentForDocument, setSelectedStudentForDocument] = useState<RecruitmentApplication | null>(null);
+  const [documentGeneratorOpenForType, setDocumentGeneratorOpenForType] = useState<{ open: boolean; documentType?: DocumentType; studentId?: string }>({ open: false });
+  const [generatingDoc, setGeneratingDoc] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{ progress: number; message: string } | null>(null);
 
   // États pour le recrutement lié aux postes de budget
   const [selectedBudgetItems, setSelectedBudgetItems] = useState<string[]>([]);
@@ -561,17 +576,6 @@ const EtudeDetails: React.FC = () => {
       return max;
     }, 4); // Minimum 4 semaines
   }; // Facteur de zoom (1 = normal, 2 = double largeur, etc.)
-
-  // Debug: Log des états
-  useEffect(() => {
-    console.log('🔍 Debug states:', {
-      isSelectingRange,
-      quickBudgetDialogOpen,
-      quickBudgetPosition,
-      editingBudgetItem: editingBudgetItem?.title,
-      budgetItemsCount: budgetItems.length
-    });
-  }, [isSelectingRange, quickBudgetDialogOpen, quickBudgetPosition, editingBudgetItem, budgetItems.length]);
 
   // Sauvegarder le zoom et maxWeeks dans le localStorage
   useEffect(() => {
@@ -965,6 +969,907 @@ const EtudeDetails: React.FC = () => {
     }
   };
 
+  // Récupérer le template assigné pour un type de document donné (depuis templateAssignments)
+  const getAssignedTemplate = async (documentType: DocumentType) => {
+    if (!etude?.structureId) return null;
+
+    try {
+      const assignmentsQuery = query(
+        collection(db, 'templateAssignments'),
+        where('structureId', '==', etude.structureId),
+        where('documentType', '==', documentType)
+      );
+
+      const assignmentsSnapshot = await getDocs(assignmentsQuery);
+      if (assignmentsSnapshot.empty) return null;
+
+      const assignmentDoc = assignmentsSnapshot.docs[0];
+      const assignmentData = assignmentDoc.data();
+      
+      const templateDoc = await getDoc(doc(db, 'templates', assignmentData.templateId));
+      if (!templateDoc.exists()) return null;
+
+      const templateData = templateDoc.data();
+      return {
+        id: templateDoc.id,
+        name: templateData.name,
+        description: templateData.description,
+        pdfUrl: templateData.pdfUrl,
+        fileName: templateData.fileName || '',
+        variables: templateData.variables || [],
+        assignmentId: assignmentDoc.id,
+        generationType: assignmentData.generationType || 'template'
+      };
+    } catch (error) {
+      console.error('❌ Erreur lors de la récupération du template assigné:', error);
+      return null;
+    }
+  };
+
+  // Fonction utilitaire pour convertir variableId en balise
+  const getTagFromVariableId = (variableId: string): string => {
+    const tagMappings: { [key: string]: string } = {
+      // Étude - utiliser les mêmes variableId que dans les templates pour les missions mais avec des balises adaptées
+      'numeroMission': '<etude_numero>', // Les templates utilisent numeroMission mais on le mappe vers etude_numero
+      'numeroEtude': '<etude_numero>',
+      'chargeName': '<etude_cdm>',
+      'missionDateDebut': '<etude_date_debut>',
+      'startDate': '<etude_date_debut>',
+      'missionDateFin': '<etude_date_fin>',
+      'endDate': '<etude_date_fin>',
+      'location': '<etude_lieu>',
+      'company': '<etude_entreprise>',
+      'prixHT': '<etude_prix_ht>',
+      'priceHT': '<etude_prix_ht>',
+      'missionDescription': '<etude_description>',
+      'description': '<etude_description>',
+      'title': '<etude_titre>',
+      'hours': '<etude_heures>',
+      'consultantCount': '<etude_nb_consultants>',
+      'studentCount': '<etude_nb_consultants>',
+      'etape': '<etude_etape>',
+      'status': '<etude_statut>',
+      'missionType': '<etude_type>',
+      'missionTypeName': '<etude_type>',
+      'generationDate': '<generationDate>',
+      'generationDatePlusOneYear': '<etude_date_generation_plus_1_an>',
+      
+      // Balises spécifiques JE
+      'etudeJehTotal': '<etude_jeh_total>',
+      'etudeDureeSemaines': '<etude_duree_semaines>',
+      'phaseListe': '<phase_liste>',
+      
+      // User
+      'lastName': '<user_nom>',
+      'firstName': '<user_prenom>',
+      'email': '<user_email>',
+      'ecole': '<user_ecole>',
+      'displayName': '<user_nom_complet>',
+      'studentId': '<user_numero_etudiant>',
+      
+      // Contact
+      'contact_lastName': '<contact_nom>',
+      'contact_firstName': '<contact_prenom>',
+      'contact_email': '<contact_email>',
+      'contact_phone': '<contact_telephone>',
+      'contact_position': '<contact_poste>',
+      'contact_linkedin': '<contact_linkedin>',
+      'contact_fullName': '<contact_nom_complet>',
+      
+      // Structure
+      'structure_name': '<structure_nom>',
+      'structure_nom': '<structure_nom>',
+      'structure_address': '<structure_adresse>',
+      'structure_phone': '<structure_telephone>',
+      'structure_email': '<structure_email>',
+      'structure_siret': '<structure_siret>',
+      'structure_tvaNumber': '<structure_tvaNumber>',
+      'structure_apeCode': '<structure_apeCode>',
+      'structure_president_fullName': '<structure_president_nom_complet>',
+      
+      // Entreprise
+      'companyName': '<entreprise_nom>',
+      'name': '<entreprise_nom>',
+      'nSiret': '<entreprise_nsiret>',
+      'companyAddress': '<entreprise_adresse>',
+      'address': '<entreprise_adresse>',
+      'companyCity': '<entreprise_ville>',
+      'city': '<entreprise_ville>',
+      'companyPhone': '<entreprise_telephone>',
+      'phone': '<entreprise_telephone>',
+      'companyEmail': '<entreprise_email>',
+      'website': '<entreprise_site_web>',
+      
+      // Totaux
+      'totalHT': '<totalHT>',
+      'totalTTC': '<totalTTC>',
+      'tva': '<tva>',
+    };
+    return tagMappings[variableId] || `<${variableId}>`;
+  };
+
+  // Fonction pour remplacer les balises par leurs valeurs (adaptée pour les études)
+  const replaceTags = async (
+    text: string,
+    studentData?: any,
+    structureData?: any,
+    tempDataOverride?: { [key: string]: string },
+    cachedData?: {
+      userData?: any;
+      chargeData?: any;
+      presidentFullName?: string | null;
+    }
+  ): Promise<string> => {
+    if (!text || !etude) return text;
+
+    try {
+      const company = companyFullData;
+      const contactData = contacts.find(c => c.isDefault) || contacts[0];
+      const chargeData = cachedData?.chargeData;
+      const userData = cachedData?.userData || studentData;
+      const presidentFullName = cachedData?.presidentFullName || '';
+
+      // Calculer les totaux
+      const totalHT = etude.prixHT || 0;
+      const tva = totalHT * 0.2;
+      const totalTTC = totalHT + tva;
+
+      // Décrypter les données utilisateur si nécessaire
+      let decryptedUserData = userData;
+      if (userData?.id || (userData && (userData.displayName?.startsWith('ENC:') || userData.firstName?.startsWith('ENC:') || userData.lastName?.startsWith('ENC:')))) {
+        try {
+          const userId = userData.id || studentId;
+          if (userId) {
+            decryptedUserData = await decryptUserDisplayData(userId, {
+              displayName: userData.displayName,
+              firstName: userData.firstName,
+              lastName: userData.lastName
+            });
+            // Conserver les autres champs
+            decryptedUserData = { ...userData, ...decryptedUserData };
+          }
+        } catch (error) {
+          console.warn('Erreur lors du décryptage des données utilisateur:', error);
+          decryptedUserData = userData;
+        }
+      }
+
+      const replacements: { [key: string]: string } = {
+        // Balises de l'étude
+        '<etude_numero>': etude.numeroEtude || '[Numéro d\'étude non disponible]',
+        '<etude_cdm>': etude.chargeName || '[Chargé d\'étude non disponible]',
+        '<etude_date_debut>': etude.startDate ? new Date(etude.startDate).toLocaleDateString('fr-FR') : '[Date de début non disponible]',
+        '<etude_date_fin>': etude.endDate ? new Date(etude.endDate).toLocaleDateString('fr-FR') : '[Date de fin non disponible]',
+        '<etude_lieu>': etude.location || '[Lieu non disponible]',
+        '<etude_entreprise>': etude.company || '[Entreprise non disponible]',
+        '<etude_prix_ht>': typeof etude.prixHT === 'number' ? etude.prixHT.toFixed(2) + '€' : '[Prix HT non disponible]',
+        '<etude_description>': etude.description || '[Description non disponible]',
+        '<etude_titre>': etude.title || '[Titre non disponible]',
+        '<etude_heures>': typeof etude.hours === 'number' ? etude.hours.toString() : '[Heures non disponibles]',
+        '<etude_nb_consultants>': typeof etude.consultantCount === 'number' ? etude.consultantCount.toString() : '[Nombre de consultants non disponible]',
+        '<etude_etape>': etude.etape || '[Étape non disponible]',
+        '<etude_statut>': etude.status || '[Statut non disponible]',
+        '<etude_type>': etude.missionTypeName || '[Type d\'étude non disponible]',
+        '<generationDate>': new Date().toLocaleDateString('fr-FR'),
+        '<generationDatePlusOneYear>': new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toLocaleDateString('fr-FR'),
+        '<etude_date_generation_plus_1_an>': new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toLocaleDateString('fr-FR'),
+        
+        // Balises spécifiques JE
+        '<etude_jeh_total>': budgetItems.reduce((sum, item) => sum + (item.jehCount || 0), 0).toString() || '0',
+        '<etude_duree_semaines>': (() => {
+          if (!etude.startDate || !etude.endDate) return '[Durée non disponible]';
+          const start = new Date(etude.startDate);
+          const end = new Date(etude.endDate);
+          const diffTime = Math.abs(end.getTime() - start.getTime());
+          const diffWeeks = Math.ceil(diffTime / (1000 * 60 * 60 * 24 * 7));
+          return diffWeeks.toString();
+        })(),
+        '<phase_liste>': budgetItems.map(item => `${item.title}: ${item.jehCount || 0} JEH`).join(', ') || '[Aucune phase]',
+        
+        // Balises pour les totaux
+        '<totalHT>': totalHT.toFixed(2) + '€',
+        '<totalTTC>': totalTTC.toFixed(2) + '€',
+        '<tva>': tva.toFixed(2) + '€',
+        
+        // Balises utilisateur (avec données décryptées)
+        '<user_nom>': decryptedUserData?.lastName || '[Nom non disponible]',
+        '<user_prenom>': decryptedUserData?.firstName || '[Prénom non disponible]',
+        '<user_email>': decryptedUserData?.email || '[Email non disponible]',
+        '<user_ecole>': decryptedUserData?.ecole || '[École non disponible]',
+        '<user_nom_complet>': decryptedUserData?.displayName || '[Nom complet non disponible]',
+        '<user_telephone>': decryptedUserData?.phone || '[Téléphone non disponible]',
+        '<user_numero_etudiant>': decryptedUserData?.studentId || '[Numéro étudiant non disponible]',
+        '<user_formation>': decryptedUserData?.formation || '[Formation non disponible]',
+        '<user_specialite>': decryptedUserData?.speciality || '[Spécialité non disponible]',
+        '<user_niveau_etude>': decryptedUserData?.studyLevel || '[Niveau d\'études non disponible]',
+        
+        // Balises de contact
+        '<contact_nom>': contactData?.lastName || '[Nom du contact non disponible]',
+        '<contact_prenom>': contactData?.firstName || '[Prénom du contact non disponible]',
+        '<contact_email>': contactData?.email || '[Email du contact non disponible]',
+        '<contact_telephone>': contactData?.phone || '[Téléphone du contact non disponible]',
+        '<contact_poste>': contactData?.position || '[Poste du contact non disponible]',
+        '<contact_linkedin>': contactData?.linkedin || '[LinkedIn du contact non disponible]',
+        '<contact_nom_complet>': `${contactData?.firstName || ''} ${contactData?.lastName || ''}`.trim() || '[Nom complet du contact non disponible]',
+        
+        // Balises de la structure
+        '<structure_nom>': structureData?.nom || structureFullData?.nom || '[Nom de la structure non disponible]',
+        '<structure_address>': structureData?.address || structureFullData?.address || '[Adresse de la structure non disponible]',
+        '<structure_phone>': structureData?.phone || structureFullData?.phone || '[Téléphone de la structure non disponible]',
+        '<structure_email>': structureData?.email || structureFullData?.email || '[Email de la structure non disponible]',
+        '<structure_siret>': structureData?.siret || structureFullData?.siret || '[SIRET de la structure non disponible]',
+        '<structure_tvaNumber>': structureData?.tvaNumber || structureFullData?.tvaNumber || '[Numéro de TVA de la structure non disponible]',
+        '<structure_apeCode>': structureData?.apeCode || structureFullData?.apeCode || '[Code APE de la structure non disponible]',
+        '<structure_president_nom_complet>': presidentFullName || '[Président non disponible]',
+        
+        // Balises pour l'entreprise
+        '<entreprise_nom>': company?.name || etude.company || '[Nom entreprise non disponible]',
+        '<entreprise_siren>': company?.nSiret ? company.nSiret.substring(0, 9) : '[SIREN non disponible]',
+        '<entreprise_nsiret>': company?.nSiret || '[SIRET non disponible]',
+        '<entreprise_adresse>': company?.address || '[Adresse entreprise non disponible]',
+        '<entreprise_ville>': company?.city || '[Ville entreprise non disponible]',
+        '<entreprise_pays>': company?.country || '[Pays entreprise non disponible]',
+        '<entreprise_telephone>': company?.phone || '[Téléphone entreprise non disponible]',
+        '<entreprise_email>': company?.email || '[Email entreprise non disponible]',
+        '<entreprise_site_web>': company?.website || '[Site web entreprise non disponible]',
+        '<entreprise_description>': company?.description || '[Description entreprise non disponible]',
+        
+        // Balises du chargé d'étude
+        '<charge_email>': chargeData?.email || '',
+        '<charge_phone>': chargeData?.phone || '',
+      };
+
+      let result = text;
+
+      Object.entries(replacements).forEach(([tag, value]) => {
+        const regex = new RegExp(tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        const tempValue = tempDataOverride?.[tag.replace(/[<>]/g, '')];
+        const finalValue = tempValue || value;
+        result = result.replace(regex, finalValue);
+      });
+
+      // Vérifier s'il reste des balises non remplacées
+      const remainingTags = result.match(/<[^>]+>/g);
+      if (remainingTags) {
+        remainingTags.forEach(tag => {
+          const tagName = tag.replace(/[<>]/g, '');
+          result = result.replace(tag, `[Information "${tagName}" non disponible]`);
+        });
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Erreur lors du remplacement des variables:', error);
+      setSnackbar({
+        open: true,
+        message: 'Une erreur est survenue lors du remplacement des variables',
+        severity: 'error'
+      });
+      return text;
+    }
+  };
+
+  const escapeRegExp = (string: string): string => {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  };
+
+  // Fonction principale pour générer un document à partir d'un template assigné
+  const generateDocument = async (
+    documentType: DocumentType,
+    studentId?: string,
+    ignoreMissingData: boolean = false,
+    forceDownload: boolean = false
+  ) => {
+    if (etude?.isArchived) {
+      setSnackbar({
+        open: true,
+        message: 'Impossible de générer des documents pour une étude archivée',
+        severity: 'error'
+      });
+      return;
+    }
+    
+    // Protection contre les appels multiples
+    if (generatingDoc) {
+      console.log('⚠️ Génération déjà en cours, ignoré');
+      return;
+    }
+    
+    try {
+      setGeneratingDoc(true);
+      
+      console.log('🚀 Début de la génération du document:', documentType);
+      
+      // 1. Récupérer l'assignation du template
+      if (forceDownload) {
+        setDownloadProgress({ progress: 50, message: 'Récupération du template...' });
+      }
+      console.log('📄 Récupération de l\'assignation du template...');
+      const assignmentsRef = collection(db, 'templateAssignments');
+      const assignmentQuery = query(
+        assignmentsRef,
+        where('documentType', '==', documentType),
+        where('structureId', '==', etude.structureId)
+      );
+      
+      const assignmentSnapshot = await getDocs(assignmentQuery);
+      console.log('📄 Assignations trouvées:', assignmentSnapshot.size);
+      
+      if (assignmentSnapshot.empty) {
+        throw new Error(`Aucun template assigné pour le type de document "${documentType}" et la structure "${etude.structureId}". Veuillez vérifier les assignations dans les paramètres.`);
+      }
+
+      // Supprimer l'ancien document s'il existe
+      console.log('🗑️ Suppression des anciens documents...');
+      const existingDocsQuery = query(
+        collection(db, 'generatedDocuments'),
+        where('etudeId', '==', etude.id || ''),
+        where('documentType', '==', documentType)
+      );
+      const existingDocsSnapshot = await getDocs(existingDocsQuery);
+      console.log('🗑️ Anciens documents trouvés:', existingDocsSnapshot.size);
+      
+      for (const doc of existingDocsSnapshot.docs) {
+        const docData = doc.data();
+        // Supprimer de Storage
+        if (docData.fileUrl && storage) {
+          const oldStorageRef = ref(storage, docData.fileUrl);
+          try {
+            await deleteObject(oldStorageRef);
+            console.log('🗑️ Fichier supprimé de Storage:', docData.fileUrl);
+          } catch (error) {
+            console.error('Erreur lors de la suppression de l\'ancien fichier:', error);
+          }
+        }
+        // Supprimer de Firestore
+        await deleteDoc(doc.ref);
+        console.log('🗑️ Document supprimé de Firestore:', doc.id);
+      }
+
+      const assignmentData = assignmentSnapshot.docs[0].data();
+      const templateId = assignmentData.templateId;
+      const generationType = assignmentData.generationType || 'template';
+      console.log('📄 Template ID:', templateId);
+      console.log('📄 Type de génération:', generationType);
+      
+      // Vérifier le type de génération
+      if (generationType === 'editor') {
+        console.log('📝 Type de génération: éditeur - redirection vers QuoteBuilder');
+        // Rediriger vers l'éditeur (QuoteBuilder)
+        const url = `/app/etude/${etude.numeroEtude}/quote?template=${templateId}`;
+        navigate(url);
+        setGeneratingDoc(false);
+        return;
+      }
+      
+      // 2. Récupérer le template avec cet ID
+      if (forceDownload) {
+        setDownloadProgress({ progress: 60, message: 'Chargement du template...' });
+      }
+      console.log('📄 Récupération du template...');
+      const templateRef = doc(db, 'templates', templateId);
+      const templateSnap = await getDoc(templateRef);
+      
+      if (!templateSnap.exists()) {
+        throw new Error('Le template assigné n\'existe plus. Veuillez en assigner un nouveau.');
+      }
+
+      const templateData = templateSnap.data();
+      const templatePdfUrl = templateData.pdfUrl;
+      const templateVariables = (templateData.variables || []) as TemplateVariable[];
+      console.log('📄 Template récupéré, variables:', templateVariables.length);
+
+      // 3. Charger et modifier le PDF
+      if (forceDownload) {
+        setDownloadProgress({ progress: 70, message: 'Téléchargement du PDF...' });
+      }
+      console.log('📄 Chargement du PDF template...');
+      console.log('📄 Template PDF URL:', templatePdfUrl);
+      
+      let pdfUrl;
+      if (templatePdfUrl.startsWith('http')) {
+        console.log('📄 URL directe détectée');
+        pdfUrl = templatePdfUrl;
+      } else {
+        console.log('📄 Chemin Storage détecté, récupération de l\'URL');
+        if (!storage) {
+          throw new Error('Firebase Storage n\'est pas initialisé. Vérifiez la configuration Firebase.');
+        }
+        const storageRef = ref(storage, templatePdfUrl);
+        pdfUrl = await getDownloadURL(storageRef);
+      }
+      
+      console.log('📄 URL finale du PDF:', pdfUrl);
+      const response = await fetch(pdfUrl);
+      const pdfBlob = await response.blob();
+      const pdfBytes = await pdfBlob.arrayBuffer();
+      console.log('📄 PDF chargé, taille:', pdfBytes.byteLength);
+
+      console.log('📄 Chargement du PDF dans PDFDocument...');
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      console.log('📄 PDFDocument chargé, pages:', pdfDoc.getPageCount());
+      
+      const helveticaFont = await pdfDoc.embedFont('Helvetica');
+      const helveticaFontBold = await pdfDoc.embedFont('Helvetica-Bold');
+      const pages = pdfDoc.getPages();
+      console.log('📄 Polices chargées, pages récupérées');
+
+      // 3.1. Récupérer toutes les données nécessaires en parallèle
+      console.log('🏢 Récupération des données en parallèle...');
+      const dataPromises: Promise<any>[] = [];
+      
+      // Structure
+      let structureDataPromise: Promise<any> = Promise.resolve(null);
+      if (etude.structureId) {
+        structureDataPromise = getDoc(doc(db, 'structures', etude.structureId)).then(doc => {
+          if (doc.exists()) {
+            return { ...doc.data(), id: doc.id };
+          }
+          return null;
+        });
+        dataPromises.push(structureDataPromise);
+      }
+      
+      // User data (si studentId)
+      let userDataPromise: Promise<any> = Promise.resolve(null);
+      if (studentId) {
+        userDataPromise = getDoc(doc(db, 'users', studentId)).then(doc => {
+          return doc.exists() ? doc.data() : null;
+        });
+        dataPromises.push(userDataPromise);
+      }
+      
+      // Charge data
+      const chargeDataPromise = getDoc(doc(db, 'users', etude.chargeId)).then(doc => {
+        return doc.exists() ? doc.data() : null;
+      });
+      dataPromises.push(chargeDataPromise);
+      
+      // President data (si structureId)
+      let presidentFullNamePromise: Promise<string | null> = Promise.resolve(null);
+      if (etude.structureId) {
+        presidentFullNamePromise = (async () => {
+          try {
+            const usersRef = collection(db, 'users');
+            const q = query(usersRef, where('structureId', '==', etude.structureId));
+            const usersSnapshot = await getDocs(q);
+            
+            let members = usersSnapshot.docs.map(docSnap => ({
+              id: docSnap.id,
+              ...docSnap.data(),
+              mandat: docSnap.data().mandat || null,
+              bureauRole: docSnap.data().bureauRole || null,
+              poles: docSnap.data().poles || [],
+              firstName: docSnap.data().firstName || '',
+              lastName: docSnap.data().lastName || '',
+              displayName: docSnap.data().displayName || ''
+            }));
+
+            const presidents = members.filter((member: any) => {
+              const hasPresidentRole = member.bureauRole === 'president' || 
+                member.poles?.some((p: any) => p.poleId === 'pre');
+              return hasPresidentRole && member.mandat;
+            });
+
+            if (presidents.length > 0) {
+              const sortedPresidents = presidents.sort((a, b) => {
+                if (!a.mandat || !b.mandat) return 0;
+                const aYear = parseInt(a.mandat.split('-')[0]);
+                const bYear = parseInt(b.mandat.split('-')[0]);
+                return bYear - aYear;
+              });
+
+              const mostRecentPresident = sortedPresidents[0];
+              if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
+                return `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
+              } else if (mostRecentPresident.displayName) {
+                return mostRecentPresident.displayName;
+              }
+            }
+            return null;
+          } catch (error) {
+            console.error('Erreur lors de la récupération du président:', error);
+            return null;
+          }
+        })();
+        dataPromises.push(presidentFullNamePromise);
+      }
+      
+      // Attendre toutes les requêtes en parallèle
+      const [
+        structureData,
+        userData,
+        chargeData,
+        presidentFullName
+      ] = await Promise.all([
+        structureDataPromise,
+        userDataPromise,
+        chargeDataPromise,
+        presidentFullNamePromise
+      ]);
+      
+      console.log('✅ Toutes les données récupérées en parallèle');
+
+      // 4. Traiter chaque variable du template
+      if (forceDownload) {
+        setDownloadProgress({ progress: 80, message: 'Traitement des variables...' });
+      }
+      console.log('🔧 Traitement des variables du template...');
+      const totalVariables = templateVariables.length;
+      for (let i = 0; i < templateVariables.length; i++) {
+        const variable = templateVariables[i];
+        if (forceDownload && i % Math.max(1, Math.floor(totalVariables / 10)) === 0) {
+          setDownloadProgress({ 
+            progress: 80 + Math.floor((i / totalVariables) * 15), 
+            message: `Traitement des variables (${i + 1}/${totalVariables})...` 
+          });
+        }
+        
+        const page = pages[variable.position.page - 1] || pages[0];
+        const pageHeight = page.getHeight();
+
+        try {
+          // Obtenir la valeur de la variable
+          let valueToReplace;
+          if (variable.type === 'raw') {
+            valueToReplace = variable.rawText || '';
+          } else if (variable.variableId) {
+            valueToReplace = getTagFromVariableId(variable.variableId);
+          } else {
+            valueToReplace = '';
+          }
+
+          const value = await replaceTags(valueToReplace, userData, structureData, {}, {
+            userData,
+            chargeData,
+            presidentFullName
+          });
+
+          if (value && value.trim()) {
+            // Appliquer les styles et la position
+            const fontSize = variable.fontSize || 12;
+            const { x, y } = variable.position;
+            const { width, height } = variable;
+            const textAlign = variable.textAlign || 'left';
+            const verticalAlign = variable.verticalAlign || 'top';
+            const lineHeightMultiplier = variable.lineHeight || 1.2;
+
+            // Découper le texte en lignes selon la largeur max
+            const splitTextToLines = (text: string, font: any, fontSize: number, maxWidth: number) => {
+              if (!text) return [];
+              
+              const paragraphs = text.split(/\r?\n/);
+              const lines: string[] = [];
+              
+              paragraphs.forEach((paragraph, paragraphIndex) => {
+                if (paragraphIndex > 0) {
+                  lines.push('');
+                }
+                
+                const words = paragraph.split(' ');
+                let currentLine = '';
+                
+                for (let i = 0; i < words.length; i++) {
+                  const testLine = currentLine ? currentLine + ' ' + words[i] : words[i];
+                  const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+                  
+                  if (testWidth > maxWidth && currentLine) {
+                    lines.push(currentLine);
+                    currentLine = words[i];
+                  } else {
+                    currentLine = testLine;
+                  }
+                }
+                
+                if (currentLine) {
+                  lines.push(currentLine);
+                }
+              });
+              
+              return lines;
+            };
+
+            // Fonction pour nettoyer le texte des caractères non-encodables
+            const cleanTextForPDF = (text: string): string => {
+              if (!text) return '';
+              return text
+                .replace(/\u202F/g, ' ')
+                .replace(/\u00A0/g, ' ')
+                .replace(/\u2019/g, "'")
+                .replace(/\u2018/g, "'")
+                .replace(/\u201C/g, '"')
+                .replace(/\u201D/g, '"')
+                .replace(/\u2013/g, '-')
+                .replace(/\u2014/g, '-')
+                .replace(/\u2026/g, '...')
+                .replace(/[^\x00-\x7F]/g, (char) => {
+                  const charCode = char.charCodeAt(0);
+                  if (charCode >= 0x00A0 && charCode <= 0x00FF) {
+                    return char;
+                  }
+                  if (charCode === 0x20AC) {
+                    return '€';
+                  }
+                  return ' ';
+                });
+            };
+
+            const font = variable.isBold ? helveticaFontBold : helveticaFont;
+            const cleanedValue = cleanTextForPDF(value);
+            const lines = splitTextToLines(cleanedValue.trim(), font, fontSize, width);
+            
+            // Calculer la hauteur totale du texte
+            const lineHeight = fontSize * lineHeightMultiplier;
+            const totalTextHeight = lines.length * lineHeight;
+            
+            // Calculer la position Y de départ
+            const verticalOffset = 4;
+            let startY: number;
+            
+            if (verticalAlign === 'top') {
+              startY = pageHeight - y - fontSize * 0.8 - verticalOffset;
+            } else if (verticalAlign === 'bottom') {
+              startY = pageHeight - y - height + fontSize * 0.8 + (totalTextHeight - lineHeight) - verticalOffset;
+            } else {
+              const verticalCenter = pageHeight - y - (height / 2);
+              startY = verticalCenter + (totalTextHeight / 2) - lineHeight + (fontSize * 0.8) - verticalOffset;
+            }
+
+            const minY = pageHeight - y - height + fontSize * 0.5;
+            const maxY = pageHeight - y - fontSize * 0.2;
+            
+            if (startY > maxY) {
+              startY = maxY;
+            }
+            if (startY - (totalTextHeight - lineHeight) < minY) {
+              startY = minY + (totalTextHeight - lineHeight);
+            }
+
+            // Dessiner chaque ligne
+            let lineY = startY;
+            for (let i = 0; i < lines.length; i++) {
+              const line = cleanTextForPDF(lines[i]);
+              
+              if (line && line.trim()) {
+                let xLine = x;
+                const lineWidth = font.widthOfTextAtSize(line, fontSize);
+                
+                if (textAlign === 'center') {
+                  xLine = x + (width - lineWidth) / 2;
+                } else if (textAlign === 'right') {
+                  xLine = x + width - lineWidth;
+                }
+                
+                xLine = Math.max(x, Math.min(xLine, x + width - 1));
+                
+                try {
+                  if (lineY >= minY && lineY <= maxY) {
+                    page.drawText(line, {
+                      x: xLine,
+                      y: lineY,
+                      size: fontSize,
+                      font,
+                      maxWidth: width
+                    });
+                  }
+                } catch (drawError) {
+                  const fallbackLine = line.replace(/[^\x20-\x7E]/g, ' ');
+                  if (lineY >= minY && lineY <= maxY && fallbackLine.trim()) {
+                    try {
+                      page.drawText(fallbackLine, {
+                        x: xLine,
+                        y: lineY,
+                        size: fontSize,
+                        font,
+                        maxWidth: width
+                      });
+                    } catch (fallbackError) {
+                      console.error(`Impossible de dessiner la ligne ${i}:`, fallbackError);
+                    }
+                  }
+                }
+              }
+              
+              lineY -= lineHeight;
+              
+              if (lineY < minY) {
+                break;
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`Erreur lors du traitement de la variable ${variable.name}:`, err);
+        }
+      }
+
+      // 5. Sauvegarder le PDF modifié
+      console.log('💾 Sauvegarde du PDF modifié...');
+      const modifiedPdfBytes = await pdfDoc.save();
+      console.log('💾 PDF sauvegardé, taille:', modifiedPdfBytes.byteLength);
+      
+      // Créer le nom du fichier avec décryptage des données utilisateur
+      let fileName;
+      if (documentType === 'convention_etude') {
+        fileName = `CE_${etude.numeroEtude}.pdf`;
+      } else if (documentType === 'recapitulatif_mission' && userData) {
+        // Décrypter le nom de l'utilisateur pour le nom de fichier
+        let decryptedDisplayName = userData.displayName;
+        if (userData.displayName?.startsWith('ENC:') || userData.firstName?.startsWith('ENC:') || userData.lastName?.startsWith('ENC:')) {
+          try {
+            const userId = userData.id || studentId;
+            if (userId) {
+              const decrypted = await decryptUserDisplayData(userId, {
+                displayName: userData.displayName,
+                firstName: userData.firstName,
+                lastName: userData.lastName
+              });
+              decryptedDisplayName = decrypted.displayName;
+            }
+          } catch (error) {
+            console.warn('Erreur lors du décryptage pour le nom de fichier:', error);
+          }
+        }
+        const nomFamille = decryptedDisplayName?.split(' ').pop()?.toUpperCase() || 'ETUDIANT';
+        fileName = `RM_${nomFamille}_${etude.numeroEtude}.pdf`;
+      } else if (documentType === 'proces_verbal_recette') {
+        fileName = `PV_${etude.numeroEtude}.pdf`;
+      } else if (documentType === 'rapport_pedagogique') {
+        fileName = `RP_${etude.numeroEtude}.pdf`;
+      } else {
+        fileName = `${documentType}_${etude.numeroEtude}.pdf`;
+      }
+      console.log('📁 Nom du fichier:', fileName);
+
+      const blob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
+      
+      // Si forceDownload est true, télécharger directement le PDF
+      if (forceDownload) {
+        setDownloadProgress({ progress: 95, message: 'Finalisation du téléchargement...' });
+        console.log('📥 Téléchargement forcé du PDF...');
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        setTimeout(() => URL.revokeObjectURL(url), 100);
+        
+        console.log('✅ PDF téléchargé avec succès');
+        setDownloadProgress({ progress: 100, message: 'Téléchargement terminé' });
+        setTimeout(() => {
+          setDownloadProgress(null);
+        }, 500);
+      }
+
+      // Uploader le fichier modifié vers Storage
+      console.log('☁️ Upload du fichier vers Storage...');
+      let documentUrl;
+      let uploadSucceeded = false;
+      
+      if (!storage) {
+        console.warn('⚠️ Firebase Storage non disponible - génération du document en mode téléchargement uniquement');
+        if (!forceDownload) {
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = fileName;
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+          setSnackbar({
+            open: true,
+            message: 'Document téléchargé avec succès (Storage non disponible)',
+            severity: 'success'
+          });
+          return;
+        }
+      } else {
+        try {
+          const storagePath = `etudes/${etude.id}/documents/${fileName}`;
+          const documentStorageRef = ref(storage, storagePath);
+          const metadata = {
+            contentType: 'application/pdf',
+            customMetadata: {
+              etudeId: etude.id || '',
+              documentType: documentType,
+              generatedAt: new Date().toISOString()
+            }
+          };
+          await uploadBytes(documentStorageRef, blob, metadata);
+          console.log('☁️ Fichier uploadé vers Storage');
+          documentUrl = await getDownloadURL(documentStorageRef);
+          console.log('☁️ URL du document:', documentUrl);
+          uploadSucceeded = true;
+        } catch (uploadError: any) {
+          console.warn('⚠️ Erreur lors de l\'upload vers Storage:', uploadError);
+          uploadSucceeded = false;
+        }
+      }
+
+      // Préparer les tags
+      const tags: string[] = [documentType];
+      if (studentId) {
+        tags.push('student_document');
+      }
+
+      // Créer le document dans Firestore (seulement si l'upload vers Storage a réussi)
+      if (uploadSucceeded && documentUrl) {
+        console.log('📊 Création du document dans Firestore...');
+        const documentData = {
+          etudeId: etude.id,
+          etudeNumber: etude.numeroEtude,
+          etudeTitle: etude.title || '',
+          structureId: etude.structureId,
+          documentType,
+          fileName,
+          fileUrl: documentUrl,
+          fileSize: blob.size,
+          version: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          createdBy: currentUser?.uid || '',
+          status: 'draft',
+          isValid: true,
+          tags,
+          notes: studentId ? `Document généré pour ${userData?.displayName || 'étudiant'}` : 'Document généré'
+        };
+
+        if (studentId) {
+          documentData.studentId = studentId;
+          documentData.studentName = userData?.displayName || '';
+          documentData.studentEmail = userData?.email || '';
+        }
+
+        const docRef = await addDoc(collection(db, 'generatedDocuments'), documentData);
+        console.log('📊 Document créé dans Firestore, ID:', docRef.id);
+      } else {
+        console.log('⚠️ Document généré mais non sauvegardé (Storage non disponible)');
+      }
+
+      // Télécharger le document seulement si forceDownload n'est pas déjà fait
+      if (!forceDownload) {
+        console.log('⬇️ Téléchargement du document...');
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+      }
+      console.log('✅ Document téléchargé avec succès');
+
+      setSnackbar({
+        open: true,
+        message: 'Document généré avec succès',
+        severity: 'success'
+      });
+    } catch (error: unknown) {
+      console.error('❌ Erreur lors de la génération du document:', error);
+      setDownloadProgress(null);
+      const errorMessage = error instanceof Error ? error.message : 'Erreur lors de la génération du document';
+      setSnackbar({
+        open: true,
+        message: errorMessage,
+        severity: 'error'
+      });
+      throw error;
+    } finally {
+      console.log('🏁 Fin de la génération du document');
+      setGeneratingDoc(false);
+      if (!forceDownload) {
+        setDownloadProgress(null);
+      }
+    }
+  };
+
   // Ouvrir la page QuoteBuilder depuis l'étude, de manière identique à MissionDetails
   const handleCreateQuoteFromEtude = async () => {
     if (!etude?.numeroEtude) {
@@ -975,13 +1880,8 @@ const EtudeDetails: React.FC = () => {
     try {
       const assignedTemplate = await getAssignedQuoteTemplate();
       
-      console.log('=== CRÉATION DE PROPOSITION COMMERCIALE ===');
-      console.log('Étude:', etude);
-      console.log('Contacts disponibles:', contacts);
-      
       // Trouver le contact principal (isDefault = true) ou le premier contact disponible
       const mainContact = contacts.find(contact => contact.isDefault) || contacts[0];
-      console.log('Contact principal sélectionné:', mainContact);
       
       // Préparer les paramètres d'URL pour passer les informations de contact
       const urlParams = new URLSearchParams();
@@ -997,19 +1897,11 @@ const EtudeDetails: React.FC = () => {
         if ('gender' in mainContact) {
           urlParams.append('contactGender', (mainContact as any).gender);
         }
-        console.log('Paramètres de contact ajoutés à l\'URL:', {
-          contactId: mainContact.id,
-          contactEmail: mainContact.email,
-          contactFirstName: mainContact.firstName,
-          contactLastName: mainContact.lastName,
-          contactGender: (mainContact as any).gender
-        });
       } else {
         console.warn('Aucun contact trouvé pour cette étude');
       }
       
       const url = `/app/etude/${etude.numeroEtude}/quote?${urlParams.toString()}`;
-      console.log('URL de navigation:', url);
       navigate(url);
     } catch (error) {
       console.error('Erreur lors de l\'ouverture de la proposition commerciale:', error);
@@ -1043,10 +1935,8 @@ const EtudeDetails: React.FC = () => {
       const recruitedStudents: {[taskId: string]: RecruitmentApplication[]} = {};
       for (const task of recruitmentData) {
         recruitedStudents[task.id] = await getRecruitedStudentsForTask(task.id);
-        console.log(`Étudiants recrutés pour la tâche ${task.title}:`, recruitedStudents[task.id].length);
       }
       setRecruitedStudentsByTask(recruitedStudents);
-      console.log('Tous les étudiants recrutés chargés:', recruitedStudents);
 
       // Charger les postes de budget
       const budgetRef = collection(db, 'budgetItems');
@@ -1102,14 +1992,12 @@ const EtudeDetails: React.FC = () => {
             ...doc.data()
           })) as Contact[];
           setContacts(contactsData);
-          console.log('Contacts chargés via companyId:', contactsData);
         } catch (error) {
           console.warn('Erreur lors du chargement des contacts via companyId:', error);
         }
       } else if (etude?.company) {
         // Si pas de companyId, essayer de trouver l'entreprise par nom
         try {
-          console.log('Tentative de chargement des contacts via nom d\'entreprise:', etude.company);
           
           // D'abord, trouver l'entreprise par nom
           const companiesRef = collection(db, 'companies');
@@ -1119,7 +2007,6 @@ const EtudeDetails: React.FC = () => {
           if (!companiesSnapshot.empty) {
             const companyDoc = companiesSnapshot.docs[0];
             const companyData = companyDoc.data();
-            console.log('Entreprise trouvée par nom:', companyData);
             
             // Maintenant chercher les contacts avec l'ID de l'entreprise
             const contactsRef = collection(db, 'contacts');
@@ -1130,9 +2017,7 @@ const EtudeDetails: React.FC = () => {
               ...doc.data()
             })) as Contact[];
             setContacts(contactsData);
-            console.log('Contacts chargés via nom d\'entreprise:', contactsData);
           } else {
-            console.log('Aucune entreprise trouvée avec le nom:', etude.company);
             setContacts([]);
           }
         } catch (error) {
@@ -1140,11 +2025,18 @@ const EtudeDetails: React.FC = () => {
           setContacts([]);
         }
       } else {
-        console.log('Aucune information d\'entreprise disponible pour charger les contacts');
         setContacts([]);
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erreur lors du chargement des données associées:', error);
+      const isPermissionDenied = error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'permission-denied';
+      setSnackbar({
+        open: true,
+        message: isPermissionDenied
+          ? 'Droits insuffisants pour afficher les données associées à cette étude.'
+          : 'Erreur lors du chargement des données associées.',
+        severity: 'error'
+      });
     }
   };
 
@@ -1362,7 +2254,6 @@ const EtudeDetails: React.FC = () => {
       // Recharger les postes de budget
       await loadAssociatedData(etude.id);
       
-      console.log('Postes de budget mis à jour avec les nouvelles dates d\'étude');
     } catch (error) {
       console.error('Erreur lors de la mise à jour des postes de budget:', error);
     }
@@ -1624,22 +2515,30 @@ const EtudeDetails: React.FC = () => {
     if (!newNote.trim() || !etude?.id || !currentUser) return;
 
     try {
-      const noteData: Omit<EtudeNote, 'id'> = {
+      const noteData: Record<string, unknown> = {
         content: newNote.trim(),
         createdAt: new Date(),
         createdBy: currentUser.uid,
         createdByName: currentUser.displayName || 'Utilisateur inconnu',
-        createdByPhotoURL: currentUser.photoURL || undefined,
         etudeId: etude.id,
         etudeNumber: etude.numeroEtude
       };
+      if (currentUser.photoURL != null) {
+        noteData.createdByPhotoURL = currentUser.photoURL;
+      }
 
       await addDoc(collection(db, 'etudeNotes'), noteData);
       
       // Mettre à jour l'état local
       const newNoteEntry: EtudeNote = {
         id: crypto.randomUUID(),
-        ...noteData
+        content: noteData.content as string,
+        createdAt: noteData.createdAt as Date,
+        createdBy: noteData.createdBy as string,
+        createdByName: noteData.createdByName as string,
+        createdByPhotoURL: (noteData.createdByPhotoURL as string) ?? undefined,
+        etudeId: noteData.etudeId as string,
+        etudeNumber: noteData.etudeNumber as string
       };
       setNotes(prev => [newNoteEntry, ...prev]);
       setNewNote('');
@@ -1651,11 +2550,12 @@ const EtudeDetails: React.FC = () => {
         message: 'Note ajoutée avec succès',
         severity: 'success'
       });
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erreur lors de l\'ajout de la note:', error);
+      const isPermissionDenied = error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'permission-denied';
       setSnackbar({
         open: true,
-        message: 'Erreur lors de l\'ajout de la note',
+        message: isPermissionDenied ? 'Droits insuffisants pour ajouter une note.' : 'Erreur lors de l\'ajout de la note',
         severity: 'error'
       });
     }
@@ -1992,9 +2892,6 @@ const EtudeDetails: React.FC = () => {
     if (!newRecruitmentTask.title) return;
 
     try {
-      console.log('Début de création de tâche de recrutement');
-      console.log('Mode lié:', linkedRecruitmentMode);
-      console.log('Postes sélectionnés:', selectedBudgetItems);
       
       const taskData = {
         ...newRecruitmentTask,
@@ -2017,10 +2914,8 @@ const EtudeDetails: React.FC = () => {
         location: newRecruitmentTask.location || ''
       } as RecruitmentTask;
 
-      console.log('Données de la tâche à créer:', taskData);
 
       const docRef = await addDoc(collection(db, 'recruitmentTasks'), taskData);
-      console.log('Tâche créée dans Firestore avec ID:', docRef.id);
       
       // Créer la nouvelle tâche avec l'ID généré
       const newTaskWithId: RecruitmentTask = {
@@ -2031,11 +2926,9 @@ const EtudeDetails: React.FC = () => {
       // Mettre à jour l'état local immédiatement
       const updatedTasks = [...recruitmentTasks, newTaskWithId];
       setRecruitmentTasks(updatedTasks);
-      console.log('État local des tâches mis à jour');
       
       // Synchroniser les postes de budget avec les nouvelles tâches
       await syncBudgetItemsFromRecruitmentTasksWithTasks(updatedTasks);
-      console.log('Synchronisation des postes de budget terminée');
       
       setRecruitmentDialogOpen(false);
       setNewRecruitmentTask({});
@@ -2064,7 +2957,6 @@ const EtudeDetails: React.FC = () => {
     if (!editingRecruitmentTask?.id || !etude?.id) return;
 
     try {
-      console.log('Début de modification de tâche de recrutement:', editingRecruitmentTask.id);
       
       const updateData = {
         title: editingRecruitmentTask.title,
@@ -2091,18 +2983,15 @@ const EtudeDetails: React.FC = () => {
       );
 
       await updateDoc(doc(db, 'recruitmentTasks', editingRecruitmentTask.id), filteredUpdateData);
-      console.log('Tâche mise à jour dans Firestore');
       
       // Mettre à jour l'état local
       const updatedTasks = recruitmentTasks.map(task => 
         task.id === editingRecruitmentTask.id ? editingRecruitmentTask : task
       );
       setRecruitmentTasks(updatedTasks);
-      console.log('État local des tâches mis à jour');
       
       // Synchroniser les postes de budget avec les tâches mises à jour
       await syncBudgetItemsFromRecruitmentTasksWithTasks(updatedTasks);
-      console.log('Synchronisation des postes de budget terminée');
       
       setEditRecruitmentDialogOpen(false);
       setEditingRecruitmentTask(null);
@@ -2187,28 +3076,20 @@ const EtudeDetails: React.FC = () => {
 
   const handleDeleteRecruitmentTask = async (taskId: string) => {
     try {
-      console.log('Début de suppression de la tâche de recrutement:', taskId);
       const task = recruitmentTasks.find(t => t.id === taskId);
       if (!task) {
-        console.log('Tâche non trouvée');
         return;
       }
 
-      console.log('Tâche à supprimer:', task.title);
-      console.log('Postes de budget liés:', task.budgetItemIds);
-
       // Supprimer la tâche de Firestore
       await deleteDoc(doc(db, 'recruitmentTasks', taskId));
-      console.log('Tâche supprimée de Firestore');
       
       // Mettre à jour l'état local et synchroniser immédiatement
       const updatedTasks = recruitmentTasks.filter(t => t.id !== taskId);
       setRecruitmentTasks(updatedTasks);
-      console.log('État local des tâches mis à jour');
       
       // Synchroniser les postes de budget avec les tâches restantes
       await syncBudgetItemsFromRecruitmentTasksWithTasks(updatedTasks);
-      console.log('Synchronisation des postes de budget terminée');
 
       setSnackbar({
         open: true,
@@ -2256,11 +3137,9 @@ const EtudeDetails: React.FC = () => {
       const applicationsSnapshot = await getDocs(applicationsQuery);
       
       const existingUserIds = applicationsSnapshot.docs.map(doc => doc.data().userId);
-      console.log('🚫 Étudiants déjà recrutés:', existingUserIds);
       
       // Filtrer les utilisateurs qui ne sont pas encore recrutés
       const availableUsers = allUsers.filter(user => !existingUserIds.includes(user.id));
-      console.log('✅ Étudiants disponibles:', availableUsers.map(u => u.displayName || u.email));
       
       setAvailableStudents(availableUsers);
       setAddStudentDialogOpen(true);
@@ -2537,9 +3416,6 @@ const EtudeDetails: React.FC = () => {
   const syncBudgetItemsFromRecruitmentTasksWithTasks = async (tasks: RecruitmentTask[]) => {
     if (!etude?.id) return;
     try {
-      console.log('Début de syncBudgetItemsFromRecruitmentTasksWithTasks');
-      console.log('Tâches de recrutement passées:', tasks.length);
-      console.log('Postes de budget actuels:', budgetItems.length);
       
       // Construire un agrégat par budgetItemId à partir des tâches passées
       const aggregate: Record<string, { required: number; recruited: number }> = {};
@@ -2560,16 +3436,12 @@ const EtudeDetails: React.FC = () => {
         const applicationsSnapshot = await getDocs(applicationsQuery);
         const recruited = applicationsSnapshot.size;
         
-        console.log(`Tâche ${task.title}: ${required} requis, ${recruited} recrutés (basé sur les candidatures)`);
-        
         for (const bid of task.budgetItemIds) {
           if (!aggregate[bid]) aggregate[bid] = { required: 0, recruited: 0 };
           aggregate[bid].required += required;
           aggregate[bid].recruited += recruited;
         }
       }
-
-      console.log('Agrégat des tâches par poste de budget:', aggregate);
 
       const batch = writeBatch(db);
       const updatedLocal = budgetItems.map(item => {
@@ -2589,7 +3461,6 @@ const EtudeDetails: React.FC = () => {
             recruitmentStatus: recruitmentStatus
           };
           batch.update(doc(db, 'budgetItems', item.id), updates);
-          console.log(`Poste ${item.id} (${item.title}): Mise à jour avec recrutement - ${agg.required} étudiants requis, ${agg.recruited} recrutés`);
           return { ...item, ...updates } as BudgetItem;
         } else {
           // Aucune tâche liée → réinitialiser les champs
@@ -2599,14 +3470,12 @@ const EtudeDetails: React.FC = () => {
             recruitmentStatus: deleteField()
           };
           batch.update(doc(db, 'budgetItems', item.id), updates);
-          console.log(`Poste ${item.id} (${item.title}): Réinitialisation - aucune tâche de recrutement liée`);
           return { ...item, studentsToRecruit: undefined, recruitedStudents: 0, recruitmentStatus: undefined } as BudgetItem;
         }
       });
 
       await batch.commit();
       setBudgetItems(updatedLocal);
-      console.log('syncBudgetItemsFromRecruitmentTasksWithTasks terminé avec succès');
     } catch (e) {
       console.error('syncBudgetItemsFromRecruitmentTasksWithTasks a échoué:', e);
     }
@@ -2666,7 +3535,6 @@ const EtudeDetails: React.FC = () => {
   // Fonction pour récupérer les étudiants recrutés pour une tâche
   const getRecruitedStudentsForTask = async (taskId: string): Promise<RecruitmentApplication[]> => {
     try {
-      console.log(`🔍 Recherche d'étudiants recrutés pour la tâche ${taskId}`);
       const applicationsRef = collection(db, 'applications');
       const q = query(
         applicationsRef, 
@@ -2674,8 +3542,6 @@ const EtudeDetails: React.FC = () => {
         where('status', 'in', ['Acceptée', 'Ajouté manuellement'])
       );
       const snapshot = await getDocs(q);
-      
-      console.log(`📊 Trouvé ${snapshot.docs.length} candidatures acceptées pour la tâche ${taskId}`);
       
       const applications = snapshot.docs.map(doc => {
         const data = doc.data();
@@ -2699,7 +3565,6 @@ const EtudeDetails: React.FC = () => {
         } as RecruitmentApplication;
       });
       
-      console.log(`✅ Étudiants recrutés pour la tâche ${taskId}:`, applications.map(app => app.userDisplayName));
       return applications;
     } catch (error) {
       console.error('Erreur lors de la récupération des étudiants recrutés:', error);
@@ -3126,7 +3991,6 @@ const EtudeDetails: React.FC = () => {
   };
 
   const handleBudgetItemClick = (item: BudgetItem, event: React.MouseEvent) => {
-    console.log('🖱️ Budget item click:', item.title);
     event.stopPropagation();
     setEditingBudgetItem(item);
     setNewBudgetItem({
@@ -3164,14 +4028,12 @@ const EtudeDetails: React.FC = () => {
       // Positionner la popup au-dessus de la timeline
       const y = timelineRect.top - 250; // 20px au-dessus de la timeline
       
-      console.log('📍 Edit popup position:', { x, y, centerPercentage });
       setQuickBudgetPosition({ x, y });
     } else {
       // Fallback : utiliser la position du clic avec un décalage vers le haut
       const x = event.clientX;
       const y = event.clientY - 100; // Décalage plus important vers le haut
       
-      console.log('📍 Edit popup position (fallback):', { x, y });
       setQuickBudgetPosition({ x, y });
     }
     
@@ -3262,13 +4124,10 @@ const EtudeDetails: React.FC = () => {
   };
 
     const handleBudgetItemResizeEnd = () => {
-    console.log('🔚 Resize end - resizingBudgetItem:', resizingBudgetItem);
-    console.log('🔚 Resize end - resizeType:', resizeType);
     
     if (resizingBudgetItem) {
       // Récupérer les données mises à jour depuis l'état local
       const updatedItem = budgetItems.find(item => item.id === resizingBudgetItem.id);
-      console.log('🔚 Resize end - updatedItem:', updatedItem);
       
       if (updatedItem) {
         // Sauvegarder directement les nouvelles dates dans Firestore
@@ -3279,12 +4138,10 @@ const EtudeDetails: React.FC = () => {
         
         const actionType = resizeType === 'move' ? 'déplacement' : 'redimensionnement';
         
-        console.log(`💾 Sauvegarde ${actionType}:`, updateData);
         
         // Mettre à jour Firestore directement
         updateDoc(doc(db!, 'budgetItems', updatedItem.id), updateData)
           .then(() => {
-            console.log(`✅ ${actionType} sauvegardé:`, updateData);
             setSnackbar({
               open: true,
               message: resizeType === 'move' ? 'Poste déplacé avec succès' : 'Période mise à jour avec succès',
@@ -3300,7 +4157,6 @@ const EtudeDetails: React.FC = () => {
             });
           });
       } else {
-        console.log('🔚 Resize end - updatedItem non trouvé');
       }
     }
     setResizingBudgetItem(null);
@@ -3516,12 +4372,10 @@ const EtudeDetails: React.FC = () => {
 
   // Fonctions pour la sélection de plage
   const handleTimelineMouseDown = (event: React.MouseEvent) => {
-    console.log('🖱️ MouseDown event triggered');
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const percentage = (x / rect.width) * 100;
     
-    console.log('📊 Selection start:', percentage);
     setIsSelectingRange(true);
     setSelectionStart(percentage);
     setSelectionEnd(percentage);
@@ -3535,13 +4389,11 @@ const EtudeDetails: React.FC = () => {
     const x = event.clientX - rect.left;
     const percentage = (x / rect.width) * 100;
     
-    console.log('📊 Selection end:', percentage);
     setSelectionEnd(percentage);
     setMousePosition(percentage);
   };
 
   const handleTimelineMouseUp = (event: React.MouseEvent) => {
-    console.log('🖱️ MouseUp event triggered, isSelectingRange:', isSelectingRange);
     if (!isSelectingRange) return;
     
     setIsSelectingRange(false);
@@ -3551,12 +4403,10 @@ const EtudeDetails: React.FC = () => {
     const end = Math.max(selectionStart, selectionEnd);
     const width = end - start;
     
-    console.log('📊 Selection width:', width, 'start:', start, 'end:', end);
     
     if (width > 2) { // Au moins 2% de largeur
       // Convertir les pourcentages en dates
       const dates = convertPercentageToDates(start, end);
-      console.log('📅 Converted dates:', dates);
       
       if (dates && dates.startDate && dates.endDate) {
         // Créer un poste temporaire qui apparaîtra immédiatement
@@ -3593,7 +4443,6 @@ const EtudeDetails: React.FC = () => {
         const x = event.clientX;
         const y = event.clientY - 50; // Décalage vers le haut pour éviter que la popup cache le curseur
         
-        console.log('📍 Popup position:', { x, y });
         setQuickBudgetPosition({ x, y });
         setQuickBudgetDialogOpen(true);
       } else {
@@ -5814,9 +6663,7 @@ const EtudeDetails: React.FC = () => {
                                       onClick={async (e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
-                                        console.log('🖱️ Clic sur étudiants recrutés pour le poste de budget:', item.id);
                                         // Message temporaire pour confirmer que le clic fonctionne
-                                        console.log('✅ Gestionnaire de clic activé pour le poste:', item.title);
                                         // Récupérer les étudiants recrutés pour ce poste de budget
                                         const recruitedStudents: RecruitmentApplication[] = [];
                                         
@@ -5825,7 +6672,6 @@ const EtudeDetails: React.FC = () => {
                                           task.budgetItemIds && task.budgetItemIds.includes(item.id)
                                         );
                                         
-                                        console.log('🔗 Tâches liées au poste:', linkedTasks.map(t => t.title));
                                         
                                         for (const task of linkedTasks) {
                                           let taskStudents = recruitedStudentsByTask[task.id];
@@ -5840,7 +6686,6 @@ const EtudeDetails: React.FC = () => {
                                           recruitedStudents.push(...taskStudents);
                                         }
                                         
-                                        console.log('📊 Étudiants recrutés pour le poste:', recruitedStudents.length);
                                         
                                         // Toujours ouvrir la boîte de dialogue, même si elle est vide
                                         handleOpenRecruitedStudents(recruitedStudents, `Étudiants recrutés - ${item.title}`);
@@ -6003,17 +6848,11 @@ const EtudeDetails: React.FC = () => {
                                   }}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    console.log('🖱️ Clic sur étudiants recrutés pour la tâche:', task.id);
                                     // Message temporaire pour confirmer que le clic fonctionne
-                                    console.log('✅ Gestionnaire de clic activé pour la tâche:', task.title);
-                                    console.log('📊 Données disponibles:', recruitedStudentsByTask[task.id]);
-                                    console.log('📊 Nombre d\'étudiants recrutés:', recruitedStudentsByTask[task.id]?.length || 0);
                                     
                                     // Charger les données si elles ne sont pas disponibles
                                     if (!recruitedStudentsByTask[task.id]) {
-                                      console.log('🔄 Chargement des données pour la tâche:', task.id);
                                       getRecruitedStudentsForTask(task.id).then(students => {
-                                        console.log('✅ Étudiants chargés:', students);
                                         setRecruitedStudentsByTask(prev => ({
                                           ...prev,
                                           [task.id]: students
@@ -6152,252 +6991,575 @@ const EtudeDetails: React.FC = () => {
 
         {/* Documents Tab */}
         <TabPanel value={tabValue} index={3}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-            <Typography variant="h4" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
-              Documents
-            </Typography>
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              {selectedDocuments.length > 0 && (
-                <>
-                  <Button
-                    startIcon={<DeleteIcon />}
-                    onClick={handleDeleteSelectedDocuments}
-                    variant="outlined"
-                    color="error"
-                    sx={{ 
-                      borderColor: '#f44336',
-                      color: '#f44336',
-                      '&:hover': { 
-                        borderColor: '#d32f2f',
-                        bgcolor: 'rgba(244, 67, 54, 0.04)'
-                      }
-                    }}
-                  >
-                    Supprimer ({selectedDocuments.length})
-                  </Button>
-                  <Button
-                    startIcon={<DownloadIcon />}
-                    onClick={handleDownloadSelectedDocuments}
-                    variant="outlined"
-                    sx={{ 
-                      borderColor: '#4caf50',
-                      color: '#4caf50',
-                      '&:hover': { 
-                        borderColor: '#388e3c',
-                        bgcolor: 'rgba(76, 175, 80, 0.04)'
-                      }
-                    }}
-                  >
-                    Télécharger ({selectedDocuments.length})
-                  </Button>
-                </>
-              )}
-              <Button
-                startIcon={<AutoIcon />}
-                onClick={handleOpenDocumentGenerator}
-                variant="outlined"
-                sx={{ 
-                  borderColor: '#667eea',
-                  color: '#667eea',
-                  '&:hover': { 
-                    borderColor: '#5a6fd8',
-                    bgcolor: 'rgba(102, 126, 234, 0.04)'
-                  }
-                }}
-              >
-                Générateur intelligent
-              </Button>
-              <Button
-                startIcon={<UploadIcon />}
-                onClick={() => setDocumentDialogOpen(true)}
-                variant="contained"
-                sx={{ 
-                  bgcolor: '#667eea',
-                  '&:hover': { bgcolor: '#5a6fd8' }
-                }}
-              >
-                Upload Document
-              </Button>
-            </Box>
-          </Box>
-
-          <Paper sx={{ 
-            p: 3, 
-            borderRadius: 3,
-            boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
-            animation: `${fadeInUp} 0.6s ease-out`
-          }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-              <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
-                Documents de l'étude
-              </Typography>
-              {selectedDocuments.length > 0 && (
-                <Typography variant="body2" sx={{ color: '#667eea', fontWeight: 500 }}>
-                  {selectedDocuments.length} document(s) sélectionné(s)
+          {structureFullData?.structureType === 'junior' ? (
+            // Workflow spécialisé pour les Junior-Entreprises
+            <Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+                <Typography variant="h4" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                  Documents - Workflow Projet
                 </Typography>
-              )}
-            </Box>
-            <TableContainer>
-              <Table>
-                <TableHead>
-                  <TableRow sx={{ bgcolor: '#f8f9fa' }}>
-                    <TableCell sx={{ fontWeight: 600, width: '50px' }}>
-                      <Checkbox
-                        checked={selectAllDocuments}
-                        indeterminate={selectedDocuments.length > 0 && selectedDocuments.length < documents.length}
-                        onChange={(e) => handleSelectAllDocuments(e.target.checked)}
-                        sx={{ 
-                          color: '#667eea',
-                          '&.Mui-checked': { color: '#667eea' }
-                        }}
-                      />
-                    </TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Nom</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Statut</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Date d'upload</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {documents.map((doc, index) => (
-                    <TableRow 
-                      key={doc.id}
-                      sx={{ 
-                        animation: `${fadeInUp} 0.6s ease-out ${index * 0.1}s both`,
-                        '&:hover': { bgcolor: '#f8f9fa' },
-                        // Différencier visuellement les brouillons
-                        bgcolor: doc.isDraft ? 'rgba(255, 193, 7, 0.05)' : 'transparent'
-                      }}
-                    >
-                      <TableCell sx={{ width: '50px' }}>
-                        <Checkbox
-                          checked={selectedDocuments.includes(doc.id)}
-                          onChange={(e) => handleDocumentSelectionChange(doc.id, e.target.checked)}
-                          sx={{ 
-                            color: '#667eea',
-                            '&.Mui-checked': { color: '#667eea' }
-                          }}
-                        />
-                      </TableCell>
-                      <TableCell sx={{ fontWeight: 500 }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          {doc.name}
-                          {doc.isDraft && (
-                            <Chip 
-                              label="Brouillon" 
-                              size="small" 
-                              sx={{ 
-                                bgcolor: '#FFC107', 
-                                color: '#000',
-                                fontSize: '0.7rem',
-                                height: '20px'
-                              }} 
-                            />
-                          )}
+                <Button
+                  startIcon={<UploadIcon />}
+                  onClick={() => setDocumentDialogOpen(true)}
+                  variant="outlined"
+                  sx={{ 
+                    borderColor: '#667eea',
+                    color: '#667eea',
+                    '&:hover': { 
+                      borderColor: '#5a6fd8',
+                      bgcolor: 'rgba(102, 126, 234, 0.04)'
+                    }
+                  }}
+                >
+                  Upload Document
+                </Button>
+              </Box>
+
+              {/* Étape 1 : Avant-Vente */}
+              <Accordion defaultExpanded sx={{ mb: 2, borderRadius: 2, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+                    <Box sx={{ 
+                      width: 40, 
+                      height: 40, 
+                      borderRadius: '50%', 
+                      bgcolor: '#667eea', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center',
+                      color: 'white',
+                      fontWeight: 700
+                    }}>
+                      1
+                    </Box>
+                    <Box sx={{ flexGrow: 1 }}>
+                      <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                        Avant-Vente
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: '#86868b' }}>
+                        Proposition commerciale et convention d'étude
+                      </Typography>
+                    </Box>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Stack spacing={3}>
+                    <Card variant="outlined" sx={{ p: 2 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                        <Box>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                            Proposition Commerciale
+                          </Typography>
+                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                            Document de présentation (PPTX/PDF externe)
+                          </Typography>
                         </Box>
-                      </TableCell>
-                      <TableCell>
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                          <Chip 
-                            label={doc.isDraft ? 'Brouillon' : 'Final'} 
-                            size="small"
-                            sx={{ 
-                              fontWeight: 600,
-                              bgcolor: doc.isDraft ? '#FFC107' : '#4CAF50',
-                              color: doc.isDraft ? '#000' : 'white',
-                              fontSize: '0.7rem',
-                              maxWidth: '80px',
-                              '& .MuiChip-label': {
-                                fontSize: '0.65rem',
-                                px: 1
-                              }
-                            }}
-                          />
-                          {doc.uploadedBy && (
-                            <Typography variant="caption" sx={{ color: '#8E8E93', fontSize: '0.7rem' }}>
-                              Par: {doc.uploadedBy}
-                            </Typography>
-                          )}
+                        <Button
+                          startIcon={<FileUploadIcon />}
+                          onClick={() => setDocumentDialogOpen(true)}
+                          variant="outlined"
+                          size="small"
+                        >
+                          Uploader
+                        </Button>
+                      </Box>
+                    </Card>
+                    <Card variant="outlined" sx={{ p: 2 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Box>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                            Convention d'Étude
+                          </Typography>
+                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                            Génération automatique via template
+                          </Typography>
                         </Box>
-                      </TableCell>
-                      <TableCell>
-                        {doc.uploadedAt && typeof doc.uploadedAt === 'object' && doc.uploadedAt.toDate ? 
-                          formatDate(doc.uploadedAt.toDate().toISOString()) :
-                          doc.uploadedAt && typeof doc.uploadedAt === 'string' ? 
-                            formatDate(doc.uploadedAt) :
-                            'Date invalide'
-                        }
-                      </TableCell>
-                      <TableCell>
-                        <Box sx={{ display: 'flex', gap: 0.5 }}>
-                          {!doc.isDraft && (
-                            <Tooltip title="Aperçu">
-                              <IconButton 
-                                size="small" 
-                                sx={{ color: '#667eea' }}
-                                onClick={() => handleDocumentPreview(doc)}
-                              >
+                        <Button
+                          startIcon={<PlayArrowIcon />}
+                          onClick={() => generateDocument('convention_etude', undefined, false, false)}
+                          variant="contained"
+                          size="small"
+                          sx={{ bgcolor: '#667eea' }}
+                          disabled={generatingDoc}
+                        >
+                          {generatingDoc ? 'Génération...' : 'Générer'}
+                        </Button>
+                      </Box>
+                    </Card>
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+
+              {/* Étape 2 : Recrutement & Staffing */}
+              <Accordion defaultExpanded sx={{ mb: 2, borderRadius: 2, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+                    <Box sx={{ 
+                      width: 40, 
+                      height: 40, 
+                      borderRadius: '50%', 
+                      bgcolor: '#4CAF50', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center',
+                      color: 'white',
+                      fontWeight: 700
+                    }}>
+                      2
+                    </Box>
+                    <Box sx={{ flexGrow: 1 }}>
+                      <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                        Recrutement & Staffing
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: '#86868b' }}>
+                        Récapitulatifs de mission pour les étudiants staffés
+                      </Typography>
+                    </Box>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Box>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
+                      Étudiants staffés sur l'étude
+                    </Typography>
+                    {recruitmentTasks.length === 0 ? (
+                      <Alert severity="info">
+                        Aucune tâche de recrutement trouvée. Créez d'abord des tâches de recrutement dans l'onglet Recrutement.
+                      </Alert>
+                    ) : (
+                      <TableContainer>
+                        <Table>
+                          <TableHead>
+                            <TableRow>
+                              <TableCell sx={{ fontWeight: 600 }}>Étudiant</TableCell>
+                              <TableCell sx={{ fontWeight: 600 }}>Tâche</TableCell>
+                              <TableCell sx={{ fontWeight: 600 }}>JEH</TableCell>
+                              <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {recruitmentTasks.flatMap(task => 
+                              (recruitedStudentsByTask[task.id] || []).map((student, idx) => (
+                                <TableRow key={`${task.id}-${student.id}-${idx}`}>
+                                  <TableCell>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                      <Avatar src={student.userPhotoURL || undefined} sx={{ width: 32, height: 32 }}>
+                                        {student.userDisplayName?.charAt(0) || '?'}
+                                      </Avatar>
+                                      <Typography variant="body2">
+                                        {student.userDisplayName || student.userEmail}
+                                      </Typography>
+                                    </Box>
+                                  </TableCell>
+                                  <TableCell>{task.title}</TableCell>
+                                  <TableCell>
+                                    {budgetItems
+                                      .filter(bi => task.budgetItemIds?.includes(bi.id))
+                                      .reduce((sum, bi) => sum + (bi.jehCount || 0), 0).toFixed(1)} JEH
+                                  </TableCell>
+                                  <TableCell>
+                                    <Button
+                                      startIcon={<DescriptionIconJE />}
+                                      onClick={() => generateDocument('recapitulatif_mission', student.userId, false, false)}
+                                      variant="outlined"
+                                      size="small"
+                                      disabled={generatingDoc}
+                                    >
+                                      {generatingDoc ? 'Génération...' : 'Générer RM'}
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))
+                            )}
+                            {recruitmentTasks.every(task => !recruitedStudentsByTask[task.id] || recruitedStudentsByTask[task.id].length === 0) && (
+                              <TableRow>
+                                <TableCell colSpan={4} sx={{ textAlign: 'center', py: 3 }}>
+                                  <PeopleIcon sx={{ fontSize: 48, color: '#d2d2d7', mb: 1 }} />
+                                  <Typography variant="body2" sx={{ color: '#86868b' }}>
+                                    Aucun étudiant recruté pour le moment
+                                  </Typography>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    )}
+                  </Box>
+                </AccordionDetails>
+              </Accordion>
+
+              {/* Étape 3 : Suivi & Clôture */}
+              <Accordion defaultExpanded sx={{ mb: 2, borderRadius: 2, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+                    <Box sx={{ 
+                      width: 40, 
+                      height: 40, 
+                      borderRadius: '50%', 
+                      bgcolor: '#FF9800', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center',
+                      color: 'white',
+                      fontWeight: 700
+                    }}>
+                      3
+                    </Box>
+                    <Box sx={{ flexGrow: 1 }}>
+                      <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                        Suivi & Clôture
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: '#86868b' }}>
+                        PV de recette et rapport pédagogique
+                      </Typography>
+                    </Box>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Stack spacing={2}>
+                    <Card variant="outlined" sx={{ p: 2 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Box>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                            PV de Recette Finale
+                          </Typography>
+                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                            Déclenche la facturation du solde
+                          </Typography>
+                        </Box>
+                        <Button
+                          startIcon={<CheckCircleIcon />}
+                          onClick={() => generateDocument('proces_verbal_recette', undefined, false, false)}
+                          variant="contained"
+                          size="small"
+                          sx={{ bgcolor: '#FF9800' }}
+                          disabled={generatingDoc}
+                        >
+                          {generatingDoc ? 'Génération...' : 'Générer PV'}
+                        </Button>
+                      </Box>
+                    </Card>
+                    <Card variant="outlined" sx={{ p: 2 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Box>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                            Rapport Pédagogique
+                          </Typography>
+                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                            Bilan pédagogique de l'étude
+                          </Typography>
+                        </Box>
+                        <Button
+                          startIcon={<SchoolIcon />}
+                          onClick={() => generateDocument('rapport_pedagogique', undefined, false, false)}
+                          variant="outlined"
+                          size="small"
+                          disabled={generatingDoc}
+                        >
+                          {generatingDoc ? 'Génération...' : 'Générer'}
+                        </Button>
+                      </Box>
+                    </Card>
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+
+              {/* Liste des documents existants */}
+              {documents.length > 0 && (
+                <Paper sx={{ mt: 3, p: 3, borderRadius: 3, boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
+                    Documents uploadés
+                  </Typography>
+                  <TableContainer>
+                    <Table>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 600 }}>Nom</TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>Date</TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {documents.map((doc) => (
+                          <TableRow key={doc.id}>
+                            <TableCell>{doc.name}</TableCell>
+                            <TableCell>
+                              {doc.uploadedAt && typeof doc.uploadedAt === 'object' && doc.uploadedAt.toDate ? 
+                                formatDate(doc.uploadedAt.toDate().toISOString()) :
+                                doc.uploadedAt && typeof doc.uploadedAt === 'string' ? 
+                                  formatDate(doc.uploadedAt) :
+                                  'Date invalide'}
+                            </TableCell>
+                            <TableCell>
+                              <IconButton size="small" onClick={() => handleDocumentPreview(doc)}>
                                 <VisibilityIcon />
                               </IconButton>
-                            </Tooltip>
-                          )}
-                          {doc.isDraft && doc.quoteData && (
-                            <Tooltip title="Reprendre l'édition">
-                              <IconButton 
-                                size="small" 
-                                sx={{ color: '#34D399' }}
-                                onClick={() => handleResumeEditing(doc)}
-                              >
-                                <EditIcon />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                          {!doc.isDraft && (
-                            <Tooltip title="Télécharger">
-                              <IconButton 
-                                size="small" 
-                                sx={{ color: '#2ed573' }}
-                                onClick={() => handleDocumentDownload(doc)}
-                              >
+                              <IconButton size="small" onClick={() => handleDocumentDownload(doc)}>
                                 <DownloadIcon />
                               </IconButton>
-                            </Tooltip>
-                          )}
-                          <Tooltip title="Supprimer">
-                            <IconButton 
-                              size="small" 
-                              color="error"
-                              onClick={() => handleDocumentDelete(doc.id)}
-                              disabled={deletingDocument === doc.id}
-                            >
-                              {deletingDocument === doc.id ? (
-                                <CircularProgress size={16} />
-                              ) : (
+                              <IconButton size="small" color="error" onClick={() => handleDocumentDelete(doc.id)}>
                                 <DeleteIcon />
-                              )}
-                            </IconButton>
-                          </Tooltip>
-                        </Box>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {documents.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={5} sx={{ textAlign: 'center', py: 4 }}>
-                        <FolderIcon sx={{ fontSize: 64, color: '#d2d2d7', mb: 2 }} />
-                        <Typography variant="h6" sx={{ color: '#86868b', mb: 1 }}>
-                          Aucun document disponible
-                        </Typography>
-                        <Typography variant="body2" sx={{ color: '#86868b' }}>
-                          Commencez par créer une proposition commerciale ou uploader un document
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
+                              </IconButton>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              )}
+            </Box>
+          ) : (
+            // Workflow classique pour les Job Services
+            <Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+                <Typography variant="h4" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                  Documents
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  {selectedDocuments.length > 0 && (
+                    <>
+                      <Button
+                        startIcon={<DeleteIcon />}
+                        onClick={handleDeleteSelectedDocuments}
+                        variant="outlined"
+                        color="error"
+                        sx={{ 
+                          borderColor: '#f44336',
+                          color: '#f44336',
+                          '&:hover': { 
+                            borderColor: '#d32f2f',
+                            bgcolor: 'rgba(244, 67, 54, 0.04)'
+                          }
+                        }}
+                      >
+                        Supprimer ({selectedDocuments.length})
+                      </Button>
+                      <Button
+                        startIcon={<DownloadIcon />}
+                        onClick={handleDownloadSelectedDocuments}
+                        variant="outlined"
+                        sx={{ 
+                          borderColor: '#4caf50',
+                          color: '#4caf50',
+                          '&:hover': { 
+                            borderColor: '#388e3c',
+                            bgcolor: 'rgba(76, 175, 80, 0.04)'
+                          }
+                        }}
+                      >
+                        Télécharger ({selectedDocuments.length})
+                      </Button>
+                    </>
                   )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Paper>
+                  <Button
+                    startIcon={<AutoIcon />}
+                    onClick={handleOpenDocumentGenerator}
+                    variant="outlined"
+                    sx={{ 
+                      borderColor: '#667eea',
+                      color: '#667eea',
+                      '&:hover': { 
+                        borderColor: '#5a6fd8',
+                        bgcolor: 'rgba(102, 126, 234, 0.04)'
+                      }
+                    }}
+                  >
+                    Générateur intelligent
+                  </Button>
+                  <Button
+                    startIcon={<UploadIcon />}
+                    onClick={() => setDocumentDialogOpen(true)}
+                    variant="contained"
+                    sx={{ 
+                      bgcolor: '#667eea',
+                      '&:hover': { bgcolor: '#5a6fd8' }
+                    }}
+                  >
+                    Upload Document
+                  </Button>
+                </Box>
+              </Box>
+
+              <Paper sx={{ 
+                p: 3, 
+                borderRadius: 3,
+                boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+                animation: `${fadeInUp} 0.6s ease-out`
+              }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                    Documents de la mission
+                  </Typography>
+                  {selectedDocuments.length > 0 && (
+                    <Typography variant="body2" sx={{ color: '#667eea', fontWeight: 500 }}>
+                      {selectedDocuments.length} document(s) sélectionné(s)
+                    </Typography>
+                  )}
+                </Box>
+                <TableContainer>
+                  <Table>
+                    <TableHead>
+                      <TableRow sx={{ bgcolor: '#f8f9fa' }}>
+                        <TableCell sx={{ fontWeight: 600, width: '50px' }}>
+                          <Checkbox
+                            checked={selectAllDocuments}
+                            indeterminate={selectedDocuments.length > 0 && selectedDocuments.length < documents.length}
+                            onChange={(e) => handleSelectAllDocuments(e.target.checked)}
+                            sx={{ 
+                              color: '#667eea',
+                              '&.Mui-checked': { color: '#667eea' }
+                            }}
+                          />
+                        </TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Nom</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Statut</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Date d'upload</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {documents.map((doc, index) => (
+                        <TableRow 
+                          key={doc.id}
+                          sx={{ 
+                            animation: `${fadeInUp} 0.6s ease-out ${index * 0.1}s both`,
+                            '&:hover': { bgcolor: '#f8f9fa' },
+                            bgcolor: doc.isDraft ? 'rgba(255, 193, 7, 0.05)' : 'transparent'
+                          }}
+                        >
+                          <TableCell sx={{ width: '50px' }}>
+                            <Checkbox
+                              checked={selectedDocuments.includes(doc.id)}
+                              onChange={(e) => handleDocumentSelectionChange(doc.id, e.target.checked)}
+                              sx={{ 
+                                color: '#667eea',
+                                '&.Mui-checked': { color: '#667eea' }
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell sx={{ fontWeight: 500 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              {doc.name}
+                              {doc.isDraft && (
+                                <Chip 
+                                  label="Brouillon" 
+                                  size="small" 
+                                  sx={{ 
+                                    bgcolor: '#FFC107', 
+                                    color: '#000',
+                                    fontSize: '0.7rem',
+                                    height: '20px'
+                                  }} 
+                                />
+                              )}
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                              <Chip 
+                                label={doc.isDraft ? 'Brouillon' : 'Final'} 
+                                size="small"
+                                sx={{ 
+                                  fontWeight: 600,
+                                  bgcolor: doc.isDraft ? '#FFC107' : '#4CAF50',
+                                  color: doc.isDraft ? '#000' : 'white',
+                                  fontSize: '0.7rem',
+                                  maxWidth: '80px',
+                                  '& .MuiChip-label': {
+                                    fontSize: '0.65rem',
+                                    px: 1
+                                  }
+                                }}
+                              />
+                              {doc.uploadedBy && (
+                                <Typography variant="caption" sx={{ color: '#8E8E93', fontSize: '0.7rem' }}>
+                                  Par: {doc.uploadedBy}
+                                </Typography>
+                              )}
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            {doc.uploadedAt && typeof doc.uploadedAt === 'object' && doc.uploadedAt.toDate ? 
+                              formatDate(doc.uploadedAt.toDate().toISOString()) :
+                              doc.uploadedAt && typeof doc.uploadedAt === 'string' ? 
+                                formatDate(doc.uploadedAt) :
+                                'Date invalide'
+                            }
+                          </TableCell>
+                          <TableCell>
+                            <Box sx={{ display: 'flex', gap: 0.5 }}>
+                              {!doc.isDraft && (
+                                <Tooltip title="Aperçu">
+                                  <IconButton 
+                                    size="small" 
+                                    sx={{ color: '#667eea' }}
+                                    onClick={() => handleDocumentPreview(doc)}
+                                  >
+                                    <VisibilityIcon />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                              {doc.isDraft && doc.quoteData && (
+                                <Tooltip title="Reprendre l'édition">
+                                  <IconButton 
+                                    size="small" 
+                                    sx={{ color: '#34D399' }}
+                                    onClick={() => handleResumeEditing(doc)}
+                                  >
+                                    <EditIcon />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                              {!doc.isDraft && (
+                                <Tooltip title="Télécharger">
+                                  <IconButton 
+                                    size="small" 
+                                    sx={{ color: '#2ed573' }}
+                                    onClick={() => handleDocumentDownload(doc)}
+                                  >
+                                    <DownloadIcon />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                              <Tooltip title="Supprimer">
+                                <IconButton 
+                                  size="small" 
+                                  color="error"
+                                  onClick={() => handleDocumentDelete(doc.id)}
+                                  disabled={deletingDocument === doc.id}
+                                >
+                                  {deletingDocument === doc.id ? (
+                                    <CircularProgress size={16} />
+                                  ) : (
+                                    <DeleteIcon />
+                                  )}
+                                </IconButton>
+                              </Tooltip>
+                            </Box>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {documents.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={5} sx={{ textAlign: 'center', py: 4 }}>
+                            <FolderIcon sx={{ fontSize: 64, color: '#d2d2d7', mb: 2 }} />
+                            <Typography variant="h6" sx={{ color: '#86868b', mb: 1 }}>
+                              Aucun document disponible
+                            </Typography>
+                            <Typography variant="body2" sx={{ color: '#86868b' }}>
+                              Commencez par créer une proposition commerciale ou uploader un document
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Paper>
+            </Box>
+          )}
         </TabPanel>
 
         {/* Dialogs */}
@@ -6854,7 +8016,6 @@ const EtudeDetails: React.FC = () => {
                   value={tempBudgetInput || (newBudgetItem.budget !== undefined && newBudgetItem.budget !== null ? newBudgetItem.budget.toString() : '')}
                   onChange={async (e) => {
                     const value = e.target.value;
-                    console.log('🔢 Budget input value:', value);
                     
                     // Permettre les chiffres, virgules et points (max 2 décimales)
                     if (value === '' || /^[\d.,]*$/.test(value)) {
@@ -6864,7 +8025,6 @@ const EtudeDetails: React.FC = () => {
                         // Vérifier qu'il n'y a pas plus de 2 chiffres après le séparateur
                         const parts = value.split(/[.,]/);
                         if (parts.length === 1 || (parts.length === 2 && parts[1].length <= 2)) {
-                                              console.log('✅ Budget validation passed for:', value);
                         
                         // Toujours mettre à jour la valeur temporaire
                         setTempBudgetInput(value);
@@ -6879,19 +8039,16 @@ const EtudeDetails: React.FC = () => {
                           }
                         } else if (value === ',' || value === '.') {
                           // Permettre la saisie temporaire
-                          console.log('🔢 Budget decimal separator, keeping temp input');
                         } else {
                           // Vérifier si la valeur se termine par . ou ,
                           const endsWithDecimal = value.endsWith('.') || value.endsWith(',');
                           
                           if (endsWithDecimal) {
                             // Pour les valeurs qui se terminent par . ou , on garde la saisie
-                            console.log('🔢 Budget decimal input, keeping temp input');
                           } else {
                             // Valeur complète, convertir normalement
                             const newBudget = parseFloat(value.replace(',', '.'));
                             if (!isNaN(newBudget)) {
-                              console.log('🔢 Complete budget value:', newBudget);
                               setNewBudgetItem({ ...newBudgetItem, budget: newBudget });
                               // Sauvegarder automatiquement
                               if (creatingBudgetItem) {
@@ -6904,13 +8061,10 @@ const EtudeDetails: React.FC = () => {
                           }
                         }
                       } else {
-                        console.log('❌ Too many decimal places for budget:', value);
                       }
                     } else {
-                      console.log('❌ Too many decimal separators for budget:', value);
                     }
                   } else {
-                    console.log('❌ Budget validation failed for:', value);
                   }
                   }}
                   inputProps={{
@@ -6999,7 +8153,6 @@ const EtudeDetails: React.FC = () => {
                         value={tempJehInput || (newBudgetItem.jehCount !== undefined && newBudgetItem.jehCount !== null ? newBudgetItem.jehCount.toString() : '')}
                         onChange={async (e) => {
                           const value = e.target.value;
-                          console.log('🔢 Input value:', value);
                           
                           // Validation pour permettre jusqu'à 2 chiffres après le point
                           if (value === '' || /^[\d.,]*$/.test(value)) {
@@ -7009,7 +8162,6 @@ const EtudeDetails: React.FC = () => {
                               // Vérifier qu'il n'y a pas plus de 2 chiffres après le séparateur
                               const parts = value.split(/[.,]/);
                               if (parts.length === 1 || (parts.length === 2 && parts[1].length <= 2)) {
-                                console.log('✅ Validation passed for:', value);
                                 
                                 // Toujours mettre à jour la valeur temporaire
                                 setTempJehInput(value);
@@ -7024,19 +8176,16 @@ const EtudeDetails: React.FC = () => {
                                   }
                                 } else if (value === ',' || value === '.') {
                                   // Permettre la saisie temporaire
-                                  console.log('🔢 Decimal separator, keeping temp input');
                                 } else {
                                   // Vérifier si la valeur se termine par . ou ,
                                   const endsWithDecimal = value.endsWith('.') || value.endsWith(',');
                                   
                                   if (endsWithDecimal) {
                                     // Pour les valeurs qui se terminent par . ou , on garde la saisie
-                                    console.log('🔢 Decimal input, keeping temp input');
                                   } else {
                                     // Valeur complète, convertir normalement
                                     const jehCount = parseFloat(value.replace(',', '.'));
                                     if (!isNaN(jehCount)) {
-                                      console.log('🔢 Complete value:', jehCount);
                                       setNewBudgetItem({ ...newBudgetItem, jehCount });
                                       // Sauvegarder automatiquement
                                       if (creatingBudgetItem) {
@@ -7049,13 +8198,10 @@ const EtudeDetails: React.FC = () => {
                                   }
                                 }
                               } else {
-                                console.log('❌ Too many decimal places for:', value);
                               }
                             } else {
-                              console.log('❌ Too many decimal separators for:', value);
                             }
                           } else {
-                            console.log('❌ Validation failed for:', value);
                           }
                         }}
                         inputProps={{
@@ -7140,7 +8286,6 @@ const EtudeDetails: React.FC = () => {
                         value={tempJehRateInput || (newBudgetItem.jehRate !== undefined && newBudgetItem.jehRate !== null ? newBudgetItem.jehRate.toString() : '')}
                         onChange={async (e) => {
                           const value = e.target.value;
-                          console.log('🔢 Input jeh rate value:', value);
                           
                           // Validation pour permettre jusqu'à 2 chiffres après le point
                           if (value === '' || /^[\d.,]*$/.test(value)) {
@@ -7150,7 +8295,6 @@ const EtudeDetails: React.FC = () => {
                               // Vérifier qu'il n'y a pas plus de 2 chiffres après le séparateur
                               const parts = value.split(/[.,]/);
                               if (parts.length === 1 || (parts.length === 2 && parts[1].length <= 2)) {
-                                console.log('✅ Jeh rate validation passed for:', value);
                                 
                                 // Toujours mettre à jour la valeur temporaire
                                 setTempJehRateInput(value);
@@ -7165,19 +8309,16 @@ const EtudeDetails: React.FC = () => {
                                   }
                                 } else if (value === ',' || value === '.') {
                                   // Permettre la saisie temporaire
-                                  console.log('🔢 Decimal separator, keeping temp input');
                                 } else {
                                   // Vérifier si la valeur se termine par . ou ,
                                   const endsWithDecimal = value.endsWith('.') || value.endsWith(',');
                                   
                                   if (endsWithDecimal) {
                                     // Pour les valeurs qui se terminent par . ou , on garde la saisie
-                                    console.log('🔢 Decimal input, keeping temp input');
                                   } else {
                                     // Valeur complète, convertir normalement
                                     const jehRate = parseFloat(value.replace(',', '.'));
                                     if (!isNaN(jehRate)) {
-                                      console.log('🔢 Complete jeh rate value:', jehRate);
                                       setNewBudgetItem({ ...newBudgetItem, jehRate });
                                       // Sauvegarder automatiquement
                                       if (creatingBudgetItem) {
@@ -7190,13 +8331,10 @@ const EtudeDetails: React.FC = () => {
                                   }
                                 }
                               } else {
-                                console.log('❌ Too many decimal places for jeh rate:', value);
                               }
                             } else {
-                              console.log('❌ Too many decimal separators for jeh rate:', value);
                             }
                           } else {
-                            console.log('❌ Jeh rate validation failed for:', value);
                           }
                         }}
                         inputProps={{
@@ -7285,7 +8423,6 @@ const EtudeDetails: React.FC = () => {
                         value={tempHoursInput || (newBudgetItem.hoursCount !== undefined && newBudgetItem.hoursCount !== null ? newBudgetItem.hoursCount.toString() : '')}
                         onChange={async (e) => {
                           const value = e.target.value;
-                          console.log('🔢 Input hours value:', value);
                           
                           // Validation pour permettre jusqu'à 2 chiffres après le point
                           if (value === '' || /^[\d.,]*$/.test(value)) {
@@ -7295,7 +8432,6 @@ const EtudeDetails: React.FC = () => {
                               // Vérifier qu'il n'y a pas plus de 2 chiffres après le séparateur
                               const parts = value.split(/[.,]/);
                               if (parts.length === 1 || (parts.length === 2 && parts[1].length <= 2)) {
-                                console.log('✅ Hours validation passed for:', value);
                                 
                                 // Toujours mettre à jour la valeur temporaire
                                 setTempHoursInput(value);
@@ -7310,19 +8446,16 @@ const EtudeDetails: React.FC = () => {
                                   }
                                 } else if (value === ',' || value === '.') {
                                   // Permettre la saisie temporaire
-                                  console.log('🔢 Decimal separator, keeping temp input');
                                 } else {
                                   // Vérifier si la valeur se termine par . ou ,
                                   const endsWithDecimal = value.endsWith('.') || value.endsWith(',');
                                   
                                   if (endsWithDecimal) {
                                     // Pour les valeurs qui se terminent par . ou , on garde la saisie
-                                    console.log('🔢 Decimal input, keeping temp input');
                                   } else {
                                     // Valeur complète, convertir normalement
                                     const hoursCount = parseFloat(value.replace(',', '.'));
                                     if (!isNaN(hoursCount)) {
-                                      console.log('🔢 Complete value:', hoursCount);
                                       setNewBudgetItem({ ...newBudgetItem, hoursCount });
                                       // Sauvegarder automatiquement
                                       if (creatingBudgetItem) {
@@ -7335,13 +8468,10 @@ const EtudeDetails: React.FC = () => {
                                   }
                                 }
                               } else {
-                                console.log('❌ Too many decimal places for hours:', value);
                               }
                             } else {
-                              console.log('❌ Too many decimal separators for hours:', value);
                             }
                           } else {
-                            console.log('❌ Hours validation failed for:', value);
                           }
                         }}
                         inputProps={{
@@ -7412,7 +8542,6 @@ const EtudeDetails: React.FC = () => {
                         value={tempHourlyRateInput || (newBudgetItem.hourlyRate !== undefined && newBudgetItem.hourlyRate !== null ? newBudgetItem.hourlyRate.toString() : '')}
                         onChange={(e) => {
                           const value = e.target.value;
-                          console.log('🔢 Input hourly rate value:', value);
                           
                           // Validation pour permettre jusqu'à 2 chiffres après le point
                           if (value === '' || /^[\d.,]*$/.test(value)) {
@@ -7422,7 +8551,6 @@ const EtudeDetails: React.FC = () => {
                               // Vérifier qu'il n'y a pas plus de 2 chiffres après le séparateur
                               const parts = value.split(/[.,]/);
                               if (parts.length === 1 || (parts.length === 2 && parts[1].length <= 2)) {
-                                console.log('✅ Hourly rate validation passed for:', value);
                                 
                                 // Toujours mettre à jour la valeur temporaire
                                 setTempHourlyRateInput(value);
@@ -7432,19 +8560,16 @@ const EtudeDetails: React.FC = () => {
                                   updateTemporaryBudgetItem({ hourlyRate: 0 });
                                 } else if (value === ',' || value === '.') {
                                   // Permettre la saisie temporaire
-                                  console.log('🔢 Decimal separator, keeping temp input');
                                 } else {
                                   // Vérifier si la valeur se termine par . ou ,
                                   const endsWithDecimal = value.endsWith('.') || value.endsWith(',');
                                   
                                   if (endsWithDecimal) {
                                     // Pour les valeurs qui se terminent par . ou , on garde la saisie
-                                    console.log('🔢 Decimal input, keeping temp input');
                                   } else {
                                     // Valeur complète, convertir normalement
                                     const hourlyRate = parseFloat(value.replace(',', '.'));
                                     if (!isNaN(hourlyRate)) {
-                                      console.log('🔢 Complete hourly rate value:', hourlyRate);
                                       setNewBudgetItem({ ...newBudgetItem, hourlyRate });
                                       updateTemporaryBudgetItem({ hourlyRate });
                                       setTempHourlyRateInput(''); // Vider l'input temporaire
@@ -7452,13 +8577,10 @@ const EtudeDetails: React.FC = () => {
                                   }
                                 }
                               } else {
-                                console.log('❌ Too many decimal places for hourly rate:', value);
                               }
                             } else {
-                              console.log('❌ Too many decimal separators for hourly rate:', value);
                             }
                           } else {
-                            console.log('❌ Hourly rate validation failed for:', value);
                           }
                         }}
                         inputProps={{
@@ -9465,12 +10587,21 @@ const EtudeDetails: React.FC = () => {
           open={snackbar.open}
           autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          disablePortal={false}
           sx={{
-            zIndex: 9999,
+            zIndex: '10000 !important',
+            position: 'fixed !important',
+            left: '72px !important',
+            bottom: '56px !important',
             '& .MuiSnackbar-root': {
-              zIndex: 9999
+              zIndex: '10000 !important',
+              position: 'fixed !important'
             }
+          }}
+          style={{
+            zIndex: 10000,
+            position: 'fixed'
           }}
         >
           <Alert 
@@ -9479,8 +10610,12 @@ const EtudeDetails: React.FC = () => {
             variant="filled"
             sx={{ 
               width: '100%',
-              zIndex: 9999,
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+              zIndex: '10000 !important',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+              position: 'relative'
+            }}
+            style={{
+              zIndex: 10000
             }}
           >
             {snackbar.message}
@@ -10127,13 +11262,65 @@ const EtudeDetails: React.FC = () => {
 
         {/* Générateur de documents intelligent */}
         <DocumentGeneratorDialog
-          open={documentGeneratorOpen}
-          onClose={() => setDocumentGeneratorOpen(false)}
+          open={documentGeneratorOpen || documentGeneratorOpenForType.open}
+          onClose={() => {
+            setDocumentGeneratorOpen(false);
+            setDocumentGeneratorOpenForType({ open: false });
+          }}
           etudeData={etude}
           companyData={companyFullData}
           contactData={contacts.find(c => c.isDefault) || contacts[0]}
           structureData={structureFullData}
+          budgetItems={budgetItems}
+          studentId={documentGeneratorOpenForType.studentId}
+          documentType={documentGeneratorOpenForType.documentType}
         />
+
+        {/* Indicateur de progression pour la génération de documents */}
+        {downloadProgress && (
+          <Box
+            sx={{
+              position: 'fixed',
+              bottom: 24,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 9999,
+              minWidth: 300,
+              maxWidth: 500,
+              bgcolor: 'background.paper',
+              borderRadius: 2,
+              boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+              p: 2,
+              border: '1px solid',
+              borderColor: 'divider'
+            }}
+          >
+            <LinearProgress 
+              variant="determinate" 
+              value={downloadProgress.progress} 
+              sx={{ 
+                height: 8, 
+                borderRadius: 4,
+                backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                mb: 1,
+                '& .MuiLinearProgress-bar': {
+                  borderRadius: 4
+                }
+              }} 
+            />
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                display: 'block', 
+                textAlign: 'center',
+                color: 'text.secondary',
+                fontSize: '0.75rem'
+              }}
+            >
+              {downloadProgress.message}
+            </Typography>
+          </Box>
+        )}
       </Box>
     </Box>
   );

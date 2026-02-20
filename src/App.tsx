@@ -34,6 +34,7 @@ import MentionsLegales from './pages/MentionsLegales';
 import PolitiqueConfidentialite from './pages/PolitiqueConfidentialite';
 import ProtectedRoute from './components/ProtectedRoute';
 import RequireRole from './components/guards/RequireRole';
+import RequireJobServiceForAmbassadors from './components/guards/RequireJobServiceForAmbassadors';
 import { useAuth } from './contexts/AuthContext';
 import Tresorerie from './pages/Tresorerie';
 import StripeCustomers from './pages/settings/StripeCustomers';
@@ -109,7 +110,11 @@ function App(): JSX.Element {
 
   return (
     <ThemeProvider theme={theme}>
-      <SnackbarProvider maxSnack={3}>
+      <SnackbarProvider 
+        maxSnack={3} 
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        style={{ zIndex: 10000 }}
+      >
         <AuthProvider>
           <ChangelogProvider>
             <ActivityTrackerWrapper>
@@ -273,7 +278,9 @@ function App(): JSX.Element {
                           requireContactAccess={false}
                           requireCanViewEvents={false}
                         >
+                          <RequireJobServiceForAmbassadors>
                             <AmbassadorsLayout />
+                          </RequireJobServiceForAmbassadors>
                         </RequireRole>
                       }>
                         <Route index element={<Ambassadors />} />

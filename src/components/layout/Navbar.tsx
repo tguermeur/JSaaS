@@ -153,8 +153,9 @@ const Navbar: React.FC<NavbarProps> = () => {
 
   // États pour les données utilisateur
   const [userData, setUserData] = useState<any>(null);
+  const [structureType, setStructureType] = useState<'junior' | 'jobservice' | null>(null);
 
-  // Récupérer les données utilisateur
+  // Récupérer les données utilisateur et le type de structure
   useEffect(() => {
     const fetchUserData = async () => {
       if (!currentUser?.uid) return;
@@ -162,7 +163,17 @@ const Navbar: React.FC<NavbarProps> = () => {
       try {
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
         if (userDoc.exists()) {
-          setUserData(userDoc.data());
+          const data = userDoc.data();
+          setUserData(data);
+          
+          // Récupérer le type de structure
+          if (data.structureId) {
+            const structureDoc = await getDoc(doc(db, 'structures', data.structureId));
+            if (structureDoc.exists()) {
+              const structureData = structureDoc.data();
+              setStructureType(structureData.structureType || 'jobservice');
+            }
+          }
         }
       } catch (error) {
         console.error('Erreur lors de la récupération des données utilisateur:', error);
@@ -301,34 +312,162 @@ const Navbar: React.FC<NavbarProps> = () => {
     if (!currentUser) return;
     
     try {
+      // Récupérer le structureId de l'utilisateur
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const userData = userDoc.data();
+      const structureId = userData?.structureId;
+
+      if (!structureId) {
+        setRecentData({
+          missions: [],
+          documents: []
+        });
+        return;
+      }
+
       const activities = await getUserRecentActivity(currentUser.uid);
       
+      // Récupérer le type de structure si pas encore chargé
+      let currentStructureType = structureType;
+      if (!currentStructureType && userData.structureId) {
+        const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
+        if (structureDoc.exists()) {
+          currentStructureType = structureDoc.data().structureType || 'jobservice';
+          setStructureType(currentStructureType);
+        }
+      }
+
+      // Filtrer les missions/études par structureId
       const recentMissions = activities
-        .filter(item => item.type === 'mission')
-        .slice(0, 3)
+        .filter(item => {
+          if (item.type !== 'mission') return false;
+          // Vérifier si la mission/étude appartient à la structure de l'utilisateur
+          if (item.metadata?.structureId) {
+            return item.metadata.structureId === structureId;
+          }
+          return true; // On laisse passer pour vérifier ensuite
+        })
+        .slice(0, 10) // Récupérer plus pour filtrer ensuite
         .map(item => ({
           id: item.id,
           type: 'mission' as const,
           title: item.title,
           subtitle: item.subtitle || '',
+          icon: <HistoryIcon fontSize="small" />,
+          metadata: item.metadata
+        }));
+
+      // Vérifier les missions/études dans Firestore pour s'assurer qu'elles appartiennent à la structure
+      const verifiedMissions = await Promise.all(
+        recentMissions.map(async (mission) => {
+          try {
+            if (currentStructureType === 'junior') {
+              // Pour les JE, vérifier dans la collection 'etudes'
+              const etudeDoc = await getDoc(doc(db, 'etudes', mission.id));
+              if (etudeDoc.exists()) {
+                const etudeData = etudeDoc.data();
+                if (etudeData.structureId === structureId) {
+                  return { ...mission, url: `/app/etude/${mission.id}` };
+                }
+              }
+            } else {
+              // Pour les JS, vérifier dans la collection 'missions'
+              const missionDoc = await getDoc(doc(db, 'missions', mission.id));
+              if (missionDoc.exists()) {
+                const missionData = missionDoc.data();
+                if (missionData.structureId === structureId) {
+                  return mission;
+                }
+              }
+            }
+            return null;
+          } catch (error) {
+            console.error('Erreur lors de la vérification de la mission/étude:', error);
+            return null;
+          }
+        })
+      );
+
+      const filteredMissions = verifiedMissions
+        .filter((m): m is NonNullable<typeof m> => m !== null)
+        .slice(0, 3)
+        .map(m => ({
+          id: m.id,
+          type: 'mission' as const,
+          title: m.title,
+          subtitle: m.subtitle || '',
           icon: <HistoryIcon fontSize="small" />
         }));
 
+      // Filtrer les documents par structureId
       const recentDocuments = activities
-        .filter(item => item.type === 'document')
-        .slice(0, 3)
+        .filter(item => {
+          if (item.type !== 'document') return false;
+          // Vérifier si le document appartient à la structure de l'utilisateur
+          if (item.metadata?.structureId) {
+            return item.metadata.structureId === structureId;
+          }
+          // Si pas de metadata, on vérifie en récupérant le document depuis Firestore
+          return true; // On laisse passer pour vérifier ensuite
+        })
+        .slice(0, 10) // Récupérer plus pour filtrer ensuite
         .map(item => ({
           id: item.id,
           type: 'mission' as const, // On utilise le type 'mission' pour la compatibilité, mais on gère l'URL spécifiquement
           title: item.title,
           subtitle: item.subtitle || '',
           icon: <DescriptionIcon fontSize="small" />,
-          url: item.url
+          url: item.url,
+          metadata: item.metadata
+        }));
+
+      // Vérifier les documents dans Firestore pour s'assurer qu'ils appartiennent à la structure
+      // Les documents peuvent être dans 'documents' ou 'generatedDocuments'
+      const verifiedDocuments = await Promise.all(
+        recentDocuments.map(async (doc) => {
+          try {
+            // Essayer d'abord dans la collection 'documents'
+            const documentDoc = await getDoc(doc(db, 'documents', doc.id));
+            if (documentDoc.exists()) {
+              const documentData = documentDoc.data();
+              if (documentData.structureId === structureId) {
+                return doc;
+              }
+              return null;
+            }
+            
+            // Si pas trouvé, essayer dans 'generatedDocuments'
+            const generatedDoc = await getDoc(doc(db, 'generatedDocuments', doc.id));
+            if (generatedDoc.exists()) {
+              const generatedData = generatedDoc.data();
+              if (generatedData.structureId === structureId) {
+                return doc;
+              }
+            }
+            
+            return null;
+          } catch (error) {
+            console.error('Erreur lors de la vérification du document:', error);
+            return null;
+          }
+        })
+      );
+
+      const filteredDocuments = verifiedDocuments
+        .filter((d): d is NonNullable<typeof d> => d !== null)
+        .slice(0, 3)
+        .map(d => ({
+          id: d.id,
+          type: 'mission' as const,
+          title: d.title,
+          subtitle: d.subtitle || '',
+          icon: <DescriptionIcon fontSize="small" />,
+          url: d.url
         }));
 
       setRecentData({
-        missions: recentMissions,
-        documents: recentDocuments
+        missions: filteredMissions,
+        documents: filteredDocuments
       });
 
     } catch (error) {
@@ -382,41 +521,104 @@ const Navbar: React.FC<NavbarProps> = () => {
           return;
         }
         
-        // Rechercher les missions de la structure
-        const missionsQuery = firestoreQuery(
-          collection(db, 'missions'),
-          where('structureId', '==', structureId),
-          where('numeroMission', '>=', query),
-          where('numeroMission', '<=', query + '\uf8ff'),
-          limit(5)
-        );
+        // Récupérer le type de structure si pas encore chargé
+        let currentStructureType = structureType;
+        if (!currentStructureType && userData.structureId) {
+          const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
+          if (structureDoc.exists()) {
+            currentStructureType = structureDoc.data().structureType || 'jobservice';
+            setStructureType(currentStructureType);
+          }
+        }
         
-        const missionsSnapshot = await getDocs(missionsQuery);
-        const missions = missionsSnapshot.docs.map(doc => {
-          const data = doc.data();
-          const numeroMission = data.numeroMission || '';
+        // Rechercher les missions/études selon le type de structure
+        if (currentStructureType === 'junior') {
+          // Pour les JE, rechercher les études
+          const etudesQuery = firestoreQuery(
+            collection(db, 'etudes'),
+            where('structureId', '==', structureId),
+            where('numeroEtude', '>=', query),
+            where('numeroEtude', '<=', query + '\uf8ff'),
+            limit(5)
+          );
           
-          console.log('🔍 Mission trouvée dans la recherche:', {
-            docId: doc.id,
-            numeroMission: numeroMission,
-            company: data.company,
-            structureId: data.structureId,
-            numeroMissionType: typeof numeroMission,
-            numeroMissionLength: numeroMission?.length
+          const etudesSnapshot = await getDocs(etudesQuery);
+          const missions = etudesSnapshot.docs.map(doc => {
+            const data = doc.data();
+            const numeroEtude = data.numeroEtude || '';
+            
+            return {
+              id: numeroEtude || doc.id,
+              type: 'mission' as const,
+              title: numeroEtude || doc.id,
+              subtitle: `${data.company || 'Sans entreprise'} - ${data.location || 'Sans localisation'}`,
+              icon: <BusinessIcon fontSize="small" />,
+              url: `/app/etude/${numeroEtude || doc.id}`
+            };
           });
           
-          if (!numeroMission) {
-            console.warn('⚠️ Mission sans numeroMission trouvée:', doc.id);
-          }
+          // Rechercher aussi les documents générés dans les études
+          // Les documents générés pour les études utilisent etudeNumber, pas missionNumber
+          const generatedDocsQuery = firestoreQuery(
+            collection(db, 'generatedDocuments'),
+            where('structureId', '==', structureId),
+            where('fileName', '>=', query),
+            where('fileName', '<=', query + '\uf8ff'),
+            limit(5)
+          );
           
-          return {
-            id: numeroMission || doc.id, // Utiliser numeroMission pour la navigation
-            type: 'mission' as const,
-            title: numeroMission || doc.id,
-            subtitle: `${data.company || 'Sans entreprise'} - ${data.location || 'Sans localisation'}`,
-            icon: <BusinessIcon fontSize="small" />
-          };
-        });
+          try {
+            const generatedDocsSnapshot = await getDocs(generatedDocsQuery);
+            const generatedDocs = generatedDocsSnapshot.docs
+              .filter(doc => {
+                const data = doc.data();
+                // Filtrer uniquement les documents liés aux études (qui ont etudeNumber)
+                return data.etudeNumber;
+              })
+              .map(doc => {
+                const data = doc.data();
+                return {
+                  id: doc.id,
+                  type: 'mission' as const,
+                  title: data.fileName || 'Document',
+                  subtitle: `Étude ${data.etudeNumber || data.missionNumber || ''}`,
+                  icon: <DescriptionIcon fontSize="small" />,
+                  url: data.fileUrl
+                };
+              });
+            
+            // Ajouter les documents générés aux résultats
+            results.missions = [...missions, ...generatedDocs].slice(0, 5);
+          } catch (error) {
+            console.error('Erreur lors de la recherche de documents générés:', error);
+            results.missions = missions;
+          }
+        } else {
+          // Pour les JS, rechercher les missions
+          const missionsQuery = firestoreQuery(
+            collection(db, 'missions'),
+            where('structureId', '==', structureId),
+            where('numeroMission', '>=', query),
+            where('numeroMission', '<=', query + '\uf8ff'),
+            limit(5)
+          );
+          
+          const missionsSnapshot = await getDocs(missionsQuery);
+          const missions = missionsSnapshot.docs.map(doc => {
+            const data = doc.data();
+            const numeroMission = data.numeroMission || '';
+            
+            return {
+              id: numeroMission || doc.id,
+              type: 'mission' as const,
+              title: numeroMission || doc.id,
+              subtitle: `${data.company || 'Sans entreprise'} - ${data.location || 'Sans localisation'}`,
+              icon: <BusinessIcon fontSize="small" />
+            };
+          });
+          
+          results.missions = missions;
+        }
 
         // Rechercher les utilisateurs de la structure
         const usersQuery = firestoreQuery(
@@ -497,13 +699,26 @@ const Navbar: React.FC<NavbarProps> = () => {
     console.log('🔍 Clic sur résultat de recherche:', {
       type: result.type,
       id: result.id,
-      title: result.title
+      title: result.title,
+      url: result.url
     });
+    
+    // Si le résultat a une URL (document généré), ouvrir directement
+    if (result.url) {
+      window.open(result.url, '_blank');
+      return;
+    }
     
     switch (result.type) {
       case 'mission':
-        console.log('🚀 Navigation vers mission:', result.id);
-        navigate(`/app/mission/${result.id}`);
+        // Pour les JE, naviguer vers les études, pour les JS vers les missions
+        if (structureType === 'junior') {
+          console.log('🚀 Navigation vers étude:', result.id);
+          navigate(`/app/etude/${result.id}`);
+        } else {
+          console.log('🚀 Navigation vers mission:', result.id);
+          navigate(`/app/mission/${result.id}`);
+        }
         break;
       case 'user':
         navigate(`/app/profile?userId=${result.id}`);
@@ -636,7 +851,7 @@ const Navbar: React.FC<NavbarProps> = () => {
             <TextField
               fullWidth
               size="small"
-              placeholder="Rechercher une mission, un document..."
+              placeholder={structureType === 'junior' ? "Rechercher une étude, un document..." : "Rechercher une mission, un document..."}
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}
               onFocus={() => setSearchOpen(true)}
@@ -699,14 +914,21 @@ const Navbar: React.FC<NavbarProps> = () => {
                       
                       <ListItem 
                         button 
-                        onClick={() => { navigate('/app/mission'); setSearchOpen(false); }}
+                        onClick={() => { 
+                          if (structureType === 'junior') {
+                            navigate('/app/etude');
+                          } else {
+                            navigate('/app/mission');
+                          }
+                          setSearchOpen(false); 
+                        }}
                         sx={{ py: 1.5, px: 2, '&:hover': { bgcolor: '#f5f9ff' } }}
                       >
                         <ListItemIcon sx={{ minWidth: 40 }}>
                           <PostAddIcon sx={{ color: '#0071e3' }} />
                         </ListItemIcon>
                         <ListItemText 
-                          primary="Créer une nouvelle mission"
+                          primary={structureType === 'junior' ? 'Créer une nouvelle étude' : 'Créer une nouvelle mission'}
                           primaryTypographyProps={{ variant: 'body2', fontWeight: 500 }}
                         />
                       </ListItem>
@@ -727,10 +949,10 @@ const Navbar: React.FC<NavbarProps> = () => {
 
                       <Divider sx={{ my: 0 }} />
 
-                      {/* Section Missions Récentes */}
+                      {/* Section Missions/Études Récentes */}
                       <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: '1px solid #f0f0f0', borderTop: '1px solid #f0f0f0' }}>
                         <Typography variant="xs" sx={{ fontWeight: 600, color: '#86868b', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                          Missions récentes
+                          {structureType === 'junior' ? 'Études récentes' : 'Missions récentes'}
                         </Typography>
                       </ListItem>
 

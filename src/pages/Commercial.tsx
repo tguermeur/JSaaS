@@ -3060,7 +3060,7 @@ const Commercial: React.FC = (): JSX.Element => {
         open={Boolean(companiesColumnPickerAnchor)}
         anchorEl={companiesColumnPickerAnchor}
         onClose={() => setCompaniesColumnPickerAnchor(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         PaperProps={{ sx: { borderRadius: '12px', p: 1.5, minWidth: 260 } }}
       >
@@ -3510,7 +3510,7 @@ const Commercial: React.FC = (): JSX.Element => {
         anchorEl={rowMenuAnchorEl}
         open={Boolean(rowMenuAnchorEl)}
         onClose={() => { setRowMenuAnchorEl(null); setRowMenuProspectId(null); }}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         PaperProps={{ sx: { borderRadius: '12px', minWidth: 180 } }}
       >

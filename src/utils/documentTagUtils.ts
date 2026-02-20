@@ -22,6 +22,10 @@ export interface ReplacementData {
     missionType?: string;
     createdAt?: string | Date;
     updatedAt?: string | Date;
+    // Données spécifiques JE
+    jehTotal?: number;
+    dureeSemaines?: number;
+    phaseListe?: string;
   };
 
   // Données du chargé d'étude
@@ -55,6 +59,7 @@ export interface ReplacementData {
     studentId?: string;
     studyLevel?: string;
     speciality?: string;
+    remunerationBruteTotal?: number;
   };
 
   // Données de l'entreprise
@@ -247,6 +252,9 @@ const getEtudeValue = (variableId: string, data?: ReplacementData['etude']): str
     case 'createdAt': return formatDate(data.createdAt);
     case 'updatedAt': return formatDate(data.updatedAt);
     case 'generationDate': return new Date().toLocaleDateString('fr-FR');
+    case 'etudeJehTotal': return data.jehTotal?.toString() || '';
+    case 'etudeDureeSemaines': return data.dureeSemaines?.toString() || '';
+    case 'phaseListe': return data.phaseListe || '';
     default: return '';
   }
 };
@@ -288,6 +296,7 @@ const getEtudiantValue = (variableId: string, data?: ReplacementData['etudiant']
     case 'studentId': return data.studentId || '';
     case 'studyLevel': return data.studyLevel || '';
     case 'speciality': return data.speciality || '';
+    case 'etudiantRemunerationBruteTotal': return formatAmount(data.remunerationBruteTotal);
     default: return '';
   }
 };

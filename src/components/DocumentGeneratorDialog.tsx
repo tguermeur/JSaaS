@@ -69,6 +69,7 @@ import { collection, addDoc, getDocs, query, where, doc, getDoc } from 'firebase
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { COMPLETE_TAG_LIBRARY } from '../pages/DocumentGenerator';
 import { replaceTagsInText, ReplacementData, getExampleData } from '../utils/documentTagUtils';
+import { DocumentType } from '../types/templates';
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
 import PptxTemplater from 'pptxtemplater';
@@ -118,6 +119,9 @@ interface DocumentGeneratorDialogProps {
   companyData?: any;
   contactData?: any;
   structureData?: any;
+  budgetItems?: any[];
+  studentId?: string;
+  documentType?: string;
 }
 
 const DocumentGeneratorDialog: React.FC<DocumentGeneratorDialogProps> = ({
@@ -126,7 +130,10 @@ const DocumentGeneratorDialog: React.FC<DocumentGeneratorDialogProps> = ({
   etudeData,
   companyData,
   contactData,
-  structureData
+  structureData,
+  budgetItems = [],
+  studentId,
+  documentType
 }) => {
   const theme = useTheme();
   const { currentUser } = useAuth();
@@ -144,6 +151,146 @@ const DocumentGeneratorDialog: React.FC<DocumentGeneratorDialogProps> = ({
   const [documentTemplate, setDocumentTemplate] = useState<DocumentTemplate | null>(null);
   const [previewText, setPreviewText] = useState('');
   const [customValues, setCustomValues] = useState<{[tagName: string]: string}>({});
+  const [studentData, setStudentData] = useState<any>(null);
+  
+  // Charger les données de l'étudiant si studentId est fourni
+  useEffect(() => {
+    const loadStudentData = async () => {
+      if (studentId) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', studentId));
+          if (userDoc.exists()) {
+            setStudentData(userDoc.data());
+          }
+        } catch (error) {
+          console.error('Erreur lors du chargement des données de l\'étudiant:', error);
+        }
+      } else {
+        setStudentData(null);
+      }
+    };
+    loadStudentData();
+  }, [studentId]);
+
+  // Charger automatiquement le template assigné quand documentType est fourni
+  useEffect(() => {
+    const loadAssignedTemplate = async () => {
+      if (!open || !documentType || !etudeData?.structureId || !currentUser) return;
+
+      try {
+        console.log('📄 Chargement du template assigné pour:', documentType);
+        
+        // Récupérer l'assignation du template
+        const assignmentsQuery = query(
+          collection(db, 'templateAssignments'),
+          where('structureId', '==', etudeData.structureId),
+          where('documentType', '==', documentType)
+        );
+        
+        const assignmentsSnapshot = await getDocs(assignmentsQuery);
+        
+        if (assignmentsSnapshot.empty) {
+          console.log('⚠️ Aucun template assigné pour ce type de document');
+          setSnackbar({
+            open: true,
+            message: `Aucun template assigné pour le type "${documentType}". Veuillez en assigner un dans les paramètres.`,
+            severity: 'warning'
+          });
+          return;
+        }
+
+        const assignmentDoc = assignmentsSnapshot.docs[0];
+        const assignmentData = assignmentDoc.data();
+        const templateId = assignmentData.templateId;
+        const generationType = assignmentData.generationType || 'template';
+
+        console.log('📄 Template ID assigné:', templateId);
+        console.log('📄 Type de génération:', generationType);
+
+        // Si le type de génération est 'editor', on ne charge pas de template PDF
+        if (generationType === 'editor') {
+          console.log('📝 Type de génération: éditeur - pas de template PDF à charger');
+          setSnackbar({
+            open: true,
+            message: 'Ce type de document utilise l\'éditeur. Veuillez utiliser l\'éditeur dédié.',
+            severity: 'info'
+          });
+          return;
+        }
+
+        // Récupérer le template
+        const templateDoc = await getDoc(doc(db, 'templates', templateId));
+        
+        if (!templateDoc.exists()) {
+          console.error('❌ Template assigné introuvable');
+          setSnackbar({
+            open: true,
+            message: 'Le template assigné n\'existe plus. Veuillez en assigner un nouveau.',
+            severity: 'error'
+          });
+          return;
+        }
+
+        const templateData = templateDoc.data();
+        const templatePdfUrl = templateData.pdfUrl;
+        const templateVariables = templateData.variables || [];
+
+        console.log('📄 Template récupéré:', templateData.name);
+        console.log('📄 Variables du template:', templateVariables.length);
+
+        // Télécharger le fichier PDF depuis Storage ou URL
+        let pdfBlob: Blob;
+        
+        if (templatePdfUrl.startsWith('http')) {
+          // URL directe
+          const response = await fetch(templatePdfUrl);
+          pdfBlob = await response.blob();
+        } else {
+          // Chemin Firebase Storage
+          const storageRef = ref(storage, templatePdfUrl);
+          const downloadURL = await getDownloadURL(storageRef);
+          const response = await fetch(downloadURL);
+          pdfBlob = await response.blob();
+        }
+
+        // Convertir le Blob en File pour l'utiliser dans le composant
+        const pdfFile = new File([pdfBlob], templateData.fileName || 'template.pdf', { type: 'application/pdf' });
+        
+        console.log('✅ Template chargé avec succès');
+        
+        // Définir le fichier sélectionné et passer à l'étape d'analyse
+        setSelectedFile(pdfFile);
+        setActiveStep(1);
+        
+        // Analyser le document pour détecter les balises
+        analyzeDocument(pdfFile);
+        
+        // Stocker les informations du template
+        setDocumentTemplate({
+          id: templateDoc.id,
+          name: templateData.name,
+          description: templateData.description || '',
+          fileUrl: templatePdfUrl,
+          fileName: templateData.fileName || 'template.pdf',
+          fileType: 'application/pdf',
+          detectedTags: [],
+          createdAt: templateData.createdAt?.toDate() || new Date(),
+          createdBy: templateData.createdBy || '',
+          structureId: templateData.structureId || ''
+        });
+
+      } catch (error) {
+        console.error('❌ Erreur lors du chargement du template assigné:', error);
+        setSnackbar({
+          open: true,
+          message: 'Erreur lors du chargement du template assigné',
+          severity: 'error'
+        });
+      }
+    };
+
+    loadAssignedTemplate();
+  }, [open, documentType, etudeData?.structureId, currentUser]);
   
   // États pour la conversion PDF
   const [showPdfConversion, setShowPdfConversion] = useState(false);
@@ -224,7 +371,6 @@ const DocumentGeneratorDialog: React.FC<DocumentGeneratorDialogProps> = ({
     }
     
     setFilteredTags(filtered);
-    console.log(`Filtrage: ${filtered.length} balises trouvées pour "${searchTerm}" dans catégorie "${selectedCategory}"`);
   }, [searchTerm, selectedCategory]);
 
   // Réinitialiser le dialogue quand il s'ouvre
@@ -1136,6 +1282,14 @@ Pour l'entreprise :                    Pour l'étudiant :
     
     if (!etudeData) return '';
 
+    // Calculer les données JE spécifiques
+    const jehTotal = budgetItems?.reduce((sum, item) => sum + (item.jehCount || 0), 0) || etudeData?.jeh || 0;
+    const dureeSemaines = etudeData?.startDate && etudeData?.endDate ? 
+      Math.ceil((new Date(etudeData.endDate).getTime() - new Date(etudeData.startDate).getTime()) / (1000 * 60 * 60 * 24 * 7)) : 0;
+    const phaseListe = budgetItems?.map(item => 
+      `${item.title || 'Phase'}: ${item.jehCount || 0} JEH${item.budget ? ` (${item.budget}€ HT)` : ''}`
+    ).join(', ') || 'Aucune phase définie';
+
     // Construire les données de remplacement
     const replacementData: ReplacementData = {
       etude: {
@@ -1153,7 +1307,11 @@ Pour l'entreprise :                    Pour l'étudiant :
         studentCount: etudeData.consultantCount,
         status: etudeData.status,
         etape: etudeData.etape,
-        missionType: etudeData.missionTypeName
+        missionType: etudeData.missionTypeName,
+        // Données JE spécifiques (seront utilisées via les balises personnalisées)
+        jehTotal: jehTotal,
+        dureeSemaines: dureeSemaines,
+        phaseListe: phaseListe
       },
       charge: {
         chargeName: etudeData.chargeName,
@@ -1161,7 +1319,7 @@ Pour l'entreprise :                    Pour l'étudiant :
       },
       entreprise: companyData ? {
         companyName: companyData.name,
-        siret: companyData.nSiret,
+        nSiret: companyData.nSiret,
         companyAddress: companyData.address,
         companyCity: companyData.city,
         companyPhone: companyData.phone,
@@ -1183,6 +1341,24 @@ Pour l'entreprise :                    Pour l'étudiant :
         structure_address: structureData.address,
         structure_phone: structureData.phone,
         structure_email: structureData.email
+      } : undefined,
+      etudiant: studentData ? {
+        lastName: studentData.lastName || '',
+        firstName: studentData.firstName || '',
+        displayName: studentData.displayName || `${studentData.firstName || ''} ${studentData.lastName || ''}`.trim(),
+        email: studentData.email || '',
+        phone: studentData.phone || '',
+        ecole: studentData.ecole || '',
+        formation: studentData.formation || '',
+        address: studentData.address || '',
+        city: studentData.city || '',
+        studyLevel: studentData.studyLevel || '',
+        speciality: studentData.speciality || '',
+        // Calculer la rémunération brute totale si budgetItems et studentId sont fournis
+        remunerationBruteTotal: budgetItems && studentId ? 
+          budgetItems
+            .filter(item => item.jehCount && item.jehRate)
+            .reduce((sum, item) => sum + (item.jehCount * item.jehRate), 0) : undefined
       } : undefined
     };
 
@@ -1547,17 +1723,17 @@ Pour l'entreprise :                    Pour l'étudiant :
           chargeName: etudeData?.chargeName,
           chargeId: etudeData?.chargeId
         },
-        entreprise: companyData ? {
-          companyName: companyData.name,
-          siret: companyData.nSiret,
-          companyAddress: companyData.address,
-          companyCity: companyData.city,
-          companyPhone: companyData.phone,
-          companyEmail: companyData.email,
-          website: companyData.website
-        } : {
-          companyName: etudeData?.company
-        },
+      entreprise: companyData ? {
+        companyName: companyData.name,
+        nSiret: companyData.nSiret,
+        companyAddress: companyData.address,
+        companyCity: companyData.city,
+        companyPhone: companyData.phone,
+        companyEmail: companyData.email,
+        website: companyData.website
+      } : {
+        companyName: etudeData?.company
+      },
         contact: contactData ? {
           contact_firstName: contactData.firstName,
           contact_lastName: contactData.lastName,
@@ -3330,11 +3506,20 @@ Pour l'entreprise :                    Pour l'étudiant :
         open={snackbar.open}
         autoHideDuration={6000}
         onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        sx={{
+          zIndex: 10000,
+          position: 'fixed !important'
+        }}
       >
         <Alert
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
           severity={snackbar.severity}
           variant="filled"
+          sx={{
+            zIndex: 10000,
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+          }}
         >
           {snackbar.message}
         </Alert>

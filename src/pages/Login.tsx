@@ -694,7 +694,7 @@ export default function Login(): JSX.Element {
         open={!!twoFactorError && twoFactorRequired}
         autoHideDuration={5000}
         onClose={() => setTwoFactorError(null)}
-        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         sx={{
           '& .MuiSnackbar-root': {
             top: '80px !important'
