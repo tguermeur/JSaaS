@@ -5,15 +5,15 @@
 
 import { doc, getDoc } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { app, auth, db } from '../firebase/config';
+import { app, auth, db, getAppFunctions, FUNCTIONS_REGION } from '../firebase/config';
 import { batchDecryptForStructure } from './batchDecrypt';
 
 function getCallableFunctions() {
-  return app ? getFunctions(app, 'us-central1') : getFunctions(undefined, 'us-central1');
+  return app ? getAppFunctions() : getFunctions(undefined, FUNCTIONS_REGION);
 }
 
 export const isEncryptedField = (v: unknown): boolean =>
-  typeof v === 'string' && v.startsWith('ENC:');
+  typeof v === 'string' && (v.startsWith('ENC:') || v.startsWith('ENC2:'));
 
 const SUCCESS_CACHE_TTL_MS = 10 * 60 * 1000;
 const FAILURE_COOLDOWN_MS = 30 * 1000;
@@ -21,7 +21,13 @@ const FAILURE_COOLDOWN_MS = 30 * 1000;
 const MAX_DECRYPT_CONCURRENCY = 6;
 
 export type UserDisplayData = { displayName: string; firstName: string; lastName: string };
-export type RawUserDisplayData = { displayName?: string; firstName?: string; lastName?: string };
+export type RawUserDisplayData = {
+  displayName?: string;
+  firstName?: string;
+  lastName?: string;
+  displayFirstName?: string;
+  displayLastName?: string;
+};
 export type RawUserContactData = { phone?: string; studentId?: string };
 export type UserContactData = { phone: string; studentId: string };
 export type UserStructureData = UserDisplayData & UserContactData & {
@@ -245,15 +251,54 @@ export async function decryptUserContactFields(
 }
 
 function toFallback(rawData: RawUserDisplayData | null | undefined): UserDisplayData {
-  const firstName = rawData?.firstName || '';
-  const lastName = rawData?.lastName || '';
+  const fromDisplay = preferDisplayFields(rawData);
+  if (fromDisplay) return fromDisplay;
+  const firstName = rawData?.firstName && !isEncryptedField(rawData.firstName) ? rawData.firstName : '';
+  const lastName = rawData?.lastName && !isEncryptedField(rawData.lastName) ? rawData.lastName : '';
   const displayName =
-    rawData?.displayName || `${firstName} ${lastName}`.trim() || '';
+    (rawData?.displayName && !isEncryptedField(rawData.displayName) ? rawData.displayName : '') ||
+    `${firstName} ${lastName}`.trim() ||
+    '';
   return { displayName, firstName, lastName };
+}
+
+/** Utilise display* plaintext sans appeler batchDecrypt. */
+export function preferDisplayFields(
+  raw: RawUserDisplayData | null | undefined
+): UserDisplayData | null {
+  if (!raw) return null;
+  const firstName =
+    (raw.displayFirstName && !isEncryptedField(raw.displayFirstName) ? raw.displayFirstName : '') ||
+    (raw.firstName && !isEncryptedField(raw.firstName) ? raw.firstName : '');
+  const lastName =
+    (raw.displayLastName && !isEncryptedField(raw.displayLastName) ? raw.displayLastName : '') ||
+    (raw.lastName && !isEncryptedField(raw.lastName) ? raw.lastName : '');
+  const displayName =
+    (raw.displayName && !isEncryptedField(raw.displayName) ? raw.displayName : '') ||
+    `${firstName} ${lastName}`.trim();
+
+  const hasDisplayPlain =
+    (typeof raw.displayFirstName === 'string' &&
+      !!raw.displayFirstName &&
+      !isEncryptedField(raw.displayFirstName)) ||
+    (typeof raw.displayLastName === 'string' &&
+      !!raw.displayLastName &&
+      !isEncryptedField(raw.displayLastName)) ||
+    (typeof raw.displayName === 'string' &&
+      !!raw.displayName &&
+      !isEncryptedField(raw.displayName));
+
+  if (!hasDisplayPlain && !firstName && !lastName) return null;
+  if (!hasDisplayPlain && (isEncryptedField(raw.firstName) || isEncryptedField(raw.lastName))) {
+    return null;
+  }
+  if (!firstName && !lastName && !displayName) return null;
+  return { firstName, lastName, displayName };
 }
 
 function needsNameDecrypt(raw: RawUserDisplayData | null | undefined): boolean {
   if (!raw) return true;
+  if (preferDisplayFields(raw)) return false;
   return (
     isEncryptedField(raw.displayName) ||
     isEncryptedField(raw.firstName) ||
@@ -327,6 +372,8 @@ async function fetchRawUserDisplayData(userId: string): Promise<RawUserDisplayDa
       displayName: d.displayName as string | undefined,
       firstName: d.firstName as string | undefined,
       lastName: d.lastName as string | undefined,
+      displayFirstName: d.displayFirstName as string | undefined,
+      displayLastName: d.displayLastName as string | undefined,
     };
   } catch {
     return null;
@@ -335,9 +382,19 @@ async function fetchRawUserDisplayData(userId: string): Promise<RawUserDisplayDa
 
 /** Indique si le prénom/nom doit encore être déchiffré. */
 export function userNeedsNameDecrypt(
-  user: { firstName?: string; lastName?: string; displayName?: string } | null | undefined
+  user:
+    | {
+        firstName?: string;
+        lastName?: string;
+        displayName?: string;
+        displayFirstName?: string;
+        displayLastName?: string;
+      }
+    | null
+    | undefined
 ): boolean {
   if (!user) return false;
+  if (preferDisplayFields(user)) return false;
   return (
     isEncryptedField(user.firstName) ||
     isEncryptedField(user.lastName) ||
@@ -394,6 +451,12 @@ export async function decryptUserDisplayData(
     if (fetched) {
       raw = { ...fetched, ...raw };
     }
+  }
+
+  const fromDisplay = preferDisplayFields(raw);
+  if (fromDisplay) {
+    decryptCache.set(userId, { value: fromDisplay, expiresAt: Date.now() + SUCCESS_CACHE_TTL_MS });
+    return fromDisplay;
   }
 
   if (!raw || !needsNameDecrypt(raw)) {
@@ -461,19 +524,48 @@ export async function decryptUsersList<
     displayName?: string;
     firstName?: string;
     lastName?: string;
+    displayFirstName?: string;
+    displayLastName?: string;
     graduationYear?: string;
     program?: string;
   }
 >(users: T[]): Promise<T[]> {
-  const toDecrypt = users.filter(
-    (u) =>
+  // Prefill cache from display* to avoid CF for name display
+  for (const user of users) {
+    const preferred = preferDisplayFields(user);
+    if (preferred) {
+      decryptCache.set(user.id, {
+        value: preferred,
+        expiresAt: Date.now() + SUCCESS_CACHE_TTL_MS,
+      });
+    }
+  }
+
+  const toDecrypt = users.filter((u) => {
+    if (preferDisplayFields(u)) {
+      // Still need decrypt if graduationYear/program encrypted
+      return isEncryptedField(u.graduationYear) || isEncryptedField(u.program);
+    }
+    return (
       isEncryptedField(u.displayName) ||
       isEncryptedField(u.firstName) ||
       isEncryptedField(u.lastName) ||
       isEncryptedField(u.graduationYear) ||
       isEncryptedField(u.program)
-  );
-  if (toDecrypt.length === 0) return users;
+    );
+  });
+  if (toDecrypt.length === 0) {
+    return users.map((u) => {
+      const preferred = preferDisplayFields(u);
+      if (!preferred) return u;
+      return {
+        ...u,
+        firstName: preferred.firstName || u.firstName,
+        lastName: preferred.lastName || u.lastName,
+        displayName: preferred.displayName || u.displayName,
+      };
+    });
+  }
 
   const uniqueToDecrypt = Array.from(new Map(toDecrypt.map((user) => [user.id, user])).values());
   const now = Date.now();
@@ -526,7 +618,18 @@ export async function decryptUsersList<
     return merged;
   });
   const decryptedMap = new Map(decrypted.map((u) => [u.id, u]));
-  return users.map((u) => decryptedMap.get(u.id) || u);
+  return users.map((u) => {
+    const fromBatch = decryptedMap.get(u.id);
+    if (fromBatch) return fromBatch;
+    const preferred = preferDisplayFields(u);
+    if (!preferred) return u;
+    return {
+      ...u,
+      firstName: preferred.firstName || u.firstName,
+      lastName: preferred.lastName || u.lastName,
+      displayName: preferred.displayName || u.displayName,
+    };
+  });
 }
 
 /**
@@ -635,11 +738,21 @@ export function getSafeDisplayName(
     displayName?: string | null;
     firstName?: string | null;
     lastName?: string | null;
+    displayFirstName?: string | null;
+    displayLastName?: string | null;
     email?: string | null;
   } | null | undefined,
   fallback = 'Utilisateur'
 ): string {
   if (!user) return fallback;
+  const preferred = preferDisplayFields({
+    displayName: user.displayName ?? undefined,
+    firstName: user.firstName ?? undefined,
+    lastName: user.lastName ?? undefined,
+    displayFirstName: user.displayFirstName ?? undefined,
+    displayLastName: user.displayLastName ?? undefined,
+  });
+  if (preferred?.displayName) return preferred.displayName;
   const firstName = user.firstName && !isEncryptedField(user.firstName) ? user.firstName : '';
   const lastName = user.lastName && !isEncryptedField(user.lastName) ? user.lastName : '';
   const fromParts = `${firstName} ${lastName}`.trim();

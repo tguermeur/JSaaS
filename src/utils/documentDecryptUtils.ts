@@ -3,13 +3,12 @@
  * Utilise les Cloud Functions "ForStructure" (sans 2FA).
  */
 import { httpsCallable } from 'firebase/functions';
-import { getFunctions } from 'firebase/functions';
-import { app } from '../firebase/config';
+import { getAppFunctions } from '../firebase/config';
 import { isEncryptedField } from './decryptUserUtils';
 
 type RecordData = Record<string, unknown>;
 
-const functions = () => getFunctions(app, 'us-central1');
+const functions = () => getAppFunctions();
 
 export function recordHasEncryptedFields(
   data: RecordData | null | undefined,

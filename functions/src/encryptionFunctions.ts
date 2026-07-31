@@ -9,6 +9,7 @@ import {
   decrypt, 
   encryptSensitiveFields, 
   decryptSensitiveFields,
+  encryptUserFieldsWithDisplay,
   SENSITIVE_FIELDS 
 } from './encryption';
 import { verifyTwoFactorCodeForAccess } from './twoFactor';
@@ -66,8 +67,8 @@ export const encryptUserData = onCall(functionConfig, async (request) => {
       }
     }
 
-    // Chiffrer les champs sensibles
-    const encrypted = await encryptSensitiveFields(userData, SENSITIVE_FIELDS.USER);
+    // Chiffrer les champs sensibles + copies display* en clair
+    const encrypted = await encryptUserFieldsWithDisplay(userData);
     
     return { success: true, encryptedData: encrypted };
   } catch (error: any) {
@@ -353,19 +354,42 @@ export const decryptCompanyData = onCall(functionConfig, async (request) => {
   }
 
   try {
-    const { companyId, twoFactorCode } = request.data;
+    const { companyId, twoFactorCode, structureId: requestStructureId } = request.data;
     const requestingUserId = request.auth.uid;
 
-    const companyDoc = await admin.firestore().collection('companies').doc(companyId).get();
-    
-    if (!companyDoc.exists) {
-      throw new Error('Entreprise non trouvée');
+    const requestingUserDoc = await admin.firestore().collection('users').doc(requestingUserId).get();
+    const requestingUser = requestingUserDoc.data();
+    const callerStructureId = requestingUser?.structureId as string | undefined;
+    const isSuperAdmin =
+      requestingUser?.status === 'superadmin' || requestingUser?.role === 'superadmin';
+
+    if (!isSuperAdmin && !callerStructureId) {
+      throw new Error('Non autorisé : structureId requis pour le déchiffrement');
+    }
+
+    let companyData: Record<string, unknown> | undefined;
+    let resolvedCompanyId = typeof companyId === 'string' ? companyId : undefined;
+
+    if (resolvedCompanyId) {
+      const companyDoc = await admin.firestore().collection('companies').doc(resolvedCompanyId).get();
+      if (!companyDoc.exists) {
+        throw new Error('Entreprise non trouvée');
+      }
+      companyData = companyDoc.data() as Record<string, unknown>;
+      const companyStructureId = companyData?.structureId as string | undefined;
+      if (!isSuperAdmin && companyStructureId !== callerStructureId) {
+        throw new Error('Non autorisé : entreprise hors de votre structure');
+      }
+    } else if (requestStructureId) {
+      if (!isSuperAdmin && requestStructureId !== callerStructureId) {
+        throw new Error('Non autorisé : structureId ne correspond pas');
+      }
+      throw new Error('companyId requis pour le déchiffrement');
+    } else {
+      throw new Error('companyId ou structureId requis');
     }
 
     // Vérifier que l'utilisateur a la 2FA activée
-    const requestingUserDoc = await admin.firestore().collection('users').doc(requestingUserId).get();
-    const requestingUser = requestingUserDoc.data();
-
     if (!requestingUser?.twoFactorEnabled) {
       throw new Error('Vous devez activer l\'authentification à deux facteurs (2FA) pour accéder aux données cryptées');
     }
@@ -381,14 +405,13 @@ export const decryptCompanyData = onCall(functionConfig, async (request) => {
       throw new Error('Code 2FA invalide. Veuillez réessayer.');
     }
 
-    const companyData = companyDoc.data();
     const decrypted = await decryptSensitiveFields(companyData!, SENSITIVE_FIELDS.COMPANY);
 
     // Logger l'accès aux données cryptées
     await logEncryptedDataAccess(
       requestingUserId,
       'decrypt_company',
-      companyId,
+      resolvedCompanyId || 'unknown',
       true,
       {
         ip: request.rawRequest?.ip,
@@ -696,19 +719,54 @@ export const decryptContactData = onCall(functionConfig, async (request) => {
   }
 
   try {
-    const { contactId, twoFactorCode } = request.data;
+    const { contactId, twoFactorCode, structureId: requestStructureId } = request.data;
     const requestingUserId = request.auth.uid;
 
-    const contactDoc = await admin.firestore().collection('contacts').doc(contactId).get();
-    
-    if (!contactDoc.exists) {
-      throw new Error('Contact non trouvé');
+    const requestingUserDoc = await admin.firestore().collection('users').doc(requestingUserId).get();
+    const requestingUser = requestingUserDoc.data();
+    const callerStructureId = requestingUser?.structureId as string | undefined;
+    const isSuperAdmin =
+      requestingUser?.status === 'superadmin' || requestingUser?.role === 'superadmin';
+
+    if (!isSuperAdmin && !callerStructureId) {
+      throw new Error('Non autorisé : structureId requis pour le déchiffrement');
+    }
+
+    let contactData: Record<string, unknown> | undefined;
+    let resolvedContactId = typeof contactId === 'string' ? contactId : undefined;
+
+    if (resolvedContactId) {
+      const contactDoc = await admin.firestore().collection('contacts').doc(resolvedContactId).get();
+      if (!contactDoc.exists) {
+        throw new Error('Contact non trouvé');
+      }
+      contactData = contactDoc.data() as Record<string, unknown>;
+
+      let contactStructureId = contactData?.structureId as string | undefined;
+      if (!contactStructureId && contactData?.companyId) {
+        const companyDoc = await admin
+          .firestore()
+          .collection('companies')
+          .doc(String(contactData.companyId))
+          .get();
+        contactStructureId = companyDoc.exists
+          ? (companyDoc.data()?.structureId as string | undefined)
+          : undefined;
+      }
+
+      if (!isSuperAdmin && contactStructureId !== callerStructureId) {
+        throw new Error('Non autorisé : contact hors de votre structure');
+      }
+    } else if (requestStructureId) {
+      if (!isSuperAdmin && requestStructureId !== callerStructureId) {
+        throw new Error('Non autorisé : structureId ne correspond pas');
+      }
+      throw new Error('contactId requis pour le déchiffrement');
+    } else {
+      throw new Error('contactId ou structureId requis');
     }
 
     // Vérifier que l'utilisateur a la 2FA activée
-    const requestingUserDoc = await admin.firestore().collection('users').doc(requestingUserId).get();
-    const requestingUser = requestingUserDoc.data();
-
     if (!requestingUser?.twoFactorEnabled) {
       throw new Error('Vous devez activer l\'authentification à deux facteurs (2FA) pour accéder aux données cryptées');
     }
@@ -724,14 +782,13 @@ export const decryptContactData = onCall(functionConfig, async (request) => {
       throw new Error('Code 2FA invalide. Veuillez réessayer.');
     }
 
-    const contactData = contactDoc.data();
     const decrypted = await decryptSensitiveFields(contactData!, SENSITIVE_FIELDS.CONTACT);
 
     // Logger l'accès aux données cryptées
     await logEncryptedDataAccess(
       requestingUserId,
       'decrypt_contact',
-      contactId,
+      resolvedContactId || 'unknown',
       true,
       {
         ip: request.rawRequest?.ip,
@@ -803,7 +860,10 @@ const lowResourceConfig = {
 };
 
 /**
- * Déchiffre un texte arbitraire
+ * Déchiffre un texte arbitraire.
+ * Isolation Phase 1 : le ciphertext n'est pas lié cryptographiquement à une structure
+ * (pas de HKDF par tenant encore), mais on exige request.data.structureId === caller.structureId
+ * pour éviter un oracle de déchiffrement cross-tenant ouvert.
  */
 export const decryptText = onCall(lowResourceConfig, async (request) => {
   if (!request.auth) {
@@ -812,13 +872,22 @@ export const decryptText = onCall(lowResourceConfig, async (request) => {
 
   const callerSnap = await admin.firestore().collection('users').doc(request.auth.uid).get();
   const caller = callerSnap.data();
+  const callerStructureId = caller?.structureId as string | undefined;
+  const isSuperAdmin = caller?.status === 'superadmin' || caller?.role === 'superadmin';
   const memberStatuses = ['admin', 'admin_structure', 'membre', 'member', 'etudiant', 'entreprise'];
   if (
-    caller?.status !== 'superadmin' &&
-    caller?.role !== 'superadmin' &&
-    (!caller?.structureId || !memberStatuses.includes(caller?.status ?? ''))
+    !isSuperAdmin &&
+    (!callerStructureId || !memberStatuses.includes(caller?.status ?? ''))
   ) {
     throw new Error('Permissions insuffisantes pour déchiffrer');
+  }
+
+  const requestStructureId = request.data?.structureId as string | undefined;
+  if (!requestStructureId || typeof requestStructureId !== 'string') {
+    throw new Error('structureId requis');
+  }
+  if (!isSuperAdmin && requestStructureId !== callerStructureId) {
+    throw new Error('Non autorisé : structureId ne correspond pas');
   }
 
   try {

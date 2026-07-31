@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { auth, app, db } from '../firebase/config';
+import { auth, app, db, getAppFunctions, FUNCTIONS_REGION } from '../firebase/config';
 import { onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth';
 import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
@@ -211,7 +211,13 @@ export function AuthProvider({ children }) {
             }
           }, 8000);
 
-          user.getIdToken(true).catch(e => console.error("Erreur refresh token initial:", e));
+          void (async () => {
+            try {
+              await user.getIdToken(true);
+            } catch (e) {
+              console.error("Erreur refresh token initial:", e);
+            }
+          })();
           
           unsubscribeSnapshot = onSnapshot(userDocRef, async (userDocSnap) => {
             try {
@@ -238,7 +244,7 @@ export function AuthProvider({ children }) {
                     dec = ownDecryptCache.data;
                   } else if (ownDecryptCooldownUntil <= now) {
                     if (!ownDecryptInFlight) {
-                      const functionsInstance = app ? getFunctions(app, 'us-central1') : getFunctions();
+                      const functionsInstance = app ? getAppFunctions() : getFunctions();
                       const decryptOwnUserData = httpsCallable(functionsInstance, 'decryptOwnUserData');
                       ownDecryptInFlight = decryptOwnUserData({})
                         .then((result) => {
@@ -390,7 +396,11 @@ export function AuthProvider({ children }) {
                 previousData.status !== newImportantFields.status
             )) {
               console.log("Mise à jour des droits détectée, rafraîchissement du token...");
-              user.getIdToken(true).catch(e => console.error("Erreur refresh token:", e));
+              try {
+                await user.getIdToken(true);
+              } catch (e) {
+                console.error("Erreur refresh token:", e);
+              }
             }
 
             // Créer un objet utilisateur étendu avec toutes les données
@@ -791,6 +801,11 @@ export function AuthProvider({ children }) {
     try {
       setLoading(true);
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      try {
+        await userCredential.user.getIdToken(true);
+      } catch (tokenErr) {
+        console.error("Erreur refresh token après login:", tokenErr);
+      }
       await updateLastActivity();
       return userCredential.user;
     } catch (err: any) {

@@ -3,6 +3,7 @@ import {
   decryptUserDisplayData,
   getCachedUserDisplayData,
   isEncryptedField,
+  preferDisplayFields,
   subscribeUserNameCache,
   userNeedsNameDecrypt,
   type RawUserDisplayData,
@@ -13,10 +14,13 @@ export type UseDecryptedUserNameInput = {
   firstName?: string;
   lastName?: string;
   displayName?: string;
+  displayFirstName?: string;
+  displayLastName?: string;
 };
 
 /**
  * Déchiffre automatiquement prénom / nom pour l'affichage React (cache global partagé).
+ * Préfère displayFirstName / displayLastName / displayName plaintext (0 appel CF).
  */
 export function useDecryptedUserName(
   user: UseDecryptedUserNameInput | null | undefined,
@@ -33,15 +37,23 @@ export function useDecryptedUserName(
     return null;
   }, [userId]);
 
-  const [names, setNames] = useState<RawUserDisplayData | null>(() => readCached());
+  const fromDisplayFields = preferDisplayFields(user);
+
+  const [names, setNames] = useState<RawUserDisplayData | null>(() => fromDisplayFields || readCached());
   const [isDecrypting, setIsDecrypting] = useState(() => {
     if (!userId) return false;
-    if (readCached()) return false;
+    if (fromDisplayFields || readCached()) return false;
     return userNeedsNameDecrypt(user);
   });
 
   const refresh = useCallback(async () => {
     if (!userId) return;
+    const preferred = preferDisplayFields(user);
+    if (preferred) {
+      setNames(preferred);
+      setIsDecrypting(false);
+      return;
+    }
     const cached = readCached();
     if (cached) {
       setNames(cached);
@@ -66,16 +78,34 @@ export function useDecryptedUserName(
         displayName: user?.displayName,
         firstName: user?.firstName,
         lastName: user?.lastName,
+        displayFirstName: user?.displayFirstName,
+        displayLastName: user?.displayLastName,
       });
       setNames(dec);
     } finally {
       setIsDecrypting(false);
     }
-  }, [userId, user?.displayName, user?.firstName, user?.lastName, fallback, readCached, user]);
+  }, [
+    userId,
+    user?.displayName,
+    user?.firstName,
+    user?.lastName,
+    user?.displayFirstName,
+    user?.displayLastName,
+    fallback,
+    readCached,
+    user,
+  ]);
 
   useEffect(() => {
     if (!userId) {
       setNames(null);
+      setIsDecrypting(false);
+      return;
+    }
+    const preferred = preferDisplayFields(user);
+    if (preferred) {
+      setNames(preferred);
       setIsDecrypting(false);
       return;
     }
@@ -98,7 +128,18 @@ export function useDecryptedUserName(
       return;
     }
     void refresh();
-  }, [userId, user?.firstName, user?.lastName, user?.displayName, fallback, refresh, readCached, user]);
+  }, [
+    userId,
+    user?.firstName,
+    user?.lastName,
+    user?.displayName,
+    user?.displayFirstName,
+    user?.displayLastName,
+    fallback,
+    refresh,
+    readCached,
+    user,
+  ]);
 
   useEffect(() => {
     if (!userId) return undefined;
@@ -120,8 +161,8 @@ export function useDecryptedUserName(
       fallback;
 
   const computeInitials = (): string => {
-    const firstName = names?.firstName || user?.firstName || '';
-    const lastName = names?.lastName || user?.lastName || '';
+    const firstName = names?.firstName || user?.displayFirstName || user?.firstName || '';
+    const lastName = names?.lastName || user?.displayLastName || user?.lastName || '';
     const fromNames = `${firstName.charAt(0)}${lastName.charAt(0)}`.trim();
     if (fromNames) return fromNames.toUpperCase();
 
@@ -137,8 +178,8 @@ export function useDecryptedUserName(
   const initials = loading ? '' : computeInitials();
 
   return {
-    firstName: names?.firstName ?? (loading ? '' : user?.firstName ?? ''),
-    lastName: names?.lastName ?? (loading ? '' : user?.lastName ?? ''),
+    firstName: names?.firstName ?? (loading ? '' : user?.displayFirstName ?? user?.firstName ?? ''),
+    lastName: names?.lastName ?? (loading ? '' : user?.displayLastName ?? user?.lastName ?? ''),
     displayName: names?.displayName ?? (loading ? '' : user?.displayName ?? ''),
     fullName,
     initials,

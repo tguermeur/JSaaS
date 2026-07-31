@@ -1,10 +1,9 @@
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { app } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
+import { getAppFunctions } from '../firebase/config';
 import type { SignatureEvent, SignatureRequest } from '../types/signature';
 
 function getFns() {
-  if (!app) throw new Error('Firebase non initialisé');
-  return getFunctions(app, 'us-central1');
+  return getAppFunctions();
 }
 
 export type SignerInput = {

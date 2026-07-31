@@ -16,7 +16,7 @@
   ],
   "host_permissions": [
     "https://*.linkedin.com/*",
-    "https://us-central1-jsaas-dd2f7.cloudfunctions.net/*"
+    "https://*.cloudfunctions.net/*"
   ],
   "oauth2": {
     "client_id": "VOTRE_CLIENT_ID.apps.googleusercontent.com",

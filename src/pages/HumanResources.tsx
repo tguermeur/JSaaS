@@ -1944,7 +1944,7 @@ const HumanResources = () => {
             setTwoFactorDialogOpen(true);
             return;
           }
-          const functions = getFunctions(undefined, 'us-central1');
+          const functions = getFunctions(undefined, (import.meta.env.VITE_FUNCTIONS_REGION as string) || 'us-central1');
           const decryptUserData = httpsCallable(functions, 'decryptUserData');
           const result = await decryptUserData({
             userId: selectedUser.id,
@@ -2464,7 +2464,7 @@ const HumanResources = () => {
       if (canRead) {
         mergedData = await decryptUserViaStructure(selectedUser);
       } else {
-        const functions = getFunctions(undefined, 'us-central1');
+        const functions = getFunctions(undefined, (import.meta.env.VITE_FUNCTIONS_REGION as string) || 'us-central1');
         const decryptUserData = httpsCallable(functions, 'decryptUserData');
         const deviceId = getDeviceId();
         const result = await decryptUserData({

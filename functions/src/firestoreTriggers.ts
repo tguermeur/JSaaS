@@ -4,7 +4,7 @@
  */
 
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { encryptSensitiveFields, SENSITIVE_FIELDS } from './encryption';
+import { encryptUserFieldsWithDisplay, SENSITIVE_FIELDS } from './encryption';
 
 const triggerConfig = {
   memory: '256MiB' as const,
@@ -19,6 +19,7 @@ const triggerConfig = {
  * Chiffre les champs sensibles des documents users à chaque écriture
  * (création ou mise à jour). Évite les boucles en ne traitant que les
  * champs non encore chiffrés (sans préfixe ENC:).
+ * Écrit aussi displayFirstName / displayLastName / displayName en clair.
  */
 export const encryptUserOnWrite = onDocumentWritten(
   {
@@ -38,20 +39,35 @@ export const encryptUserOnWrite = onDocumentWritten(
       return;
     }
 
+    const isEnc = (v: unknown) =>
+      typeof v === 'string' && (v.startsWith('ENC:') || v.startsWith('ENC2:'));
     const hasSensitiveData = SENSITIVE_FIELDS.USER.some(
       (field) =>
+        field !== 'displayName' &&
         userData[field] != null &&
         typeof userData[field] === 'string' &&
         (userData[field] as string).trim() !== '' &&
-        !(userData[field] as string).startsWith('ENC:')
+        !isEnc(userData[field])
     );
 
+    const needsDisplayBackfill =
+      (isEnc(userData.firstName) || isEnc(userData.lastName) || isEnc(userData.displayName)) &&
+      (!userData.displayFirstName ||
+        !userData.displayLastName ||
+        (typeof userData.displayName === 'string' && isEnc(userData.displayName)));
+
+    // Noms déjà chiffrés sans display* : ne pas re-chiffrer ici (besoin decrypt via backfill CF)
     if (!hasSensitiveData) {
+      if (needsDisplayBackfill) {
+        console.log(
+          `[encryptUserOnWrite] display* manquants pour ${userId} — utiliser backfillDisplayFields`
+        );
+      }
       return;
     }
 
     try {
-      const encrypted = await encryptSensitiveFields(userData, [...SENSITIVE_FIELDS.USER]);
+      const encrypted = await encryptUserFieldsWithDisplay(userData);
       await change.after.ref.set(encrypted, { merge: true });
       console.log(`[encryptUserOnWrite] Données sensibles chiffrées pour l'utilisateur ${userId}`);
     } catch (error) {

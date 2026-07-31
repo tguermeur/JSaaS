@@ -36,7 +36,7 @@ interface ExtendedReport extends Report {
 }
 
 const ReportsTab: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
   const { enqueueSnackbar } = useSnackbar();
   const [reports, setReports] = useState<ExtendedReport[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,10 +50,7 @@ const ReportsTab: React.FC = () => {
   const fetchUserReports = async () => {
     if (!currentUser) return;
     try {
-      // Idéalement, getReports devrait accepter un userId pour filtrer côté serveur
-      // Ici on filtre côté client comme solution temporaire
-      const allReports = await getReports() as ExtendedReport[];
-      const userReports = allReports.filter(r => r.userId === currentUser.uid);
+      const userReports = await getReports({ userId: currentUser.uid }) as ExtendedReport[];
       // Tri par date décroissante
       userReports.sort((a, b) => {
         const dateA = new Date(a.createdAt).getTime();
@@ -83,7 +80,8 @@ const ReportsTab: React.FC = () => {
         content: newReportContent,
         userId: currentUser.uid,
         userEmail: currentUser.email || '',
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        ...(userData?.structureId ? { structureId: userData.structureId as string } : {}),
       });
       
       enqueueSnackbar('Rapport envoyé avec succès', { variant: 'success' });

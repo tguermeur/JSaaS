@@ -110,13 +110,58 @@ export function generateEncryptionKey(): string {
 }
 
 /**
+ * Indique si une valeur est un ciphertext connu (legacy ENC: ou tenant ENC2:).
+ */
+export function isEncryptedValue(value: unknown): boolean {
+  return typeof value === 'string' && (value.startsWith('ENC:') || value.startsWith('ENC2:'));
+}
+
+function isPlaintextString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '' && !isEncryptedValue(value);
+}
+
+/**
+ * Copie prénom/nom en clair vers display* (jamais chiffrés) avant chiffrement des champs sensibles.
+ */
+export function populateUserDisplayFields<T extends Record<string, any>>(data: T): T {
+  if (!data || typeof data !== 'object') return data;
+
+  const out: Record<string, any> = { ...data };
+  const first = isPlaintextString(out.firstName)
+    ? out.firstName.trim()
+    : isPlaintextString(out.displayFirstName)
+      ? out.displayFirstName.trim()
+      : '';
+  const last = isPlaintextString(out.lastName)
+    ? out.lastName.trim()
+    : isPlaintextString(out.displayLastName)
+      ? out.displayLastName.trim()
+      : '';
+  const display = isPlaintextString(out.displayName)
+    ? out.displayName.trim()
+    : `${first} ${last}`.trim();
+
+  if (first) out.displayFirstName = first;
+  if (last) out.displayLastName = last;
+  if (display) out.displayName = display;
+
+  return out as T;
+}
+
+/**
  * Chiffre un texte en utilisant AES-256-GCM
  * @param text - Texte à chiffrer
- * @returns Objet avec le texte chiffré, IV et tag
+ * @param structureId - Si fourni, utilise une clé dérivée par tenant (ENC2:)
+ * @returns Texte chiffré (ENC: legacy ou ENC2: tenant)
  */
-export async function encrypt(text: string): Promise<string> {
+export async function encrypt(text: string, structureId?: string): Promise<string> {
   if (!text || text.trim() === '') {
     return text; // Ne pas chiffrer les chaînes vides
+  }
+
+  if (structureId) {
+    const { encryptWithTenantKey } = await import('./tenantCrypto');
+    return encryptWithTenantKey(text, structureId);
   }
 
   try {
@@ -149,11 +194,22 @@ export async function encrypt(text: string): Promise<string> {
 
 /**
  * Déchiffre un texte chiffré avec AES-256-GCM
- * @param encryptedText - Texte chiffré (format: ENC:{iv}{tag}{encrypted})
+ * Gère ENC2: (tenant) puis ENC: (clé globale legacy).
+ * @param encryptedText - Texte chiffré
+ * @param structureId - Requis pour ENC2: si non embarqué / pour dériver la clé
  * @returns Texte déchiffré
  */
-export async function decrypt(encryptedText: string): Promise<string> {
-  if (!encryptedText || !encryptedText.startsWith('ENC:')) {
+export async function decrypt(encryptedText: string, structureId?: string): Promise<string> {
+  if (!encryptedText || typeof encryptedText !== 'string') {
+    return encryptedText;
+  }
+
+  if (encryptedText.startsWith('ENC2:')) {
+    const { decryptWithTenantKey } = await import('./tenantCrypto');
+    return decryptWithTenantKey(encryptedText, structureId);
+  }
+
+  if (!encryptedText.startsWith('ENC:')) {
     return encryptedText; // Pas chiffré, retourner tel quel
   }
 
@@ -184,6 +240,15 @@ export async function decrypt(encryptedText: string): Promise<string> {
     
     return decrypted;
   } catch (error) {
+    // Fallback : tenter clé tenant si structureId fourni (migration partielle)
+    if (structureId) {
+      try {
+        const { decryptWithTenantKey } = await import('./tenantCrypto');
+        return await decryptWithTenantKey(encryptedText, structureId);
+      } catch {
+        // ignorer et rethrow l'erreur legacy
+      }
+    }
     console.error('Erreur lors du déchiffrement:', error);
     throw new Error('Erreur lors du déchiffrement des données. La clé est peut-être incorrecte ou les données sont corrompues.');
   }
@@ -197,13 +262,36 @@ export async function decrypt(encryptedText: string): Promise<string> {
  */
 export async function encryptSensitiveFields<T extends Record<string, any>>(
   data: T,
-  sensitiveFields: readonly string[]
+  sensitiveFields: readonly string[],
+  options?: { structureId?: string }
 ): Promise<T> {
   if (!data || typeof data !== 'object') {
     return data;
   }
 
-  const encrypted: Record<string, any> = { ...data };
+  const isUserFields =
+    sensitiveFields.includes('firstName') ||
+    sensitiveFields.includes('lastName') ||
+    sensitiveFields.includes('displayName');
+
+  // display* en clair avant chiffrement des noms (listes UI sans CF)
+  let encrypted: Record<string, any> = isUserFields
+    ? populateUserDisplayFields({ ...data })
+    : { ...data };
+
+  // Ne jamais chiffrer les champs d'affichage
+  const plainDisplayName = isPlaintextString(encrypted.displayName)
+    ? encrypted.displayName
+    : undefined;
+  const plainDisplayFirst = isPlaintextString(encrypted.displayFirstName)
+    ? encrypted.displayFirstName
+    : undefined;
+  const plainDisplayLast = isPlaintextString(encrypted.displayLastName)
+    ? encrypted.displayLastName
+    : undefined;
+
+  // Clé tenant uniquement si explicitement demandée (pas auto depuis data.structureId)
+  const structureId = options?.structureId;
 
   for (const field of sensitiveFields) {
     if (field in encrypted && encrypted[field] !== null && encrypted[field] !== undefined) {
@@ -224,9 +312,13 @@ export async function encryptSensitiveFields<T extends Record<string, any>>(
       }
       
       // Ne chiffrer que les chaînes non vides et non déjà chiffrées
-      if (typeof value === 'string' && value.trim() !== '' && !value.startsWith('ENC:')) {
+      // displayName reste en clair (mirror UI) — firstName/lastName restent chiffrés
+      if (field === 'displayName') {
+        continue;
+      }
+      if (typeof value === 'string' && value.trim() !== '' && !isEncryptedValue(value)) {
         try {
-          encrypted[field] = await encrypt(value);
+          encrypted[field] = await encrypt(value, structureId);
         } catch (error) {
           console.error(`Erreur lors du chiffrement du champ ${field}:`, error);
           // En cas d'erreur, ne pas chiffrer (mieux que de perdre les données)
@@ -235,7 +327,73 @@ export async function encryptSensitiveFields<T extends Record<string, any>>(
     }
   }
 
+  // Garantir display* non chiffrés après boucle
+  if (plainDisplayFirst) encrypted.displayFirstName = plainDisplayFirst;
+  if (plainDisplayLast) encrypted.displayLastName = plainDisplayLast;
+  if (plainDisplayName) encrypted.displayName = plainDisplayName;
+
   return encrypted as T;
+}
+
+/**
+ * Après chiffrement des noms : conserve des copies plaintext pour l'affichage listes
+ * (displayFirstName / displayLastName / displayName). Ne jamais y mettre le NIR.
+ */
+export function applyUserDisplayFields<T extends Record<string, any>>(data: T): T {
+  if (!data || typeof data !== 'object') return data;
+
+  const isEnc = (v: unknown): boolean => isEncryptedValue(v);
+
+  const plainOr = (primary: unknown, fallback?: unknown): string => {
+    if (typeof primary === 'string' && primary.trim() !== '' && !isEnc(primary)) {
+      return primary.trim();
+    }
+    if (typeof fallback === 'string' && fallback.trim() !== '' && !isEnc(fallback)) {
+      return fallback.trim();
+    }
+    return '';
+  };
+
+  const firstName = plainOr(data.firstName, data.displayFirstName);
+  const lastName = plainOr(data.lastName, data.displayLastName);
+  const displayName = plainOr(data.displayName) || `${firstName} ${lastName}`.trim();
+
+  const out: Record<string, any> = { ...data };
+  if (firstName) out.displayFirstName = firstName;
+  if (lastName) out.displayLastName = lastName;
+  if (displayName) out.displayName = displayName;
+  return out as T;
+}
+
+/**
+ * Chiffre les champs sensibles user puis ré-applique les display* en clair.
+ */
+export async function encryptUserFieldsWithDisplay<T extends Record<string, any>>(
+  data: T
+): Promise<T> {
+  const firstName =
+    typeof data.firstName === 'string' && !isEncryptedValue(data.firstName)
+      ? data.firstName.trim()
+      : typeof data.displayFirstName === 'string' && !isEncryptedValue(data.displayFirstName)
+        ? data.displayFirstName.trim()
+        : '';
+  const lastName =
+    typeof data.lastName === 'string' && !isEncryptedValue(data.lastName)
+      ? data.lastName.trim()
+      : typeof data.displayLastName === 'string' && !isEncryptedValue(data.displayLastName)
+        ? data.displayLastName.trim()
+        : '';
+  const displayName =
+    typeof data.displayName === 'string' && !isEncryptedValue(data.displayName)
+      ? data.displayName.trim()
+      : `${firstName} ${lastName}`.trim();
+
+  const encrypted = await encryptSensitiveFields(data, [...SENSITIVE_FIELDS.USER]);
+  const withDisplay = { ...encrypted } as Record<string, any>;
+  if (firstName) withDisplay.displayFirstName = firstName;
+  if (lastName) withDisplay.displayLastName = lastName;
+  if (displayName) withDisplay.displayName = displayName;
+  return withDisplay as T;
 }
 
 /**
@@ -263,10 +421,12 @@ export async function decryptSensitiveFields<T extends Record<string, any>>(
         console.log(`[Decrypt] birthDate trouvée - Type: ${typeof value}, Valeur: ${value}, Commence par ENC: ${typeof value === 'string' && value.startsWith('ENC:')}`);
       }
       
-      // Déchiffrer uniquement les chaînes qui commencent par ENC:
-      if (typeof value === 'string' && value.startsWith('ENC:')) {
+      // Déchiffrer ENC: / ENC2:
+      if (typeof value === 'string' && isEncryptedValue(value)) {
         try {
-          const decryptedValue = await decrypt(value);
+          const structureId =
+            typeof decrypted.structureId === 'string' ? decrypted.structureId : undefined;
+          const decryptedValue = await decrypt(value, structureId);
           decrypted[field] = decryptedValue;
           
           // Log pour birthDate
@@ -277,7 +437,7 @@ export async function decryptSensitiveFields<T extends Record<string, any>>(
           console.error(`Erreur lors du déchiffrement du champ ${field}:`, error);
           // En cas d'erreur, garder la valeur chiffrée (mieux que de perdre les données)
         }
-      } else if (field === 'birthDate' && typeof value === 'string' && !value.startsWith('ENC:')) {
+      } else if (field === 'birthDate' && typeof value === 'string' && !isEncryptedValue(value)) {
         // Si birthDate existe mais n'est pas chiffrée, log pour debug
         console.log(`[Decrypt] birthDate non chiffrée trouvée: ${value}`);
       }

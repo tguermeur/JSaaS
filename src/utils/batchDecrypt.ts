@@ -3,14 +3,14 @@
  */
 
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { app } from '../firebase/config';
+import { app, getAppFunctions, FUNCTIONS_REGION } from '../firebase/config';
 
 export type BatchDecryptEntity = 'user' | 'company' | 'contact' | 'prospect';
 
 const BATCH_SIZE = 50;
 
 function getCallableFunctions() {
-  return app ? getFunctions(app, 'us-central1') : getFunctions(undefined, 'us-central1');
+  return app ? getAppFunctions() : getFunctions(undefined, FUNCTIONS_REGION);
 }
 
 export type BatchDecryptResponse = {

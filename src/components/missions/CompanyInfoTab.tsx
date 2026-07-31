@@ -49,7 +49,7 @@ import { uploadCompanyLogo } from '../../firebase/storage';
 import { collection, getDocs, query, where, doc, getDoc, updateDoc, addDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { batchDecryptForStructure } from '../../utils/batchDecrypt';
-import { app, db } from '../../firebase/config';
+import { app, db, getAppFunctions } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { Company, Contact } from '../../pages/Entreprises';
 import { tokens } from '../../theme/tokens';
@@ -74,7 +74,7 @@ const safeContactField = (v: unknown): string => {
 };
 
 const getCallableFunctions = () =>
-  app ? getFunctions(app, 'us-central1') : getFunctions();
+  app ? getAppFunctions() : getFunctions();
 
 interface AmbassadorSettings {
   companyId: string;

@@ -232,6 +232,31 @@ export const isStorageAvailable = (): boolean => {
   }
 };
 
+/** Région Cloud Functions (env) — défaut prod actuelle jusqu'à bascule EU (Phase 6). */
+export const FUNCTIONS_REGION =
+  (import.meta.env.VITE_FUNCTIONS_REGION as string | undefined)?.trim() || 'us-central1';
+
+/**
+ * Base URL HTTP des Cloud Functions.
+ * Préférer VITE_FUNCTIONS_BASE_URL ; sinon dériver du projectId + région.
+ */
+export function getFunctionsBaseUrl(): string {
+  const fromEnv = (import.meta.env.VITE_FUNCTIONS_BASE_URL as string | undefined)?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, '');
+  const projectId = firebaseConfig.projectId as string;
+  return `https://${FUNCTIONS_REGION}-${projectId}.cloudfunctions.net`;
+}
+
+export function getFunctionsUrl(functionName: string): string {
+  return `${getFunctionsBaseUrl()}/${functionName.replace(/^\//, '')}`;
+}
+
+/** Instance Functions synchrone (région configurable). */
+export function getAppFunctions() {
+  if (!app) throw new Error('Firebase app non initialisée');
+  return getFunctions(app, FUNCTIONS_REGION);
+}
+
 // Initialiser Firebase Functions de manière paresseuse
 let functionsInstance: any = null;
 
@@ -248,8 +273,8 @@ export const getFirebaseFunctions = async () => {
       
       // Initialisation des fonctions avec gestion d'erreur améliorée
       try {
-        functionsInstance = getFunctions(app, 'us-central1');
-        if (DEBUG_FIREBASE) console.log('Firebase Functions initialisé (us-central1)');
+        functionsInstance = getFunctions(app, FUNCTIONS_REGION);
+        if (DEBUG_FIREBASE) console.log(`Firebase Functions initialisé (${FUNCTIONS_REGION})`);
       } catch (functionsError) {
         console.error('Erreur lors de l\'initialisation de Firebase Functions:', functionsError);
         try {

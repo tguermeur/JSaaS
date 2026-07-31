@@ -1,6 +1,6 @@
 // Ajoutez ces imports au début du fichier
 import { db, storage } from '../firebase/config';
-import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, getDoc, serverTimestamp, query, where } from 'firebase/firestore';
+import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, getDoc, serverTimestamp, query, where, limit } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { useAuth } from '../contexts/AuthContext';
 import React, { useState, useRef, useEffect } from 'react';
@@ -2718,14 +2718,20 @@ const TemplatesPDF: React.FC = () => {
       const structureTypeValue = structureData.structureType || 'jobservice';
       setStructureType(structureTypeValue);
 
-      const missionsSnapshot = await getDocs(collection(db, 'missions'));
-      const usersSnapshot = await getDocs(collection(db, 'users'));
-      const companiesSnapshot = await getDocs(collection(db, 'companies'));
-      const expenseNotesSnapshot = await getDocs(collection(db, 'expenseNotes'));
-      const workingHoursSnapshot = await getDocs(collection(db, 'workingHours'));
+      const structureId = userData.structureId as string;
+      // Filtrer par structure — pas de scan global expenseNotes/workingHours
+      // (pas toujours de structureId ; dérivés via missionId si besoin).
+      const missionsSnapshot = await getDocs(
+        query(collection(db, 'missions'), where('structureId', '==', structureId), limit(500))
+      );
+      const usersSnapshot = await getDocs(
+        query(collection(db, 'users'), where('structureId', '==', structureId), limit(500))
+      );
+      const companiesSnapshot = await getDocs(
+        query(collection(db, 'companies'), where('structureId', '==', structureId), limit(500))
+      );
 
-      if (!missionsSnapshot.empty || !usersSnapshot.empty || !companiesSnapshot.empty || 
-          !expenseNotesSnapshot.empty || !workingHoursSnapshot.empty) {
+      if (!missionsSnapshot.empty || !usersSnapshot.empty || !companiesSnapshot.empty) {
         
         // Créer les champs selon le type de structure
         const missionFields = structureTypeValue === 'junior' ? [
@@ -3143,12 +3149,21 @@ const TemplatesPDF: React.FC = () => {
 
   // Fonction pour récupérer les types de mission
   const fetchMissionTypes = async () => {
+    if (!currentUser) return;
     try {
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const structureId = userDoc.data()?.structureId as string | undefined;
+      if (!structureId) {
+        setMissionTypes([]);
+        return;
+      }
       const missionTypesRef = collection(db, 'missionTypes');
-      const missionTypesSnapshot = await getDocs(missionTypesRef);
-      const types = missionTypesSnapshot.docs.map(doc => ({
-        id: doc.id,
-        title: doc.data().title
+      const missionTypesSnapshot = await getDocs(
+        query(missionTypesRef, where('structureId', '==', structureId), limit(500))
+      );
+      const types = missionTypesSnapshot.docs.map(d => ({
+        id: d.id,
+        title: d.data().title
       }));
       setMissionTypes(types);
     } catch (error) {

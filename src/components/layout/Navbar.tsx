@@ -274,7 +274,8 @@ const Navbar: React.FC<NavbarProps> = () => {
         userEmail: currentUser.email,
         createdAt: new Date(),
         status: 'pending',
-        imageUrl: imageUrl
+        imageUrl: imageUrl,
+        ...(userData?.structureId ? { structureId: userData.structureId } : {}),
       };
 
       console.log('💾 Sauvegarde du rapport:', reportData);

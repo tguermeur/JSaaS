@@ -32,19 +32,28 @@ service firebase.storage {
     function userExists() {
       return firestore.exists(/databases/(default)/documents/users/$(request.auth.uid));
     }
+
+    // Custom claims (Phase 3) avec fallback Firestore users
+    function tokenStructureId() {
+      return request.auth.token.keys().hasAll(['structureId']) && request.auth.token.structureId != null
+        ? request.auth.token.structureId
+        : (userExists() ? getUserData().structureId : null);
+    }
+    function tokenIsSuperAdmin() {
+      return (request.auth.token.keys().hasAll(['superadmin']) && request.auth.token.superadmin == true)
+        || (userExists() && (getUserData().status == 'superadmin' || getUserData().role == 'superadmin'));
+    }
     
     // Vérifie si l'utilisateur est Superadmin
     function isSuperAdmin() {
-      return isAuthenticated() && 
-             userExists() &&
-             (getUserData().status == 'superadmin' || getUserData().role == 'superadmin');
+      return isAuthenticated() && tokenIsSuperAdmin();
     }
 
     // Membre structure sans étudiant (pas de list récursif Storage pour les étudiants)
     function isStructureStaff(structureId) {
       return isAuthenticated() &&
              userExists() &&
-             getUserData().structureId == structureId &&
+             tokenStructureId() == structureId &&
              getUserData().status in ['admin', 'admin_structure', 'member', 'membre'];
     }
     
@@ -52,7 +61,7 @@ service firebase.storage {
     function isStructureMember(structureId) {
       return isAuthenticated() && 
              userExists() &&
-             getUserData().structureId == structureId &&
+             tokenStructureId() == structureId &&
              getUserData().status in ['admin', 'admin_structure', 'member', 'membre', 'etudiant'];
     }
     
@@ -60,7 +69,7 @@ service firebase.storage {
     function isStructureAdmin(structureId) {
       return isAuthenticated() && 
              userExists() &&
-             getUserData().structureId == structureId &&
+             tokenStructureId() == structureId &&
              (getUserData().status == 'admin' || getUserData().status == 'admin_structure');
     }
 
@@ -170,7 +179,7 @@ service firebase.storage {
                    // Membre de la structure de la mission
                    (
                      userExists() &&
-                     getUserData().structureId == firestore.get(missionPath).data.structureId &&
+                     tokenStructureId() == firestore.get(missionPath).data.structureId &&
                      getUserData().status in ['admin', 'member', 'membre']
                    ) ||
                    // Entreprise accédant à sa propre mission
@@ -206,7 +215,7 @@ service firebase.storage {
                (
                  firestore.exists(contractPath) &&
                  userExists() &&
-                 getUserData().structureId == firestore.get(contractPath).data.structureId &&
+                 tokenStructureId() == firestore.get(contractPath).data.structureId &&
                  (
                    getUserData().status == 'admin' ||
                    hasModulePermission(firestore.get(contractPath).data.structureId, 'tresorerie_read')
@@ -221,7 +230,7 @@ service firebase.storage {
                (
                  firestore.exists(contractPath) &&
                  userExists() &&
-                 getUserData().structureId == firestore.get(contractPath).data.structureId &&
+                 tokenStructureId() == firestore.get(contractPath).data.structureId &&
                  (
                    getUserData().status == 'admin' ||
                    hasModulePermission(firestore.get(contractPath).data.structureId, 'tresorerie')
@@ -245,7 +254,7 @@ service firebase.storage {
                (
                  firestore.exists(prospectPath) &&
                  userExists() &&
-                 getUserData().structureId == firestore.get(prospectPath).data.structureId &&
+                 tokenStructureId() == firestore.get(prospectPath).data.structureId &&
                  getUserData().status in ['admin', 'member', 'membre']
                );
       }
@@ -268,7 +277,7 @@ service firebase.storage {
                (
                  firestore.exists(targetUserPath) &&
                  userExists() &&
-                 getUserData().structureId == firestore.get(targetUserPath).data.structureId &&
+                 tokenStructureId() == firestore.get(targetUserPath).data.structureId &&
                  getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
                );
       }
@@ -285,7 +294,7 @@ service firebase.storage {
         (
           firestore.exists(/databases/(default)/documents/users/$(userId)) &&
           userExists() &&
-          getUserData().structureId == firestore.get(/databases/(default)/documents/users/$(userId)).data.structureId &&
+          tokenStructureId() == firestore.get(/databases/(default)/documents/users/$(userId)).data.structureId &&
           getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
         )
       );
@@ -307,7 +316,7 @@ service firebase.storage {
                (
                  firestore.exists(targetUserPath) &&
                  userExists() &&
-                 getUserData().structureId == firestore.get(targetUserPath).data.structureId &&
+                 tokenStructureId() == firestore.get(targetUserPath).data.structureId &&
                  getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
                );
       }
@@ -328,7 +337,7 @@ service firebase.storage {
                (
                  firestore.exists(missionPath) &&
                  userExists() &&
-                 getUserData().structureId == firestore.get(missionPath).data.structureId &&
+                 tokenStructureId() == firestore.get(missionPath).data.structureId &&
                  getUserData().status in ['admin', 'member', 'membre']
                );
       }
@@ -341,9 +350,9 @@ service firebase.storage {
     // RÈGLES POUR LES LOGOS ET IMAGES
     // =========================================================================
     
-    // Logo de structure : lecture publique (URL utilisée dans <img>). Écriture : tout membre de la structure (aligné avec paramètres structure).
+    // Logo de structure : lecture réservée aux membres de la structure (URLs tokenisées getDownloadURL restent utilisables).
     match /structures/{structureId}/logo {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
       allow write: if isAuthenticated() && (isSuperAdmin() || isStructureStaff(structureId));
     }
     
@@ -358,7 +367,7 @@ service firebase.storage {
                  userExists() &&
                  (
                    (
-                     getUserData().structureId == firestore.get(companyPath).data.structureId &&
+                     tokenStructureId() == firestore.get(companyPath).data.structureId &&
                      getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
                    ) ||
                    (
@@ -388,7 +397,7 @@ service firebase.storage {
                  (
                    // Membre de la structure
                    (
-                     getUserData().structureId == firestore.get(companyPath).data.structureId &&
+                     tokenStructureId() == firestore.get(companyPath).data.structureId &&
                      getUserData().status in ['admin', 'member', 'membre']
                    ) ||
                    // Contact de l'entreprise
@@ -408,11 +417,17 @@ service firebase.storage {
     // RÈGLES POUR LES TEMPLATES
     // =========================================================================
     
+    // Templates PDF : chemin plat /templates/** (pas de structureId dans le path).
+    // Isolation minimale : staff structure (admin/membre) uniquement — métadonnées Storage indisponibles.
     match /templates/{allPaths=**} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated() && 
+      allow read: if isAuthenticated() &&
+                     userExists() &&
+                     (isSuperAdmin() ||
+                      getUserData().status in ['admin', 'admin_structure', 'member', 'membre']);
+      allow write: if isAuthenticated() &&
                       userExists() &&
-                      getUserData().status in ['admin', 'member', 'membre', 'superadmin'];
+                      (isSuperAdmin() ||
+                       getUserData().status in ['admin', 'admin_structure', 'member', 'membre']);
     }
 
     // =========================================================================
@@ -445,7 +460,7 @@ service firebase.storage {
                             isSuperAdmin() ||
                             (
                               firestore.exists(/databases/(default)/documents/etudes/$(etudeId)) &&
-                              firestore.get(/databases/(default)/documents/etudes/$(etudeId)).data.structureId == getUserData().structureId &&
+                              firestore.get(/databases/(default)/documents/etudes/$(etudeId)).data.structureId == tokenStructureId() &&
                               getUserData().status in ['admin', 'admin_structure', 'member', 'membre', 'etudiant']
                             )
                           );

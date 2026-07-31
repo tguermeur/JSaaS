@@ -33,6 +33,7 @@ import { db } from '../firebase/config';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase/config';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { FUNCTIONS_REGION } from '../firebase/config';
 import { getContactAccessPermissions } from '../utils/contactPermissions';
 import { getPostAuthRedirectPath } from '../utils/safeAppHome';
 
@@ -234,7 +235,7 @@ export default function Login(): JSX.Element {
     setTwoFactorError(null);
 
     try {
-      const functions = getFunctions(auth.app, 'us-central1');
+      const functions = getFunctions(auth.app, FUNCTIONS_REGION);
       const verifyTwoFactorCodeFn = httpsCallable<
         { uid: string; code: string; deviceInfo?: ReturnType<typeof getDeviceInfo> },
         { success: boolean }

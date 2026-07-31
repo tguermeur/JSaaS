@@ -103,8 +103,18 @@ const tokenProgressFill = document.getElementById('tokenProgressFill');
 // Variable pour suivre si un prospect a déjà été ajouté
 let prospectAdded = false;
 
-// URL de la Cloud Function qui appelle Gemini côté serveur (clé API secrète)
-const GEMINI_EXTRACT_URL = 'https://us-central1-jsaas-dd2f7.cloudfunctions.net/api/gemini/extract-profile';
+// URL de la Cloud Function qui appelle Gemini côté serveur (clé API secrète).
+// Configurable via chrome.storage.sync.functionsBaseUrl ; défaut = prod actuelle.
+const DEFAULT_FUNCTIONS_BASE = 'https://' + 'us-central1' + '-' + 'jsaas-dd2f7' + '.cloudfunctions.net';
+let GEMINI_EXTRACT_URL = `${DEFAULT_FUNCTIONS_BASE}/api/gemini/extract-profile`;
+try {
+  if (typeof chrome !== 'undefined' && chrome.storage?.sync) {
+    chrome.storage.sync.get(['functionsBaseUrl'], (r) => {
+      const base = (r.functionsBaseUrl || DEFAULT_FUNCTIONS_BASE).replace(/\/$/, '');
+      GEMINI_EXTRACT_URL = `${base}/api/gemini/extract-profile`;
+    });
+  }
+} catch (_) { /* ignore */ }
 
 /**
  * Valide qu'une URL de photo LinkedIn est correcte et non corrompue

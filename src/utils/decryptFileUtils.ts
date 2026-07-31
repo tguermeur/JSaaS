@@ -3,8 +3,9 @@
  */
 
 import { getDownloadURL, getStorage, ref } from 'firebase/storage';
+import { getFunctionsUrl } from '../firebase/config';
 
-const DECRYPT_FILE_URL = 'https://us-central1-jsaas-dd2f7.cloudfunctions.net/decryptFile';
+const DECRYPT_FILE_URL = getFunctionsUrl('decryptFile');
 
 const MIME_TO_EXT: Record<string, string> = {
   'application/pdf': '.pdf',

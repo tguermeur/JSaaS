@@ -955,7 +955,7 @@ export const sendContactEmail = onCall(publicContactConfig, async (request) => {
         from_company: company,
         from_email: email,
         message: message,
-        to_email: 'teo.guermeur@gmail.com'
+        to_email: process.env.CONTACT_INBOX || process.env.CONTACT_EMAIL || 'contact@jsconnect.app'
       }
     };
 
@@ -1484,6 +1484,8 @@ export {
   encryptText,
   decryptText
 } from './encryptionFunctions';
+
+export { backfillDisplayFields } from './backfillDisplayFields';
 
 export {
   encryptFile,

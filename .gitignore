@@ -107,4 +107,4 @@ dist/extension/
 .google-cloud-token
 *.google-cloud-token
 service-account-key.json
-*.json.key
+*.json.key.reencrypt-progress.json

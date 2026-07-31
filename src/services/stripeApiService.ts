@@ -1,5 +1,5 @@
 // Service pour appeler directement les fonctions Firebase via HTTP
-import { auth } from '../firebase/config';
+import { auth, getFunctionsBaseUrl } from '../firebase/config';
 
 interface StripeCustomer {
   id: string;
@@ -22,8 +22,7 @@ interface StripePayment {
   description?: string;
 }
 
-// URL de base pour les fonctions Firebase
-const FUNCTIONS_BASE_URL = 'https://us-central1-jsaas-dd2f7.cloudfunctions.net';
+const FUNCTIONS_BASE_URL = getFunctionsBaseUrl();
 
 // Fonction pour obtenir le token d'authentification
 const getAuthToken = async (): Promise<string | null> => {

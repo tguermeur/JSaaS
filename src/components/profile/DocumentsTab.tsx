@@ -35,6 +35,7 @@ import { UserData, CustomDocument } from '../../types/user';
 import { uploadCV, uploadFile } from '../../firebase/storage';
 import { getStorage, ref, getDownloadURL, deleteObject } from 'firebase/storage';
 import { updateUserDocument } from '../../firebase/firestore';
+import { getFunctionsUrl } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSnackbar } from 'notistack';
 import DocumentDisclaimer from '../DocumentDisclaimer';
@@ -173,7 +174,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
         setUploadProgress(85);
         
         const encryptResponse = await axios.post(
-          `https://us-central1-jsaas-dd2f7.cloudfunctions.net/encryptFile`,
+          getFunctionsUrl('encryptFile'),
           { filePath },
           {
             headers: {
@@ -517,7 +518,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
           try {
             setUploadProgress(85);
             const encryptResponse = await axios.post(
-              `https://us-central1-jsaas-dd2f7.cloudfunctions.net/encryptFile`,
+              getFunctionsUrl('encryptFile'),
               { filePath },
               {
                 headers: {
@@ -578,7 +579,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
           try {
             setUploadProgress(85);
             const encryptResponse = await axios.post(
-              `https://us-central1-jsaas-dd2f7.cloudfunctions.net/encryptFile`,
+              getFunctionsUrl('encryptFile'),
               { filePath },
               {
                 headers: {
@@ -691,7 +692,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
         console.log(`🔐 Début du chiffrement de ${docType.label}...`, { filePath });
         
         const encryptResponse = await axios.post(
-          `https://us-central1-jsaas-dd2f7.cloudfunctions.net/encryptFile`,
+          getFunctionsUrl('encryptFile'),
           { filePath },
           {
             headers: {
@@ -892,7 +893,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
         setUploadProgress(85);
         
         const encryptResponse = await axios.post(
-          `https://us-central1-jsaas-dd2f7.cloudfunctions.net/encryptFile`,
+          getFunctionsUrl('encryptFile'),
           { filePath },
           {
             headers: {

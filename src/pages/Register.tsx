@@ -43,7 +43,7 @@ import { loadStripe } from '@stripe/stripe-js';
 import { Structure } from '../types/structure';
 import { uploadCV, uploadFile } from '../firebase/storage';
 import { doc, getDoc, collection, addDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { db, getFunctionsUrl } from '../firebase/config';
 import { getAuth } from 'firebase/auth';
 import axios from 'axios';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
@@ -425,7 +425,7 @@ const Register: React.FC = () => {
             if (token) {
               try {
                 await axios.post(
-                  `https://us-central1-jsaas-dd2f7.cloudfunctions.net/encryptFile`,
+                  getFunctionsUrl('encryptFile'),
                   { filePath },
                   {
                     headers: {

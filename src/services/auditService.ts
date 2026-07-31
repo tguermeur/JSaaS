@@ -1,5 +1,5 @@
 import { db } from '../firebase/config';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, getDoc, Timestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, doc, getDoc, Timestamp, limit } from 'firebase/firestore';
 import { AuditDocument, AuditAssignment, DocumentComparison } from '../types/audit';
 
 const AUDIT_DOCUMENTS_COLLECTION = 'auditDocuments';
@@ -68,10 +68,13 @@ const auditService = {
   // Récupérer toutes les missions
   async getMissions(structureId?: string): Promise<Mission[]> {
     try {
+      if (!structureId) {
+        throw new Error('structureId required');
+      }
       const missionsRef = collection(db, 'missions');
-      const missionsSnapshot = structureId
-        ? await getDocs(query(missionsRef, where('structureId', '==', structureId)))
-        : await getDocs(missionsRef);
+      const missionsSnapshot = await getDocs(
+        query(missionsRef, where('structureId', '==', structureId), limit(500))
+      );
       
       return missionsSnapshot.docs.map(doc => {
         const data = doc.data();
