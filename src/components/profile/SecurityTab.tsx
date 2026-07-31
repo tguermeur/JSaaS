@@ -970,9 +970,8 @@ const SecurityTab: React.FC<SecurityTabProps> = ({ userData, onUpdate }) => {
           mb: 3, 
           borderRadius: 2, 
           border: '1px solid', 
-          borderColor: 'error.main',
-          bgcolor: 'error.light',
-          bgcolor: 'rgba(211, 47, 47, 0.04)'
+borderColor: 'error.main',
+            bgcolor: 'rgba(211, 47, 47, 0.04)'
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>

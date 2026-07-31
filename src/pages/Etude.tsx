@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Button,
@@ -28,8 +29,7 @@ import {
   MenuItem,
   Grid,
   InputAdornment,
-  Divider,
-  keyframes
+  Divider
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -52,19 +52,12 @@ import MissionForm, { MissionFormData } from '../components/missions/MissionForm
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
-import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
+import { decryptUsersList, getDecryptedUserDisplayName, getSafeDisplayName } from '../utils/decryptUserUtils';
+import { tokens } from '../theme/tokens';
+import { fadeIn } from '../styles/animations';
+import LoadingState from '../components/common/LoadingState';
+import MissionsListPage, { type MissionListRow } from './missions/MissionsListPage';
 
-// Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
 
 interface EtudeData {
   id?: string;
@@ -74,6 +67,8 @@ interface EtudeData {
   lieu?: string;
   entreprise?: string;
   prixHT?: number;
+  priceHT?: number;
+  totalTTC?: number;
   status: string;
   structureId?: string;
   type?: string;
@@ -99,6 +94,17 @@ interface EtudeData {
   };
   isArchived?: boolean;
 }
+
+/** Total TTC = prix horaire HT × heures × 1,2 (TVA 20 %). */
+const getEtudeTotalTTC = (e: EtudeData): number | undefined => {
+  if (typeof e.totalTTC === 'number' && e.totalTTC > 0) return e.totalTTC;
+  const hourly = e.priceHT ?? e.prixHT;
+  const hours = e.hours;
+  if (typeof hourly !== 'number' || hourly <= 0 || typeof hours !== 'number' || hours <= 0) {
+    return undefined;
+  }
+  return Math.round(hourly * hours * 1.2 * 100) / 100;
+};
 
 interface FirestoreEtudeData {
   numeroEtude: string;
@@ -138,7 +144,7 @@ interface ChargeData {
 }
 
 const Etude: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
   const { canRead, canWrite, loading: permissionLoading } = usePermission('audit');
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
@@ -243,7 +249,7 @@ const Etude: React.FC = () => {
         const snapshot = await getDocs(etudesQuery);
         console.log("Nombre total d'études trouvées:", snapshot.docs.length);
         
-        const etudesData = snapshot.docs.map(doc => {
+        let etudesData = snapshot.docs.map(doc => {
           const data = doc.data() as FirestoreEtudeData;
           console.log("Étude trouvée:", {
             id: doc.id,
@@ -258,6 +264,23 @@ const Etude: React.FC = () => {
             ...data
           } as EtudeData;
         });
+
+        // Décrypter les noms des CDM (batch dédupliqué)
+        const encryptedCharges = Array.from(
+          new Map(
+            etudesData
+              .filter((e) => e.chargeId && e.chargeName?.startsWith?.('ENC:'))
+              .map((e) => [e.chargeId, { id: e.chargeId, displayName: e.chargeName }])
+          ).values()
+        );
+        if (encryptedCharges.length > 0) {
+          const decrypted = await decryptUsersList(encryptedCharges);
+          const nameById = new Map(decrypted.map((u) => [u.id, u.displayName]));
+          etudesData = etudesData.map((e) => {
+            const name = e.chargeId ? nameById.get(e.chargeId) : undefined;
+            return name ? { ...e, chargeName: name } : e;
+          });
+        }
 
         // Trier les études par date de création
         etudesData.sort((a, b) => {
@@ -604,7 +627,7 @@ const Etude: React.FC = () => {
         status: 'En attente',
         structureId: userStructureId,
         chargeId: formData.chargeId || currentUser.uid,
-        chargeName: selectedCharge.displayName,
+        chargeName: getSafeDisplayName(selectedCharge),
         chargePhotoURL: selectedCharge.photoURL || null,
         description: formData.description,
         prixHT: formData.priceHT,
@@ -673,293 +696,49 @@ const Etude: React.FC = () => {
   }
 
   return (
-    <Box sx={{ p: 3, bgcolor: '#f5f5f7', minHeight: '100vh' }}>
-      <Box 
-        sx={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
-          mb: 4,
-          px: 2 
+    <>
+    {loading ? (
+      <LoadingState message="Chargement des études…" />
+    ) : (
+      <MissionsListPage
+        title="Études"
+        subtitle="Pipeline complet des études de la structure."
+        newLabel="Nouvelle étude"
+        searchPlaceholder="Rechercher une étude…"
+        rows={filteredEtudes.map((e): MissionListRow => ({
+          id: e.id || '',
+          numero: e.numeroEtude,
+          title: e.description || e.company || e.numeroEtude,
+          client: e.company || e.entreprise || '',
+          chargeId: e.chargeId,
+          chargeName: e.chargeName,
+          chargePhotoURL: e.chargePhotoURL,
+          status: e.isArchived ? 'Archivée' : (e.status || 'En cours'),
+          amountHT: getEtudeTotalTTC(e),
+          dueDate: formatDate(e.endDate),
+          isEtude: true,
+        }))}
+        canWrite={canWrite}
+        onNew={() => setCreateDialogOpen(true)}
+        onRowClick={(row) => {
+          const etude = filteredEtudes.find((e) => e.id === row.id);
+          if (etude) handleCardClick(etude);
         }}
-      >
-        <Typography 
-          variant="h4" 
-          sx={{ 
-            fontWeight: 700,
-            mb: 4,
-            background: theme => `linear-gradient(90deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            animation: `${fadeIn} 0.5s ease-out`
-          }}
-        >
-          Études
-        </Typography>
-        {canWrite && (
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => setCreateDialogOpen(true)}
-            sx={{
-              bgcolor: '#0066cc',
-              borderRadius: '0.8rem',
-              px: 3,
-              py: 1,
-              '&:hover': {
-                bgcolor: '#0077ed'
-              }
-            }}
-          >
-            Ajouter une étude
-          </Button>
-        )}
-      </Box>
-
-      <Box sx={{ 
-        mb: 3, 
-        px: 2,
-        display: 'flex',
-        gap: 1,
-        alignItems: 'center'
-      }}>
-        <Button
-          variant={archiveFilter === 'active' ? 'contained' : 'outlined'}
-          onClick={() => setArchiveFilter('active')}
-          sx={{
-            borderRadius: '20px',
-            textTransform: 'none',
-            px: 3,
-            py: 1,
-            bgcolor: archiveFilter === 'active' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'active' ? 'white' : '#1d1d1f',
-            borderColor: '#d2d2d7',
-            '&:hover': {
-              bgcolor: archiveFilter === 'active' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
-            }
-          }}
-        >
-          Études en cours
-        </Button>
-        <Button
-          variant={archiveFilter === 'archived' ? 'contained' : 'outlined'}
-          onClick={() => setArchiveFilter('archived')}
-          sx={{
-            borderRadius: '20px',
-            textTransform: 'none',
-            px: 3,
-            py: 1,
-            bgcolor: archiveFilter === 'archived' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'archived' ? 'white' : '#1d1d1f',
-            borderColor: '#d2d2d7',
-            '&:hover': {
-              bgcolor: archiveFilter === 'archived' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
-            }
-          }}
-        >
-          Études archivées
-        </Button>
-        <Button
-          variant={archiveFilter === 'all' ? 'contained' : 'outlined'}
-          onClick={() => setArchiveFilter('all')}
-          sx={{
-            borderRadius: '20px',
-            textTransform: 'none',
-            px: 3,
-            py: 1,
-            bgcolor: archiveFilter === 'all' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'all' ? 'white' : '#1d1d1f',
-            borderColor: '#d2d2d7',
-            '&:hover': {
-              bgcolor: archiveFilter === 'all' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
-            }
-          }}
-        >
-          Toutes les études
-        </Button>
-      </Box>
-
-      {loading ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
-          <CircularProgress sx={{ color: '#0066cc' }} />
-        </Box>
-      ) : etudes.length === 0 ? (
-        <Paper 
-          sx={{ 
-            p: 4, 
-            textAlign: 'center',
-            bgcolor: 'white',
-            borderRadius: '1.2rem',
-            border: '1px solid #e5e5e7',
-            mx: 2
-          }}
-        >
-          <WorkHistoryIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-          <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-            Aucune étude dans votre structure
-          </Typography>
-          <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-            Commencez par ajouter votre première étude en cliquant sur le bouton ci-dessus.
-          </Typography>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => setCreateDialogOpen(true)}
-            sx={{
-              bgcolor: '#0066cc',
-              borderRadius: '0.8rem',
-              px: 3,
-              py: 1,
-              '&:hover': {
-                bgcolor: '#0077ed'
-              }
-            }}
-          >
-            Ajouter une étude
-          </Button>
-        </Paper>
-      ) : (
-        <TableContainer 
-          component={Paper} 
-          sx={{ 
-            borderRadius: '12px',
-            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-            overflow: 'hidden'
-          }}
-        >
-          <Table>
-            <TableHead>
-              <TableRow sx={{ backgroundColor: '#f5f5f7' }}>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Favori</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Numéro</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>CP</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Entreprise</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Localisation</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Date de début</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Consultants</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Heures</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Statut</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {filteredEtudes.map((etude) => (
-                <TableRow 
-                  key={etude.id}
-                  onClick={() => handleCardClick(etude)}
-                  sx={{ 
-                    cursor: 'pointer',
-                    '&:hover': {
-                      backgroundColor: 'rgba(0,0,0,0.02)'
-                    },
-                    '& td': {
-                      borderBottom: '1px solid #f5f5f7',
-                      color: '#1d1d1f'
-                    }
-                  }}
-                >
-                  <TableCell>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => handleToggleFavorite(etude.id || '', e)}
-                      sx={{ 
-                        color: favoriteEtudes.includes(etude.id || '') ? '#0071e3' : '#86868b',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0,0,0,0.04)'
-                        }
-                      }}
-                    >
-                      {favoriteEtudes.includes(etude.id || '') ? <StarIcon /> : <StarBorderIcon />}
-                    </IconButton>
-                  </TableCell>
-                  <TableCell>{etude.numeroEtude}</TableCell>
-                                      <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Tooltip title={etude.chargeName || 'Non assigné'}>
-                          <Avatar
-                            src={etude.chargePhotoURL}
-                            sx={{ 
-                              width: 40, 
-                              height: 40,
-                              border: '2px solid #ffffff',
-                              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                              backgroundColor: '#0071e3'
-                            }}
-                          >
-                            {etude.chargeName?.charAt(0)}
-                          </Avatar>
-                        </Tooltip>
-                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                          {etude.chargeName || 'Non assigné'}
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                    <TableCell>{etude.company}</TableCell>
-                    <TableCell>{etude.location}</TableCell>
-                    <TableCell>{formatDate(etude.startDate)}</TableCell>
-                    <TableCell>{etude.consultantCount || 0}</TableCell>
-                    <TableCell>{etude.hours || 0}</TableCell>
-                    <TableCell>
-                      <Chip
-                        label={etude.status}
-                        sx={{
-                          backgroundColor: 
-                            etude.status === 'En cours' ? 'rgba(0,113,227,0.1)' :
-                            etude.status === 'Terminé' ? 'rgba(52,199,89,0.1)' :
-                            'rgba(255,149,0,0.1)',
-                          color:
-                            etude.status === 'En cours' ? '#0071e3' :
-                            etude.status === 'Terminé' ? '#34C759' :
-                            '#FF9500',
-                          fontWeight: 500,
-                          borderRadius: '6px'
-                        }}
-                      />
-                    </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      )}
+        toolbarExtra={
+          <>
+            <Button size="small" variant={archiveFilter === 'active' ? 'contained' : 'outlined'} onClick={() => setArchiveFilter('active')} sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}>
+              En cours
+            </Button>
+            <Button size="small" variant={archiveFilter === 'archived' ? 'contained' : 'outlined'} onClick={() => setArchiveFilter('archived')} sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}>
+              Archivées
+            </Button>
+            <Button size="small" variant={archiveFilter === 'all' ? 'contained' : 'outlined'} onClick={() => setArchiveFilter('all')} sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}>
+              Toutes
+            </Button>
+          </>
+        }
+      />
+    )}
 
       <Dialog
         open={editDialogOpen}
@@ -1046,12 +825,21 @@ const Etude: React.FC = () => {
       <Dialog
         open={createDialogOpen}
         onClose={() => setCreateDialogOpen(false)}
-        maxWidth="md"
+        maxWidth="sm"
         fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: tokens.radius.xxl,
+            overflow: 'hidden',
+            boxShadow: tokens.shadows.pop,
+          },
+        }}
       >
-        <DialogTitle>Créer une nouvelle étude</DialogTitle>
-        <DialogContent>
-          <MissionForm 
+        <DialogContent sx={{ p: 0, '&:first-of-type': { pt: 0 } }}>
+          <MissionForm
+            title="Nouvelle étude"
+            subtitle="Renseignez les informations pour ouvrir une nouvelle étude."
+            submitLabel="Créer l'étude"
             onSubmit={handleCreateEtude}
             onCancel={() => setCreateDialogOpen(false)}
             availableCharges={availableCharges}
@@ -1059,22 +847,26 @@ const Etude: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert 
-          severity={snackbar.severity} 
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          variant="filled"
-          sx={{ width: '100%' }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
-    </Box>
+          <Alert 
+            severity={snackbar.severity} 
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            variant="filled"
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
+    </>
   );
 };
 

@@ -24,9 +24,16 @@ export interface Structure {
   // Clés Stripe de la structure
   stripeIntegrationEnabled?: boolean;
   stripePublishableKey?: string;
-  stripeSecretKey?: string;
+  /** Indique qu’une clé secrète est enregistrée côté serveur (jamais exposée au client). */
+  stripeSecretConfigured?: boolean;
   stripeProductId?: string;
   stripeBuyButtonId?: string;
+  /** Type de structure : Junior Entreprise (études) ou Job Service (missions). */
+  structureType?: 'junior' | 'jobservice';
+  /** Gratification nette par défaut (€). */
+  defaultGratificationNet?: number;
+  /** Gratification brute par défaut (€). */
+  defaultGratificationBrute?: number;
 }
 
 export interface CreateStructureData {
@@ -34,4 +41,7 @@ export interface CreateStructureData {
   ecole: string;
   emailDomains: string[];
   domaines: string[];
+  /** UID du créateur (requis pour l’inscription Junior, optionnel pour SuperAdmin). */
+  createdBy?: string;
+  structureType?: 'junior' | 'jobservice';
 } 

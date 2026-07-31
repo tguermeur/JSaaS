@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { collection, query, where, onSnapshot, updateDoc, doc, getDocs, writeBatch, orderBy, limit, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, updateDoc, doc, getDocs, writeBatch, orderBy, limit, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from './AuthContext';
 import { useSnackbar } from 'notistack';
@@ -10,8 +10,15 @@ export type NotificationType =
   | 'report_update' 
   | 'report_response'
   | 'mission_update'
+  | 'mission_note'
+  | 'expense_status'
+  | 'ambassador_update'
   | 'user_update'
-  | 'system';
+  | 'system'
+  | 'etude_update'
+  | 'billing'
+  | 'signature'
+  | 'commercial_update';
 
 export type NotificationPriority = 'low' | 'medium' | 'high' | 'urgent';
 
@@ -107,8 +114,15 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       report_update: true,
       report_response: true,
       mission_update: true,
+      mission_note: true,
+      expense_status: true,
+      ambassador_update: true,
       user_update: true,
-      system: true
+      system: true,
+      etude_update: true,
+      billing: true,
+      signature: true,
+      commercial_update: true,
     }
   });
 
@@ -126,7 +140,13 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           if (userData.notificationPreferences) {
             setPreferences(prev => ({
               ...prev,
-              ...userData.notificationPreferences
+              ...userData.notificationPreferences,
+              types: {
+                ...prev.types,
+                ...(userData.notificationPreferences.types || {}),
+                ambassador_update:
+                  userData.notificationPreferences.types?.ambassador_update ?? prev.types.ambassador_update,
+              },
             }));
           }
         }
@@ -149,6 +169,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setIsLoading(true);
     
     const isEntreprise = userData?.status === 'entreprise';
+    const isEtudiant = userData?.status === 'etudiant';
 
     // Requête pour les notifications de l'utilisateur
     const userNotificationsQuery = query(
@@ -175,16 +196,25 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           ...doc.data(),
           createdAt: doc.data().createdAt?.toDate() || new Date(),
           clickedAt: doc.data().clickedAt?.toDate() ?? null,
-          priority: doc.data().priority || 'medium'
+          priority: doc.data().priority || 'medium',
+          metadata: {
+            ...(doc.data().metadata || {}),
+            ...(doc.data().count != null ? { count: doc.data().count } : {}),
+            ...(doc.data().lastEventAt?.toDate
+              ? { lastEventAt: doc.data().lastEventAt.toDate() }
+              : {}),
+          },
         })) as PersistentNotification[];
 
         // Filtrer les notifications selon les préférences utilisateur
         const filteredNotifications = notifications.filter(notification => {
+          if (notification.metadata?.hidden === true) return false;
           // Les notifications critiques (urgent) sont toujours affichées
           if (notification.priority === 'urgent') return true;
           
           // Vérifier si le type de notification est activé dans les préférences
-          return preferences.types[notification.type] !== false;
+          const typeEnabled = preferences.types[notification.type as NotificationType];
+          return typeEnabled !== false;
         });
 
         setPersistentNotifications(prev => {
@@ -209,9 +239,9 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
     );
 
-      // Écouter les notifications globales (seulement si l'utilisateur n'est pas une entreprise)
+      // Écouter les notifications globales (seulement pour admin/membre/admin_structure, pas entreprises ni étudiants)
       let unsubscribeGlobal: (() => void) | null = null;
-      if (!isEntreprise) {
+      if (!isEntreprise && !isEtudiant) {
         unsubscribeGlobal = onSnapshot(
           globalNotificationsQuery,
           (snapshot) => {
@@ -318,14 +348,28 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   }, [enqueueSnackbar]);
 
-  // Envoyer une notification
+  // Envoyer une notification (via Cloud Function pour cross-user)
   const sendNotification = useCallback(async (notification: Omit<PersistentNotification, 'id' | 'createdAt' | 'read'>) => {
     try {
-      await addDoc(collection(db, 'notifications'), {
-        ...notification,
-        createdAt: serverTimestamp(),
-        read: false
-      });
+      const { NotificationService } = await import('../services/notificationService');
+      if (notification.userId) {
+        await NotificationService.sendToUser(
+          notification.userId,
+          notification.type,
+          notification.title,
+          notification.message,
+          notification.priority || 'medium',
+          {
+            ...(notification.metadata || {}),
+            structureId: notification.structureId,
+            reportId: notification.reportId,
+            recipientType: notification.recipientType,
+            recipientCount: notification.recipientCount,
+          }
+        );
+      } else {
+        throw new Error('userId requis pour envoyer une notification');
+      }
     } catch (error) {
       console.error('Erreur lors de l\'envoi de la notification:', error);
       enqueueSnackbar('Erreur lors de l\'envoi de la notification', { variant: 'error' });

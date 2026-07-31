@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Typography, Button } from '@mui/material';
+import { tokens } from '../../theme/tokens';
 
 interface SettingsPageHeaderProps {
   title: string;
@@ -22,12 +23,12 @@ const SettingsPageHeader: React.FC<SettingsPageHeaderProps> = ({
             sx={{
               width: 56,
               height: 56,
-              borderRadius: '16px',
-              background: `linear-gradient(135deg, #667eea 0%, #764ba2 100%)`,
+              borderRadius: tokens.radius.lg,
+              background: tokens.gradients.brand,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 8px 32px rgba(102, 126, 234, 0.3)'
+              boxShadow: `0 8px 32px ${tokens.colors.primaryAlpha20}`
             }}
           >
             {React.cloneElement(icon as React.ReactElement, { sx: { color: 'white', fontSize: 28 } })}
@@ -35,10 +36,7 @@ const SettingsPageHeader: React.FC<SettingsPageHeaderProps> = ({
           <Box>
             <Typography variant="h4" sx={{ 
               fontWeight: 700, 
-              background: `linear-gradient(135deg, #667eea 0%, #764ba2 100%)`,
-              backgroundClip: 'text',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
+              color: tokens.colors.textPrimary,
               mb: 0.5
             }}>
               {title}

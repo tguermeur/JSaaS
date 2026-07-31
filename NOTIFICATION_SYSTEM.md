@@ -23,6 +23,7 @@ type NotificationType =
   | 'report_update'         // Mise à jour de rapport
   | 'report_response'       // Réponse à un rapport
   | 'mission_update'        // Mise à jour de mission
+  | 'ambassador_update'     // Événements ambassadeur (demandes, docs, candidatures)
   | 'user_update'           // Mise à jour de profil utilisateur
   | 'system';               // Notifications système
 ```
@@ -271,6 +272,30 @@ showTemporaryNotification({
 - Les couleurs respectent les contrastes WCAG
 - Les actions sont accessibles au clavier
 
+## Notifications ambassadeur
+
+Les notifications ambassadeur (`ambassador_update`) sont créées par des **Cloud Functions** (pas depuis le client) pour contourner les règles Firestore sur la création cross-utilisateur.
+
+### Déclencheurs
+
+| Fonction | Événement | Destinataires |
+|----------|-----------|---------------|
+| `onAmbassadorProposalRequest` | Demande de proposition commerciale | Staff structure (permission ambassadeurs) |
+| `onAmbassadorDocumentWrite` | Document visible entreprise déposé | Contacts entreprise (`canViewEvents`) |
+| `onAmbassadorApplicationWrite` | Candidature / nouveau créneau | Structure (groupé) + entreprise (digest) |
+| `flushAmbassadorApplicationDigests` | Planifié (1 h) | Entreprise si seuil ou délai 4 h |
+
+### Regroupement anti-spam
+
+- ID déterministe `notifications/{userId}__{groupKey}` pour fusionner les événements similaires tant que la notif est non lue
+- Candidatures entreprise : digest après **3 candidatures** ou **4 h** (`ambassadorDigestState`)
+- Deep link : `/app/ambassadeurs/event/{eventId}`
+
+### Fichiers
+
+- `functions/src/ambassadorNotifications.ts`
+- `functions/src/ambassadorNotificationRecipients.ts`
+
 ## Dépannage
 
 ### Problèmes Courants
@@ -298,13 +323,20 @@ console.log('Notifications:', persistentNotifications);
 console.log('Unread count:', unreadCount);
 ```
 
+
+## Architecture 2026 (CF)
+
+Les notifications cross-utilisateur sont créées **uniquement** par Cloud Functions (`notifyUsersCallable`, triggers Firestore). Voir `functions/src/notifications/`.
+
+Emails transactionnels : secrets `EMAILJS_TEMPLATE_ID_*` — catalogue dans [`email-templates/README.md`](email-templates/README.md).
+
 ## Évolutions Futures
 
+- [x] Notifications par email (EmailJS via CF + préférences)
+- [x] Notifications groupées (pattern ambassadeur + missions)
+- [x] Templates email (`email-templates/`)
 - [ ] Notifications push navigateur
-- [ ] Notifications par email
 - [ ] Sons de notification
-- [ ] Templates de notifications
-- [ ] Notifications groupées
 - [ ] Historique complet des notifications
 - [ ] Export des notifications
-- [ ] Notifications programmées 
+- [ ] Notifications programmées

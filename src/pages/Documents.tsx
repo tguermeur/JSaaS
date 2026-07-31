@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
 import {
   Box,
@@ -49,6 +50,7 @@ import {
   Info as InfoIcon,
   ColorLens as ColorIcon,
   InsertDriveFile as FileTextIcon,
+  NoteAdd as NoteAddIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDate } from '../utils/dateUtils';
@@ -65,6 +67,7 @@ import {
   getDoc,
   updateDoc,
   setDoc,
+  limit,
 } from 'firebase/firestore';
 import { db, storage } from '../firebase/config';
 import { deleteFile } from '../firebase/storage';
@@ -79,7 +82,10 @@ import UploadModal from '../components/documents/UploadModal';
 import { trackUserActivity } from '../services/userActivityService';
 import TwoFactorDialog from '../components/common/TwoFactorDialog';
 import { fetchDecryptFile, is2FARequiredError } from '../utils/decryptFileUtils';
-import { decryptUserDisplayData } from '../utils/decryptUserUtils';
+import { decryptUserDisplayData, getDecryptedUserDisplayName, prefetchUserDisplayNames } from '../utils/decryptUserUtils';
+import UserReferenceText from '../components/common/UserReferenceText';
+import ManualDocumentGenerator from '../components/documents/ManualDocumentGeneratorDialog';
+import { tokens } from '../theme/tokens';
 
 const Documents: React.FC = () => {
   const { currentUser, userData } = useAuth();
@@ -106,6 +112,7 @@ const Documents: React.FC = () => {
   // ID spécial pour le dossier virtuel "Documents Étudiants"
   const STUDENTS_DOCUMENTS_FOLDER_ID = 'virtual-folder-students-documents';
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [manualGeneratorOpen, setManualGeneratorOpen] = useState(false);
   const [createFolderDialogOpen, setCreateFolderDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
@@ -320,13 +327,17 @@ const Documents: React.FC = () => {
       setLoading(true);
       const allDocuments: Document[] = [];
 
-      // Récupérer la mission pour obtenir le chargé de mission
+      // Récupérer la mission pour obtenir le chargé de mission (décrypté si nécessaire)
       let chargeName = '';
       try {
         const missionDoc = await getDoc(doc(db, 'missions', missionId));
         if (missionDoc.exists()) {
           const missionData = missionDoc.data();
           chargeName = missionData.chargeName || '';
+          if (missionData.chargeId && chargeName?.startsWith?.('ENC:')) {
+            const chargeDoc = await getDoc(doc(db, 'users', missionData.chargeId));
+            chargeName = await getDecryptedUserDisplayName(missionData.chargeId, chargeDoc.data() || null);
+          }
         }
       } catch (e) {
         console.error('Erreur lors de la récupération de la mission:', e);
@@ -471,30 +482,33 @@ const Documents: React.FC = () => {
         } catch (error: any) {
           // Si l'index n'existe pas encore, on charge tous les documents et on filtre
           console.warn('Index missionId non disponible, chargement de tous les documents...');
-          const allDocsQuery = query(missionDocsRef);
+          const allDocsQuery = query(missionDocsRef, limit(500));
           missionDocsSnapshot = await getDocs(allDocsQuery);
         }
 
         const missionDocsMap: { [missionId: string]: Document[] } = {};
+
+        const uploaderIds = Array.from(
+          new Set(
+            missionDocsSnapshot.docs
+              .map((d) => d.data().uploadedBy as string | undefined)
+              .filter((id): id is string => Boolean(id))
+          )
+        );
+        if (uploaderIds.length > 0) {
+          await prefetchUserDisplayNames(uploaderIds);
+        }
         
         for (const docSnap of missionDocsSnapshot.docs) {
           const data = docSnap.data();
           // Filtrer les documents qui ont un missionId
           if (!data.missionId) continue;
           
-          // Récupérer le nom de l'utilisateur avec décryptage
+          // Récupérer le nom de l'utilisateur (cache / batch préchargé)
           let uploadedByName = '';
           try {
-            const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
-            const userData = userDoc.data();
-            if (userData) {
-              // Décrypter les données utilisateur si nécessaire
-              const decryptedData = await decryptUserDisplayData(data.uploadedBy, {
-                displayName: userData.displayName,
-                firstName: userData.firstName,
-                lastName: userData.lastName
-              });
-              uploadedByName = decryptedData.displayName || `${decryptedData.firstName || ''} ${decryptedData.lastName || ''}`.trim() || 'Inconnu';
+            if (data.uploadedBy) {
+              uploadedByName = await getDecryptedUserDisplayName(data.uploadedBy, null);
             }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
@@ -558,7 +572,7 @@ const Documents: React.FC = () => {
             } catch (error: any) {
               // Si l'index n'est pas disponible, charger tous les documents et filtrer
               console.warn('Index parentFolderId non disponible, chargement de tous les documents...');
-              const allDocsQuery = query(docsRef);
+              const allDocsQuery = query(docsRef, limit(500));
               const allDocsSnapshot = await getDocs(allDocsQuery);
               // Filtrer les documents sans parentFolderId et sans missionId
               docsSnapshot = {
@@ -581,7 +595,7 @@ const Documents: React.FC = () => {
           if (indexError?.code === 'failed-precondition') {
             console.warn('Index en cours de construction, chargement sans tri...');
             if (currentFolderId === null) {
-              const allDocsQuery = query(docsRef);
+              const allDocsQuery = query(docsRef, limit(500));
               const allDocsSnapshot = await getDocs(allDocsQuery);
               docsSnapshot = {
                 docs: allDocsSnapshot.docs.filter(doc => {
@@ -602,6 +616,17 @@ const Documents: React.FC = () => {
         }
 
         const docsList: Document[] = [];
+        const folderUploaderIds = Array.from(
+          new Set(
+            docsSnapshot.docs
+              .map((d) => d.data().uploadedBy as string | undefined)
+              .filter((id): id is string => Boolean(id))
+          )
+        );
+        if (folderUploaderIds.length > 0) {
+          await prefetchUserDisplayNames(folderUploaderIds);
+        }
+
         for (const docSnap of docsSnapshot.docs) {
           const data = docSnap.data();
           
@@ -613,21 +638,10 @@ const Documents: React.FC = () => {
             continue;
           }
           
-          // Récupérer le nom de l'utilisateur avec décryptage
           let uploadedByName = '';
           try {
             if (data.uploadedBy) {
-              const userDoc = await getDoc(doc(db, 'users', data.uploadedBy));
-              const userData = userDoc.data();
-              if (userData) {
-                // Décrypter les données utilisateur si nécessaire
-                const decryptedData = await decryptUserDisplayData(data.uploadedBy, {
-                  displayName: userData.displayName,
-                  firstName: userData.firstName,
-                  lastName: userData.lastName
-                });
-                uploadedByName = decryptedData.displayName || `${decryptedData.firstName || ''} ${decryptedData.lastName || ''}`.trim() || 'Inconnu';
-              }
+              uploadedByName = await getDecryptedUserDisplayName(data.uploadedBy, null);
             }
           } catch (e) {
             console.error('Erreur lors de la récupération du nom utilisateur:', e);
@@ -663,9 +677,11 @@ const Documents: React.FC = () => {
           const usersRef = collection(db, 'users');
           const usersQuery = query(
             usersRef,
-            where('structureId', '==', structureId)
+            where('structureId', '==', structureId),
+            limit(150)
           );
           const usersSnapshot = await getDocs(usersQuery);
+          await prefetchUserDisplayNames(usersSnapshot.docs.map((d) => d.id));
           
           for (const userDocSnap of usersSnapshot.docs) {
             const userData = userDocSnap.data();
@@ -673,15 +689,13 @@ const Documents: React.FC = () => {
             
             if (!userData) continue;
             
-            // Décrypter les données utilisateur si nécessaire
             let userName = 'Inconnu';
             try {
-              const decryptedData = await decryptUserDisplayData(userId, {
+              userName = await getDecryptedUserDisplayName(userId, {
                 displayName: userData.displayName,
                 firstName: userData.firstName,
                 lastName: userData.lastName
               });
-              userName = decryptedData.displayName || `${decryptedData.firstName || ''} ${decryptedData.lastName || ''}`.trim() || 'Inconnu';
             } catch (e) {
               console.error('Erreur lors du décryptage du nom utilisateur:', e);
               userName = userData.displayName || `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Inconnu';
@@ -934,7 +948,7 @@ const Documents: React.FC = () => {
                   const folderDocsQuery = query(docsRef, where('parentFolderId', '==', folderId));
                   folderDocsSnapshot = await getDocs(folderDocsQuery);
                 } catch {
-                  const allDocsSnapshot = await getDocs(docsRef);
+                  const allDocsSnapshot = await getDocs(query(docsRef, limit(500)));
                   folderDocsSnapshot = {
                     docs: allDocsSnapshot.docs.filter(doc => {
                       const data = doc.data();
@@ -1005,7 +1019,7 @@ const Documents: React.FC = () => {
                 );
                 docsSnapshot = await getDocs(docsQuery);
               } catch {
-                const allDocsSnapshot = await getDocs(docsRef);
+                const allDocsSnapshot = await getDocs(query(docsRef, limit(500)));
                 docsSnapshot = {
                   docs: allDocsSnapshot.docs.filter(doc => {
                     const data = doc.data();
@@ -1045,7 +1059,7 @@ const Documents: React.FC = () => {
                 try {
                   folderDocsSnapshot = await getDocs(folderDocsQuery);
                 } catch {
-                  const allDocsSnapshot = await getDocs(docsRef);
+                  const allDocsSnapshot = await getDocs(query(docsRef, limit(500)));
                   folderDocsSnapshot = {
                     docs: allDocsSnapshot.docs.filter(doc => {
                       const data = doc.data();
@@ -1109,7 +1123,7 @@ const Documents: React.FC = () => {
               const docsQuery = query(docsRef, where('missionId', '!=', null));
               docsSnapshot = await getDocs(docsQuery);
             } catch {
-              const allDocsSnapshot = await getDocs(docsRef);
+              const allDocsSnapshot = await getDocs(query(docsRef, limit(500)));
               docsSnapshot = {
                 docs: allDocsSnapshot.docs.filter(doc => {
                   const data = doc.data();
@@ -1246,7 +1260,7 @@ const Documents: React.FC = () => {
               const docsQuery = query(docsRef, where('missionId', '==', mission.id));
               docsSnapshot = await getDocs(docsQuery);
             } catch {
-              const allDocsSnapshot = await getDocs(docsRef);
+              const allDocsSnapshot = await getDocs(query(docsRef, limit(500)));
               docsSnapshot = {
                 docs: allDocsSnapshot.docs.filter(doc => {
                   const data = doc.data();
@@ -1356,7 +1370,7 @@ const Documents: React.FC = () => {
           const docsQuery = query(docsRef, where('missionId', '==', mission.id));
           docsSnapshot = await getDocs(docsQuery);
         } catch {
-          const allDocsSnapshot = await getDocs(docsRef);
+          const allDocsSnapshot = await getDocs(query(docsRef, limit(500)));
           docsSnapshot = {
             docs: allDocsSnapshot.docs.filter(doc => {
               const data = doc.data();
@@ -2049,7 +2063,7 @@ const Documents: React.FC = () => {
             } catch (error: any) {
               console.warn('Erreur lors de la récupération des documents pour la taille:', error);
               // Si l'index n'existe pas, charger tous les documents et filtrer
-              const allDocsQuery = query(docsRef);
+              const allDocsQuery = query(docsRef, limit(500));
               const allDocsSnapshot = await getDocs(allDocsQuery);
               docsSnapshot = {
                 docs: allDocsSnapshot.docs.filter(doc => {
@@ -2095,7 +2109,7 @@ const Documents: React.FC = () => {
               try {
                 folderDocsSnapshot = await getDocs(folderDocsQuery);
               } catch {
-                const allDocsSnapshot = await getDocs(docsRef);
+                const allDocsSnapshot = await getDocs(query(docsRef, limit(500)));
                 folderDocsSnapshot = {
                   docs: allDocsSnapshot.docs.filter(doc => {
                     const data = doc.data();
@@ -2672,12 +2686,16 @@ const Documents: React.FC = () => {
     );
   }
 
+  if (manualGeneratorOpen) {
+    return <ManualDocumentGenerator onClose={() => setManualGeneratorOpen(false)} />;
+  }
+
   return (
-    <Box sx={{ p: 3 }}>
+    <Box sx={{ p: 3, bgcolor: tokens.colors.appBg, minHeight: '100vh' }}>
       {/* Header */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+          <Typography sx={{ ...tokens.typography.pageTitle, color: tokens.colors.gray900, mb: 1 }}>
             Documents
           </Typography>
           <Breadcrumbs separator="›" sx={{ mb: 1 }}>
@@ -2704,13 +2722,13 @@ const Documents: React.FC = () => {
         <Box sx={{ display: 'flex', gap: 1 }}>
           <IconButton
             onClick={() => setViewMode('grid')}
-            color={viewMode === 'grid' ? 'primary' : 'default'}
+            sx={{ color: viewMode === 'grid' ? tokens.colors.brandTeal : tokens.colors.gray500 }}
           >
             <GridIcon />
           </IconButton>
           <IconButton
             onClick={() => setViewMode('list')}
-            color={viewMode === 'list' ? 'primary' : 'default'}
+            sx={{ color: viewMode === 'list' ? tokens.colors.brandTeal : tokens.colors.gray500 }}
           >
             <ListIcon />
           </IconButton>
@@ -2718,13 +2736,29 @@ const Documents: React.FC = () => {
             variant="outlined"
             startIcon={<CreateFolderIcon />}
             onClick={() => setCreateFolderDialogOpen(true)}
+            sx={{ borderRadius: tokens.radius.lg, textTransform: 'none', borderColor: tokens.colors.borderDefault }}
           >
             Créer un dossier
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<NoteAddIcon />}
+            onClick={() => setManualGeneratorOpen(true)}
+            sx={{ borderRadius: tokens.radius.lg, textTransform: 'none', borderColor: tokens.colors.borderDefault }}
+          >
+            Générer un document
           </Button>
           <Button
             variant="contained"
             startIcon={<UploadIcon />}
             onClick={() => setUploadModalOpen(true)}
+            sx={{
+              borderRadius: tokens.radius.lg,
+              textTransform: 'none',
+              bgcolor: tokens.colors.brandTeal,
+              boxShadow: tokens.shadows.button,
+              '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+            }}
           >
             Téléverser
           </Button>
@@ -2742,9 +2776,10 @@ const Documents: React.FC = () => {
             <Box sx={{ 
               mb: 3, 
               p: 2, 
-              bgcolor: '#f5f5f7', 
-              borderRadius: '12px',
-              border: '1px solid rgba(0, 0, 0, 0.05)'
+              bgcolor: tokens.colors.bgPaper, 
+              borderRadius: tokens.radius.lg,
+              border: `1px solid ${tokens.colors.divider}`,
+              boxShadow: tokens.shadows.sm,
             }}>
               <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
                 <FormControl size="small" sx={{ minWidth: 200 }}>
@@ -2916,14 +2951,22 @@ const Documents: React.FC = () => {
 
           {/* Vue Liste */}
           {viewMode === 'list' && (
-            <TableContainer component={Paper}>
+            <TableContainer
+              component={Paper}
+              sx={{
+                borderRadius: tokens.radius.lg,
+                boxShadow: tokens.shadows.md,
+                border: `1px solid ${tokens.colors.divider}`,
+                overflow: 'hidden',
+              }}
+            >
               <Table>
                 <TableHead>
-                  <TableRow>
-                    <TableCell>Nom</TableCell>
-                    <TableCell>Date de création</TableCell>
-                    <TableCell>Créé par</TableCell>
-                    <TableCell align="right">Actions</TableCell>
+                  <TableRow sx={{ bgcolor: tokens.colors.gray50 }}>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Nom</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Date de création</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Créé par</TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -3020,7 +3063,14 @@ const Documents: React.FC = () => {
                           ? (folder.createdAt as any).toDate().toLocaleDateString('fr-FR')
                           : new Date(folder.createdAt as Date).toLocaleDateString('fr-FR')}
                       </TableCell>
-                      <TableCell>{folder.createdByName || 'Inconnu'}</TableCell>
+                      <TableCell>
+                        <UserReferenceText
+                          userId={folder.createdBy}
+                          name={folder.createdByName}
+                          component="span"
+                          fallback="Inconnu"
+                        />
+                      </TableCell>
                       <TableCell align="right">
                         <IconButton
                           size="small"
@@ -3497,12 +3547,21 @@ const Documents: React.FC = () => {
                   <Typography variant="body2" color="text.secondary">Créé par :</Typography>
                 </Grid>
                 <Grid item xs={8}>
-                  <Typography variant="body2">
-                    {itemProperties.type === 'folder' 
-                      ? (itemProperties.item as Folder).createdByName || 'Inconnu'
-                      : (itemProperties.item as Document).uploadedByName || 'Inconnu'
+                  <UserReferenceText
+                    userId={
+                      itemProperties.type === 'folder'
+                        ? (itemProperties.item as Folder).createdBy
+                        : (itemProperties.item as Document).uploadedBy
                     }
-                  </Typography>
+                    name={
+                      itemProperties.type === 'folder'
+                        ? (itemProperties.item as Folder).createdByName
+                        : (itemProperties.item as Document).uploadedByName
+                    }
+                    component="span"
+                    variant="body2"
+                    fallback="Inconnu"
+                  />
                 </Grid>
 
                 <Grid item xs={4}>
@@ -3637,9 +3696,9 @@ const Documents: React.FC = () => {
             {itemProperties?.type === 'folder' && itemProperties?.item ? (
               <FolderIcon sx={{ fontSize: 40, color: (itemProperties.item as Folder).color || '#007AFF' }} />
             ) : itemProperties?.type === 'document' && itemProperties?.item ? (
-              <FileTextIcon sx={{ fontSize: 40, color: '#86868b' }} />
+              <FileTextIcon sx={{ fontSize: 40, color: tokens.colors.textSecondary }} />
             ) : (
-              <FileTextIcon sx={{ fontSize: 40, color: '#86868b' }} />
+              <FileTextIcon sx={{ fontSize: 40, color: tokens.colors.textSecondary }} />
             )}
             <Typography variant="h6">{itemProperties?.item?.name || 'Propriétés'}</Typography>
           </Box>
@@ -3719,11 +3778,22 @@ const Documents: React.FC = () => {
                     <Typography variant="body2" color="text.secondary">
                       Créé par:
                     </Typography>
-                    <Typography variant="body2" fontWeight={500}>
-                      {itemProperties.type === 'document' 
-                        ? (itemProperties.item as Document).uploadedByName || 'Inconnu'
-                        : (itemProperties.item as Folder).createdByName || 'Inconnu'}
-                    </Typography>
+                    <UserReferenceText
+                      userId={
+                        itemProperties.type === 'document'
+                          ? (itemProperties.item as Document).uploadedBy
+                          : (itemProperties.item as Folder).createdBy
+                      }
+                      name={
+                        itemProperties.type === 'document'
+                          ? (itemProperties.item as Document).uploadedByName
+                          : (itemProperties.item as Folder).createdByName
+                      }
+                      component="span"
+                      variant="body2"
+                      fallback="Inconnu"
+                      sx={{ fontWeight: 500 }}
+                    />
                   </Box>
                   
                   {itemProperties.item.updatedAt && (
@@ -3819,13 +3889,18 @@ const Documents: React.FC = () => {
       />
 
       {/* Snackbar */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-      >
-        <Alert severity={snackbar.severity}>{snackbar.message}</Alert>
-      </Snackbar>
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
+          onClose={() => setSnackbar({ ...snackbar, open: false })}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
+        >
+          <Alert severity={snackbar.severity}>{snackbar.message}</Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

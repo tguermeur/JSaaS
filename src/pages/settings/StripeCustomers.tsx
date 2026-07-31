@@ -8,11 +8,12 @@ import {
   Grid, 
   Paper, 
   Chip,
-  Container,
   CircularProgress
 } from '@mui/material';
-import PersonIcon from '@mui/icons-material/Person';
 import { styled } from '@mui/material';
+import PersonIcon from '@mui/icons-material/Person';
+import { tokens } from '../../theme/tokens';
+import { settingsPageStyles, SettingsPanel } from '../../components/ds';
 
 interface StripeCustomer {
   id: string;
@@ -26,15 +27,17 @@ interface StripeCustomer {
 }
 
 const StyledPaper = styled(Paper)(({ theme }) => ({
-  padding: theme.spacing(3),
+  padding: theme.spacing(2.5),
   height: '100%',
   display: 'flex',
   flexDirection: 'column',
-  borderRadius: 16,
-  transition: 'all 0.3s ease',
+  borderRadius: tokens.radius.lg,
+  border: `1px solid ${tokens.colors.divider}`,
+  boxShadow: tokens.shadows.sm,
+  transition: tokens.transitions.fast,
   '&:hover': {
-    boxShadow: theme.shadows[4],
-    borderColor: theme.palette.grey[300],
+    boxShadow: tokens.shadows.md,
+    borderColor: tokens.colors.gray300,
   },
 }));
 
@@ -102,20 +105,35 @@ export default function StripeCustomers() {
   }
 
   return (
-    <Container maxWidth="lg">
-      <Box mb={4} display="flex" alignItems="center" justifyContent="space-between">
-        <Box display="flex" alignItems="center" gap={1}>
-          <PersonIcon sx={{ fontSize: 32 }} />
-          <Typography variant="h4" component="h1">
-            Clients Stripe
-          </Typography>
+    <Box>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box
+            sx={{
+              width: 40,
+              height: 40,
+              borderRadius: tokens.radius.md,
+              background: tokens.gradients.brand,
+              display: 'grid',
+              placeItems: 'center',
+              color: '#fff',
+            }}
+          >
+            <PersonIcon sx={{ fontSize: 20 }} />
+          </Box>
+          <Box>
+            <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+            <Typography component="h1" sx={settingsPageStyles.title}>Clients Stripe</Typography>
+          </Box>
         </Box>
         <Chip
           label={`${customers.length} client${customers.length > 1 ? 's' : ''}`}
           variant="outlined"
+          sx={{ borderColor: tokens.colors.divider }}
         />
       </Box>
 
+      <SettingsPanel title="Abonnés" desc="Clients Stripe liés à la plateforme">
       <Grid container spacing={3}>
         {customers && customers.length > 0 ? (
           customers.map((customer) => (
@@ -186,6 +204,7 @@ export default function StripeCustomers() {
           </Grid>
         )}
       </Grid>
-    </Container>
+      </SettingsPanel>
+    </Box>
   );
 } 

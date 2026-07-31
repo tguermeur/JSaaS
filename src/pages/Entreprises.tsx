@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
   Button,
   Grid,
   TextField,
@@ -12,127 +11,43 @@ import {
   DialogContent,
   DialogActions,
   IconButton,
-  Avatar,
-  Chip,
   Snackbar,
   Alert,
   CircularProgress,
-  CardHeader,
-  CardActions,
-  Tooltip,
   Paper,
   Divider,
   Stack,
-  InputBase,
   alpha,
-  useTheme
 } from '@mui/material';
 import {
   Add as AddIcon,
-  Edit as EditIcon,
-  Delete as DeleteIcon,
   Business as BusinessIcon,
-  WorkHistory as WorkHistoryIcon,
-  Euro as EuroIcon,
   CloudUpload as CloudUploadIcon,
   PersonAdd as PersonAddIcon,
   Close as CloseIcon
 } from '@mui/icons-material';
 import { collection, getDocs, addDoc, deleteDoc, doc, updateDoc, query, where, Timestamp, deleteField, getDoc } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { batchDecryptForStructure } from '../utils/batchDecrypt';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { uploadCompanyLogo } from '../firebase/storage';
-import { keyframes } from '@mui/system';
-import { styled } from '@mui/material';
 import { usePermission } from '../hooks/usePermission';
+import { tokens } from '../theme/tokens';
+import { StyledButton, StyledTextField, StyledDialog } from '../components/styled';
 import AccessDenied from '../components/common/AccessDenied';
+import { AppPageShell, CompaniesLayout, CompanySwitcher } from '../components/ds';
+import type { CompanyListItem } from '../components/ds';
 
-// Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
-const scaleIn = keyframes`
-  from {
-    transform: scale(0.95);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-`;
-
-// Styles personnalisés
-const StyledCard = styled(Card)(({ theme }) => ({
-  borderRadius: '16px',
-  boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-  backdropFilter: 'blur(10px)',
-  backgroundColor: alpha(theme.palette.background.paper, 0.8),
-  transition: 'all 0.3s ease-in-out',
-  '&:hover': {
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.08)',
-    transform: 'translateY(-2px)',
-  },
-  animation: `${fadeIn} 0.5s ease-out`,
-}));
-
-const StyledAvatar = styled(Avatar)(({ theme }) => ({
-  width: 80,
-  height: 80,
-  borderRadius: '16px',
-  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-  transition: 'all 0.3s ease-in-out',
-  '&:hover': {
-    transform: 'scale(1.05)',
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
-  },
-  '& img': {
-    objectFit: 'contain',
-    padding: '8px'
-  }
-}));
-
-const StyledButton = styled(Button)(({ theme }) => ({
-  borderRadius: '12px',
-  textTransform: 'none',
-  fontWeight: 600,
-  padding: '10px 24px',
-  transition: 'all 0.3s ease-in-out',
-  '&:hover': {
-    transform: 'translateY(-2px)',
-    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-  },
-}));
-
-const StyledTextField = styled(TextField)(({ theme }) => ({
-  '& .MuiOutlinedInput-root': {
-    borderRadius: '12px',
-    transition: 'all 0.3s ease-in-out',
-    '&:hover': {
-      '& .MuiOutlinedInput-notchedOutline': {
-        borderColor: theme.palette.primary.main,
-      },
-    },
-  },
-}));
-
-const StyledDialog = styled(Dialog)(({ theme }) => ({
-  '& .MuiDialog-paper': {
-    borderRadius: '24px',
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
-    animation: `${scaleIn} 0.3s ease-out`,
-  },
-}));
+/** Convertit une valeur Firestore (Timestamp, Date, number) ou undefined en Date. */
+function toSafeDate(value: unknown): Date {
+  if (value == null) return new Date();
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') return new Date(value);
+  const o = value as { toDate?: () => Date };
+  if (typeof o?.toDate === 'function') return o.toDate();
+  return new Date();
+}
 
 export interface Contact {
   id: string;
@@ -170,6 +85,7 @@ export interface Company {
   email?: string;
   website?: string;
   logo?: string;
+  logoLarge?: string;
   contacts?: Contact[];
   missionsCount?: number;
   totalRevenue?: number;
@@ -234,13 +150,38 @@ const Entreprises: React.FC = () => {
   const [showContactForm, setShowContactForm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
-  const theme = useTheme();
+  const [directorySearch, setDirectorySearch] = useState('');
+
+  const formatEur = (n?: number) =>
+    new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n || 0);
+
+  const toListItem = (company: Company): CompanyListItem => {
+    const display = { ...company, ...decryptedCompanies[company.id] };
+    const name = display.name || company.name || '—';
+    return {
+      id: company.id,
+      name: isEncrypted(name) ? 'Entreprise' : name,
+      sector: display.city || company.city,
+      missionsCount: company.missionsCount,
+      revenue: formatEur(company.totalRevenue),
+      initials: name.slice(0, 2).toUpperCase(),
+    };
+  };
+
+  const companyListItems = companies.map(toListItem);
+  const totalRevenue = companies.reduce((s, c) => s + (c.totalRevenue || 0), 0);
+  const totalMissions = companies.reduce((s, c) => s + (c.missionsCount || 0), 0);
 
   const updateCompanyStats = async (companyId: string) => {
     try {
-      // Récupérer toutes les missions de l'entreprise
       const missionsRef = collection(db, 'missions');
-      const missionsQuery = query(missionsRef, where('companyId', '==', companyId));
+      const userDoc = await getDoc(doc(db, 'users', currentUser!.uid));
+      const userStructureIdLocal = userDoc.exists() ? userDoc.data()?.structureId : null;
+      const missionsQueryConstraints = [where('companyId', '==', companyId)];
+      if (userStructureIdLocal) {
+        missionsQueryConstraints.push(where('structureId', '==', userStructureIdLocal));
+      }
+      const missionsQuery = query(missionsRef, ...missionsQueryConstraints);
       const missionsSnapshot = await getDocs(missionsQuery);
       
       // Récupérer les missions
@@ -348,7 +289,7 @@ const Entreprises: React.FC = () => {
             contacts: data.contacts || [],
             missionsCount: companyMissions.length,
             totalRevenue,
-            createdAt: data.createdAt?.toDate() || new Date(),
+            createdAt: toSafeDate(data.createdAt),
             structureId: data.structureId
           } as Company;
         });
@@ -369,29 +310,34 @@ const Entreprises: React.FC = () => {
     fetchCompanies();
   }, [currentUser?.uid]);
 
-  // Déchiffrer les infos entreprise (nom, ville) pour l'affichage de la liste
+  // Déchiffrer les infos entreprise (nom, ville) — batch 1 callable
   useEffect(() => {
     if (!companies.length || !canRead) return;
     const run = async () => {
-      const next: Record<string, Partial<Pick<Company, 'name' | 'city'>>> = {};
-      const functions = getFunctions();
-      const decryptCompany = httpsCallable(functions, 'decryptCompanyDataForStructure');
-      for (const company of companies) {
-        if (isEncrypted(company.name) || isEncrypted(company.city)) {
-          try {
-            const res = await decryptCompany({ companyId: company.id });
-            const dec = (res.data as { decryptedData?: Partial<Company> })?.decryptedData;
-            if (dec && (dec.name != null || dec.city != null)) {
-              next[company.id] = { name: dec.name, city: dec.city };
-            }
-          } catch {
-            // ignorer si déchiffrement échoue
+      const toDecrypt = companies.filter(
+        (company) => isEncrypted(company.name) || isEncrypted(company.city)
+      );
+      if (!toDecrypt.length) return;
+      try {
+        const results = await batchDecryptForStructure<Partial<Pick<Company, 'name' | 'city'>>>(
+          'company',
+          toDecrypt.map((c) => c.id),
+          ['name', 'city', 'address', 'phone']
+        );
+        const next: Record<string, Partial<Pick<Company, 'name' | 'city'>>> = {};
+        for (const [id, dec] of Object.entries(results)) {
+          if (dec.name != null || dec.city != null) {
+            next[id] = { name: dec.name, city: dec.city };
           }
         }
+        if (Object.keys(next).length) {
+          setDecryptedCompanies((prev) => ({ ...prev, ...next }));
+        }
+      } catch {
+        // ignorer si déchiffrement échoue
       }
-      if (Object.keys(next).length) setDecryptedCompanies(prev => ({ ...prev, ...next }));
     };
-    run();
+    void run();
   }, [companies, canRead]);
 
   const handleOpenDialog = () => {
@@ -437,21 +383,20 @@ const Entreprises: React.FC = () => {
     }
 
     try {
-      const userDoc = await getDocs(collection(db, 'users'));
-      if (userDoc.empty) {
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      if (!userDoc.exists()) {
         throw new Error("Utilisateur non trouvé");
       }
 
-      const userData = userDoc.docs[0].data();
-      const userStructureId = userData.structureId;
-
-      // Générer un ID unique pour l'entreprise
-      const companyId = crypto.randomUUID();
+      const userData = userDoc.data();
+      const userStructureId = userData?.structureId;
+      if (!userStructureId) {
+        throw new Error("Structure non trouvée pour l'utilisateur");
+      }
 
       const companiesRef = collection(db, 'companies');
       await addDoc(companiesRef, {
         ...newCompany,
-        id: companyId, // Ajouter l'ID à l'objet
         createdAt: Timestamp.fromDate(new Date()),
         structureId: userStructureId
       });
@@ -463,14 +408,43 @@ const Entreprises: React.FC = () => {
       });
 
       handleCloseDialog();
-      // Rafraîchir la liste des entreprises
-      const snapshot = await getDocs(query(companiesRef, where('structureId', '==', userStructureId)));
-      const companiesList = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate() || new Date()
-      })) as Company[];
-      setCompanies(companiesList);
+      // Rafraîchir la liste des entreprises (même logique que fetchCompanies)
+      const companiesQuery = query(companiesRef, where('structureId', '==', userStructureId));
+      const companiesSnapshot = await getDocs(companiesQuery);
+      const missionsRef = collection(db, 'missions');
+      const missionsQuery = query(missionsRef, where('structureId', '==', userStructureId));
+      const missionsSnapshot = await getDocs(missionsQuery);
+      const missionsByCompany = missionsSnapshot.docs.reduce((acc, d) => {
+        const data = d.data();
+        const companyId = data.companyId;
+        if (!acc[companyId]) acc[companyId] = [];
+        acc[companyId].push(data);
+        return acc;
+      }, {} as Record<string, any[]>);
+      const companiesData = companiesSnapshot.docs.map(d => {
+        const data = d.data();
+        const companyMissions = missionsByCompany[d.id] || [];
+        const totalRevenue = companyMissions.reduce((t, m) => t + (Number(m.totalTTC) || 0), 0);
+        return {
+          id: d.id,
+          name: data.name,
+          description: data.description,
+          address: data.address,
+          city: data.city,
+          country: data.country,
+          phone: data.phone,
+          email: data.email,
+          website: data.website,
+          logo: data.logo,
+          nSiret: data.nSiret,
+          contacts: data.contacts || [],
+          missionsCount: companyMissions.length,
+          totalRevenue,
+          createdAt: toSafeDate(data.createdAt),
+          structureId: data.structureId
+        } as Company;
+      });
+      setCompanies(companiesData);
     } catch (error) {
       console.error("Erreur lors de la création de l'entreprise:", error);
       setSnackbar({
@@ -504,7 +478,7 @@ const Entreprises: React.FC = () => {
       const companiesList = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate() || new Date()
+        createdAt: toSafeDate(doc.data().createdAt)
       })) as Company[];
       setCompanies(companiesList);
     } catch (error) {
@@ -518,6 +492,46 @@ const Entreprises: React.FC = () => {
   };
 
   const handleDeleteCompany = async (companyId: string) => {
+    if (!currentUser) {
+      setSnackbar({
+        open: true,
+        message: "Seul un administrateur peu supprimer une entreprise.",
+        severity: "error"
+      });
+      return;
+    }
+
+    try {
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const userData = userDoc.exists() ? userDoc.data() : null;
+      const userStatus = userData?.status;
+      const userRole = userData?.role;
+      const isAdmin =
+        userStatus === 'admin' ||
+        userRole === 'admin' ||
+        userStatus === 'admin_structure' ||
+        userRole === 'admin_structure' ||
+        userStatus === 'superadmin' ||
+        userRole === 'superadmin';
+
+      if (!isAdmin) {
+        setSnackbar({
+          open: true,
+          message: "Seul un administrateur peu supprimer une entreprise.",
+          severity: "error"
+        });
+        return;
+      }
+    } catch (error) {
+      console.error("Erreur lors de la vérification des droits de suppression:", error);
+      setSnackbar({
+        open: true,
+        message: "Erreur lors de la vérification des droits",
+        severity: "error"
+      });
+      return;
+    }
+
     if (!window.confirm("Êtes-vous sûr de vouloir supprimer cette entreprise ?")) {
       return;
     }
@@ -649,225 +663,95 @@ const Entreprises: React.FC = () => {
   }
 
   return (
-    <Box sx={{ 
-      p: 3,
-      background: theme => `linear-gradient(180deg, ${alpha(theme.palette.background.default, 0.8)} 0%, ${alpha(theme.palette.background.paper, 0.9)} 100%)`,
-      minHeight: '100vh'
-    }}>
-      <Typography 
-        variant="h4" 
-        gutterBottom 
-        sx={{ 
-          fontWeight: 700,
-          mb: 4,
-          background: theme => `linear-gradient(90deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          animation: `${fadeIn} 0.5s ease-out`
-        }}
-      >
-        Entreprises
-      </Typography>
-
-      {canWrite && (
-        <Box 
-          sx={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center', 
-            mb: 4,
-            px: 2,
-            animation: `${fadeIn} 0.5s ease-out 0.2s both`
-          }}
-        >
+    <AppPageShell
+      eyebrow="CRM"
+      title="Entreprises"
+      titleSuffix={String(companies.length)}
+      subtitle={
+        companies.length > 0
+          ? `CA cumulé ${formatEur(totalRevenue)} · ${totalMissions} mission${totalMissions > 1 ? 's' : ''}`
+          : undefined
+      }
+      actions={
+        canWrite ? (
           <StyledButton
             variant="contained"
             startIcon={<AddIcon />}
             onClick={handleOpenDialog}
             sx={{
-              bgcolor: theme => theme.palette.primary.main,
-              '&:hover': {
-                bgcolor: theme => theme.palette.primary.dark
-              }
+              bgcolor: tokens.colors.brandTeal,
+              boxShadow: tokens.shadows.button,
+              textTransform: 'none',
+              borderRadius: tokens.radius.md,
+              '&:hover': { bgcolor: tokens.colors.brandTeal700 },
             }}
           >
             Ajouter une entreprise
           </StyledButton>
+        ) : undefined
+      }
+    >
+      {companies.length === 0 ? (
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 360, p: 4 }}>
+          <Paper
+            sx={{
+              p: 5,
+              textAlign: 'center',
+              bgcolor: tokens.colors.bgPaper,
+              borderRadius: tokens.radius.lg,
+              border: `1px solid ${tokens.colors.borderDefault}`,
+              maxWidth: 420,
+            }}
+          >
+            <BusinessIcon sx={{ fontSize: 48, color: tokens.colors.textSecondary, mb: 2 }} />
+            <Typography variant="h6" sx={{ color: tokens.colors.textPrimary, mb: 1 }}>
+              Aucune entreprise dans votre structure
+            </Typography>
+            <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, mb: 3 }}>
+              {canWrite
+                ? 'Commencez par ajouter votre première entreprise.'
+                : "Aucune entreprise n'a encore été ajoutée à votre structure."}
+            </Typography>
+            {canWrite && (
+              <StyledButton variant="contained" startIcon={<AddIcon />} onClick={handleOpenDialog}>
+                Ajouter une entreprise
+              </StyledButton>
+            )}
+          </Paper>
         </Box>
-      )}
-
-      <Grid container spacing={3} sx={{ px: 2 }}>
-        {companies.length === 0 ? (
-          <Grid item xs={12}>
-            <Paper 
-              sx={{ 
-                p: 4, 
+      ) : (
+        <CompaniesLayout
+          directory={
+            <CompanySwitcher
+              companies={companyListItems}
+              search={directorySearch}
+              onSearchChange={setDirectorySearch}
+              onSelect={(companyId) => navigate(`/app/entreprises/${companyId}`)}
+            />
+          }
+          detail={
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: '100%',
+                p: 4,
                 textAlign: 'center',
-                bgcolor: 'white',
-                borderRadius: '1.2rem',
-                border: '1px solid #e5e5e7',
-                animation: `${fadeIn} 0.5s ease-out`
               }}
             >
-              <BusinessIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-              <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-                Aucune entreprise dans votre structure
+              <BusinessIcon sx={{ fontSize: 40, color: tokens.colors.gray300, mb: 2 }} />
+              <Typography sx={{ fontSize: 15, fontWeight: 600, color: tokens.colors.gray900, mb: 0.75 }}>
+                Sélectionnez une entreprise
               </Typography>
-              <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-                {canWrite 
-                  ? "Commencez par ajouter votre première entreprise en cliquant sur le bouton ci-dessous."
-                  : "Aucune entreprise n'a encore été ajoutée à votre structure."
-                }
+              <Typography sx={{ fontSize: 13, color: tokens.colors.gray500, maxWidth: 320 }}>
+                Choisissez une entreprise dans l&apos;annuaire à gauche pour afficher sa fiche détaillée.
               </Typography>
-              {canWrite && (
-                <StyledButton
-                  variant="contained"
-                  startIcon={<AddIcon />}
-                  onClick={handleOpenDialog}
-                >
-                  Ajouter une entreprise
-                </StyledButton>
-              )}
-            </Paper>
-          </Grid>
-        ) : (
-          companies.map((company) => {
-            const displayCompany = { ...company, ...decryptedCompanies[company.id] };
-            return (
-            <Grid item xs={12} sm={6} md={4} lg={3} key={company.id}>
-              <StyledCard 
-                onClick={() => handleCardClick(company.id)}
-                sx={{ 
-                  height: '100%',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  cursor: 'pointer',
-                  maxHeight: '280px'
-                }}
-              >
-                <CardContent sx={{ p: 2, flexGrow: 1 }}>
-                  <Box sx={{ 
-                    display: 'flex', 
-                    flexDirection: 'column', 
-                    alignItems: 'center',
-                    gap: 1
-                  }}>
-                    {company.logo ? (
-                      <StyledAvatar
-                        src={company.logo}
-                        alt={displayCompany.name}
-                        sx={{ mb: 1 }}
-                      />
-                    ) : (
-                      <Box
-                        sx={{
-                          width: 80,
-                          height: 80,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          bgcolor: theme => alpha(theme.palette.primary.main, 0.1),
-                          borderRadius: '16px',
-                          mb: 1
-                        }}
-                      >
-                        <BusinessIcon sx={{ fontSize: 32, color: 'primary.main' }} />
-                      </Box>
-                    )}
-                    
-                    <Typography 
-                      variant="h6" 
-                      sx={{ 
-                        fontWeight: 600,
-                        textAlign: 'center',
-                        color: theme => theme.palette.text.primary,
-                        fontSize: '1rem',
-                        lineHeight: 1.2,
-                        mb: 0.5
-                      }}
-                    >
-                      {displayCompany.name}
-                    </Typography>
-                    
-                    {(displayCompany.city ?? company.city) && (
-                      <Typography 
-                        variant="body2" 
-                        sx={{ 
-                          color: theme => alpha(theme.palette.text.secondary, 0.8),
-                          textAlign: 'center',
-                          fontSize: '0.875rem'
-                        }}
-                      >
-                        {displayCompany.city ?? company.city}
-                      </Typography>
-                    )}
-                  </Box>
-                </CardContent>
-
-                <Divider />
-
-                <Box sx={{ 
-                  p: 1.5,
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  bgcolor: theme => alpha(theme.palette.background.default, 0.5)
-                }}>
-                  <Box sx={{ textAlign: 'center', flex: 1 }}>
-                    <Typography 
-                      variant="h6" 
-                      sx={{ 
-                        color: theme => theme.palette.text.primary,
-                        fontWeight: 600,
-                        fontSize: '1rem'
-                      }}
-                    >
-                      {company.missionsCount || 0}
-                    </Typography>
-                    <Typography 
-                      variant="caption" 
-                      sx={{ 
-                        color: theme => alpha(theme.palette.text.secondary, 0.8),
-                        display: 'block',
-                        fontSize: '0.75rem'
-                      }}
-                    >
-                      {company.missionsCount > 1 ? 'Missions' : 'Mission'}
-                    </Typography>
-                  </Box>
-                  
-                  <Box sx={{ textAlign: 'center', flex: 1 }}>
-                    <Typography 
-                      variant="h6" 
-                      sx={{ 
-                        color: theme => theme.palette.text.primary,
-                        fontWeight: 600,
-                        fontSize: '1rem'
-                      }}
-                    >
-                      {new Intl.NumberFormat('fr-FR', { 
-                        style: 'currency', 
-                        currency: 'EUR',
-                        maximumFractionDigits: 0
-                      }).format(company.totalRevenue || 0)}
-                    </Typography>
-                    <Typography 
-                      variant="caption" 
-                      sx={{ 
-                        color: theme => alpha(theme.palette.text.secondary, 0.8),
-                        display: 'block',
-                        fontSize: '0.75rem'
-                      }}
-                    >
-                      CA Total
-                    </Typography>
-                  </Box>
-                </Box>
-              </StyledCard>
-            </Grid>
-          );
-          })
-        )}
-      </Grid>
+            </Box>
+          }
+        />
+      )}
 
       {/* Dialog pour ajouter une entreprise */}
       <StyledDialog 
@@ -910,13 +794,13 @@ const Entreprises: React.FC = () => {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  border: theme => `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
-                  borderRadius: '12px',
+                  border: `1px solid ${tokens.colors.primaryAlpha20}`,
+                  borderRadius: tokens.radius.md,
                   cursor: 'pointer',
-                  transition: 'all 0.2s ease-in-out',
+                  transition: tokens.transitions.fast,
                   '&:hover': {
-                    borderColor: theme => theme.palette.primary.main,
-                    bgcolor: theme => alpha(theme.palette.primary.main, 0.05),
+                    borderColor: tokens.colors.brandTeal,
+                    bgcolor: tokens.colors.primaryAlpha10,
                   }
                 }}
               >
@@ -1017,9 +901,9 @@ const Entreprises: React.FC = () => {
                   startIcon={<PersonAddIcon />}
                   onClick={() => setShowContactForm(true)}
                   sx={{
-                    color: 'primary.main',
+                    color: tokens.colors.brandTeal,
                     '&:hover': {
-                      bgcolor: theme => alpha(theme.palette.primary.main, 0.05),
+                      bgcolor: tokens.colors.primaryAlpha10,
                     }
                   }}
                 >
@@ -1033,7 +917,7 @@ const Entreprises: React.FC = () => {
                   sx={{
                     p: 2,
                     mb: 1,
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
@@ -1075,7 +959,7 @@ const Entreprises: React.FC = () => {
                 <Paper sx={{ 
                   p: 2, 
                   mt: 2, 
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   bgcolor: theme => alpha(theme.palette.background.default, 0.5)
                 }}>
                                       <Stack spacing={2}>
@@ -1168,25 +1052,29 @@ const Entreprises: React.FC = () => {
       </StyledDialog>
 
       {/* Snackbar pour les notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar({ ...snackbar, open: false })}
-          severity={snackbar.severity}
-          sx={{ 
-            width: '100%',
-            borderRadius: '12px',
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
-          }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
-    </Box>
+          <Alert
+            onClose={() => setSnackbar({ ...snackbar, open: false })}
+            severity={snackbar.severity}
+            sx={{ 
+              width: '100%',
+              borderRadius: tokens.radius.md,
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
+            }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
+    </AppPageShell>
   );
 };
 

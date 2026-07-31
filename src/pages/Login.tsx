@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Box, 
   TextField, 
@@ -24,12 +25,16 @@ import {
   VisibilityOff 
 } from '@mui/icons-material';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
+import { tokens } from '../theme/tokens';
 import { loginUser, resetPassword } from '../firebase/auth';
-import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { useAuth } from '../contexts/AuthContext';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase/config';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { getContactAccessPermissions } from '../utils/contactPermissions';
+import { getPostAuthRedirectPath } from '../utils/safeAppHome';
 
 export default function Login(): JSX.Element {
   const theme = useTheme();
@@ -50,51 +55,59 @@ export default function Login(): JSX.Element {
   const [pendingUserStatus, setPendingUserStatus] = useState<string | null>(null);
 
   const navigate = useNavigate();
+  const { currentUser, userData, loading: authLoading, isContactWithAccess, contactPermissions } = useAuth();
 
-  const getRedirectPath = async (userStatus: string, userId: string): Promise<string> => {
-    // Pour les entreprises, vérifier si c'est un contact avec accès
-    if (userStatus === 'entreprise') {
-      try {
-        // Vérifier si c'est un contact avec accès
-        const contactsQuery = query(
-          collection(db, 'contacts'),
-          where('userId', '==', userId)
-        );
-        const contactsSnapshot = await getDocs(contactsQuery);
-        
-        if (!contactsSnapshot.empty) {
-          const contactDoc = contactsSnapshot.docs[0];
-          const contactId = contactDoc.id;
-          
-          const contactAccessRef = doc(db, 'contactAccess', contactId);
-          const contactAccessDoc = await getDoc(contactAccessRef);
-          
-          if (contactAccessDoc.exists()) {
-            const accessData = contactAccessDoc.data();
-            // Si le contact a canViewEvents ou canManageAmbassadors, rediriger vers ambassadeurs
-            if (accessData.canViewEvents || accessData.canManageAmbassadors) {
-              return '/app/ambassadeurs';
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Erreur lors de la vérification des permissions du contact:', error);
-      }
-      return '/app/dashboard'; // Dashboard entreprise par défaut
-    }
-    
-    switch (userStatus) {
-      case 'etudiant':
-        return '/app/dashboard'; // Dashboard étudiant
-      case 'admin_structure':
-      case 'admin':
-      case 'membre':
-      case 'superadmin':
-        return '/app/dashboard'; // Dashboard JE (complet)
-      default:
-        return '/app/dashboard';
-    }
+  const redirectToApp = (path: string) => {
+    navigate(path, { replace: true });
   };
+
+  const resolveRedirectPath = async (
+    userStatus: string,
+    firestoreUser?: Record<string, unknown>,
+    uid?: string
+  ): Promise<string> => {
+    const companyId = (firestoreUser?.companyId as string) || undefined;
+    let canViewEvents = false;
+    let canManageAmbassadors = false;
+
+    if (userStatus === 'entreprise' && companyId && uid) {
+      const perms = await getContactAccessPermissions(uid);
+      canViewEvents = !!perms?.canViewEvents;
+      canManageAmbassadors = !!perms?.canManageAmbassadors;
+    }
+
+    return getPostAuthRedirectPath({
+      status: userStatus,
+      companyId,
+      isContactWithAccess: userStatus === 'entreprise' && !!companyId,
+      canViewEvents,
+      canManageAmbassadors,
+    });
+  };
+
+  // Déjà connecté sur /login → redirection SPA (sans reload qui casse la session en prod)
+  useEffect(() => {
+    if (authLoading || !currentUser) return;
+    if (userData?.status) {
+      redirectToApp(
+        getPostAuthRedirectPath({
+          status: userData.status as string,
+          companyId: userData.companyId,
+          isContactWithAccess,
+          canViewEvents: !!contactPermissions?.canViewEvents,
+          canManageAmbassadors: !!contactPermissions?.canManageAmbassadors,
+        })
+      );
+    }
+  }, [
+    authLoading,
+    currentUser,
+    userData?.status,
+    userData?.companyId,
+    isContactWithAccess,
+    contactPermissions?.canViewEvents,
+    contactPermissions?.canManageAmbassadors,
+  ]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,7 +115,7 @@ export default function Login(): JSX.Element {
     setError(null);
 
     try {
-      const user = await loginUser(email, password);
+      const user = await loginUser(email.trim(), password);
       
       // Attendre un peu pour s'assurer que le document est créé
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -133,35 +146,17 @@ export default function Login(): JSX.Element {
             setLoading(false);
             return; // Ne pas rediriger, attendre la vérification 2FA
           } else {
-            // Pas de 2FA, rediriger normalement
-            const redirectPath = await getRedirectPath(userStatus, user.uid);
-            
-            // Si c'est un contact avec accès, attendre un peu plus pour que le contexte charge les permissions
-            if (userStatus === 'entreprise') {
-              try {
-                const contactsQuery = query(
-                  collection(db, 'contacts'),
-                  where('userId', '==', user.uid)
-                );
-                const contactsSnapshot = await getDocs(contactsQuery);
-                if (!contactsSnapshot.empty) {
-                  // C'est un contact avec accès, attendre que le contexte charge les permissions
-                  await new Promise(resolve => setTimeout(resolve, 1500));
-                }
-              } catch (error) {
-                console.warn('Erreur lors de la vérification du contact:', error);
-              }
-            }
-            
-            navigate(redirectPath);
+            const redirectPath = await resolveRedirectPath(userStatus, userData, user.uid);
+            redirectToApp(redirectPath);
+            return;
           }
         } else {
           console.warn('Document utilisateur toujours inexistant après plusieurs tentatives');
-          navigate('/app/dashboard');
+          redirectToApp('/app');
         }
       } catch (error) {
         console.error('Erreur lors de la récupération du statut:', error);
-        navigate('/app/dashboard');
+        redirectToApp('/app');
       }
     } catch (error: any) {
       console.error('Erreur de connexion:', error);
@@ -239,25 +234,46 @@ export default function Login(): JSX.Element {
     setTwoFactorError(null);
 
     try {
-      const functions = getFunctions();
-      const verifyTwoFactorCode = httpsCallable(functions, 'verifyTwoFactorCode');
-      
-      // Récupérer les informations de l'appareil
+      const functions = getFunctions(auth.app, 'us-central1');
+      const verifyTwoFactorCodeFn = httpsCallable<
+        { uid: string; code: string; deviceInfo?: ReturnType<typeof getDeviceInfo> },
+        { success: boolean }
+      >(functions, 'verifyTwoFactorCode');
+
       const deviceInfo = getDeviceInfo(pendingUserId);
-      
-      // Envoyer le code et les infos de l'appareil
-      await verifyTwoFactorCode({ 
-        uid: pendingUserId, 
-        code: codeToVerify,
-        deviceInfo 
+
+      await verifyTwoFactorCodeFn({
+        uid: pendingUserId,
+        code: codeToVerify.replace(/\D/g, ''),
+        deviceInfo,
       });
 
-      // Code valide, rediriger
-      const redirectPath = await getRedirectPath(pendingUserStatus || '', pendingUserId || '');
-      navigate(redirectPath);
-    } catch (error: any) {
+      let firestoreUser: Record<string, unknown> | undefined;
+      try {
+        const userDoc = await getDoc(doc(db, 'users', pendingUserId || ''));
+        if (userDoc.exists()) firestoreUser = userDoc.data();
+      } catch {
+        /* ignorer */
+      }
+      const redirectPath = await resolveRedirectPath(
+        pendingUserStatus || '',
+        firestoreUser,
+        pendingUserId
+      );
+      redirectToApp(redirectPath);
+    } catch (error: unknown) {
       console.error('Erreur vérification 2FA:', error);
-      const errorMessage = error.message || 'Code invalide. Veuillez réessayer.';
+      const err = error as { code?: string; message?: string; details?: unknown };
+      let errorMessage = 'Code invalide. Veuillez réessayer.';
+      if (err.code === 'functions/failed-precondition') {
+        errorMessage = err.message || 'Service 2FA temporairement indisponible. Contactez le support.';
+      } else if (err.code === 'functions/permission-denied') {
+        errorMessage = 'Session expirée. Reconnectez-vous avec email et mot de passe.';
+      } else if (err.code === 'functions/invalid-argument') {
+        errorMessage = err.message || errorMessage;
+      } else if (err.message && !err.message.includes('INTERNAL')) {
+        errorMessage = err.message;
+      }
       setTwoFactorError(errorMessage);
       
       // Réinitialiser le code pour permettre une nouvelle tentative
@@ -329,6 +345,7 @@ export default function Login(): JSX.Element {
 
 
   return (
+    <>
     <Box
       sx={{
         display: 'flex',
@@ -346,8 +363,9 @@ export default function Login(): JSX.Element {
         sx={{
           p: { xs: 2.5, sm: 4 },
           width: '100%',
-          borderRadius: '12px',
-          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)'
+          borderRadius: tokens.radius.md,
+          boxShadow: tokens.shadows.lg,
+          bgcolor: tokens.colors.marketingWhite,
         }}
       >
         <Typography 
@@ -358,24 +376,63 @@ export default function Login(): JSX.Element {
           sx={{ 
             fontWeight: 600, 
             fontSize: { xs: '1.25rem', sm: '1.5rem', md: '2rem' },
-            mb: { xs: 2, sm: 3 }
+            mb: { xs: 2, sm: 3 },
+            color: tokens.colors.ink,
           }}
         >
           Connexion à JS Connect
         </Typography>
 
         {error && (
-          <Alert 
-            severity="error" 
-            sx={{ 
-              mb: 2, 
+          <Alert
+            severity="error"
+            variant="outlined"
+            role="alert"
+            sx={{
+              mb: 2,
               width: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'flex-start'
+              py: 0.75,
+              px: 1.5,
+              borderRadius: tokens.radius.sm,
+              bgcolor: tokens.colors.errorLight,
+              borderColor: 'rgba(239, 68, 68, 0.3)',
+              alignItems: 'center',
+              animation: 'loginErrorIn 0.25s ease-out',
+              '@keyframes loginErrorIn': {
+                from: { opacity: 0, transform: 'translateY(-4px)' },
+                to: { opacity: 1, transform: 'translateY(0)' },
+              },
+              '& .MuiAlert-icon': {
+                p: 0,
+                mr: 1,
+                fontSize: '1.125rem',
+                alignItems: 'center',
+                opacity: 0.9,
+              },
+              '& .MuiAlert-message': {
+                p: 0,
+                overflow: 'hidden',
+                minWidth: 0,
+                flex: 1,
+              },
             }}
           >
-            {error}
+            <Typography
+              component="span"
+              variant="body2"
+              sx={{
+                display: 'block',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                fontWeight: 500,
+                lineHeight: 1.25,
+                color: '#b91c1c',
+              }}
+            >
+              {error}
+            </Typography>
           </Alert>
         )}
 
@@ -390,13 +447,17 @@ export default function Login(): JSX.Element {
             autoComplete="email"
             autoFocus
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              if (error) setError(null);
+            }}
+            error={!!error}
             disabled={loading}
             variant="outlined"
             sx={{ 
               mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -411,13 +472,17 @@ export default function Login(): JSX.Element {
             id="password"
             autoComplete="current-password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              if (error) setError(null);
+            }}
+            error={!!error}
             disabled={loading}
             variant="outlined"
             sx={{ 
               mb: { xs: 2, sm: 3 },
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
             InputProps={{
@@ -444,13 +509,16 @@ export default function Login(): JSX.Element {
               mt: { xs: 1.5, sm: 2 },
               mb: { xs: 2, sm: 3 },
               py: { xs: 1.25, sm: 1.5 },
-              borderRadius: '20px',
+              borderRadius: tokens.radius.xxl,
               textTransform: 'none',
               fontWeight: 500,
               fontSize: { xs: '0.9rem', sm: '1rem' },
-              bgcolor: '#0071e3',
+              bgcolor: tokens.colors.marketingBlack,
+              color: tokens.colors.marketingWhite,
+              boxShadow: 'none',
               '&:hover': {
-                bgcolor: '#0062c3'
+                bgcolor: tokens.colors.marketingBlack,
+                opacity: 0.9,
               }
             }}
           >
@@ -471,7 +539,7 @@ export default function Login(): JSX.Element {
                 component={RouterLink} 
                 to="/forgot-password"
                 sx={{ 
-                  color: '#0071e3',
+                  color: tokens.colors.ink,
                   textDecoration: 'none',
                   '&:hover': {
                     textDecoration: 'underline'
@@ -495,7 +563,7 @@ export default function Login(): JSX.Element {
             to="/register" 
             variant="body2"
             sx={{ 
-              color: '#0071e3',
+              color: tokens.colors.ink,
               textDecoration: 'none',
               fontWeight: 500,
               fontSize: { xs: '0.8rem', sm: '0.875rem' },
@@ -520,7 +588,7 @@ export default function Login(): JSX.Element {
           sx: {
             m: { xs: 2, sm: 3 },
             maxWidth: { xs: 'calc(100% - 32px)', sm: '420px' },
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)'
           }
         }}
@@ -533,7 +601,7 @@ export default function Login(): JSX.Element {
             pb: 1,
             pt: 4,
             px: 3,
-            color: '#1d1d1f'
+            color: tokens.colors.textPrimary
           }}
         >
           Vérification en deux étapes
@@ -547,7 +615,7 @@ export default function Login(): JSX.Element {
               textAlign: 'center',
               fontSize: '0.9375rem',
               lineHeight: 1.5,
-              color: '#86868b',
+              color: tokens.colors.textSecondary,
               mb: 0
             }}
           >
@@ -608,8 +676,8 @@ export default function Login(): JSX.Element {
               mt: 3,
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '12px',
-                backgroundColor: '#f5f5f7',
+                borderRadius: tokens.radius.md,
+                backgroundColor: tokens.colors.bgSubtle,
                 border: 'none',
                 fontSize: '2rem',
                 letterSpacing: '0.5rem',
@@ -620,16 +688,16 @@ export default function Login(): JSX.Element {
                   border: 'none'
                 },
                 '&.Mui-focused fieldset': {
-                  border: '2px solid #007AFF',
-                  borderColor: '#007AFF'
+                  border: `2px solid ${tokens.colors.ink}`,
+                  borderColor: tokens.colors.ink
                 },
                 '&.Mui-disabled': {
-                  backgroundColor: '#f5f5f7',
+                  backgroundColor: tokens.colors.bgSubtle,
                   opacity: 0.6
                 }
               },
               '& .MuiInputBase-input': {
-                color: '#1d1d1f'
+                color: tokens.colors.textPrimary
               }
             }}
             autoFocus
@@ -642,20 +710,21 @@ export default function Login(): JSX.Element {
             disabled={twoFactorLoading || twoFactorCode.length !== 6}
             fullWidth
             sx={{ 
-              borderRadius: '12px',
+              borderRadius: tokens.radius.xxl,
               py: 1.5,
               fontSize: '1rem',
               fontWeight: 600,
               textTransform: 'none',
-              bgcolor: '#007AFF',
+              bgcolor: tokens.colors.marketingBlack,
+              color: tokens.colors.marketingWhite,
               boxShadow: 'none',
               '&:hover': {
-                bgcolor: '#0051D5',
-                boxShadow: '0 4px 12px rgba(0, 122, 255, 0.3)'
+                bgcolor: tokens.colors.marketingBlack,
+                opacity: 0.9,
               },
               '&:disabled': {
-                bgcolor: '#d1d1d6',
-                color: '#86868b'
+                bgcolor: tokens.colors.gray300,
+                color: tokens.colors.inkMuted
               }
             }}
           >
@@ -673,14 +742,14 @@ export default function Login(): JSX.Element {
             disabled={twoFactorLoading}
             fullWidth
             sx={{ 
-              borderRadius: '12px',
+              borderRadius: tokens.radius.xxl,
               py: 1.25,
               fontSize: '0.9375rem',
               fontWeight: 500,
               textTransform: 'none',
-              color: '#007AFF',
+              color: tokens.colors.ink,
               '&:hover': {
-                bgcolor: 'rgba(0, 122, 255, 0.05)'
+                bgcolor: tokens.colors.bgSubtle
               }
             }}
           >
@@ -689,45 +758,49 @@ export default function Login(): JSX.Element {
         </DialogActions>
       </Dialog>
       
-      {/* Snackbar pour afficher les erreurs 2FA */}
-      <Snackbar
-        open={!!twoFactorError && twoFactorRequired}
-        autoHideDuration={5000}
-        onClose={() => setTwoFactorError(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        sx={{
-          '& .MuiSnackbar-root': {
-            top: '80px !important'
-          }
-        }}
-      >
-        <Alert 
-          onClose={() => setTwoFactorError(null)} 
-          severity="error" 
-          sx={{ 
-            width: '100%',
-            fontSize: '0.9375rem',
-            fontWeight: 500,
-            '& .MuiAlert-icon': {
-              fontSize: '1.25rem'
-            }
-          }}
-        >
-          {twoFactorError}
-        </Alert>
-      </Snackbar>
-      
       <Typography variant="body2" color="text.secondary" sx={{ mt: { xs: 2, sm: 4 }, mb: { xs: 2, sm: 0 }, textAlign: 'center', px: { xs: 2, sm: 0 }, fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
         En vous connectant, vous acceptez les{' '}
-        <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
+        <Link component={RouterLink} to="/mentions-legales" sx={{ color: tokens.colors.ink, textDecoration: 'none', fontSize: 'inherit' }}>
           Conditions d'utilisation
         </Link>{' '}
         et la{' '}
-        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
+        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: tokens.colors.ink, textDecoration: 'none', fontSize: 'inherit' }}>
           Politique de confidentialité
         </Link>{' '}
         de JS Connect.
       </Typography>
     </Box>
+      {/* Snackbar pour afficher les erreurs 2FA - rendu en portal pour éviter children invalides dans Box */}
+      {createPortal(
+        <Snackbar
+          open={!!twoFactorError && twoFactorRequired}
+          autoHideDuration={5000}
+          onClose={() => setTwoFactorError(null)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{
+            zIndex: 10000,
+            '& .MuiSnackbar-root': {
+              top: '80px !important'
+            }
+          }}
+        >
+          <Alert 
+            onClose={() => setTwoFactorError(null)} 
+            severity="error" 
+            sx={{ 
+              width: '100%',
+              fontSize: '0.9375rem',
+              fontWeight: 500,
+              '& .MuiAlert-icon': {
+                fontSize: '1.25rem'
+              }
+            }}
+          >
+            {twoFactorError}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
+    </>
   );
 } 

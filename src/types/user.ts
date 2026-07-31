@@ -23,12 +23,15 @@ export interface UserData {
   customDocuments?: CustomDocument[];
   photoURL?: string;
   program?: string; // Optionnel pour entreprises et structures
+  campus?: string; // Campus de l'établissement (distinct de city = adresse)
   birthPlace?: string;
+  birthPostalCode?: string;
   postalCode?: string;
   gender?: 'M' | 'F' | 'Autre';
   nationality?: string;
   studentId?: string;
   address?: string;
+  city?: string;
   socialSecurityNumber?: string;
   phone?: string;
   linkedinUrl?: string;
@@ -76,7 +79,7 @@ export interface UserData {
 }
 
 export interface ExtendedUser extends User {
-  status?: 'user' | 'admin' | 'superadmin';
+  status?: 'user' | 'etudiant' | 'membre' | 'admin' | 'superadmin' | 'entreprise' | 'admin_structure';
   role?: string;
   phone?: string;
   address?: string;

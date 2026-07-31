@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<!--
+  EMAILJS : To Email {{to_email}}, Subject {{subject}}, From {{from_name}}, Reply {{reply_to}}
+  Corps : prénom, lien_demo (ex. https://js-connect.fr/features?profile=junior), lien_essai, ton_prénom_nom
+  Logo : https://js-connect.fr/images/logo.png?v=2 (chargé depuis le site, pas d’attachement)
+-->
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{subject}}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+  <style>
+    body, table, td, p, a, li { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+    body { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+    @media only screen and (max-width: 600px) {
+      .wrapper { width: 100% !important; max-width: 100% !important; }
+      .btn { display: block !important; width: 100% !important; box-sizing: border-box !important; }
+    }
+  </style>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'DM Sans', system-ui, -apple-system, sans-serif; background-color: #f0f4f8; color: #1e3a5f;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f0f4f8;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" class="wrapper" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 20px rgba(31, 74, 127, 0.08); overflow: hidden;">
+          <!-- Logo sur fond blanc (évite le bloc blanc sur bleu) -->
+          <tr>
+            <td style="padding: 28px 32px; background-color: #ffffff; text-align: center; border-radius: 12px 12px 0 0;">
+              <img class="logo" style="max-width: 120px; height: auto; margin-bottom: 20px;" src="https://js-connect.fr/images/logo.png?v=2" alt="JS Connect">
+            </td>
+          </tr>
+          <!-- Titre sur bandeau bleu -->
+          <tr>
+            <td style="padding: 24px 32px 28px; background-color: #1F4A7F; text-align: center;">
+              <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; font-weight: 600; color: rgba(255,255,255,0.95); letter-spacing: -0.02em;">Vous jonglez encore avec 5 outils qui datent de 2006 ?</p>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding: 32px;">
+              <p style="margin: 0 0 16px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Bonjour <strong>{{prénom}}</strong>,</p>
+              <p style="margin: 0 0 20px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Nous sommes en 2026. L'Intelligence Artificielle transforme le monde de l'entreprise à une vitesse folle...</p>
+              <p style="margin: 0 0 20px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Pourtant, quand on regarde le quotidien d'un bureau en Junior-Entreprise, la réalité est souvent bloquée 20 ans en arrière. Pour faire tourner votre structure, vous êtes obligés de jongler entre :</p>
+
+              <ul style="margin: 0 0 24px; padding-left: 22px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.65; color: #1e3a5f;">
+                <li style="margin-bottom: 8px;">Un fichier Excel interminable et instable pour la prospection.</li>
+                <li style="margin-bottom: 8px;">Des Google Forms éparpillés pour recruter vos étudiants.</li>
+                <li style="margin-bottom: 8px;">Un Google Drive chaotique pour générer des conventions à la main.</li>
+                <li style="margin-bottom: 8px;">Trello, Asana, ou un CRM mal configuré...</li>
+              </ul>
+
+              <p style="margin: 0 0 20px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Le résultat ? Vos membres s'épuisent à faire le pont entre des plateformes d'un autre temps. Vous passez vos journées sur de la paperasse et du copier-coller, au lieu de vous concentrer sur ce qui a vraiment de la valeur : <strong>développer le chiffre d'affaires</strong>, monter en compétences et faire rayonner votre JE.</p>
+              <p style="margin: 0 0 24px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Il est temps de passer à l'ère de l'IA et de tout réunir au même endroit.</p>
+
+              <!-- Encadré JS Connect -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom: 28px; background-color: #f5f8fb; border-left: 4px solid #25B9AC; border-radius: 0 10px 10px 0;">
+                <tr>
+                  <td style="padding: 20px 24px;">
+                    <p style="margin: 0 0 10px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">C'est pour cela que nous avons créé <strong>JS Connect</strong> : l'ERP tout-en-un de nouvelle génération, conçu exclusivement pour les JE.</p>
+                    <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: #25B9AC;">Un outil créé par des Juniors, pour les Juniors.</p>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin: 0 0 20px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Une seule plateforme ultra-sécurisée pour remplacer tout le reste :</p>
+
+              <!-- Liste des avantages -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td style="padding: 12px 0; border-bottom: 1px solid #dce8f0;">
+                    <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.6; color: #1e3a5f;"><strong style="color: #1F4A7F;">Concentrez-vous sur le business :</strong> Notre extension LinkedIn dopée à l'IA scanne les profils et remplit automatiquement votre pipeline de prospection. L'IA travaille, vos chargés d'affaires closent.</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px 0; border-bottom: 1px solid #dce8f0;">
+                    <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.6; color: #1e3a5f;"><strong style="color: #1F4A7F;">Zéro perte d'historique :</strong> La hantise de changer d'outil ? Tout recommencer. Grâce à notre importateur boosté à l'IA, transférez vos années d'anciennes études, clients et bases de données en quelques minutes. L'IA s'occupe de tout ranger.</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px 0; border-bottom: 1px solid #dce8f0;">
+                    <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.6; color: #1e3a5f;"><strong style="color: #1F4A7F;">Un vrai portail de recrutement :</strong> Fini les Forms. Vos étudiants ont un espace dédié sur votre site pour consulter les missions et postuler en un clic.</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px 0; border-bottom: 1px solid #dce8f0;">
+                    <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.6; color: #1e3a5f;"><strong style="color: #1F4A7F;">L'administratif automatisé :</strong> Générez vos contrats, factures et récapitulatifs instantanément grâce à nos balises. Zéro erreur de saisie.</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px 0; border-bottom: 1px solid #dce8f0;">
+                    <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.6; color: #1e3a5f;"><strong style="color: #1F4A7F;">Sécurité niveau bancaire :</strong> Toutes vos données (et celles de vos clients) sont 100% cryptées, et vos accès protégés par l'authentification à double facteur (2FA).</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px 0;">
+                    <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.6; color: #1e3a5f;"><strong style="color: #1F4A7F;">Un support qui s'adapte à vous :</strong> Un besoin spécifique pour votre fonctionnement ? Notre équipe sur-mesure déploie des solutions à une vitesse fulgurante.</p>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin: 28px 0 20px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">La tentation classique est de se dire : <em>"C'est trop lourd à changer, on laissera ça au prochain mandat"</em>.</p>
+              <p style="margin: 0 0 28px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Sauf qu'en repoussant, vous continuez de perdre des heures chaque semaine. Et surtout, vous perdez votre avance sur les Junior-Entreprises concurrentes qui s'équipent d'outils modernes pour scaler. JS Connect est conçu pour vous faire gagner du temps dès aujourd'hui, sans douleur de transition.</p>
+              <p style="margin: 0 0 28px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 17px; font-weight: 600; line-height: 1.5; color: #1F4A7F;">Arrêtez de jongler avec des outils du passé. Concentrez-vous sur votre vraie valeur ajoutée.</p>
+
+              <!-- CTA Fonctionnalités (lien_demo = https://js-connect.fr/features?profile=junior par défaut) -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="center" style="padding: 8px 0 24px;">
+                    <a href="{{lien_demo}}" class="btn" style="display: inline-block; padding: 14px 28px; background-color: #1F4A7F; color: #ffffff !important; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 10px;">Voir les fonctionnalités</a>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin: 0 0 20px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1e3a5f;">Pour vous prouver à quel point la transition est facile, nous vous offrons exceptionnellement <strong>60 jours d'essai totalement gratuits</strong>, sans aucun engagement (largement le temps de clore vos premières études avec l'outil !) :</p>
+
+              <!-- CTA Essai -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="center" style="padding: 8px 0 32px;">
+                    <a href="{{lien_essai}}" class="btn" style="display: inline-block; padding: 16px 32px; background-color: #25B9AC; color: #ffffff !important; font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 10px;">Démarrer mes 2 mois offerts pour mon mandat</a>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin: 0 0 6px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.5; color: #1e3a5f;">À très vite,</p>
+              <p style="margin: 0 0 4px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 16px; font-weight: 600; color: #1F4A7F;">{{ton_prénom_nom}}</p>
+              <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 14px; color: #5a6b7d;">L'équipe JS Connect</p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 24px 32px; background-color: #f5f8fb; border-top: 1px solid #dce8f0;">
+              <p style="margin: 0; font-family: 'DM Sans', system-ui, sans-serif; font-size: 14px; color: #5a6b7d;">Vous recevez cet email car vous êtes en contact avec JS Connect.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

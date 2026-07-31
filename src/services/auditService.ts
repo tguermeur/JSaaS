@@ -66,10 +66,12 @@ interface UserData {
 // Créer une instance unique du service
 const auditService = {
   // Récupérer toutes les missions
-  async getMissions(): Promise<Mission[]> {
+  async getMissions(structureId?: string): Promise<Mission[]> {
     try {
       const missionsRef = collection(db, 'missions');
-      const missionsSnapshot = await getDocs(missionsRef);
+      const missionsSnapshot = structureId
+        ? await getDocs(query(missionsRef, where('structureId', '==', structureId)))
+        : await getDocs(missionsRef);
       
       return missionsSnapshot.docs.map(doc => {
         const data = doc.data();

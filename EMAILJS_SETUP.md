@@ -165,3 +165,35 @@ Le formulaire **Contact** peut utiliser le **même** service EmailJS avec un **a
 | `VITE_APP_URL` | URL de l’app (ex. `https://js-connect.fr`) | Lien `{{registration_link}}` dans l’email |
 
 Une fois ces éléments en place, les invitations ambassadeurs pourront être envoyées par email automatiquement depuis le navigateur.
+
+---
+
+## 10. Nouveaux templates transactionnels (2026)
+
+HTML prêts à coller dans EmailJS : dossier **[`email-templates/`](email-templates/)** (+ [`email-templates/README.md`](email-templates/README.md)).
+
+**DA** : même design que `ambassador-invite.html` (dégradé `#173B6C → #21BDA3`).
+
+Ces emails sont envoyés **depuis les Cloud Functions** (Private Key EmailJS), pas depuis le navigateur. Après création des templates dans EmailJS, renseigner les secrets Firebase :
+
+```
+EMAILJS_TEMPLATE_ID_MEMBER_INVITE
+EMAILJS_TEMPLATE_ID_WELCOME
+EMAILJS_TEMPLATE_ID_MISSION_ACCEPTED
+EMAILJS_TEMPLATE_ID_MISSION_REJECTED
+EMAILJS_TEMPLATE_ID_MISSION_ASSIGNED
+EMAILJS_TEMPLATE_ID_EXPENSE_REJECTED
+EMAILJS_TEMPLATE_ID_AMBASSADOR_RESULT
+EMAILJS_TEMPLATE_ID_TRIAL_ENDING
+EMAILJS_TEMPLATE_ID_PAYMENT_FAILED
+EMAILJS_TEMPLATE_ID_COTISATION_DUE
+EMAILJS_TEMPLATE_ID_COTISATION_PAID
+EMAILJS_TEMPLATE_ID_DOCUMENT_TO_SIGN
+EMAILJS_TEMPLATE_ID_SIGNATURE_COMPLETED
+EMAILJS_TEMPLATE_ID_ETUDE_ASSIGNED
+```
+
+Tant qu’un ID est vide, l’envoi email est **skipped** (les notifs in-app fonctionnent).
+
+Le formulaire **Contact** (`/contact`) utilise désormais la CF `sendContactEmail` (comme la homepage).
+

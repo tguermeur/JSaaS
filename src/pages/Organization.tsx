@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -43,7 +43,7 @@ import {
   alpha,
   useTheme
 } from '@mui/material';
-import { keyframes } from '@mui/system';
+import { } from '@mui/system';
 import {
   Edit as EditIcon,
   Save as SaveIcon,
@@ -68,9 +68,10 @@ import {
   MoreVert as MoreVertIcon,
   Delete as DeleteIcon
 } from '@mui/icons-material';
-import { doc, updateDoc, getDoc, getDocs, query, where, collection, addDoc } from 'firebase/firestore';
+import { doc, updateDoc, getDoc, getDocs, query, where, collection, addDoc, limit } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { decryptUsersList } from '../utils/decryptUserUtils';
+import UserNameText from '../components/common/UserNameText';
 import { useAuth } from '../contexts/AuthContext';
 import { styled } from '@mui/material';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -80,124 +81,24 @@ import { getStripeCustomers } from '../services/stripeApiService';
 import { useNavigate } from 'react-router-dom';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
+import { fadeIn, scaleIn } from '../styles/animations';
+import { tokens } from '../theme/tokens';
+import { SettingsPanel } from '../components/ds';
+import OrgAcademicConfigPanel from '../components/organization/OrgAcademicConfigPanel';
+import { StyledCard, StyledButton, StyledTextField, StyledChip, StyledTabs, StyledTableRow, StyledDialog } from '../components/styled';
 
 // Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
-const scaleIn = keyframes`
-  from {
-    transform: scale(0.95);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-`;
 
 // Styles personnalisés
-const StyledCard = styled(Card)(({ theme }) => ({
-  borderRadius: '16px',
-  boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-  backdropFilter: 'blur(10px)',
-  backgroundColor: alpha(theme.palette.background.paper, 0.8),
-  transition: 'all 0.3s ease-in-out',
-  '&:hover': {
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.08)',
-    transform: 'translateY(-2px)',
-  },
-  animation: `${fadeIn} 0.5s ease-out`,
-}));
-
 const StyledAvatar = styled(Avatar)(({ theme }) => ({
   width: 120,
   height: 120,
-  borderRadius: '24px',
+  borderRadius: tokens.radius.xxl,
   boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
   transition: 'all 0.3s ease-in-out',
   '&:hover': {
     transform: 'scale(1.05)',
     boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
-  },
-}));
-
-const StyledButton = styled(Button)(({ theme }) => ({
-  borderRadius: '12px',
-  textTransform: 'none',
-  fontWeight: 600,
-  padding: '10px 24px',
-  transition: 'all 0.3s ease-in-out',
-  '&:hover': {
-    transform: 'translateY(-2px)',
-    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-  },
-}));
-
-const StyledTextField = styled(TextField)(({ theme }) => ({
-  '& .MuiOutlinedInput-root': {
-    borderRadius: '12px',
-    transition: 'all 0.3s ease-in-out',
-    '&:hover': {
-      '& .MuiOutlinedInput-notchedOutline': {
-        borderColor: theme.palette.primary.main,
-      },
-    },
-  },
-}));
-
-const StyledChip = styled(Chip)(({ theme }) => ({
-  borderRadius: '8px',
-  fontWeight: 500,
-  transition: 'all 0.3s ease-in-out',
-  '&:hover': {
-    transform: 'translateY(-1px)',
-  },
-}));
-
-const StyledTabs = styled(Tabs)(({ theme }) => ({
-  '& .MuiTab-root': {
-    textTransform: 'none',
-    fontWeight: 600,
-    fontSize: '1rem',
-    minHeight: 48,
-    borderRadius: '12px',
-    transition: 'all 0.3s ease-in-out',
-    '&:hover': {
-      backgroundColor: alpha(theme.palette.primary.main, 0.08),
-    },
-    '&.Mui-selected': {
-      backgroundColor: alpha(theme.palette.primary.main, 0.12),
-    },
-  },
-}));
-
-const StyledTableRow = styled(TableRow, {
-  shouldForwardProp: (prop) => prop !== 'selected'
-})<{ selected?: boolean }>(({ theme, selected }) => ({
-  transition: 'all 0.3s ease-in-out',
-  backgroundColor: selected ? alpha(theme.palette.primary.main, 0.08) : 'transparent',
-  '&:hover': {
-    backgroundColor: selected 
-      ? alpha(theme.palette.primary.main, 0.12)
-      : alpha(theme.palette.primary.main, 0.04),
-    transform: 'translateX(4px)',
-  },
-}));
-
-const StyledDialog = styled(Dialog)(({ theme }) => ({
-  '& .MuiDialog-paper': {
-    borderRadius: '24px',
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
-    animation: `${scaleIn} 0.3s ease-out`,
   },
 }));
 
@@ -247,9 +148,29 @@ interface SnackbarState {
   severity: 'success' | 'error' | 'info' | 'warning';
 }
 
+function normalizeEmailForMatch(email: string | null | undefined): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+function isValidOrgEmail(email: string | null | undefined): boolean {
+  const normalized = normalizeEmailForMatch(email);
+  return normalized !== '' && normalized !== 'non renseigné' && normalized.includes('@');
+}
+
+function findStripeCustomerByEmail(
+  customers: StripeCustomer[],
+  email: string | null | undefined
+): StripeCustomer | undefined {
+  if (!isValidOrgEmail(email)) return undefined;
+  const target = normalizeEmailForMatch(email);
+  return customers.find(
+    (c) => c.email != null && normalizeEmailForMatch(c.email) === target
+  );
+}
+
 interface StripeCustomer {
   id: string;
-  email: string;
+  email: string | null;
   name: string;
   subscriptionStatus: string;
   subscriptionTitle: string;
@@ -266,6 +187,8 @@ interface SubscriptionStatus {
   renewalDate?: number | null;
 }
 
+const DEBUG_ORG = import.meta.env.DEV && import.meta.env.VITE_DEBUG_AUTH === 'true';
+
 // Définition des pôles
 const POLES = [
   { id: 'com', name: 'Communication' },
@@ -277,6 +200,34 @@ const POLES = [
   { id: 'sec', name: 'Secrétaire général' },
   { id: 'vice', name: 'Vice-président' }
 ];
+
+function normalizePoles(poles: unknown): Array<{ id: string; name: string }> {
+  if (!Array.isArray(poles) || poles.length === 0) return POLES;
+  const normalized = poles
+    .map((pole) => {
+      if (!pole || typeof pole !== 'object') return null;
+      const p = pole as { id?: unknown; name?: unknown };
+      const id = String(p.id ?? '').trim();
+      const name = String(p.name ?? '').trim();
+      if (!id) return null;
+      return { id, name: name || 'Pôle sans nom' };
+    })
+    .filter((p): p is { id: string; name: string } => p != null);
+  return normalized.length > 0 ? normalized : POLES;
+}
+
+function memberInitials(displayName?: string | null, email?: string | null): string {
+  const fromName = (displayName ?? '').trim();
+  if (fromName) {
+    const parts = fromName.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[0][0] ?? ''}${parts[parts.length - 1][0] ?? ''}`.toUpperCase();
+    }
+    return (fromName[0] ?? '?').toUpperCase();
+  }
+  const mail = (email ?? '').trim();
+  return mail ? mail[0].toUpperCase() : '?';
+}
 
 // Ajoutez les rôles de bureau
 const BUREAU_ROLES = [
@@ -383,6 +334,7 @@ const Organization = () => {
   const [newMemberData, setNewMemberData] = useState<{
     bureauRole?: BureauRole;
     mandat?: string;
+    status?: 'admin' | 'membre';
   }>({});
   const [availableUsers, setAvailableUsers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('');
@@ -417,6 +369,11 @@ const Organization = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
   const [loadingSubscription, setLoadingSubscription] = useState(true);
+
+  const matchedStripeCustomer = useMemo(
+    () => findStripeCustomerByEmail(stripeCustomers, organization.email),
+    [stripeCustomers, organization.email]
+  );
 
   // Ajouter une fonction pour retirer complètement un membre de la structure
   const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false);
@@ -491,8 +448,7 @@ const Organization = () => {
           const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
           if (structureDoc.exists()) {
             const structureData = structureDoc.data();
-            const savedPoles = structureData.poles || POLES;
-            setPoles(savedPoles);
+            setPoles(normalizePoles(structureData.poles));
           }
         }
       }
@@ -528,12 +484,9 @@ const Organization = () => {
     const fetchOrganizationData = async () => {
       try {
         if (!currentUser) {
-          console.log('Pas d\'utilisateur connecté');
           setLoading(false);
           return;
         }
-
-        console.log('Utilisateur connecté:', currentUser.uid);
 
         // Récupérer les données de l'utilisateur
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
@@ -542,45 +495,27 @@ const Organization = () => {
         }
 
         const userData = userDoc.data();
-        console.log('Données utilisateur:', userData);
 
         if (!userData.structureId) {
           throw new Error("Aucune structure associée à votre compte");
         }
 
-        console.log('StructureId trouvé:', userData.structureId);
         setStructureId(userData.structureId);
 
-        // Vérifier si la structure existe directement
         const structureRef = doc(db, 'structures', userData.structureId);
-        console.log('Référence structure:', structureRef.path);
-        
-        // Récupérer les données de la structure
         const structureDoc = await getDoc(structureRef);
-        console.log('Document structure:', {
-          exists: structureDoc.exists(),
-          id: structureDoc.id,
-          path: structureDoc.ref.path,
-          data: structureDoc.data()
-        });
         
         if (!structureDoc.exists()) {
-          // Vérifier si la structure existe dans la collection
-          const structuresSnapshot = await getDocs(collection(db, 'structures'));
-          console.log('Toutes les structures:', structuresSnapshot.docs.map(doc => ({
-            id: doc.id,
-            data: doc.data()
-          })));
           throw new Error("Structure non trouvée");
         }
 
         const structureData = structureDoc.data();
-        console.log('Données structure:', structureData);
 
         // Charger les pôles depuis Firestore, ou utiliser les pôles par défaut
-        const savedPoles = structureData.poles || POLES;
-        console.log('[Organization] Pôles chargés depuis Firestore:', savedPoles);
-        console.log('[Organization] Structure data poles:', structureData.poles);
+        const savedPoles = normalizePoles(structureData.poles);
+        if (DEBUG_ORG) {
+          console.log('[Organization] Pôles chargés:', savedPoles);
+        }
         setPoles(savedPoles);
 
         setOrganization({
@@ -646,7 +581,6 @@ const Organization = () => {
       }
       
       const userData = userDoc.data();
-      console.log('Données utilisateur courant:', userData);
 
       if (!userData.structureId) {
         console.error('Aucune structure associée à cet utilisateur');
@@ -661,52 +595,46 @@ const Organization = () => {
       }
       
       const structureData = structureDoc.data();
-      console.log('Données structure:', structureData);
 
-      if (!structureData?.ecole) {
-        console.error('École non trouvée dans la structure');
-        return;
-      }
+      const structureId = userData.structureId;
 
-      console.log('École recherchée:', structureData.ecole);
-
-      // 3. Récupérer tous les utilisateurs de la même école QUI N'ONT PAS DE STRUCTURE 
-      // OU qui ont la même structure mais ne sont pas membres
+      // 3. Récupérer tous les utilisateurs de la structure (structureId) qui ne sont pas déjà membre/admin
+      // → candidats à l'ajout comme membre (étudiants de la structure, etc.)
       const usersQuery = query(
         collection(db, 'users'),
-        where('ecole', '==', structureData.ecole)
+        where('structureId', '==', structureId)
       );
 
       const usersSnapshot = await getDocs(usersQuery);
 
-      const rawUsers = usersSnapshot.docs.map(doc => {
-        const userData = doc.data();
+      const rawUsers = usersSnapshot.docs.map(docSnap => {
+        const data = docSnap.data();
         return {
-          id: doc.id,
-          email: userData.email || '',
-          displayName: userData.displayName || '',
-          role: userData.role || 'etudiant',
-          createdAt: userData.createdAt || new Date(),
-          photoURL: userData.photoURL || '',
-          poles: userData.poles || [],
-          bureauRole: userData.bureauRole || undefined,
-          structureId: userData.structureId || '',
-          status: userData.status || ''
+          id: docSnap.id,
+          email: data.email || '',
+          displayName: data.displayName || '',
+          role: data.role || 'etudiant',
+          createdAt: data.createdAt || new Date(),
+          photoURL: data.photoURL || '',
+          poles: data.poles || [],
+          bureauRole: data.bureauRole || undefined,
+          structureId: data.structureId || '',
+          status: data.status || ''
         };
       });
 
+      // Exclure l'utilisateur courant et ne garder que ceux qui ne sont pas déjà membre ou admin
       const users = rawUsers.filter(user => {
         const notCurrentUser = user.id !== currentUser.uid;
-        const hasNoStructure = !user.structureId;
-        const hasSameStructureButNotMember = (
-          user.structureId === userData.structureId &&
-          (user.status === 'etudiant' || (!['membre', 'admin'].includes(user.status || '')))
-        );
-        return notCurrentUser && (hasNoStructure || hasSameStructureButNotMember);
+        const notAlreadyMember = !['membre', 'admin', 'admin_structure'].includes(user.status || '');
+        return notCurrentUser && notAlreadyMember;
       });
 
       const decrypted = await decryptUsersList(users);
-      setAvailableUsers(decrypted);
+      const sorted = [...decrypted].sort((a, b) =>
+        (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '', 'fr')
+      );
+      setAvailableUsers(sorted);
     } catch (error) {
       console.error('Erreur détaillée dans fetchAvailableUsers:', error);
       setSnackbar({
@@ -774,43 +702,22 @@ const Organization = () => {
   // Fonction pour sauvegarder les modifications de la structure
   const handleSaveOrg = async () => {
     try {
-      console.log('Début de handleSaveOrg');
       if (!currentUser) {
-        console.error('Pas d\'utilisateur connecté');
         throw new Error("Utilisateur non connecté");
       }
 
-      console.log('Utilisateur connecté:', currentUser.uid);
       const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
       if (!userDoc.exists()) {
-        console.error('Document utilisateur non trouvé');
         throw new Error("Document utilisateur non trouvé");
       }
 
       const userData = userDoc.data();
-      console.log('Données utilisateur:', userData);
       const structureId = userData?.structureId;
       if (!structureId) {
-        console.error('Structure ID non trouvé');
         throw new Error("Structure non trouvée");
       }
 
-      console.log('Structure ID trouvé:', structureId);
-      console.log('Données à mettre à jour:', {
-        nom: organization.name,
-        address: organization.address,
-        city: organization.city,
-        postalCode: organization.postalCode,
-        phone: organization.phone,
-        email: organization.email,
-        website: organization.website,
-        description: organization.description,
-        updatedAt: new Date()
-      });
-
-      // Mise à jour de la structure
       const structureRef = doc(db, 'structures', structureId);
-      console.log('Référence structure:', structureRef.path);
       
       await updateDoc(structureRef, {
         nom: organization.name,
@@ -831,8 +738,6 @@ const Organization = () => {
         apeCode: organization.apeCode,
         updatedAt: new Date()
       });
-
-      console.log('Mise à jour réussie');
 
       // Recharger les données de la structure
       const updatedStructureDoc = await getDoc(structureRef);
@@ -991,7 +896,7 @@ const Organization = () => {
         poles: selectedPolesList,
         poleIds: selectedPolesList.map((p: { poleId: string }) => p.poleId),
         structureId: structureId,
-        status: 'membre',
+        status: newMemberData.status || 'membre',
         bureauRole: selectedBureauRole || null,
         mandat: selectedMandatValue
       });
@@ -1090,7 +995,7 @@ const Organization = () => {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>
+        <DialogTitle component="div">
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <PersonAddIcon color="primary" />
             <Typography variant="h6">
@@ -1106,13 +1011,18 @@ const Organization = () => {
                 value={selectedUserId}
                 label="Sélectionner un membre"
                 onChange={(e) => setSelectedUserId(e.target.value as string)}
+                MenuProps={{
+                  PaperProps: {
+                    sx: { maxHeight: 320 },
+                  },
+                }}
                 sx={{
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   '& .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                    borderColor: tokens.colors.primaryAlpha20,
                   },
                   '&:hover .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme => theme.palette.primary.main,
+                    borderColor: tokens.colors.brandTeal,
                   },
                 }}
               >
@@ -1123,9 +1033,9 @@ const Organization = () => {
                         src={user.photoURL} 
                         sx={{ width: 24, height: 24 }}
                       >
-                        {user.displayName?.[0]}
+                        {memberInitials(user.displayName, user.email)}
                       </StyledAvatar>
-                      <Typography>{user.displayName || user.email}</Typography>
+                      <UserNameText user={user} component="span" fallback={user.email} />
                     </Box>
                   </MenuItem>
                 ))}
@@ -1147,12 +1057,12 @@ const Organization = () => {
                       }));
                     }}
                     sx={{
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       '& .MuiOutlinedInput-notchedOutline': {
-                        borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                        borderColor: tokens.colors.primaryAlpha20,
                       },
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: theme => theme.palette.primary.main,
+                        borderColor: tokens.colors.brandTeal,
                       },
                     }}
                   >
@@ -1174,12 +1084,12 @@ const Organization = () => {
                       bureauRole: e.target.value as BureauRole
                     }))}
                     sx={{
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       '& .MuiOutlinedInput-notchedOutline': {
-                        borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                        borderColor: tokens.colors.primaryAlpha20,
                       },
                       '&:hover .MuiOutlinedInput-notchedOutline': {
-                        borderColor: theme => theme.palette.primary.main,
+                        borderColor: tokens.colors.brandTeal,
                       },
                     }}
                   >
@@ -1189,6 +1099,34 @@ const Organization = () => {
                         {role.name}
                       </MenuItem>
                     ))}
+                  </Select>
+                </FormControl>
+
+                <FormControl fullWidth>
+                  <InputLabel>Statut</InputLabel>
+                  <Select
+                    value={newMemberData.status || 'membre'}
+                    label="Statut"
+                    onChange={(e) => {
+                      setNewMemberData(prev => ({
+                        ...prev,
+                        status: e.target.value as 'admin' | 'membre'
+                      }));
+                    }}
+                    sx={{
+                      borderRadius: tokens.radius.md,
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        borderColor: tokens.colors.primaryAlpha20,
+                      },
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: tokens.colors.brandTeal,
+                      },
+                    }}
+                  >
+                    <MenuItem value="membre">Membre</MenuItem>
+                    {(isAdmin || isSuperAdmin) && (
+                      <MenuItem value="admin">Administrateur</MenuItem>
+                    )}
                   </Select>
                 </FormControl>
 
@@ -1208,7 +1146,7 @@ const Organization = () => {
                       variant="outlined" 
                       sx={{ 
                         p: 1.5,
-                        borderRadius: '12px',
+                        borderRadius: tokens.radius.md,
                         borderColor: theme => alpha(theme.palette.divider, 0.1),
                         transition: 'all 0.2s ease-in-out',
                         '&:hover': {
@@ -1639,16 +1577,8 @@ const Organization = () => {
   }, []);
 
   useEffect(() => {
-    // Vérifier que l'email de l'organisation est valide (pas "Non renseigné" ou vide)
-    const isValidEmail = organization.email && 
-                        organization.email !== 'Non renseigné' && 
-                        organization.email.trim() !== '' &&
-                        organization.email.includes('@');
-    
-    if (isValidEmail && stripeCustomers.length > 0) {
-      const customer = stripeCustomers.find(c => 
-        c.email && c.email.toLowerCase() === organization.email.toLowerCase()
-      );
+    if (isValidOrgEmail(organization.email) && stripeCustomers.length > 0) {
+      const customer = findStripeCustomerByEmail(stripeCustomers, organization.email);
 
       if (customer) {
         setSubscriptionStatus({
@@ -2004,7 +1934,6 @@ const Organization = () => {
     }
   };
 
-
   // Afficher le chargement des permissions
   if (permissionLoading) {
     return (
@@ -2026,19 +1955,22 @@ const Organization = () => {
 
   return (
     <Box sx={{ 
+      flex: 1,
+      minHeight: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'auto',
       p: 3,
-      background: theme => `linear-gradient(180deg, ${alpha(theme.palette.background.default, 0.8)} 0%, ${alpha(theme.palette.background.paper, 0.9)} 100%)`,
-      minHeight: '100vh'
+      bgcolor: tokens.colors.appBg,
     }}>
       <Typography 
         variant="h4" 
         gutterBottom 
         sx={{ 
-          fontWeight: 700,
-          mb: 4,
-          background: theme => `linear-gradient(90deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
+          ...tokens.typography.pageTitle,
+          color: tokens.colors.gray900,
+          mb: 2,
+          flexShrink: 0,
           animation: `${fadeIn} 0.5s ease-out`
         }}
       >
@@ -2048,7 +1980,8 @@ const Organization = () => {
       <Box sx={{ 
         borderBottom: 1, 
         borderColor: 'divider', 
-        mb: 4,
+        mb: 2,
+        flexShrink: 0,
         animation: `${fadeIn} 0.5s ease-out 0.2s both`
       }}>
         <StyledTabs 
@@ -2083,7 +2016,7 @@ const Organization = () => {
         }}>
           <CircularProgress 
             sx={{ 
-              color: theme => theme.palette.primary.main,
+              color: tokens.colors.brandTeal,
               animation: `${scaleIn} 0.5s ease-out`
             }} 
           />
@@ -2091,40 +2024,36 @@ const Organization = () => {
       ) : (
         <>
           {activeTab === 0 ? (
-            <Grid container spacing={3}>
-              <Grid item xs={12} md={6}>
-                <StyledCard>
-                  <CardHeader
-                    title={
-                      <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                        Informations de l'organisation
-                      </Typography>
-                    }
-                    action={
-                      canWrite && (
-                        <IconButton 
-                          onClick={() => {
-                            if (editingOrg) {
-                              handleSaveOrg();
-                            } else {
-                              setEditingOrg(true);
-                            }
-                          }}
-                          sx={{
-                            transition: 'all 0.3s ease-in-out',
-                            '&:hover': {
-                              transform: 'rotate(15deg)',
-                              backgroundColor: theme => alpha(theme.palette.primary.main, 0.1),
-                            },
-                          }}
-                        >
-                          {editingOrg ? <SaveIcon /> : <EditIcon />}
-                        </IconButton>
-                      )
-                    }
-                  />
-                  <Divider />
-                  <CardContent>
+            <Grid container spacing={2} sx={{ alignItems: 'stretch' }}>
+              <Grid item xs={12} md={6} sx={{ display: 'flex' }}>
+                <SettingsPanel
+                  sx={{ flex: 1, width: '100%' }}
+                  title="Informations de l'organisation"
+                  icon={<InfoIcon sx={{ fontSize: 16 }} />}
+                  action={
+                    canWrite ? (
+                      <IconButton 
+                        size="small"
+                        onClick={() => {
+                          if (editingOrg) {
+                            handleSaveOrg();
+                          } else {
+                            setEditingOrg(true);
+                          }
+                        }}
+                        sx={{
+                          transition: tokens.transitions.fast,
+                          '&:hover': {
+                            transform: 'rotate(15deg)',
+                            backgroundColor: tokens.colors.primaryAlpha10,
+                          },
+                        }}
+                      >
+                        {editingOrg ? <SaveIcon fontSize="small" /> : <EditIcon fontSize="small" />}
+                      </IconButton>
+                    ) : undefined
+                  }
+                >
                     {editingOrg ? (
                       <Grid container spacing={3} sx={{ pb: 4 }}>
                         <Grid item xs={12}>
@@ -2299,7 +2228,7 @@ const Organization = () => {
                           gap: 1
                         }
                       }}>
-                        {organization.logo && (
+                        {organization.logo ? (
                           <Box sx={{ 
                             display: 'flex', 
                             justifyContent: 'center', 
@@ -2310,7 +2239,7 @@ const Organization = () => {
                               src={organization.logo}
                             />
                           </Box>
-                        )}
+                        ) : null}
                         <Typography 
                           variant="h6" 
                           sx={{ 
@@ -2340,22 +2269,34 @@ const Organization = () => {
                         <Typography variant="body2"><strong>Code APE:</strong> {organization.apeCode || 'Non renseigné'}</Typography>
                       </Box>
                     )}
-                  </CardContent>
-                </StyledCard>
+                </SettingsPanel>
               </Grid>
-              <Grid item xs={12} md={6}>
-                <StyledCard>
+              <Grid item xs={12} md={6} sx={{ display: 'flex' }}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, flex: 1, width: '100%' }}>
+                <StyledCard sx={{ flexShrink: 0, '&:hover': { transform: 'none' } }}>
                   <CardHeader
                     title="Statut de l'abonnement"
                     avatar={
                       subscriptionStatus.isActive ? 
-                        <CheckCircleIcon color="success" /> : 
-                        <CancelIcon color="error" />
+                        <CheckCircleIcon color="success" fontSize="small" /> : 
+                        <CancelIcon color="error" fontSize="small" />
                     }
+                    sx={{
+                      py: 1,
+                      px: 2,
+                      '& .MuiCardHeader-title': { fontSize: 14, fontWeight: 600 },
+                      '& .MuiCardHeader-avatar': { mr: 1 },
+                    }}
                   />
                   <Divider />
-                  <CardContent>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <CardContent
+                    sx={{
+                      py: 1.25,
+                      px: 2,
+                      '&:last-child': { pb: 1.25 },
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Typography variant="body1">
                           Statut:
@@ -2384,7 +2325,7 @@ const Organization = () => {
                               }
                             />
                         )}
-                        {subscriptionStatus.isActive && !subscriptionStatus.cancelAtPeriodEnd && (isAdmin || isSuperAdmin) && !loadingSubscription && (
+                        {subscriptionStatus.isActive && !subscriptionStatus.cancelAtPeriodEnd && (isAdmin || isSuperAdmin) && !loadingSubscription ? (
                           <>
                             <IconButton 
                               size="small" 
@@ -2412,7 +2353,7 @@ const Organization = () => {
                               </MenuItem>
                             </Menu>
                           </>
-                        )}
+                        ) : null}
                       </Box>
 
                       {loadingSubscription ? (
@@ -2427,9 +2368,9 @@ const Organization = () => {
                           {subscriptionStatus.isActive && (
                             <>
                               <Typography variant="body2" color="text.secondary">
-                                Plan : {stripeCustomers.find(c => c.email.toLowerCase() === organization.email.toLowerCase())?.subscriptionTitle || 'Non disponible'}
+                                Plan : {matchedStripeCustomer?.subscriptionTitle || 'Non disponible'}
                               </Typography>
-                              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                              <Typography variant="body2" color="text.secondary">
                                 Prochain renouvellement automatique : {subscriptionStatus.renewalDate ? new Date(subscriptionStatus.renewalDate).toLocaleDateString('fr-FR', {
                                   day: 'numeric',
                                   month: 'long',
@@ -2484,6 +2425,16 @@ const Organization = () => {
                     </Box>
                   </CardContent>
                 </StyledCard>
+                <OrgAcademicConfigPanel
+                  compact
+                  structureId={structureId}
+                  schoolName={organization.name !== 'Structure non détectée' ? organization.name : undefined}
+                  canWrite={canWrite}
+                  onNotify={(message, severity) =>
+                    setSnackbar({ open: true, message, severity })
+                  }
+                />
+                </Box>
               </Grid>
             </Grid>
           ) : activeTab === 1 ? (
@@ -2492,15 +2443,13 @@ const Organization = () => {
                 <CardHeader
                   title="Gestion des membres"
                   action={
-                    canWrite && (
-                      <AddMemberButton />
-                    )
+                    canWrite ? <AddMemberButton /> : undefined
                   }
                 />
                 <Divider />
                 <CardContent>
                   <Box sx={{ 
-                    bgcolor: '#f5f5f5',
+                    bgcolor: tokens.colors.gray100,
                     borderRadius: 2,
                     p: 3,
                     minHeight: '60vh',
@@ -2661,12 +2610,15 @@ const Organization = () => {
                                             }}
                                           >
                                             <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                              {member.displayName?.[0]}
+                                              {memberInitials(member.displayName, member.email)}
                                             </Avatar>
                                             <Box sx={{ flexGrow: 1 }}>
-                                              <Typography variant="body2">
-                                                {member.displayName || member.email}
-                                              </Typography>
+                                              <UserNameText
+                                                user={member}
+                                                variant="body2"
+                                                component="span"
+                                                fallback={member.email}
+                                              />
                                             </Box>
                                           </Box>
                                         ));
@@ -2734,12 +2686,15 @@ const Organization = () => {
                                             }}
                                           >
                                             <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                              {member.displayName?.[0]}
+                                              {memberInitials(member.displayName, member.email)}
                                             </Avatar>
                                             <Box sx={{ flexGrow: 1 }}>
-                                              <Typography variant="body2">
-                                                {member.displayName || member.email}
-                                              </Typography>
+                                              <UserNameText
+                                                user={member}
+                                                variant="body2"
+                                                component="span"
+                                                fallback={member.email}
+                                              />
                                             </Box>
                                           </Box>
                                         ));
@@ -2807,12 +2762,15 @@ const Organization = () => {
                                             }}
                                           >
                                             <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                              {member.displayName?.[0]}
+                                              {memberInitials(member.displayName, member.email)}
                                             </Avatar>
                                             <Box sx={{ flexGrow: 1 }}>
-                                              <Typography variant="body2">
-                                                {member.displayName || member.email}
-                                              </Typography>
+                                              <UserNameText
+                                                user={member}
+                                                variant="body2"
+                                                component="span"
+                                                fallback={member.email}
+                                              />
                                             </Box>
                                           </Box>
                                         ));
@@ -2825,14 +2783,9 @@ const Organization = () => {
 
                             {/* Deuxième ligne : Autres pôles */}
                             <Grid container spacing={4} justifyContent="center">
-                              {(() => {
-                                const filteredPoles = poles.filter(pole => 
-                                  !['pre', 'vice', 'sec'].includes(pole.id)
-                                );
-                                console.log('[Organization] Pôles à afficher dans l\'organigramme:', filteredPoles);
-                                console.log('[Organization] Total des pôles:', poles.length);
-                                return filteredPoles;
-                              })().map((pole) => {
+                              {poles
+                                .filter((pole) => !['pre', 'vice', 'sec'].includes(pole.id))
+                                .map((pole) => {
                                 const poleMembers = mandatMembers
                                   .filter(member => {
                                     // Vérifier si le membre appartient à ce pôle
@@ -2905,7 +2858,7 @@ const Organization = () => {
                                                 }}
                                               >
                                                 <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                                  {member.displayName?.[0]}
+                                                  {memberInitials(member.displayName, member.email)}
                                                 </Avatar>
                                                 <Box sx={{ flexGrow: 1 }}>
                                                   <Typography 
@@ -2915,7 +2868,7 @@ const Organization = () => {
                                                       color: isResponsable ? 'primary.main' : 'inherit'
                                                     }}
                                                   >
-                                                    {member.displayName}
+                                                  <UserNameText user={member} variant="body2" component="span" />
                                                   </Typography>
                                                   {isResponsable && (
                                                     <Typography variant="caption" color="primary" sx={{ fontWeight: 'bold' }}>
@@ -2952,9 +2905,9 @@ const Organization = () => {
                     </Typography>
                   }
                   action={
-                    canWrite && (
+                    canWrite ? (
                       <Box sx={{ display: 'flex', gap: 2 }}>
-                        {selectedMembers.length > 0 && (
+                        {selectedMembers.length > 0 ? (
                           <StyledButton
                             variant="contained"
                             color="secondary"
@@ -2963,7 +2916,7 @@ const Organization = () => {
                           >
                             Affecter un mandat ({selectedMembers.length})
                           </StyledButton>
-                        )}
+                        ) : null}
                         <StyledButton
                           variant="contained"
                           startIcon={<PersonAddIcon />}
@@ -2984,7 +2937,7 @@ const Organization = () => {
                           Gérer les pôles
                         </StyledButton>
                       </Box>
-                    )
+                    ) : undefined
                   }
                 />
                 <Divider />
@@ -2992,7 +2945,7 @@ const Organization = () => {
                   <TableContainer 
                     component={Paper} 
                     sx={{ 
-                      borderRadius: '16px',
+                      borderRadius: tokens.radius.lg,
                       boxShadow: 'none',
                       border: theme => `1px solid ${alpha(theme.palette.divider, 0.1)}`,
                       overflow: 'hidden'
@@ -3061,10 +3014,10 @@ const Organization = () => {
                             <TableCell>
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                 <Avatar src={member.photoURL} sx={{ width: 32, height: 32 }}>
-                                  {member.displayName?.[0]}
+                                  {memberInitials(member.displayName, member.email)}
                                 </Avatar>
                                 <Box>
-                                  <Typography variant="body2">{member.displayName}</Typography>
+                                  <UserNameText user={member} variant="body2" component="span" />
                                   <Typography variant="caption" color="text.secondary">
                                     {member.email}
                                   </Typography>
@@ -3098,7 +3051,7 @@ const Organization = () => {
                                   return (
                                     <StyledChip 
                                       key={pole.poleId} 
-                                      label={poleInfo?.name} 
+                                      label={poleInfo?.name ?? 'Pôle'} 
                                       size="small"
                                       sx={{
                                         backgroundColor: alpha(getPoleColor(poleInfo?.name || ''), 0.15),
@@ -3114,7 +3067,7 @@ const Organization = () => {
                                           px: 1.5,
                                         },
                                         height: '28px',
-                                        borderRadius: '8px',
+                                        borderRadius: tokens.radius.sm,
                                         transition: 'all 0.2s ease-in-out'
                                       }}
                                     />
@@ -3132,6 +3085,17 @@ const Organization = () => {
                                   >
                                     <EditIcon />
                                   </IconButton>
+                                  {(isAdmin || isSuperAdmin) && (
+                                    <Tooltip title="Modifier le statut (admin / membre)">
+                                      <IconButton
+                                        size="small"
+                                        onClick={() => handleChangeRole(member)}
+                                        color="secondary"
+                                      >
+                                        <AdminIcon />
+                                      </IconButton>
+                                    </Tooltip>
+                                  )}
                                   <IconButton
                                     size="small"
                                     onClick={() => handleOpenRemoveDialog(member)}
@@ -3157,7 +3121,7 @@ const Organization = () => {
                 maxWidth="sm"
                 fullWidth
               >
-                <DialogTitle>
+                <DialogTitle component="div">
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                     <PersonAddIcon color="primary" />
                     <Typography variant="h6" sx={{ fontWeight: 600 }}>
@@ -3179,12 +3143,12 @@ const Organization = () => {
                         label="Sélectionner un membre"
                         onChange={(e) => setSelectedUserId(e.target.value as string)}
                         sx={{
-                          borderRadius: '12px',
+                          borderRadius: tokens.radius.md,
                           '& .MuiOutlinedInput-notchedOutline': {
-                            borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                            borderColor: tokens.colors.primaryAlpha20,
                           },
                           '&:hover .MuiOutlinedInput-notchedOutline': {
-                            borderColor: theme => theme.palette.primary.main,
+                            borderColor: tokens.colors.brandTeal,
                           },
                         }}
                       >
@@ -3195,9 +3159,9 @@ const Organization = () => {
                                 src={user.photoURL} 
                                 sx={{ width: 24, height: 24 }}
                               >
-                                {user.displayName?.[0]}
+                                {memberInitials(user.displayName, user.email)}
                               </StyledAvatar>
-                              <Typography>{user.displayName || user.email}</Typography>
+                              <UserNameText user={user} component="span" fallback={user.email} />
                             </Box>
                           </MenuItem>
                         ))}
@@ -3206,100 +3170,128 @@ const Organization = () => {
 
                     {selectedUserId && (
                       <>
-                        <FormControl fullWidth>
-                          <InputLabel>Mandat</InputLabel>
-                          <Select
-                            value={selectedMandat || newMemberData.mandat || ''}
-                            label="Mandat"
-                            onChange={(e) => {
-                              setSelectedMandat(e.target.value);
-                              setNewMemberData(prev => ({
-                                ...prev,
-                                mandat: e.target.value
-                              }));
-                            }}
-                            sx={{
-                              borderRadius: '12px',
-                              '& .MuiOutlinedInput-notchedOutline': {
-                                borderColor: theme => alpha(theme.palette.primary.main, 0.2),
-                              },
-                              '&:hover .MuiOutlinedInput-notchedOutline': {
-                                borderColor: theme => theme.palette.primary.main,
-                              },
-                            }}
-                          >
-                            {AVAILABLE_MANDATS.map(mandat => (
-                              <MenuItem key={mandat} value={mandat}>
-                                {mandat}
-                              </MenuItem>
-                            ))}
-                          </Select>
-                        </FormControl>
+                    <FormControl fullWidth>
+                      <InputLabel>Mandat</InputLabel>
+                      <Select
+                        value={selectedMandat || newMemberData.mandat || ''}
+                        label="Mandat"
+                        onChange={(e) => {
+                          setSelectedMandat(e.target.value);
+                          setNewMemberData(prev => ({
+                            ...prev,
+                            mandat: e.target.value
+                          }));
+                        }}
+                        sx={{
+                          borderRadius: tokens.radius.md,
+                          '& .MuiOutlinedInput-notchedOutline': {
+                            borderColor: tokens.colors.primaryAlpha20,
+                          },
+                          '&:hover .MuiOutlinedInput-notchedOutline': {
+                            borderColor: tokens.colors.brandTeal,
+                          },
+                        }}
+                      >
+                        {AVAILABLE_MANDATS.map(mandat => (
+                          <MenuItem key={mandat} value={mandat}>
+                            {mandat}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
 
-                        <FormControl fullWidth>
-                          <InputLabel>Rôle au bureau</InputLabel>
-                          <Select
-                            value={newMemberData.bureauRole || ''}
-                            label="Rôle au bureau"
-                            onChange={(e) => setNewMemberData(prev => ({
-                              ...prev,
-                              bureauRole: e.target.value as BureauRole
-                            }))}
-                            sx={{
-                              borderRadius: '12px',
-                              '& .MuiOutlinedInput-notchedOutline': {
-                                borderColor: theme => alpha(theme.palette.primary.main, 0.2),
-                              },
-                              '&:hover .MuiOutlinedInput-notchedOutline': {
-                                borderColor: theme => theme.palette.primary.main,
-                              },
-                            }}
-                          >
-                            <MenuItem value="">Aucun rôle au bureau</MenuItem>
-                            {BUREAU_ROLES.map(role => {
-                              // Vérifier si un président existe déjà pour le mandat sélectionné
-                              const selectedMandatValue = selectedMandat || newMemberData.mandat || null;
-                              const hasExistingPresident = role.id === 'president' && selectedMandatValue && 
-                                members.some(member => {
-                                  if (member.id === selectedUserId) return false;
-                                  const hasPresidentRole = member.bureauRole === 'president' || 
-                                    member.poles?.some(p => p.poleId === 'pre');
-                                  return member.mandat === selectedMandatValue && hasPresidentRole;
-                                });
-                              
-                              return (
-                                <MenuItem 
-                                  key={role.id} 
-                                  value={role.id}
-                                  disabled={hasExistingPresident}
-                                >
-                                  {role.name}
-                                  {hasExistingPresident && ' (déjà assigné pour ce mandat)'}
-                                </MenuItem>
-                              );
-                            })}
-                          </Select>
-                          {(selectedMandat || newMemberData.mandat) && members.some(member => {
-                            if (member.id === selectedUserId) return false;
-                            const hasPresidentRole = member.bureauRole === 'president' || 
-                              member.poles?.some(p => p.poleId === 'pre');
-                            return member.mandat === (selectedMandat || newMemberData.mandat) && hasPresidentRole;
-                          }) && (
-                            <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
-                              Un président existe déjà pour ce mandat
-                            </Typography>
-                          )}
-                          {selectedPoles['pre'] && (selectedMandat || newMemberData.mandat) && members.some(member => {
-                            if (member.id === selectedUserId) return false;
-                            const hasPresidentRole = member.bureauRole === 'president' || 
-                              member.poles?.some(p => p.poleId === 'pre');
-                            return member.mandat === (selectedMandat || newMemberData.mandat) && hasPresidentRole;
-                          }) && (
-                            <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
-                              Un président existe déjà pour ce mandat (vous ne pouvez pas sélectionner le pôle Président)
-                            </Typography>
-                          )}
-                        </FormControl>
+                    <FormControl fullWidth>
+                      <InputLabel>Rôle au bureau</InputLabel>
+                      <Select
+                        value={newMemberData.bureauRole || ''}
+                        label="Rôle au bureau"
+                        onChange={(e) => setNewMemberData(prev => ({
+                          ...prev,
+                          bureauRole: e.target.value as BureauRole
+                        }))}
+                        sx={{
+                          borderRadius: tokens.radius.md,
+                          '& .MuiOutlinedInput-notchedOutline': {
+                            borderColor: tokens.colors.primaryAlpha20,
+                          },
+                          '&:hover .MuiOutlinedInput-notchedOutline': {
+                            borderColor: tokens.colors.brandTeal,
+                          },
+                        }}
+                      >
+                        <MenuItem value="">Aucun rôle au bureau</MenuItem>
+                        {BUREAU_ROLES.map(role => {
+                          // Vérifier si un président existe déjà pour le mandat sélectionné
+                          const selectedMandatValue = selectedMandat || newMemberData.mandat || null;
+                          const hasExistingPresident = role.id === 'president' && selectedMandatValue && 
+                            members.some(member => {
+                              if (member.id === selectedUserId) return false;
+                              const hasPresidentRole = member.bureauRole === 'president' || 
+                                member.poles?.some(p => p.poleId === 'pre');
+                              return member.mandat === selectedMandatValue && hasPresidentRole;
+                            });
+                          
+                          return (
+                            <MenuItem 
+                              key={role.id} 
+                              value={role.id}
+                              disabled={hasExistingPresident}
+                            >
+                              {role.name}
+                              {hasExistingPresident && ' (déjà assigné pour ce mandat)'}
+                            </MenuItem>
+                          );
+                        })}
+                      </Select>
+                      {(selectedMandat || newMemberData.mandat) && members.some(member => {
+                        if (member.id === selectedUserId) return false;
+                        const hasPresidentRole = member.bureauRole === 'president' || 
+                          member.poles?.some(p => p.poleId === 'pre');
+                        return member.mandat === (selectedMandat || newMemberData.mandat) && hasPresidentRole;
+                      }) ? (
+                        <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
+                          Un président existe déjà pour ce mandat
+                        </Typography>
+                      ) : null}
+                      {selectedPoles['pre'] && (selectedMandat || newMemberData.mandat) && members.some(member => {
+                        if (member.id === selectedUserId) return false;
+                        const hasPresidentRole = member.bureauRole === 'president' || 
+                          member.poles?.some(p => p.poleId === 'pre');
+                        return member.mandat === (selectedMandat || newMemberData.mandat) && hasPresidentRole;
+                      }) ? (
+                        <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
+                          Un président existe déjà pour ce mandat (vous ne pouvez pas sélectionner le pôle Président)
+                        </Typography>
+                      ) : null}
+                    </FormControl>
+
+                    <FormControl fullWidth>
+                      <InputLabel>Statut</InputLabel>
+                      <Select
+                        value={newMemberData.status || 'membre'}
+                        label="Statut"
+                        onChange={(e) => {
+                          setNewMemberData(prev => ({
+                            ...prev,
+                            status: e.target.value as 'admin' | 'membre'
+                          }));
+                        }}
+                        sx={{
+                          borderRadius: tokens.radius.md,
+                          '& .MuiOutlinedInput-notchedOutline': {
+                            borderColor: tokens.colors.primaryAlpha20,
+                          },
+                          '&:hover .MuiOutlinedInput-notchedOutline': {
+                            borderColor: tokens.colors.brandTeal,
+                          },
+                        }}
+                      >
+                        <MenuItem value="membre">Membre</MenuItem>
+                        {(isAdmin || isSuperAdmin) && (
+                          <MenuItem value="admin">Administrateur</MenuItem>
+                        )}
+                      </Select>
+                    </FormControl>
 
                         <Typography 
                           variant="subtitle1" 
@@ -3317,7 +3309,7 @@ const Organization = () => {
                               variant="outlined" 
                               sx={{ 
                                 p: 1.5,
-                                borderRadius: '12px',
+                                borderRadius: tokens.radius.md,
                                 borderColor: theme => alpha(theme.palette.divider, 0.1),
                                 transition: 'all 0.2s ease-in-out',
                                 '&:hover': {
@@ -3427,7 +3419,7 @@ const Organization = () => {
       
       {/* Dialog pour changer le statut */}
       <Dialog open={openRoleDialog} onClose={() => setOpenRoleDialog(false)}>
-        <DialogTitle>
+        <DialogTitle component="div">
           Modifier le statut de {selectedUser?.displayName}
         </DialogTitle>
         <DialogContent>
@@ -3469,9 +3461,10 @@ const Organization = () => {
         autoHideDuration={6000} 
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        sx={{ 
+        sx={{
           zIndex: 10000,
-          position: 'fixed !important'
+          left: `${tokens.layout.sidebarIconW + 16}px !important`,
+          bottom: 24,
         }}
       >
         <Alert 
@@ -3479,7 +3472,6 @@ const Organization = () => {
           severity={snackbar.severity} 
           sx={{ 
             width: '100%',
-            zIndex: 10000,
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
           }}
         >
@@ -3489,7 +3481,7 @@ const Organization = () => {
 
       {/* Dialog pour la gestion des pôles */}
       <Dialog open={openPoleDialog} onClose={() => setOpenPoleDialog(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ pb: 1 }}>
+        <DialogTitle component="div" sx={{ pb: 1 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <BadgeIcon color="primary" />
             <Typography variant="h6">
@@ -3595,7 +3587,7 @@ const Organization = () => {
 
       {/* Dialog pour gérer les pôles (ajouter, modifier, supprimer) */}
       <Dialog open={openManagePolesDialog} onClose={() => setOpenManagePolesDialog(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>
+        <DialogTitle component="div">
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <BadgeIcon color="primary" />
             <Typography variant="h6">
@@ -3696,7 +3688,7 @@ const Organization = () => {
         onClose={handleCloseRemoveDialog}
         aria-labelledby="confirm-remove-dialog-title"
       >
-        <DialogTitle id="confirm-remove-dialog-title">
+        <DialogTitle id="confirm-remove-dialog-title" component="div">
           Modification du statut du membre
         </DialogTitle>
         <DialogContent>
@@ -3732,7 +3724,7 @@ const Organization = () => {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle sx={{ bgcolor: 'error.main', color: 'white' }}>
+        <DialogTitle component="div" sx={{ bgcolor: 'error.main', color: 'white' }}>
           ⚠️ Annuler l'abonnement
         </DialogTitle>
         <DialogContent sx={{ pt: 3 }}>
@@ -3820,7 +3812,7 @@ const Organization = () => {
         maxWidth="sm" 
         fullWidth
       >
-        <DialogTitle>
+        <DialogTitle component="div">
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <BadgeIcon color="primary" />
             <Typography variant="h6">
@@ -3840,12 +3832,12 @@ const Organization = () => {
                 label="Mandat"
                 onChange={(e) => setSelectedMandat(e.target.value)}
                 sx={{
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   '& .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme => alpha(theme.palette.primary.main, 0.2),
+                    borderColor: tokens.colors.primaryAlpha20,
                   },
                   '&:hover .MuiOutlinedInput-notchedOutline': {
-                    borderColor: theme => theme.palette.primary.main,
+                    borderColor: tokens.colors.brandTeal,
                   },
                 }}
               >
@@ -3873,7 +3865,7 @@ const Organization = () => {
                 variant="outlined" 
                 sx={{ 
                   p: 1.5,
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   borderColor: theme => alpha(theme.palette.divider, 0.1),
                   transition: 'all 0.2s ease-in-out',
                   '&:hover': {
@@ -3997,7 +3989,7 @@ const Organization = () => {
         maxWidth="sm" 
         fullWidth
       >
-        <DialogTitle>
+        <DialogTitle component="div">
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <BadgeIcon color="primary" />
             <Typography variant="h6">
@@ -4016,7 +4008,7 @@ const Organization = () => {
               label="Mandat"
               onChange={(e) => setBulkMandat(e.target.value)}
               sx={{
-                borderRadius: '12px',
+                borderRadius: tokens.radius.md,
                 '& .MuiOutlinedInput-notchedOutline': {
                   borderColor: (theme) => alpha(theme.palette.primary.main, 0.2),
                 },

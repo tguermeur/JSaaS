@@ -1,8 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { collection, query, where, getDocs, updateDoc, doc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { Mission, MissionSlot } from '../../types/mission';
-import { LocationOn as LocationIcon, CalendarToday as CalendarIcon, People as PeopleIcon, Edit as EditIcon, Map as MapIcon, List as ListIcon, Delete as DeleteIcon, Visibility as VisibilityIcon, VisibilityOff as VisibilityOffIcon, CalendarMonth as CalendarMonthIcon, Schedule as ScheduleIcon } from '@mui/icons-material';
+import { Mission } from '../../types/mission';
+import {
+  Edit as EditIcon,
+  Map as MapIcon,
+  List as ListIcon,
+  Delete as DeleteIcon,
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon,
+  CalendarMonth as CalendarMonthIcon,
+  Search as SearchIcon,
+  FilterList as FilterIcon,
+  Place as PlaceIcon,
+} from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { AmbassadorEventsMap } from './AmbassadorEventsMap';
@@ -14,8 +25,44 @@ import interactionPlugin from '@fullcalendar/interaction';
 import frLocale from '@fullcalendar/core/locales/fr';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
+import { toDateFromFirestore } from '../../utils/dateUtils';
+import { Box, Typography, TextField, MenuItem, InputAdornment, IconButton } from '@mui/material';
+import { CaeEventCard, CaeKpi } from '../ds';
+import { tokens } from '../../theme/tokens';
 
 const appleFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+
+const extractCity = (location?: string): string => {
+  if (!location) return '';
+  const parts = location.split(',').map((p) => p.trim());
+  return parts[parts.length - 1] || location;
+};
+
+const getEventStatus = (event: Mission, fillRate: number): string => {
+  const now = new Date();
+  const endDate = event.endDate ? toDateFromFirestore(event.endDate) : null;
+  if (endDate && !isNaN(endDate.getTime()) && endDate < now) return 'Terminé';
+  if (fillRate >= 100) return 'Complet';
+  return 'Ouvert';
+};
+
+const formatEventDateRange = (event: Mission): string => {
+  if (!event.startDate) return '—';
+  try {
+    const startDate = toDateFromFirestore(event.startDate);
+    if (isNaN(startDate.getTime())) return '—';
+    const start = format(startDate, 'd MMM yyyy', { locale: fr });
+    if (event.endDate && event.endDate !== event.startDate) {
+      const endDate = toDateFromFirestore(event.endDate);
+      if (!isNaN(endDate.getTime())) {
+        return `${start} – ${format(endDate, 'd MMM yyyy', { locale: fr })}`;
+      }
+    }
+    return start;
+  } catch {
+    return '—';
+  }
+};
 
 export const AmbassadorEventsList: React.FC = () => {
   const [events, setEvents] = useState<Mission[]>([]);
@@ -27,6 +74,9 @@ export const AmbassadorEventsList: React.FC = () => {
   const [editingEvent, setEditingEvent] = useState<Mission | null>(null);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [applicationsByEvent, setApplicationsByEvent] = useState<Map<string, number>>(new Map());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [cityFilter, setCityFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
   const navigate = useNavigate();
   const { userData, isContactWithAccess } = useAuth();
 
@@ -303,6 +353,37 @@ export const AmbassadorEventsList: React.FC = () => {
     return applicationsByEvent.get(event.id) || 0;
   };
 
+  const cities = useMemo(
+    () => ['all', ...Array.from(new Set(events.map((e) => extractCity(e.location)).filter(Boolean)))],
+    [events],
+  );
+
+  const filteredEvents = useMemo(() => {
+    return events.filter((event) => {
+      const totalCapacity = getTotalCapacity(event);
+      const totalRegistered = getTotalRegistered(event);
+      const fillRate = totalCapacity > 0 ? Math.round((totalRegistered / totalCapacity) * 100) : 0;
+      const status = getEventStatus(event, fillRate);
+      const city = extractCity(event.location);
+      const haystack = `${event.title || ''} ${event.description || ''} ${event.campaignName || ''} ${event.location || ''}`.toLowerCase();
+      const matchesSearch = searchQuery.trim() === '' || haystack.includes(searchQuery.toLowerCase());
+      const matchesCity = cityFilter === 'all' || city === cityFilter;
+      const matchesStatus = statusFilter === 'all' || status === statusFilter;
+      return matchesSearch && matchesCity && matchesStatus;
+    });
+  }, [events, searchQuery, cityFilter, statusFilter, applicationsByEvent]);
+
+  const globalStats = useMemo(() => {
+    const totalEvents = events.length;
+    const totalSlots = events.reduce((acc, event) => acc + getTotalSlots(event), 0);
+    const totalCapacity = events.reduce((acc, event) => acc + getTotalCapacity(event), 0);
+    const totalRegistered = events.reduce((acc, event) => acc + getTotalRegistered(event), 0);
+    const avgFillRate = totalCapacity > 0 ? Math.round((totalRegistered / totalCapacity) * 100) : 0;
+    return { totalEvents, totalSlots, totalCapacity, totalRegistered, avgFillRate };
+  }, [events, applicationsByEvent]);
+
+  const statusOptions = ['all', 'Ouvert', 'Complet', 'Terminé'];
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '96px 0' }}>
@@ -340,23 +421,6 @@ export const AmbassadorEventsList: React.FC = () => {
       </div>
     );
   }
-
-  // Calcul des statistiques globales
-  const getGlobalStats = () => {
-    const totalEvents = events.length;
-    const totalSlots = events.reduce((acc, event) => acc + getTotalSlots(event), 0);
-    const totalCapacity = events.reduce((acc, event) => acc + getTotalCapacity(event), 0);
-    const totalRegistered = events.reduce((acc, event) => acc + getTotalRegistered(event), 0);
-    const avgFillRate = totalCapacity > 0 ? Math.round((totalRegistered / totalCapacity) * 100) : 0;
-
-    return {
-      totalEvents,
-      totalSlots,
-      totalCapacity,
-      totalRegistered,
-      avgFillRate
-    };
-  };
 
   // Même règle que l'accès à la page Ambassadeurs : si on peut y accéder, on peut éditer/supprimer.
   // Les événements ambassadeurs n'ont souvent pas companyId/structureId (créés via le formulaire dédié).
@@ -441,192 +505,140 @@ export const AmbassadorEventsList: React.FC = () => {
     }
   };
 
-  const globalStats = getGlobalStats();
+  const navigateToEvent = (eventId: string) => {
+    window.scrollTo(0, 0);
+    if (document.body) document.body.scrollTop = 0;
+    if (document.documentElement) document.documentElement.scrollTop = 0;
+    navigate(`/app/ambassadeurs/event/${eventId}`);
+  };
+
+  const filterSelectSx = {
+    minWidth: 160,
+    '& .MuiOutlinedInput-root': {
+      borderRadius: tokens.radius.lg,
+      fontSize: 13,
+      height: 40,
+      bgcolor: tokens.colors.bgPaper,
+    },
+  };
 
   return (
     <div>
       {/* Toggle entre vue carte et liste */}
       {events.length > 0 && (
-        <div style={{
-          backgroundColor: 'white',
-          borderRadius: '20px',
-          padding: '24px',
-          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-          border: '1px solid #f3f4f6',
-          marginBottom: '32px'
+        <Box sx={{
+          bgcolor: tokens.colors.bgPaper,
+          border: `1px solid ${tokens.colors.divider}`,
+          borderRadius: tokens.radius.xl,
+          p: 3,
+          mb: 3,
+          boxShadow: tokens.shadows.sm,
         }}>
-          {/* Boutons de toggle */}
-          <div style={{
-            display: 'flex',
-            justifyContent: 'center',
-            marginBottom: '24px'
-          }}>
-            <div style={{
-              display: 'flex',
-              backgroundColor: '#f3f4f6',
-              borderRadius: '16px',
-              padding: '4px',
-              gap: '4px'
-            }}>
-              <button
-                onClick={() => setViewMode('list')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '12px 24px',
-                  backgroundColor: viewMode === 'list' ? 'white' : 'transparent',
-                  color: viewMode === 'list' ? '#111827' : '#6b7280',
-                  border: 'none',
-                  borderRadius: '12px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  fontFamily: appleFont,
-                  cursor: 'pointer',
-                  boxShadow: viewMode === 'list' ? '0 2px 8px rgba(0, 0, 0, 0.1)' : 'none',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <ListIcon sx={{ fontSize: 18 }} />
-                Liste
-              </button>
-              <button
-                onClick={() => setViewMode('map')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '12px 24px',
-                  backgroundColor: viewMode === 'map' ? 'white' : 'transparent',
-                  color: viewMode === 'map' ? '#111827' : '#6b7280',
-                  border: 'none',
-                  borderRadius: '12px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  fontFamily: appleFont,
-                  cursor: 'pointer',
-                  boxShadow: viewMode === 'map' ? '0 2px 8px rgba(0, 0, 0, 0.1)' : 'none',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <MapIcon sx={{ fontSize: 18 }} />
-                Carte
-              </button>
-              <button
-                onClick={() => setViewMode('calendar')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '12px 24px',
-                  backgroundColor: viewMode === 'calendar' ? 'white' : 'transparent',
-                  color: viewMode === 'calendar' ? '#111827' : '#6b7280',
-                  border: 'none',
-                  borderRadius: '12px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  fontFamily: appleFont,
-                  cursor: 'pointer',
-                  boxShadow: viewMode === 'calendar' ? '0 2px 8px rgba(0, 0, 0, 0.1)' : 'none',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <CalendarMonthIcon sx={{ fontSize: 18 }} />
-                Calendrier
-              </button>
-            </div>
-          </div>
+          <Box sx={{ display: 'flex', justifyContent: 'center', mb: 3 }}>
+            <Box sx={{ display: 'inline-flex', bgcolor: tokens.colors.gray100, borderRadius: tokens.radius.lg, p: 0.5, gap: 0.5 }}>
+              {([
+                ['list', 'Liste', <ListIcon key="l" sx={{ fontSize: 16 }} />],
+                ['map', 'Carte', <MapIcon key="m" sx={{ fontSize: 16 }} />],
+                ['calendar', 'Calendrier', <CalendarMonthIcon key="c" sx={{ fontSize: 16 }} />],
+              ] as const).map(([id, label, icon]) => (
+                <Box
+                  key={id}
+                  component="button"
+                  onClick={() => setViewMode(id)}
+                  sx={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    px: 2.5,
+                    py: 1,
+                    border: 'none',
+                    borderRadius: tokens.radius.md,
+                    bgcolor: viewMode === id ? tokens.colors.bgPaper : 'transparent',
+                    color: viewMode === id ? tokens.colors.gray900 : tokens.colors.gray500,
+                    fontWeight: viewMode === id ? 600 : 500,
+                    fontSize: 14,
+                    fontFamily: 'inherit',
+                    cursor: 'pointer',
+                    boxShadow: viewMode === id ? tokens.shadows.sm : 'none',
+                    transition: tokens.transitions.fast,
+                  }}
+                >
+                  {icon}{label}
+                </Box>
+              ))}
+            </Box>
+          </Box>
 
-          {/* Contenu selon le mode */}
-          {viewMode === 'list' ? (
-            /* Statistiques pour la vue liste */
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-              gap: '32px'
-            }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{
-                  fontSize: '48px',
-                  fontWeight: 700,
-                  color: '#2563eb',
-                  marginBottom: '8px',
-                  fontFamily: appleFont
-                }}>
-                  {globalStats.totalEvents}
-                </div>
-                <div style={{
-                  fontSize: '16px',
-                  color: '#6b7280',
-                  fontFamily: appleFont,
-                  fontWeight: 500
-                }}>
-                  Événements actifs
-                </div>
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{
-                  fontSize: '48px',
-                  fontWeight: 700,
-                  color: '#f59e0b',
-                  marginBottom: '8px',
-                  fontFamily: appleFont
-                }}>
-                  {globalStats.totalCapacity}
-                </div>
-                <div style={{
-                  fontSize: '16px',
-                  color: '#6b7280',
-                  fontFamily: appleFont,
-                  fontWeight: 500
-                }}>
-                  Places disponibles
-                </div>
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{
-                  fontSize: '48px',
-                  fontWeight: 700,
-                  color: '#dc2626',
-                  marginBottom: '8px',
-                  fontFamily: appleFont
-                }}>
-                  {globalStats.totalRegistered}
-                </div>
-                <div style={{
-                  fontSize: '16px',
-                  color: '#6b7280',
-                  fontFamily: appleFont,
-                  fontWeight: 500
-                }}>
-                  Inscriptions
-                </div>
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{
-                  fontSize: '48px',
-                  fontWeight: 700,
-                  color: globalStats.avgFillRate >= 80 ? '#10b981' : globalStats.avgFillRate >= 50 ? '#f59e0b' : '#2563eb',
-                  marginBottom: '8px',
-                  fontFamily: appleFont
-                }}>
-                  {globalStats.avgFillRate}%
-                </div>
-                <div style={{
-                  fontSize: '16px',
-                  color: '#6b7280',
-                  fontFamily: appleFont,
-                  fontWeight: 500
-                }}>
-                  Taux de remplissage moyen
-                </div>
-              </div>
-            </div>
-          ) : viewMode === 'map' ? (
-            /* Vue carte */
+          {viewMode === 'list' && (
+            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 2, mb: 1 }}>
+              <CaeKpi label="Événements actifs" value={globalStats.totalEvents} />
+              <CaeKpi label="Places disponibles" value={globalStats.totalCapacity} hint="capacité totale" />
+              <CaeKpi label="Inscriptions" value={globalStats.totalRegistered} />
+              <CaeKpi label="Taux moyen" value={`${globalStats.avgFillRate}%`} hint="remplissage" />
+            </Box>
+          )}
+
+          {viewMode !== 'calendar' && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flexWrap: 'wrap', mt: viewMode === 'list' ? 2.5 : 0, mb: 2 }}>
+              <TextField
+                size="small"
+                placeholder="Rechercher un salon, une ville…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon sx={{ fontSize: 18, color: tokens.colors.gray400 }} />
+                    </InputAdornment>
+                  ),
+                }}
+                sx={{ flex: '1 1 260px', maxWidth: 360, '& .MuiOutlinedInput-root': { borderRadius: tokens.radius.lg, height: 40, fontSize: 13 } }}
+              />
+              <TextField
+                select
+                size="small"
+                value={cityFilter}
+                onChange={(e) => setCityFilter(e.target.value)}
+                sx={filterSelectSx}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <PlaceIcon sx={{ fontSize: 16, color: tokens.colors.gray400 }} />
+                    </InputAdornment>
+                  ),
+                }}
+              >
+                {cities.map((c) => (
+                  <MenuItem key={c} value={c}>{c === 'all' ? 'Toutes les villes' : c}</MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                select
+                size="small"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                sx={filterSelectSx}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <FilterIcon sx={{ fontSize: 16, color: tokens.colors.gray400 }} />
+                    </InputAdornment>
+                  ),
+                }}
+              >
+                {statusOptions.map((s) => (
+                  <MenuItem key={s} value={s}>{s === 'all' ? 'Tous les statuts' : s}</MenuItem>
+                ))}
+              </TextField>
+              <Typography sx={{ flex: 1, textAlign: 'right', fontSize: 12.5, color: tokens.colors.gray400, fontWeight: 500 }}>
+                {filteredEvents.length} salon{filteredEvents.length > 1 ? 's' : ''}
+              </Typography>
+            </Box>
+          )}
+
+          {viewMode === 'map' ? (
             <AmbassadorEventsMap />
-          ) : (
-            /* Vue calendaire */
+          ) : viewMode === 'calendar' ? (
             <div style={{ marginTop: '16px' }}>
               <div style={{
                 backgroundColor: 'white',
@@ -776,8 +788,10 @@ export const AmbassadorEventsList: React.FC = () => {
                   } else {
                     // Si pas de slots, utiliser startDate et endDate
                     try {
-                      const startDate = event.startDate ? new Date(event.startDate) : new Date();
-                      const endDate = event.endDate ? new Date(event.endDate) : new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+                      const startDate = event.startDate ? toDateFromFirestore(event.startDate) : new Date();
+                      const endDate = event.endDate
+                        ? toDateFromFirestore(event.endDate)
+                        : new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
                       
                       // Vérifier que les dates sont valides
                       if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
@@ -849,8 +863,8 @@ export const AmbassadorEventsList: React.FC = () => {
               />
               </div>
             </div>
-          )}
-        </div>
+          ) : null}
+        </Box>
       )}
 
       {events.length === 0 ? (
@@ -871,268 +885,71 @@ export const AmbassadorEventsList: React.FC = () => {
           </div>
         </div>
       ) : viewMode === 'list' ? (
-        <div style={{ display: 'grid', gap: '24px' }}>
-          {/* Liste des événements - seulement en mode liste */}
-          {events.map((event) => {
-            const totalSlots = getTotalSlots(event);
-            const totalCapacity = getTotalCapacity(event);
-            const totalRegistered = getTotalRegistered(event);
-            const fillRate = totalCapacity > 0 ? Math.round((totalRegistered / totalCapacity) * 100) : 0;
+        filteredEvents.length === 0 ? (
+          <Box sx={{ textAlign: 'center', py: 8 }}>
+            <Typography sx={{ fontSize: 15, fontWeight: 600, color: tokens.colors.gray700, mb: 0.5 }}>
+              Aucun salon ne correspond
+            </Typography>
+            <Typography sx={{ fontSize: 13, color: tokens.colors.gray400 }}>
+              Ajustez vos filtres pour voir plus de résultats.
+            </Typography>
+          </Box>
+        ) : (
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 2 }}>
+            {filteredEvents.map((event) => {
+              const totalCapacity = getTotalCapacity(event);
+              const totalRegistered = getTotalRegistered(event);
+              const fillRate = totalCapacity > 0 ? Math.round((totalRegistered / totalCapacity) * 100) : 0;
+              const status = getEventStatus(event, fillRate);
 
-            return (
-              <div
-                key={event.id}
-                style={{
-                  backgroundColor: 'white',
-                  borderRadius: '20px',
-                  padding: '24px',
-                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
-                  border: '1px solid #f3f4f6',
-                  transition: 'all 0.2s',
-                  cursor: 'pointer'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.1)';
-                  e.currentTarget.style.transform = 'translateY(-2px)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.05)';
-                  e.currentTarget.style.transform = 'translateY(0)';
-                }}
-                onClick={() => {
-                  // Scroller immédiatement avant la navigation
-                  window.scrollTo(0, 0);
-                  if (document.body) document.body.scrollTop = 0;
-                  if (document.documentElement) document.documentElement.scrollTop = 0;
-                  navigate(`/app/ambassadeurs/event/${event.id}`);
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-                      <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        padding: '4px 12px',
-                        borderRadius: '999px',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        backgroundColor: '#dbeafe',
-                        color: '#1e40af',
-                        fontFamily: appleFont
-                      }}>
-                        {event.campaignName || 'Événement'}
-                      </span>
-                      {event.company && event.company !== 'Organisation inconnue' && (
-                        <span style={{ fontSize: '14px', color: '#6b7280', fontFamily: appleFont }}>
-                          {event.company}
-                        </span>
-                      )}
-                    </div>
-                    <h3 style={{
-                      fontSize: '20px',
-                      fontWeight: 600,
-                      color: '#111827',
-                      marginBottom: '8px',
-                      fontFamily: appleFont,
-                      margin: 0
-                    }}>
-                      {event.title || event.description}
-                    </h3>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '14px', color: '#6b7280', fontFamily: appleFont, flexWrap: 'wrap' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <LocationIcon sx={{ fontSize: 18 }} />
-                        <span>{event.location}</span>
-                      </div>
-                      {event.startDate && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <ScheduleIcon sx={{ fontSize: 18 }} />
-                          <span>
-                            {format(new Date(event.startDate), 'd MMM yyyy', { locale: fr })}
-                            {event.endDate && event.endDate !== event.startDate && (
-                              <> - {format(new Date(event.endDate), 'd MMM yyyy', { locale: fr })}</>
-                            )}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleToggleVisibility(event);
-                      }}
-                      disabled={togglingVisibilityId === event.id}
-                      style={{
-                        padding: '8px',
-                        backgroundColor: (event as any).visibleForAmbassadors ? '#dbeafe' : '#f3f4f6',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: togglingVisibilityId === event.id ? 'not-allowed' : 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        transition: 'all 0.2s',
-                        opacity: togglingVisibilityId === event.id ? 0.5 : 1
-                      }}
-                      onMouseEnter={(e) => {
-                        if (togglingVisibilityId !== event.id) {
-                          e.currentTarget.style.backgroundColor = (event as any).visibleForAmbassadors ? '#bfdbfe' : '#e5e7eb';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (togglingVisibilityId !== event.id) {
-                          e.currentTarget.style.backgroundColor = (event as any).visibleForAmbassadors ? '#dbeafe' : '#f3f4f6';
-                        }
-                      }}
-                      title={(event as any).visibleForAmbassadors ? 'Masquer pour les Ambassadeurs (AvailableMissions)' : 'Afficher pour les Ambassadeurs (AvailableMissions)'}
-                    >
-                      {(event as any).visibleForAmbassadors ? (
-                        <VisibilityIcon sx={{ fontSize: 20, color: '#2563eb' }} />
-                      ) : (
-                        <VisibilityOffIcon sx={{ fontSize: 20, color: '#6b7280' }} />
-                      )}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEditEvent(event);
-                      }}
-                      style={{
-                        padding: '8px',
-                        backgroundColor: '#f3f4f6',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        transition: 'all 0.2s'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#e5e7eb';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f3f4f6';
-                      }}
-                      title="Modifier l'événement"
-                    >
-                      <EditIcon sx={{ fontSize: 20, color: '#4b5563' }} />
-                    </button>
-                    {canEditOrDeleteEvent(event) && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteEvent(event.id, event.title || event.description);
-                        }}
-                        disabled={deletingEventId === event.id}
-                        style={{
-                          padding: '8px',
-                          backgroundColor: deletingEventId === event.id ? '#fee2e2' : '#fef2f2',
-                          border: 'none',
-                          borderRadius: '8px',
-                          cursor: deletingEventId === event.id ? 'not-allowed' : 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          transition: 'all 0.2s',
-                          opacity: deletingEventId === event.id ? 0.5 : 1
-                        }}
-                        onMouseEnter={(e) => {
-                          if (deletingEventId !== event.id) {
-                            e.currentTarget.style.backgroundColor = '#fecaca';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (deletingEventId !== event.id) {
-                            e.currentTarget.style.backgroundColor = '#fef2f2';
-                          }
-                        }}
-                        title="Supprimer l'événement"
-                      >
-                        <DeleteIcon sx={{
-                          fontSize: 20,
-                          color: deletingEventId === event.id ? '#dc2626' : '#ef4444'
-                        }} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Statistiques */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                  gap: '16px',
-                  paddingTop: '16px',
-                  borderTop: '1px solid #f3f4f6'
-                }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                      <CalendarIcon sx={{ fontSize: 18, color: '#6b7280' }} />
-                      <span style={{ fontSize: '14px', color: '#6b7280', fontFamily: appleFont }}>
-                        Créneaux
-                      </span>
-                    </div>
-                    <p style={{ fontSize: '20px', fontWeight: 600, color: '#111827', margin: 0, fontFamily: appleFont }}>
-                      {totalSlots}
-                    </p>
-                  </div>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                      <PeopleIcon sx={{ fontSize: 18, color: '#6b7280' }} />
-                      <span style={{ fontSize: '14px', color: '#6b7280', fontFamily: appleFont }}>
-                        Capacité totale
-                      </span>
-                    </div>
-                    <p style={{ fontSize: '20px', fontWeight: 600, color: '#111827', margin: 0, fontFamily: appleFont }}>
-                      {totalCapacity}
-                    </p>
-                  </div>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                      <PeopleIcon sx={{ fontSize: 18, color: '#2563eb' }} />
-                      <span style={{ fontSize: '14px', color: '#6b7280', fontFamily: appleFont }}>
-                        Inscrits
-                      </span>
-                    </div>
-                    <p style={{ fontSize: '20px', fontWeight: 600, color: '#2563eb', margin: 0, fontFamily: appleFont }}>
-                      {totalRegistered}
-                    </p>
-                  </div>
-                  <div>
-                    <div style={{ marginBottom: '4px' }}>
-                      <span style={{ fontSize: '14px', color: '#6b7280', fontFamily: appleFont }}>
-                        Taux de remplissage
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <div style={{
-                        flex: 1,
-                        height: '8px',
-                        backgroundColor: '#f3f4f6',
-                        borderRadius: '999px',
-                        overflow: 'hidden'
-                      }}>
-                        <div style={{
-                          height: '100%',
-                          width: `${fillRate}%`,
-                          backgroundColor: fillRate >= 80 ? '#10b981' : fillRate >= 50 ? '#f59e0b' : '#2563eb',
-                          transition: 'width 0.3s ease',
-                          borderRadius: '999px'
-                        }} />
-                      </div>
-                      <span style={{ fontSize: '16px', fontWeight: 600, color: '#111827', fontFamily: appleFont, minWidth: '45px' }}>
-                        {fillRate}%
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              return (
+                <CaeEventCard
+                  key={event.id}
+                  title={event.title || event.description || 'Sans titre'}
+                  date={formatEventDateRange(event)}
+                  location={event.location}
+                  status={status}
+                  fillPct={fillRate}
+                  onView={() => navigateToEvent(event.id)}
+                  actions={
+                    canEditOrDeleteEvent(event) ? (
+                      <>
+                        <IconButton
+                          size="small"
+                          onClick={() => handleToggleVisibility(event)}
+                          disabled={togglingVisibilityId === event.id}
+                          sx={{ bgcolor: tokens.colors.gray100, width: 30, height: 30 }}
+                          title={(event as { visibleForAmbassadors?: boolean }).visibleForAmbassadors ? 'Masquer pour les ambassadeurs' : 'Afficher pour les ambassadeurs'}
+                        >
+                          {(event as { visibleForAmbassadors?: boolean }).visibleForAmbassadors
+                            ? <VisibilityIcon sx={{ fontSize: 16, color: tokens.colors.brandTeal }} />
+                            : <VisibilityOffIcon sx={{ fontSize: 16, color: tokens.colors.gray500 }} />}
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          onClick={() => handleEditEvent(event)}
+                          sx={{ bgcolor: tokens.colors.gray100, width: 30, height: 30 }}
+                          title="Modifier"
+                        >
+                          <EditIcon sx={{ fontSize: 16, color: tokens.colors.gray600 }} />
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          onClick={() => handleDeleteEvent(event.id, event.title || event.description || '')}
+                          disabled={deletingEventId === event.id}
+                          sx={{ bgcolor: tokens.colors.errorLight, width: 30, height: 30 }}
+                          title="Supprimer"
+                        >
+                          <DeleteIcon sx={{ fontSize: 16, color: tokens.colors.error }} />
+                        </IconButton>
+                      </>
+                    ) : undefined
+                  }
+                />
+              );
+            })}
+          </Box>
+        )
       ) : null}
 
       {/* Afficher la liste seulement si mode liste ET qu'il y a des événements */}

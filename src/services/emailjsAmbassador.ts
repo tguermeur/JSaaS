@@ -38,6 +38,7 @@ export async function sendAmbassadorInviteEmail(toEmail: string): Promise<{ ok: 
   }
 
   const registrationLink = `${BASE_URL.replace(/\/$/, '')}/register?ambassador=true&email=${encodeURIComponent(email)}`;
+  const logoUrl = `${BASE_URL.replace(/\/$/, '')}/images/logo.png`;
 
   try {
     await emailjs.send(
@@ -48,6 +49,7 @@ export async function sendAmbassadorInviteEmail(toEmail: string): Promise<{ ok: 
         email,
         registration_link: registrationLink,
         subject: 'Invitation à devenir Ambassadeur',
+        logo_url: logoUrl,
       },
       { publicKey: PUBLIC_KEY }
     );

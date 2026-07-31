@@ -1,15 +1,21 @@
 import React from 'react';
-import { Outlet } from 'react-router-dom';
 import { Box } from '@mui/material';
 import Layout from './Layout';
 import ChangelogDialog from '../ChangelogDialog';
+import OnboardingTutorialDialog from '../OnboardingTutorialDialog';
 import ImpersonationBanner from '../common/ImpersonationBanner';
 import { useChangelog } from '../../contexts/ChangelogContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { MissionProvider } from '../../contexts/MissionContext';
 
 const ProtectedLayout: React.FC = () => {
-  const { showChangelog, markChangelogAsSeen, loading: changelogLoading } = useChangelog();
+  const { showChangelog, showOnboarding, markChangelogAsSeen, markOnboardingAsSeen, closeOnboardingAndSaveStep, loading: changelogLoading } = useChangelog();
   const { isImpersonating } = useAuth();
+
+  const handleOnboardingClose = (completed: boolean, step?: number) => {
+    if (completed) markOnboardingAsSeen();
+    else if (typeof step === 'number') closeOnboardingAndSaveStep(step);
+  };
 
   return (
     <>
@@ -18,17 +24,23 @@ const ProtectedLayout: React.FC = () => {
       
       {/* Décaler le contenu si le bandeau est visible */}
       <Box sx={{ pt: isImpersonating ? '48px' : 0 }}>
-        <Layout>
-          <Outlet />
-        </Layout>
+        <MissionProvider>
+          <Layout />
+        </MissionProvider>
       </Box>
       
-      {/* Popup de changelog */}
+      {/* Tutoriel onboarding pour les nouveaux comptes (à la place du changelog) */}
       {!changelogLoading && (
-        <ChangelogDialog
-          open={showChangelog}
-          onClose={markChangelogAsSeen}
-        />
+        <>
+          <OnboardingTutorialDialog
+            open={showOnboarding}
+            onClose={handleOnboardingClose}
+          />
+          <ChangelogDialog
+            open={showChangelog}
+            onClose={markChangelogAsSeen}
+          />
+        </>
       )}
     </>
   );

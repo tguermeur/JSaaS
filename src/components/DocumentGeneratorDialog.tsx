@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -1610,12 +1611,13 @@ Pour l'entreprise :                    Pour l'étudiant :
     try {
       console.log('🔍 Recherche de la mission correspondante...');
       
-      // Chercher la mission correspondante à l'étude par numeroMission
+      // Chercher la mission correspondante à l'étude par numeroMission (dans la structure)
       const missionsRef = collection(db, 'missions');
-      const missionQuery = query(
-        missionsRef,
-        where('numeroMission', '==', etudeData.numeroEtude)
-      );
+      const missionQueryConstraints = [where('numeroMission', '==', etudeData.numeroEtude)];
+      if (etudeData.structureId) {
+        missionQueryConstraints.push(where('structureId', '==', etudeData.structureId));
+      }
+      const missionQuery = query(missionsRef, ...missionQueryConstraints);
       const missionSnapshot = await getDocs(missionQuery);
       
       let missionId: string;
@@ -3392,6 +3394,7 @@ Pour l'entreprise :                    Pour l'étudiant :
         }
       }}
     >
+      <>
       <DialogTitle sx={{ 
         display: 'flex', 
         justifyContent: 'space-between', 
@@ -3502,28 +3505,28 @@ Pour l'entreprise :                    Pour l'étudiant :
       </DialogActions>
 
       {/* Snackbar pour les notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        sx={{
-          zIndex: 10000,
-          position: 'fixed !important'
-        }}
-      >
-        <Alert
+      {typeof document !== 'undefined' && document.body && createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          severity={snackbar.severity}
-          variant="filled"
-          sx={{
-            zIndex: 10000,
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
-          }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            variant="filled"
+            sx={{
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+            }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
+      </>
     </Dialog>
   );
 };

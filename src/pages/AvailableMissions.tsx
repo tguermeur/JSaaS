@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -38,18 +39,31 @@ import {
   PictureAsPdf as PdfIcon,
   Payment as PaymentIcon,
   Event as EventIcon,
+  CalendarToday as CalendarTodayIcon,
+  Groups as GroupsIcon,
+  Euro as EuroIcon,
 } from '@mui/icons-material';
 import { collection, query, where, getDocs, getDoc, doc, addDoc, updateDoc } from 'firebase/firestore';
-import { registerAmbassadorToSlot } from '../services/missionService';
 import { loadStripe } from '@stripe/stripe-js';
 import { db } from '../firebase/config';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import Sidebar from '../components/layout/Sidebar';
-import Navbar from '../components/layout/Navbar';
 import { styled } from '@mui/material';
 import { fetchStripePaymentIntents, checkPaymentIntentExists } from '../api/stripe';
 import MissionMap from '../components/missions/MissionMap';
+import { tokens } from '../theme/tokens';
+import {
+  AppPageShell,
+  LifecycleTracker,
+  ApplyStatusLegend,
+  ApplyFilterBar,
+  ApplyListingCard,
+  ApplyListingGrid,
+  ApplyEmptyState,
+  avatarColorFromSeed,
+  initialsFromTitle,
+} from '../components/ds';
+import type { ApplyCardStatus } from '../components/ds';
 
 // Déclaration globale pour le bouton Stripe
 declare global {
@@ -83,6 +97,7 @@ interface ExtendedUserData {
   email?: string;
   graduationYear?: string;
   program?: string;
+  campus?: string;
   birthPlace?: string;
   postalCode?: string;
   gender?: string;
@@ -198,10 +213,6 @@ interface Etude {
   pricingType?: 'jeh' | 'hourly';
 }
 
-interface NavbarProps {
-  onMenuClick: () => void;
-}
-
 interface ErrorWithMessage {
   message: string;
 }
@@ -217,20 +228,148 @@ interface ApplicationData {
   status: string;
 }
 
-interface SidebarProps {
-  open: boolean;
-  onClose: () => void;
-  onHoverChange: (hovered: boolean) => void;
-}
-
 interface FirebaseTimestamp {
   toDate: () => Date;
+}
+
+const MISSION_FILTER_OPTIONS = [
+  'Compatible profil',
+  'Distanciel',
+  'Paris & IDF',
+  'Court terme',
+  'Marketing',
+  'Data',
+];
+
+function computeMissionMatch(
+  profile: ExtendedUserData | null,
+  mission: Mission
+): number {
+  if (!profile) return 50;
+
+  const requiredFields = [
+    profile.firstName,
+    profile.lastName,
+    profile.birthDate,
+    profile.email,
+    profile.graduationYear,
+    profile.program,
+    profile.phone,
+    profile.address,
+    profile.cvUrl,
+  ];
+  const filled = requiredFields.filter(Boolean).length;
+  let score = Math.round((filled / requiredFields.length) * 55);
+
+  if (profile.cvUrl) score += 15;
+
+  const haystack = `${mission.title || ''} ${mission.description || ''} ${mission.announcement || ''}`.toLowerCase();
+  const program = (profile.program || '').toLowerCase();
+  if (program) {
+    program.split(/\s+/).forEach((token) => {
+      if (token.length > 3 && haystack.includes(token)) score += 4;
+    });
+  }
+
+  if (/marketing|sea|contenu|social|digital/i.test(haystack) && /marketing|communication|digital/i.test(program)) {
+    score += 8;
+  }
+  if (/data|sql|analyse|dashboard|bi/i.test(haystack) && /data|informatique|analyse/i.test(program)) {
+    score += 8;
+  }
+
+  return Math.min(99, Math.max(38, score));
+}
+
+function missionPassesFilters(mission: Mission, filters: string[], matchPct: number): boolean {
+  if (filters.length === 0) return true;
+  return filters.some((filter) => {
+    const loc = (mission.location || '').toLowerCase();
+    const text = `${mission.title || ''} ${mission.description || ''} ${mission.announcement || ''}`.toLowerCase();
+    const hours = mission.hoursPerStudent || Math.floor((mission.hours || 0) / Math.max(mission.studentCount || 1, 1));
+
+    switch (filter) {
+      case 'Compatible profil':
+        return matchPct >= 70;
+      case 'Distanciel':
+        return /distanciel|télétravail|remote|visio|à distance/.test(loc);
+      case 'Paris & IDF':
+        return /paris|île-de-france|idf|93|94|95|92|91|78|77/.test(loc);
+      case 'Court terme':
+        return hours <= 30;
+      case 'Marketing':
+        return /marketing|sea|contenu|social|communication/.test(text);
+      case 'Data':
+        return /data|sql|analyse|dashboard|bi|statistique/.test(text);
+      default:
+        return true;
+    }
+  });
+}
+
+function getMissionStatusLabel(missionId: string, hasApplied: (id: string) => boolean, isAccepted: (id: string) => boolean): string | undefined {
+  if (isAccepted(missionId)) return 'Recruté';
+  if (hasApplied(missionId)) return 'Déjà postulé';
+  return 'Ouverte';
+}
+
+const EVENT_FILTER_OPTIONS = ['Toutes', 'Salons', 'Présentiel', 'Distanciel', 'Ouvert'];
+const MISSION_BOARD_FILTER_OPTIONS = ['Toutes', 'Compatible profil', 'Distanciel', 'Présentiel', 'Ouverte'];
+
+function isRemoteLocation(location?: string): boolean {
+  if (!location) return false;
+  return /distanciel|remote|en ligne|online|à distance/i.test(location);
+}
+
+function getApplyCardStatus(
+  id: string,
+  hasAppliedFn: (id: string) => boolean,
+  isAcceptedFn: (id: string) => boolean,
+  startDate?: string,
+): { status: ApplyCardStatus; label: string } {
+  if (isAcceptedFn(id)) return { status: 'selection', label: 'Confirmé' };
+  if (hasAppliedFn(id)) return { status: 'selection', label: 'Sélection en cours' };
+  if (startDate) {
+    const days = (new Date(startDate).getTime() - Date.now()) / 86400000;
+    if (days >= 0 && days <= 14) return { status: 'closing', label: 'Bientôt clôturée' };
+  }
+  return { status: 'open', label: 'Ouverte' };
+}
+
+function eventPassesFilter(
+  event: Mission,
+  filter: string,
+  hasAppliedFn: (id: string) => boolean,
+): boolean {
+  if (filter === 'Toutes') return true;
+  if (filter === 'Salons') return /salon|événement|event|ambassadeur/i.test(`${event.title || ''} ${event.description || ''}`);
+  if (filter === 'Présentiel') {
+    return !!event.location && !isRemoteLocation(event.location) && event.location !== 'À définir';
+  }
+  if (filter === 'Distanciel') return isRemoteLocation(event.location);
+  if (filter === 'Ouvert') return !hasAppliedFn(event.id);
+  return true;
+}
+
+function missionBoardPassesFilter(
+  mission: Mission,
+  filter: string,
+  matchPct: number,
+  hasAppliedFn: (id: string) => boolean,
+): boolean {
+  if (filter === 'Toutes') return true;
+  if (filter === 'Compatible profil') return matchPct >= 70;
+  if (filter === 'Distanciel') return isRemoteLocation(mission.location);
+  if (filter === 'Présentiel') {
+    return !!mission.location && !isRemoteLocation(mission.location) && mission.location !== 'À définir';
+  }
+  if (filter === 'Ouverte') return !hasAppliedFn(mission.id);
+  return true;
 }
 
 const AvailableMissions: React.FC = () => {
   const [missions, setMissions] = useState<Mission[]>([]);
   const [ambassadorEvents, setAmbassadorEvents] = useState<Mission[]>([]);
-  const [isAmbassador, setIsAmbassador] = useState(false);
   const [recruitmentTasks, setRecruitmentTasks] = useState<RecruitmentTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -240,7 +379,6 @@ const AvailableMissions: React.FC = () => {
 
   // Ne pas rediriger les contacts avec accès qui ont canViewEvents - ils peuvent accéder à cette page
   // La redirection est gérée dans Dashboard.tsx pour éviter les boucles
-  const [sidebarHovered, setSidebarHovered] = useState(false);
   const [selectedMission, setSelectedMission] = useState<Mission | null>(null);
   const [selectedRecruitmentTask, setSelectedRecruitmentTask] = useState<RecruitmentTask | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
@@ -264,10 +402,10 @@ const AvailableMissions: React.FC = () => {
   
   // Créer un tableau combiné pour la navigation
   // Pour les contacts avec accès, uniquement les événements ambassadeurs
-  // Sinon : missions + événements ambassadeur si isAmbassador + tâches de recrutement
-  const allItems = isContactWithAccessView 
+  // Sinon : missions + tâches de recrutement
+  const allItems = isContactWithAccessView
     ? [...ambassadorEvents]
-    : [...missions, ...ambassadorEvents, ...recruitmentTasks.map(task => ({
+    : [...missions, ...recruitmentTasks.map(task => ({
     id: task.id,
     title: task.title,
     numeroMission: task.numeroEtude || `RT-${task.id.slice(-6)}`,
@@ -307,6 +445,21 @@ const AvailableMissions: React.FC = () => {
   const [paymentSuccessDialogOpen, setPaymentSuccessDialogOpen] = useState(false);
   const [isPollingPayments, setIsPollingPayments] = useState(false);
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [activeFilters, setActiveFilters] = useState<string[]>([]);
+  const [activeEventFilter, setActiveEventFilter] = useState('Toutes');
+  const [activeMissionBoardFilter, setActiveMissionBoardFilter] = useState('Toutes');
+
+  const displayMissions = React.useMemo(() => {
+    const applied = (id: string) => userApplications.includes(id);
+    return filteredMissions
+      .map((mission) => ({
+        mission,
+        matchPct: computeMissionMatch(profileData, mission),
+      }))
+      .filter(({ mission, matchPct }) => missionPassesFilters(mission, activeFilters, matchPct))
+      .filter(({ mission, matchPct }) => missionBoardPassesFilter(mission, activeMissionBoardFilter, matchPct, applied))
+      .sort((a, b) => b.matchPct - a.matchPct);
+  }, [filteredMissions, profileData, activeFilters, activeMissionBoardFilter, userApplications]);
 
   useEffect(() => {
     const fetchMissionsAndEtudes = async () => {
@@ -322,8 +475,6 @@ const AvailableMissions: React.FC = () => {
         const userData = userDoc.data();
         const userStatus = userData?.status;
         const userStructureId = userData?.structureId;
-        const ambassadorFlag = !!userData?.isAmbassador;
-        setIsAmbassador(ambassadorFlag);
 
         // Ne pas rediriger les contacts avec accès qui ont canViewEvents
         // Ils peuvent voir les missions ambassadeurs de leur entreprise
@@ -481,27 +632,16 @@ const AvailableMissions: React.FC = () => {
           recruitmentTasksLoaded = true;
         }
 
-        // 4. Pour les users Ambassadeur ou contacts avec accès : récupérer les événements ambassadeur
-        // Pour les contacts avec accès, charger les événements de leur entreprise (même logique que Ambassadors.tsx)
-        if (ambassadorFlag || (isContactWithAccess && contactPermissions?.canViewEvents && userData?.companyId)) {
+        // 4. Pour les contacts avec accès : récupérer les événements ambassadeur de leur entreprise
+        if (isContactWithAccess && contactPermissions?.canViewEvents && userData?.companyId) {
           try {
             let ambassadorQuery;
-            if (isContactWithAccess && userData?.companyId) {
-              // Pour les contacts avec accès, charger uniquement les événements visibles de leur entreprise
-              ambassadorQuery = query(
-                collection(db, 'missions'),
-                where('type', '==', 'ambassadeur_event'),
-                where('companyId', '==', userData.companyId),
-                where('visibleForAmbassadors', '==', true)
-              );
-            } else {
-              // Pour les ambassadeurs, charger les événements visibles
-              ambassadorQuery = query(
-                collection(db, 'missions'),
-                where('type', '==', 'ambassadeur_event'),
-                where('visibleForAmbassadors', '==', true)
-              );
-            }
+            ambassadorQuery = query(
+              collection(db, 'missions'),
+              where('type', '==', 'ambassadeur_event'),
+              where('companyId', '==', userData.companyId),
+              where('visibleForAmbassadors', '==', true)
+            );
             const ambassadorSnapshot = await getDocs(ambassadorQuery);
             const ambassadorList = ambassadorSnapshot.docs.map(docSnap => {
               const d = docSnap.data();
@@ -525,6 +665,7 @@ const AvailableMissions: React.FC = () => {
                 slots: d.slots || [],
                 requiresCV: false,
                 requiresMotivation: false,
+                type: 'ambassadeur_event',
                 isAmbassadorEvent: true
               } as Mission & { isAmbassadorEvent?: boolean };
             });
@@ -1255,61 +1396,26 @@ const AvailableMissions: React.FC = () => {
         throw new Error("Vous avez déjà postulé à cette mission");
       }
 
-      // Pour les événements ambassadeurs, il faut s'inscrire à un slot
-      if ((selectedMission as any).type === 'ambassadeur_event') {
-        const slots = (selectedMission as any).slots || [];
-        
-        // Trouver un slot disponible (avec de la place)
-        const availableSlot = slots.find(slot => 
-          slot.assignedStudentIds && 
-          slot.assignedStudentIds.length < slot.capacity &&
-          !slot.assignedStudentIds.includes(currentUser.uid)
-        );
+      const applicationData: ApplicationData = {
+        missionId: selectedMission.id,
+        userId: currentUser.uid,
+        userEmail: currentUser.email,
+        cvUrl: userCV?.url || null,
+        cvUpdatedAt: userCV?.updatedAt ? userCV.updatedAt.toISOString() : null,
+        motivationLetter: document.querySelector<HTMLTextAreaElement>('textarea')?.value || '',
+        submittedAt: new Date().toISOString(),
+        status: 'En attente'
+      };
 
-        if (!availableSlot) {
-          throw new Error("Aucun créneau disponible pour cet événement");
-        }
-
-        // Inscrire l'utilisateur au slot
-        await registerAmbassadorToSlot(selectedMission.id, availableSlot.id, currentUser.uid);
-
-        // Créer aussi une candidature pour le suivi
-        const applicationData: ApplicationData = {
-          missionId: selectedMission.id,
-          userId: currentUser.uid,
-          userEmail: currentUser.email,
-          cvUrl: userCV?.url || null,
-          cvUpdatedAt: userCV?.updatedAt ? userCV.updatedAt.toISOString() : null,
-          motivationLetter: document.querySelector<HTMLTextAreaElement>('textarea')?.value || '',
-          submittedAt: new Date().toISOString(),
-          status: 'Acceptée' // Automatiquement acceptée pour les événements ambassadeurs
-        };
-
-        await addDoc(collection(db, 'applications'), applicationData);
-      } else {
-        // Pour les missions normales, créer seulement la candidature
-        const applicationData: ApplicationData = {
-          missionId: selectedMission.id,
-          userId: currentUser.uid,
-          userEmail: currentUser.email,
-          cvUrl: userCV?.url || null,
-          cvUpdatedAt: userCV?.updatedAt ? userCV.updatedAt.toISOString() : null,
-          motivationLetter: document.querySelector<HTMLTextAreaElement>('textarea')?.value || '',
-          submittedAt: new Date().toISOString(),
-          status: 'En attente'
-        };
-
-        // Vérifier que toutes les données requises sont présentes
-        const requiredFields = ['missionId', 'userId', 'userEmail', 'submittedAt', 'status'] as const;
-        const missingFields = requiredFields.filter(field => !applicationData[field]);
-        
-        if (missingFields.length > 0) {
-          throw new Error(`Champs manquants: ${missingFields.join(', ')}`);
-        }
-
-        // Créer la candidature
-        await addDoc(collection(db, 'applications'), applicationData);
+      // Vérifier que toutes les données requises sont présentes
+      const requiredFields = ['missionId', 'userId', 'userEmail', 'submittedAt', 'status'] as const;
+      const missingFields = requiredFields.filter(field => !applicationData[field]);
+      
+      if (missingFields.length > 0) {
+        throw new Error(`Champs manquants: ${missingFields.join(', ')}`);
       }
+
+      await addDoc(collection(db, 'applications'), applicationData);
 
       // Mettre à jour la liste des candidatures localement
       setUserApplications(prev => [...prev, selectedMission.id]);
@@ -1332,27 +1438,46 @@ const AvailableMissions: React.FC = () => {
     }
   };
 
-  const hasApplied = (missionId: string) => {
-    // Vérifier dans les candidatures
-    if (userApplications.includes(missionId)) {
-      return true;
-    }
-    
-    // Pour les événements ambassadeurs, vérifier aussi dans les slots
-    const mission = allItems.find(m => m.id === missionId);
-    if ((mission as any)?.type === 'ambassadeur_event' && (mission as any).slots && currentUser) {
-      const isRegisteredInSlot = (mission as any).slots.some((slot: any) => 
-        slot.assignedStudentIds?.includes(currentUser.uid)
-      );
-      if (isRegisteredInSlot) {
-        return true;
-      }
-    }
-    
-    return false;
-  };
+  const hasApplied = (missionId: string) => userApplications.includes(missionId);
   const isAccepted = (missionId: string) => applicationStatuses[missionId] === 'Acceptée';
   const isPending = (missionId: string) => applicationStatuses[missionId] === 'En attente';
+
+  const filteredAmbassadorEvents = React.useMemo(
+    () => ambassadorEvents.filter((event) => eventPassesFilter(event, activeEventFilter, hasApplied)),
+    [ambassadorEvents, activeEventFilter, userApplications],
+  );
+
+  const acceptedCount = React.useMemo(
+    () => userApplications.filter((id) => applicationStatuses[id] === 'Acceptée').length,
+    [userApplications, applicationStatuses],
+  );
+
+  const lifecycleSteps = React.useMemo(() => {
+    if (isContactWithAccessView) {
+      return [
+        { id: 'browse', label: 'Parcourir', done: true, active: false },
+        { id: 'events', label: 'Événements', done: ambassadorEvents.length > 0, active: ambassadorEvents.length === 0 },
+        { id: 'register', label: "S'inscrire", done: userApplications.length > 0, active: ambassadorEvents.length > 0 && userApplications.length === 0 },
+        { id: 'participate', label: 'Participer', done: acceptedCount > 0, active: userApplications.length > 0 && acceptedCount === 0 },
+      ];
+    }
+    const hasAnyApplication = userApplications.length > 0;
+    return [
+      { id: 'browse', label: 'Parcourir', done: true, active: false },
+      { id: 'apply', label: 'Postuler', done: hasAnyApplication, active: !hasAnyApplication },
+      { id: 'recruit', label: 'Recrutement', done: acceptedCount > 0, active: hasAnyApplication && acceptedCount === 0 },
+      { id: 'mission', label: 'Mission', done: false, active: acceptedCount > 0 },
+    ];
+  }, [isContactWithAccessView, ambassadorEvents.length, userApplications.length, acceptedCount]);
+
+  const formatEventDate = (date: Mission['startDate']) => {
+    if (!date) return null;
+    return new Date(date).toLocaleDateString('fr-FR', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  };
 
   const handleCVUpload = async (file: File) => {
     try {
@@ -1376,6 +1501,7 @@ const AvailableMissions: React.FC = () => {
       { name: 'email', filled: !!data.email },
       { name: 'graduationYear', filled: !!data.graduationYear },
       { name: 'program', filled: !!data.program },
+      { name: 'campus', filled: !!data.campus },
       { name: 'birthPlace', filled: !!data.birthPlace },
       { name: 'postalCode', filled: !!data.postalCode },
       { name: 'gender', filled: !!data.gender },
@@ -1622,45 +1748,20 @@ const AvailableMissions: React.FC = () => {
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1, py: 8 }}>
         <CircularProgress />
       </Box>
     );
   }
 
   return (
-    <Box sx={{ display: 'flex', background: '#fff', minHeight: '100vh' }}>
-      <Navbar onMenuClick={() => {}} />
-      <Sidebar
-        open={false}
-        onClose={() => {}}
-        onHoverChange={(hovered: boolean) => setSidebarHovered(hovered)}
-      />
-      <Box
-        component="main"
-        sx={{
-          flexGrow: 1,
-          p: { xs: 1, md: 3 },
-          mt: '64px',
-          marginLeft: sidebarHovered ? '260px' : '64px',
-          transition: (theme) =>
-            theme.transitions.create('margin', {
-              easing: theme.transitions.easing.sharp,
-              duration: theme.transitions.duration.leavingScreen,
-            }),
-          background: '#fff',
-          minHeight: '100vh',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'flex-start',
-        }}
-      >
+    <>
         {error && (
           <Alert 
             severity="error" 
             sx={{ 
               mb: 2,
-              borderRadius: '12px',
+              borderRadius: tokens.radius.md,
               boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05)',
             }}
           >
@@ -1668,21 +1769,31 @@ const AvailableMissions: React.FC = () => {
           </Alert>
         )}
 
-        <Typography 
-          variant="h4" 
-          sx={{ 
-            mb: 4, 
-            fontWeight: 700,
-            fontSize: '2rem',
-            background: 'linear-gradient(45deg, #0071e3, #34c759)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            letterSpacing: '-0.5px',
-            animation: 'fadeIn 0.5s ease-out',
-          }}
+        <AppPageShell
+          eyebrow={isContactWithAccessView ? 'Espace entreprise' : 'Espace étudiant'}
+          title={isContactWithAccessView ? 'Événements ambassadeurs' : 'Postuler à une mission'}
+          subtitle={
+            isContactWithAccessView
+              ? 'Consultez les salons et événements de votre programme ambassadeur.'
+              : 'Parcourez les missions ouvertes et candidatez en quelques clics.'
+          }
+          actions={!isContactWithAccessView ? <ApplyStatusLegend /> : undefined}
         >
-          Espace Candidat
-        </Typography>
+        <Box sx={{ px: 3, py: 2.5, pb: 4, width: '100%', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          {!isContactWithAccessView && (
+            <Box
+              sx={{
+                mb: 2.5,
+                bgcolor: tokens.colors.bgPaper,
+                border: `1px solid ${tokens.colors.divider}`,
+                borderRadius: tokens.radius.lg,
+                px: 2.5,
+                py: 2,
+              }}
+            >
+              <LifecycleTracker steps={lifecycleSteps} />
+            </Box>
+          )}
 
         <Drawer
           anchor="right"
@@ -1727,16 +1838,16 @@ const AvailableMissions: React.FC = () => {
                         (structureData?.cotisationsEnabled && 
                          (!userSubscription || userSubscription.status !== 'active' || 
                           (userSubscription.expiresAt && userSubscription.expiresAt <= new Date()))) 
-                        ? 'warning.main' : '#2E3B7C',
+                        ? 'warning.main' : tokens.colors.brandNavy,
                       color: 'white',
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       textTransform: 'none',
                       '&:hover': {
                         bgcolor: hasApplied(selectedMission?.id) ? (isAccepted(selectedMission?.id) ? 'success.dark' : 'grey.500') : 
                           (structureData?.cotisationsEnabled && 
                            (!userSubscription || userSubscription.status !== 'active' || 
                             (userSubscription.expiresAt && userSubscription.expiresAt <= new Date()))) 
-                          ? 'warning.dark' : '#232D5F',
+                          ? 'warning.dark' : tokens.colors.brandNavy700,
                       },
                       px: 3,
                       py: 1.5,
@@ -1792,7 +1903,7 @@ const AvailableMissions: React.FC = () => {
                         <Box sx={{ 
                           width: '100%', 
                           height: '300px', 
-                          borderRadius: '16px', 
+                          borderRadius: tokens.radius.lg, 
                           overflow: 'hidden',
                           border: '1px solid rgba(0,0,0,0.1)',
                           mb: 4
@@ -1841,7 +1952,7 @@ const AvailableMissions: React.FC = () => {
                                 return (
                                   <Box key={index} sx={{ 
                                     p: 1.5, 
-                                    borderRadius: '8px', 
+                                    borderRadius: tokens.radius.sm, 
                                     bgcolor: 'rgba(46, 59, 124, 0.04)',
                                     border: '1px solid rgba(46, 59, 124, 0.1)',
                                     display: 'flex',
@@ -1867,7 +1978,7 @@ const AvailableMissions: React.FC = () => {
                   <Grid item xs={12} md={4}>
                     <Paper sx={{ 
                       p: 3, 
-                      borderRadius: '20px', 
+                      borderRadius: tokens.radius.xl, 
                       bgcolor: 'rgba(248, 249, 250, 0.8)',
                       backdropFilter: 'blur(10px)',
                       border: '1px solid rgba(255, 255, 255, 0.2)',
@@ -1943,6 +2054,7 @@ const AvailableMissions: React.FC = () => {
                           </Typography>
                         </Box>
                         <Divider sx={{ borderColor: 'rgba(0, 0, 0, 0.1)' }} />
+                        {selectedMission.type !== 'ambassadeur_event' && !selectedMission.numeroMission?.startsWith('AMB-') && (
                         <Box>
                           <Typography sx={{ 
                             mb: 1,
@@ -1956,29 +2068,6 @@ const AvailableMissions: React.FC = () => {
                             color: '#1A1A1A',
                           }}>
                             {(() => {
-                              // Calcul spécial pour les événements ambassadeur : Total heures * 10€
-                              if (selectedMission.type === 'ambassadeur_event' || selectedMission.numeroMission?.startsWith('AMB-')) {
-                                let totalHours = 0;
-                                if (selectedMission.slots && selectedMission.slots.length > 0) {
-                                  const totalMs = selectedMission.slots.reduce((acc: number, slot: any) => {
-                                    if (slot.startTime && slot.endTime) {
-                                      const start = slot.startTime.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
-                                      const end = slot.endTime.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
-                                      return acc + (end.getTime() - start.getTime());
-                                    }
-                                    return acc;
-                                  }, 0);
-                                  totalHours = totalMs / (1000 * 60 * 60);
-                                } else if (selectedMission.hours) {
-                                  totalHours = selectedMission.hours;
-                                }
-                                
-                                if (totalHours > 0) {
-                                  // Arrondir à 2 décimales pour l'affichage monétaire
-                                  return `${(totalHours * 10).toFixed(2)}€ Total`;
-                                }
-                              }
-
                               const amount = selectedMission.salary || selectedMission.priceHT || 0;
                               if (amount === 0 || !amount) {
                                 return 'Non communiqué';
@@ -1989,7 +2078,10 @@ const AvailableMissions: React.FC = () => {
                             })()}
                           </Typography>
                         </Box>
+                        )}
+                        {selectedMission.type !== 'ambassadeur_event' && !selectedMission.numeroMission?.startsWith('AMB-') && (
                         <Divider sx={{ borderColor: 'rgba(0, 0, 0, 0.1)' }} />
+                        )}
                         <Box>
                           <Typography sx={{ 
                             mb: 1,
@@ -2051,7 +2143,7 @@ const AvailableMissions: React.FC = () => {
                   sx={{
                     bgcolor: 'white',
                     border: '1px solid rgba(0, 0, 0, 0.1)',
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     color: '#666666',
                     '&:hover': { 
                       bgcolor: 'rgba(0, 0, 0, 0.04)',
@@ -2069,7 +2161,7 @@ const AvailableMissions: React.FC = () => {
                   sx={{
                     bgcolor: 'white',
                     border: '1px solid rgba(0, 0, 0, 0.1)',
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     color: '#666666',
                     '&:hover': { 
                       bgcolor: 'rgba(0, 0, 0, 0.04)',
@@ -2085,7 +2177,7 @@ const AvailableMissions: React.FC = () => {
                   onClick={handleCloseMission}
                   variant="outlined"
                   sx={{
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     textTransform: 'none',
                     borderColor: 'rgba(0, 0, 0, 0.1)',
                     color: '#666666',
@@ -2111,7 +2203,7 @@ const AvailableMissions: React.FC = () => {
           fullWidth
           PaperProps={{
             sx: {
-              borderRadius: '24px',
+              borderRadius: tokens.radius.xxl,
               boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
               width: '400px',
               background: 'rgba(255, 255, 255, 0.98)',
@@ -2212,7 +2304,7 @@ const AvailableMissions: React.FC = () => {
                         p: 2,
                         border: '1px solid',
                         borderColor: 'rgba(0, 0, 0, 0.1)',
-                        borderRadius: '16px',
+                        borderRadius: tokens.radius.lg,
                         mb: 2,
                         background: 'rgba(0, 0, 0, 0.02)',
                       }}>
@@ -2265,7 +2357,7 @@ const AvailableMissions: React.FC = () => {
                         fullWidth
                         disabled={isSubmitting}
                         sx={{
-                          borderRadius: '12px',
+                          borderRadius: tokens.radius.md,
                           textTransform: 'none',
                           borderColor: 'rgba(46, 59, 124, 0.2)',
                           color: '#2E3B7C',
@@ -2298,7 +2390,7 @@ const AvailableMissions: React.FC = () => {
                       placeholder="Expliquez votre motivation pour cette mission..."
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '12px',
+                          borderRadius: tokens.radius.md,
                           '& fieldset': {
                             borderColor: 'rgba(0, 0, 0, 0.1)',
                           },
@@ -2324,7 +2416,7 @@ const AvailableMissions: React.FC = () => {
                   sx={{
                     bgcolor: '#2E3B7C',
                     color: 'white',
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     textTransform: 'none',
                     '&:hover': {
                       bgcolor: '#232D5F',
@@ -2370,483 +2462,242 @@ const AvailableMissions: React.FC = () => {
           </DialogContent>
         </Dialog>
 
-        <Snackbar
-          open={snackbarOpen}
-          autoHideDuration={6000}
-          onClose={() => setSnackbarOpen(false)}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        >
-          <Alert 
-            onClose={() => setSnackbarOpen(false)} 
-            severity={snackbarSeverity}
-            sx={{ width: '100%' }}
+        {createPortal(
+          <Snackbar
+            open={snackbarOpen}
+            autoHideDuration={6000}
+            onClose={() => setSnackbarOpen(false)}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+            sx={{ zIndex: 10000 }}
           >
-            {snackbarMessage}
-          </Alert>
-        </Snackbar>
+            <Alert 
+              onClose={() => setSnackbarOpen(false)} 
+              severity={snackbarSeverity}
+              sx={{ width: '100%' }}
+            >
+              {snackbarMessage}
+            </Alert>
+          </Snackbar>,
+          document.body
+        )}
 
-        <Grid container spacing={3}>
-          {/* Section Événements Ambassadeurs (visible pour les ambassadeurs ET les contacts avec accès) */}
-          {(isAmbassador || isContactWithAccessView) && ambassadorEvents.length > 0 && (
-            <>
-              <Grid item xs={12}>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1.5,
-                    mb: 1,
-                    pb: 2,
-                    borderBottom: '2px solid rgba(37, 185, 172, 0.25)',
-                  }}
-                >
-                  <EventIcon sx={{ color: '#25B9AC', fontSize: 28 }} />
-                  <Typography
-                    variant="h5"
-                    sx={{
-                      fontWeight: 700,
-                      color: '#1F4A7F',
-                      letterSpacing: '-0.02em',
-                    }}
-                  >
-                    Événements Ambassadeurs
-                  </Typography>
-                </Box>
-              </Grid>
-              {ambassadorEvents.map((event) => (
-                <Grid item xs={12} md={6} lg={4} key={`ambassador-${event.id}`}>
-                  <Paper
-                    sx={{
-                      p: 3,
-                      borderRadius: '20px',
-                      cursor: 'pointer',
-                      transition: 'all 0.3s ease-in-out',
-                      position: 'relative',
-                      background: 'linear-gradient(135deg, rgba(37, 185, 172, 0.04) 0%, rgba(31, 74, 127, 0.04) 100%)',
-                      backdropFilter: 'blur(10px)',
-                      border: '1px solid rgba(37, 185, 172, 0.25)',
-                      boxShadow: '0 4px 20px rgba(37, 185, 172, 0.08)',
-                      height: '280px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      '&:hover': {
-                        transform: 'translateY(-8px)',
-                        boxShadow: '0 8px 30px rgba(37, 185, 172, 0.15)',
-                        border: '1px solid rgba(37, 185, 172, 0.4)',
-                      },
-                    }}
-                    onClick={() => handleOpenMission(event)}
-                  >
-                    <Chip
-                      label="Salon / Événement"
-                      size="small"
-                      sx={{
-                        position: 'absolute',
-                        top: 16,
-                        right: 16,
-                        borderRadius: '12px',
-                        background: 'rgba(37, 185, 172, 0.15)',
-                        color: '#1F4A7F',
-                        fontWeight: 600,
-                        fontSize: '0.7rem',
-                      }}
+        {isContactWithAccessView && (
+          <>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: { xs: 'stretch', md: 'center' },
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 2,
+                mb: 2.5,
+                pb: 2,
+                borderBottom: `1px solid ${tokens.colors.divider}`,
+              }}
+            >
+              <ApplyFilterBar
+                options={EVENT_FILTER_OPTIONS}
+                value={activeEventFilter}
+                onChange={setActiveEventFilter}
+                inline
+              />
+              <ApplyStatusLegend />
+            </Box>
+            {filteredAmbassadorEvents.length > 0 ? (
+              <ApplyListingGrid>
+                {filteredAmbassadorEvents.map((event) => {
+                  const title = event.title || `Événement #${event.numeroMission}`;
+                  const { status, label } = getApplyCardStatus(event.id, hasApplied, isAccepted, event.startDate);
+                  const tags = ['Salon', 'Ambassadeur'].filter((tag) =>
+                    tag === 'Salon' ? /salon/i.test(title) : true,
+                  );
+                  if (event.studentCount > 0) tags.push(`${event.studentCount} places`);
+
+                  return (
+                    <ApplyListingCard
+                      key={`ambassador-${event.id}`}
+                      status={status}
+                      statusLabel={label}
+                      badgeRight={event.studentCount > 0 ? `${event.studentCount} places` : undefined}
+                      initials={initialsFromTitle(title)}
+                      avatarColor={avatarColorFromSeed(event.id)}
+                      title={title}
+                      subtitle="Salon / Événement"
+                      description={
+                        event.announcement ||
+                        event.description ||
+                        'Événement ambassadeur ouvert aux étudiants de la structure.'
+                      }
+                      tags={tags}
+                      meta={[
+                        ...(formatEventDate(event.startDate)
+                          ? [{ icon: <CalendarTodayIcon />, label: formatEventDate(event.startDate)! }]
+                          : []),
+                        ...(event.studentCount > 0
+                          ? [{ icon: <GroupsIcon />, label: `${event.studentCount} places` }]
+                          : []),
+                        ...(event.location && event.location !== 'À définir'
+                          ? [{ icon: <LocationOnIcon />, label: event.location }]
+                          : []),
+                      ]}
+                      actionLabel="Voir les détails"
+                      onAction={() => handleOpenMission(event)}
+                      onClick={() => handleOpenMission(event)}
                     />
-                    <Box sx={{ mb: 2, pr: 10 }}>
-                      <Typography
-                        variant="h6"
-                        sx={{
-                          fontWeight: 600,
-                          mb: 1,
-                          fontSize: '1.25rem',
-                          letterSpacing: '-0.3px',
-                          color: '#1e3a5f',
-                        }}
-                      >
-                        {event.title || `Événement #${event.numeroMission}`}
-                      </Typography>
-                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                        {event.studentCount > 0 && (
-                          <Chip
-                            label={`${event.studentCount} places`}
-                            size="small"
-                            sx={{
-                              borderRadius: '12px',
-                              background: 'rgba(31, 74, 127, 0.1)',
-                              color: '#1F4A7F',
-                              fontWeight: 500,
-                            }}
-                          />
-                        )}
-                      </Box>
-                    </Box>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
-                      {event.location && event.location !== 'À définir' && (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <LocationOnIcon sx={{ color: '#1F4A7F', fontSize: '1.2rem' }} />
-                          <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
-                            {event.location}
-                          </Typography>
-                        </Box>
-                      )}
-                      {event.startDate && (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <TimerIcon sx={{ color: '#1F4A7F', fontSize: '1.2rem' }} />
-                          <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
-                            {new Date(event.startDate).toLocaleDateString('fr-FR', {
-                              day: 'numeric',
-                              month: 'long',
-                              year: 'numeric',
-                            })}
-                          </Typography>
-                        </Box>
-                      )}
-                    </Box>
-                    <Button
-                      endIcon={<ChevronRightIcon />}
-                      fullWidth
-                      variant="outlined"
-                      sx={{
-                        mt: 'auto',
-                        borderRadius: '12px',
-                        textTransform: 'none',
-                        borderColor: 'rgba(37, 185, 172, 0.5)',
-                        color: '#1F4A7F',
-                        '&:hover': {
-                          borderColor: '#25B9AC',
-                          background: 'rgba(37, 185, 172, 0.08)',
-                        },
-                        py: 1,
-                      }}
-                    >
-                      Voir les détails
-                    </Button>
-                  </Paper>
-                </Grid>
-              ))}
-            </>
-          )}
-
-          {/* Missions (non affichées pour les contacts avec accès) */}
-          {!isContactWithAccessView && filteredMissions.length > 0 && (
-            <Grid item xs={12}>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1.5,
-                    mb: 1,
-                    pb: 2,
-                    mt: isAmbassador && ambassadorEvents.length > 0 ? 4 : 0,
-                    borderBottom: '2px solid rgba(46, 59, 124, 0.1)',
-                  }}
-                >
-                  <BusinessIcon sx={{ color: '#2E3B7C', fontSize: 28 }} />
-                  <Typography
-                    variant="h5"
-                    sx={{
-                      fontWeight: 700,
-                      color: '#1F4A7F',
-                      letterSpacing: '-0.02em',
-                    }}
-                  >
-                    Missions Disponibles
-                  </Typography>
-                </Box>
-            </Grid>
-          )}
-          {filteredMissions.map((mission) => (
-            <Grid item xs={12} md={6} lg={4} key={`mission-${mission.id}`}>
-              <Paper
-                sx={{
-                  p: 3,
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  transition: 'all 0.3s ease-in-out',
-                  position: 'relative',
-                  background: 'rgba(255, 255, 255, 0.9)',
-                  backdropFilter: 'blur(10px)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
-                  height: '280px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  '&:hover': {
-                    transform: 'translateY(-8px)',
-                    boxShadow: '0 8px 30px rgba(0, 0, 0, 0.1)',
-                    border: '1px solid rgba(255, 255, 255, 0.4)',
-                  },
-                }}
-                onClick={() => handleOpenMission(mission)}
-              >
-
-                {hasApplied(mission.id) && (
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      top: 16,
-                      right: 16,
-                      bgcolor: isAccepted(mission.id) ? 'success.main' : 'info.main',
-                      color: 'white',
-                      px: 2,
-                      py: 0.5,
-                      borderRadius: '20px',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                      zIndex: 1,
-                      backdropFilter: 'blur(4px)',
-                    }}
-                  >
-                    {isAccepted(mission.id) ? 'Recruté' : 'Déjà postulé'}
-                  </Box>
-                )}
-                <Box sx={{ mb: 2 }}>
-                  <Typography 
-                    variant="h6" 
-                    sx={{ 
-                      fontWeight: 600, 
-                      mb: 1,
-                      fontSize: '1.25rem',
-                      letterSpacing: '-0.3px',
-                    }}
-                  >
-                    {mission.title || `Mission #${mission.numeroMission}`}
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    <Chip
-                      label={`${mission.studentCount} étudiants`}
-                      size="small"
-                      sx={{ 
-                        borderRadius: '12px',
-                        background: 'rgba(46, 59, 124, 0.1)',
-                        color: '#2E3B7C',
-                        fontWeight: 500,
-                      }}
-                    />
-                    <Chip
-                      label={`${mission.hoursPerStudent || Math.floor(mission.hours / mission.studentCount)}h`}
-                      size="small"
-                      sx={{ 
-                        borderRadius: '12px',
-                        background: 'rgba(46, 59, 124, 0.1)',
-                        color: '#2E3B7C',
-                        fontWeight: 500,
-                      }}
-                    />
-                  </Box>
-                </Box>
-
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
-                  {mission.location && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <LocationOnIcon sx={{ color: '#2E3B7C', fontSize: '1.2rem' }} />
-                      <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
-                        {mission.location}
-                      </Typography>
-                    </Box>
-                  )}
-                  {mission.startDate && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <TimerIcon sx={{ color: '#2E3B7C', fontSize: '1.2rem' }} />
-                      <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
-                        {new Date(mission.startDate).toLocaleDateString()}
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-
-                <Button
-                  endIcon={<ChevronRightIcon />}
-                  fullWidth
-                  variant="outlined"
-                  sx={{ 
-                    mt: 'auto',
-                    borderRadius: '12px',
-                    textTransform: 'none',
-                    borderColor: 'rgba(46, 59, 124, 0.2)',
-                    color: '#2E3B7C',
-                    '&:hover': {
-                      borderColor: '#2E3B7C',
-                      background: 'rgba(46, 59, 124, 0.05)',
-                    },
-                    py: 1,
-                  }}
-                >
-                  Voir les détails
-                </Button>
-              </Paper>
-            </Grid>
-          ))}
-
-          {/* Tâches de recrutement (non affichées pour les contacts avec accès) */}
-          {!isContactWithAccessView && recruitmentTasks.map((task) => (
-            <Grid item xs={12} md={6} lg={4} key={`recruitment-${task.id}`}>
-              <Paper
-                sx={{
-                  p: 3,
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  transition: 'all 0.3s ease-in-out',
-                  position: 'relative',
-                  background: 'rgba(255, 255, 255, 0.9)',
-                  backdropFilter: 'blur(10px)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
-                  height: '280px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  '&:hover': {
-                    transform: 'translateY(-8px)',
-                    boxShadow: '0 8px 30px rgba(0, 0, 0, 0.1)',
-                    border: '1px solid rgba(255, 255, 255, 0.4)',
-                  },
-                }}
-                onClick={() => handleOpenMission({
-                  id: task.id,
-                  title: task.title,
-                  numeroMission: task.numeroEtude || `RT-${task.id.slice(-6)}`,
-                  location: task.location || 'À définir',
-                  publishedAt: task.publishedAt || new Date(),
-                  announcement: task.description,
-                  description: task.description,
-                  hoursPerStudent: task.duration,
-                  hours: task.duration,
-                  studentCount: task.studentsToRecruit || 1,
-                  salary: task.remuneration,
-                  priceHT: task.remuneration,
-                  startDate: task.startDate,
-                  requiresCV: task.requiresCV || false,
-                  requiresMotivation: task.requiresMotivation || false
+                  );
                 })}
-              >
-                {hasApplied(task.id) && (
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      top: 16,
-                      right: 16,
-                      bgcolor: isAccepted(task.id) ? 'success.main' : 'info.main',
-                      color: 'white',
-                      px: 2,
-                      py: 0.5,
-                      borderRadius: '20px',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                      zIndex: 1,
-                      backdropFilter: 'blur(4px)',
-                    }}
-                  >
-                    {isAccepted(task.id) ? 'Recruté' : 'Déjà postulé'}
-                  </Box>
-                )}
-                <Box sx={{ mb: 2 }}>
-                  <Typography 
-                    variant="h6" 
-                    sx={{ 
-                      fontWeight: 600, 
-                      mb: 1,
-                      fontSize: '1.25rem',
-                      letterSpacing: '-0.3px',
-                    }}
-                  >
-                    {task.title}
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    <Chip
-                      label={`${task.studentsToRecruit || 1} étudiants`}
-                      size="small"
-                      sx={{ 
-                        borderRadius: '12px',
-                        background: 'rgba(46, 59, 124, 0.1)',
-                        color: '#2E3B7C',
-                        fontWeight: 500,
-                      }}
-                    />
-                    {task.duration > 0 && (
-                      <Chip
-                        label={`${task.duration}h`}
-                        size="small"
-                        sx={{ 
-                          borderRadius: '12px',
-                          background: 'rgba(46, 59, 124, 0.1)',
-                          color: '#2E3B7C',
-                          fontWeight: 500,
-                        }}
-                      />
-                    )}
-                  </Box>
-                </Box>
-
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
-                  {task.location && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <LocationOnIcon sx={{ color: '#2E3B7C', fontSize: '1.2rem' }} />
-                      <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
-                        {task.location}
-                      </Typography>
-                    </Box>
-                  )}
-                  {task.startDate && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <TimerIcon sx={{ color: '#2E3B7C', fontSize: '1.2rem' }} />
-                      <Typography variant="body2" sx={{ color: '#4A4A4A' }}>
-                        {new Date(task.startDate).toLocaleDateString()}
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-
-                <Button
-                  endIcon={<ChevronRightIcon />}
-                  fullWidth
-                  variant="outlined"
-                  sx={{ 
-                    mt: 'auto',
-                    borderRadius: '12px',
-                    textTransform: 'none',
-                    borderColor: 'rgba(46, 59, 124, 0.2)',
-                    color: '#2E3B7C',
-                    '&:hover': {
-                      borderColor: '#2E3B7C',
-                      background: 'rgba(46, 59, 124, 0.05)',
-                    },
-                    py: 1,
-                  }}
-                >
-                  Voir les détails
-                </Button>
-              </Paper>
-            </Grid>
-          ))}
-
-          {((isContactWithAccessView && ambassadorEvents.length === 0) ||
-            (!isContactWithAccessView && missions.length === 0 && recruitmentTasks.length === 0 && (!isAmbassador || ambassadorEvents.length === 0))) &&
-            !loading && (
-              <Grid item xs={12}>
-                <Paper
-                  sx={{
-                    p: 4,
-                    textAlign: 'center',
-                    borderRadius: '20px',
-                    background: 'rgba(255, 255, 255, 0.9)',
-                    backdropFilter: 'blur(10px)',
-                    border: '1px solid rgba(255, 255, 255, 0.2)',
-                  }}
-                >
-                  <Typography
-                    color="textSecondary"
-                    sx={{
-                      fontSize: '1.1rem',
-                      color: '#4A4A4A',
-                    }}
-                  >
-                    Aucune mission disponible pour le moment
-                  </Typography>
-                </Paper>
-              </Grid>
+              </ApplyListingGrid>
+            ) : ambassadorEvents.length > 0 ? (
+              <ApplyEmptyState message="Aucun événement ne correspond aux filtres sélectionnés." />
+            ) : (
+              <ApplyEmptyState message="Aucun événement ambassadeur pour le moment." />
             )}
-        </Grid>
+          </>
+        )}
+
+        {!isContactWithAccessView && (
+          <>
+            <ApplyFilterBar
+              options={MISSION_BOARD_FILTER_OPTIONS}
+              value={activeMissionBoardFilter}
+              onChange={setActiveMissionBoardFilter}
+              starOption="Compatible profil"
+            />
+
+            {displayMissions.length > 0 ? (
+              <ApplyListingGrid>
+                {displayMissions.map(({ mission, matchPct }) => {
+                  const title = mission.title || `Mission #${mission.numeroMission}`;
+                  const hours =
+                    mission.hoursPerStudent ||
+                    Math.floor((mission.hours || 0) / Math.max(mission.studentCount || 1, 1));
+                  const { status, label } = getApplyCardStatus(
+                    mission.id,
+                    hasApplied,
+                    isAccepted,
+                    mission.startDate,
+                  );
+                  const company = (mission as Mission & { company?: string }).company || 'Mission';
+                  const tags = [
+                    `${hours}h`,
+                    `${mission.studentCount} étudiant${mission.studentCount > 1 ? 's' : ''}`,
+                  ];
+                  if (isRemoteLocation(mission.location)) tags.push('Distanciel');
+                  else if (mission.location) tags.push('Présentiel');
+
+                  return (
+                    <ApplyListingCard
+                      key={`mission-${mission.id}`}
+                      status={status}
+                      statusLabel={label}
+                      badgeRight={`${matchPct}%`}
+                      showStarBadge
+                      initials={initialsFromTitle(company, 'MI')}
+                      avatarColor={avatarColorFromSeed(company)}
+                      title={title}
+                      subtitle={company}
+                      description={
+                        mission.announcement ||
+                        mission.description ||
+                        'Mission ouverte aux étudiants de la structure.'
+                      }
+                      tags={tags}
+                      meta={[
+                        ...(hours > 0 ? [{ icon: <TimerIcon />, label: `${hours}h` }] : []),
+                        ...(mission.salary || mission.priceHT
+                          ? [{ icon: <EuroIcon />, label: `${mission.salary || mission.priceHT} €` }]
+                          : []),
+                        ...(mission.location
+                          ? [{ icon: <LocationOnIcon />, label: mission.location }]
+                          : []),
+                      ]}
+                      actionLabel={
+                        hasApplied(mission.id)
+                          ? isAccepted(mission.id)
+                            ? 'Recruté'
+                            : 'Déjà postulé'
+                          : 'Postuler'
+                      }
+                      actionDisabled={hasApplied(mission.id)}
+                      onAction={() => handleOpenMission(mission)}
+                      onClick={() => handleOpenMission(mission)}
+                    />
+                  );
+                })}
+              </ApplyListingGrid>
+            ) : filteredMissions.length > 0 ? (
+              <ApplyEmptyState message="Aucune mission ne correspond aux filtres sélectionnés." />
+            ) : null}
+
+            {!isContactWithAccessView && recruitmentTasks.length > 0 && (
+              <Box sx={{ mt: 3 }}>
+                <Typography sx={{ fontSize: 13, fontWeight: 600, color: tokens.colors.gray900, mb: 1.5 }}>
+                  Recrutements
+                </Typography>
+                <ApplyListingGrid>
+                  {recruitmentTasks.map((task) => {
+                    const taskAsMission = {
+                      id: task.id,
+                      title: task.title,
+                      numeroMission: task.numeroEtude || `RT-${task.id.slice(-6)}`,
+                      location: task.location || 'À définir',
+                      publishedAt: task.publishedAt || new Date(),
+                      announcement: task.description,
+                      description: task.description,
+                      hoursPerStudent: task.duration,
+                      hours: task.duration,
+                      studentCount: task.studentsToRecruit || 1,
+                      salary: task.remuneration,
+                      priceHT: task.remuneration,
+                      startDate: task.startDate,
+                      requiresCV: task.requiresCV || false,
+                      requiresMotivation: task.requiresMotivation || false,
+                    } as Mission;
+                    const { status, label } = getApplyCardStatus(
+                      task.id,
+                      hasApplied,
+                      isAccepted,
+                      task.startDate,
+                    );
+
+                    return (
+                      <ApplyListingCard
+                        key={`recruitment-${task.id}`}
+                        status={status}
+                        statusLabel={label}
+                        initials={initialsFromTitle(task.title, 'RC')}
+                        avatarColor={avatarColorFromSeed(task.id)}
+                        title={task.title}
+                        subtitle="Recrutement"
+                        description={task.description}
+                        tags={[
+                          `${task.studentsToRecruit || 1} étudiant${(task.studentsToRecruit || 1) > 1 ? 's' : ''}`,
+                          ...(task.duration > 0 ? [`${task.duration}h`] : []),
+                        ]}
+                        meta={[
+                          ...(task.duration > 0 ? [{ icon: <TimerIcon />, label: `${task.duration}h` }] : []),
+                          ...(task.remuneration ? [{ icon: <EuroIcon />, label: `${task.remuneration} €` }] : []),
+                          ...(task.location ? [{ icon: <LocationOnIcon />, label: task.location }] : []),
+                        ]}
+                        actionLabel={hasApplied(task.id) ? 'Déjà postulé' : 'Postuler'}
+                        actionDisabled={hasApplied(task.id)}
+                        onAction={() => handleOpenMission(taskAsMission)}
+                        onClick={() => handleOpenMission(taskAsMission)}
+                      />
+                    );
+                  })}
+                </ApplyListingGrid>
+              </Box>
+            )}
+          </>
+        )}
+
+        {!isContactWithAccessView &&
+          missions.length === 0 &&
+          recruitmentTasks.length === 0 &&
+          !loading && (
+            <ApplyEmptyState message="Aucune mission disponible pour le moment." />
+          )}
 
         {/* Dialogue pour profil incomplet */}
         <Dialog
@@ -2856,7 +2707,7 @@ const AvailableMissions: React.FC = () => {
           fullWidth
           PaperProps={{
             sx: {
-              borderRadius: '16px',
+              borderRadius: tokens.radius.lg,
               boxShadow: '0 0 40px rgba(0, 0, 0, 0.1)',
               width: '400px',
             }
@@ -2899,7 +2750,7 @@ const AvailableMissions: React.FC = () => {
               sx={{
                 bgcolor: '#2E3B7C',
                 color: 'white',
-                borderRadius: '8px',
+                borderRadius: tokens.radius.sm,
                 textTransform: 'none',
                 '&:hover': {
                   bgcolor: '#232D5F',
@@ -2920,7 +2771,7 @@ const AvailableMissions: React.FC = () => {
           fullWidth
           PaperProps={{
             sx: {
-              borderRadius: '16px',
+              borderRadius: tokens.radius.lg,
               boxShadow: '0 0 40px rgba(0, 0, 0, 0.1)',
               width: '400px',
             }
@@ -3000,7 +2851,7 @@ const AvailableMissions: React.FC = () => {
                       variant="outlined"
                       fullWidth
                       sx={{
-                        borderRadius: '8px',
+                        borderRadius: tokens.radius.sm,
                         textTransform: 'none',
                         py: 1.5,
                         color: 'text.secondary',
@@ -3025,7 +2876,7 @@ const AvailableMissions: React.FC = () => {
                   sx={{
                     bgcolor: 'warning.main',
                     color: 'white',
-                    borderRadius: '8px',
+                    borderRadius: tokens.radius.sm,
                     textTransform: 'none',
                     '&:hover': {
                       bgcolor: 'warning.dark',
@@ -3054,7 +2905,7 @@ const AvailableMissions: React.FC = () => {
           fullWidth
           PaperProps={{
             sx: {
-              borderRadius: '16px',
+              borderRadius: tokens.radius.lg,
               boxShadow: '0 0 40px rgba(0, 0, 0, 0.1)',
               width: '500px',
             }
@@ -3188,7 +3039,7 @@ const AvailableMissions: React.FC = () => {
           fullWidth
           PaperProps={{
             sx: {
-              borderRadius: '16px',
+              borderRadius: tokens.radius.lg,
               boxShadow: '0 0 40px rgba(0, 0, 0, 0.1)',
               width: '500px',
             }
@@ -3245,7 +3096,7 @@ const AvailableMissions: React.FC = () => {
                 variant="contained"
                 onClick={() => setPaymentSuccessDialogOpen(false)}
                 sx={{
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   textTransform: 'none',
                   px: 4,
                   py: 1.5,
@@ -3263,8 +3114,9 @@ const AvailableMissions: React.FC = () => {
             </Box>
           </DialogContent>
         </Dialog>
-      </Box>
-    </Box>
+        </Box>
+        </AppPageShell>
+    </>
   );
 };
 

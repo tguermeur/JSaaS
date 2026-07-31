@@ -4,6 +4,7 @@ import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, getDoc, serverT
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { useAuth } from '../contexts/AuthContext';
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -83,7 +84,11 @@ import {
   KeyboardArrowDown as ArrowDownIcon,
   KeyboardArrowLeft as ArrowLeftIcon,
   KeyboardArrowRight as ArrowRightIcon,
-  SelectAll as SelectAllIcon
+  SelectAll as SelectAllIcon,
+  ArrowBack as ArrowBackIcon,
+  Search as SearchIcon,
+  GridView as GridViewIcon,
+  ViewList as ViewListIcon,
 } from '@mui/icons-material';
 import { useMission } from '../contexts/MissionContext';
 import { getFileURL } from '../firebase/storage';
@@ -92,6 +97,8 @@ import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import pdfjs from '../utils/pdfWorker';
 import { PDFDocument, rgb } from 'pdf-lib';
+import { tokens } from '../theme/tokens';
+import { settingsPageStyles, TemplateCatalogCard, TemplateEditorLayout, LayerItem } from '../components/ds';
 
 // Configuration du worker PDF.js
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -314,9 +321,11 @@ export const VARIABLE_TAGS: TagMapping[] = [
   { tag: '<amendment_planned_end_date>', variableId: 'plannedEndDate', description: 'Date de fin prévue', example: '31/01/2024' },
   { tag: '<amendment_actual_start_date>', variableId: 'actualStartDate', description: 'Date de début réelle', example: '01/01/2024' },
   { tag: '<amendment_actual_end_date>', variableId: 'actualEndDate', description: 'Date de fin réelle', example: '31/01/2024' },
-  { tag: '<amendment_planned_hours>', variableId: 'plannedHours', description: 'Heures prévues', example: '40' },
-  { tag: '<amendment_actual_hours>', variableId: 'actualHours', description: 'Heures réelles', example: '35' },
-  { tag: '<amendment_reason>', variableId: 'reason', description: 'Motif', example: 'Modification des dates' },
+  { tag: '<amendment_planned_hours>', variableId: 'plannedHours', description: 'Heures prévues (lettre de mission)', example: '40' },
+  { tag: '<amendment_new_hours>', variableId: 'amendmentNewHours', description: 'Total des heures finalement travaillées (compteur)', example: '130' },
+  { tag: '<amendment_actual_hours>', variableId: 'actualHours', description: 'Total des heures finalement travaillées (alias de amendment_new_hours)', example: '130' },
+  { tag: '<heures_finalement_travaillees>', variableId: 'heuresFinalementTravaillees', description: 'Dates et horaires détaillés des heures travaillées (créneaux saisis)', example: '28/01/2026 de 16h à 18h' },
+  { tag: '<amendment_reason>', variableId: 'reason', description: 'Motif de l\'avenant', example: 'Modification des dates' },
   { tag: '<amendment_created_at>', variableId: 'createdAt', description: 'Date de création', example: '01/01/2024' },
   { tag: '<amendment_created_by>', variableId: 'createdByName', description: 'Créé par', example: 'Jean Dupont' },
   
@@ -1000,6 +1009,11 @@ const TemplatesPDF: React.FC = () => {
   
   // Ajouter un état pour le zoom
   const [zoom, setZoom] = useState(1);
+  const [pageView, setPageView] = useState<'list' | 'editor'>('list');
+  const [catalogViewMode, setCatalogViewMode] = useState<'grid' | 'list'>('grid');
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const [catalogSort, setCatalogSort] = useState<'updated' | 'name'>('updated');
+  const [leftPanelTab, setLeftPanelTab] = useState<'layers' | 'pages'>('layers');
   
   // Ajouter un état pour la position de la popup
   const [popupPosition, setPopupPosition] = useState<{ x: number; y: number } | null>(null);
@@ -1739,6 +1753,7 @@ const TemplatesPDF: React.FC = () => {
       setTemplates(templates.filter(template => template.id !== templateToDelete));
       if (selectedTemplate?.id === templateToDelete) {
         setSelectedTemplate(null);
+        setPageView('list');
       }
 
       // 5. Afficher une notification de succès
@@ -2829,8 +2844,10 @@ const TemplatesPDF: React.FC = () => {
           { id: 'plannedEndDate', name: 'Date de fin prévue', description: 'Date de fin prévue de l\'avenant', type: 'date' },
           { id: 'actualStartDate', name: 'Date de début réelle', description: 'Date de début réelle de l\'avenant', type: 'date' },
           { id: 'actualEndDate', name: 'Date de fin réelle', description: 'Date de fin réelle de l\'avenant', type: 'date' },
-          { id: 'plannedHours', name: 'Heures prévues', description: 'Nombre d\'heures prévues dans l\'avenant', type: 'number' },
-          { id: 'actualHours', name: 'Heures réelles', description: 'Nombre d\'heures réelles de l\'avenant', type: 'number' },
+          { id: 'plannedHours', name: 'Heures prévues', description: 'Nombre d\'heures prévues dans la lettre de mission', type: 'number' },
+          { id: 'amendmentNewHours', name: 'Heures finalement travaillées (total)', description: 'Compteur des heures finalement travaillées (ex. 130)', type: 'number' },
+          { id: 'actualHours', name: 'Heures finalement travaillées (alias)', description: 'Alias de amendmentNewHours pour les templates avenant', type: 'number' },
+          { id: 'heuresFinalementTravaillees', name: 'Heures finalement travaillées (détail)', description: 'Dates et horaires détaillés des créneaux saisis', type: 'text' },
           { id: 'reason', name: 'Motif', description: 'Motif de l\'avenant', type: 'text' }
         ];
 
@@ -3068,7 +3085,9 @@ const TemplatesPDF: React.FC = () => {
       actualStartDate: '<amendment_actual_start_date>',
       actualEndDate: '<amendment_actual_end_date>',
       plannedHours: '<amendment_planned_hours>',
+      amendmentNewHours: '<amendment_new_hours>',
       actualHours: '<amendment_actual_hours>',
+      heuresFinalementTravaillees: '<heures_finalement_travaillees>',
       reason: '<amendment_reason>',
       createdAt: '<amendment_created_at>',
       createdByName: '<amendment_created_by>',
@@ -3806,56 +3825,164 @@ const TemplatesPDF: React.FC = () => {
     }
   };
 
-return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: '#f5f5f5' }}>
+  const handleOpenTemplate = (template: Template) => {
+    setSelectedTemplate(template);
+    setPdfLoadError(null);
+    setPageNumber(1);
+    setSelectedPlacedVariable(null);
+    setSelectedVariables(new Set());
+    setPageView('editor');
+  };
+
+  const handleBackToList = () => {
+    setPageView('list');
+    setSelectedPlacedVariable(null);
+    setSelectedVariables(new Set());
+  };
+
+  const formatTemplateDate = (value: unknown): string | undefined => {
+    if (!value) return undefined;
+    const date =
+      typeof value === 'object' && value !== null && 'toDate' in value
+        ? (value as { toDate: () => Date }).toDate()
+        : value instanceof Date
+          ? value
+          : new Date(value as string);
+    if (Number.isNaN(date.getTime())) return undefined;
+    return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  const sortedCatalogTemplates = [...templates]
+    .filter((t) => !catalogQuery || t.name.toLowerCase().includes(catalogQuery.toLowerCase()))
+    .sort((a, b) => {
+      if (catalogSort === 'name') return a.name.localeCompare(b.name, 'fr');
+      const toTime = (v: unknown) => {
+        if (!v) return 0;
+        const d = typeof v === 'object' && v !== null && 'toDate' in v
+          ? (v as { toDate: () => Date }).toDate()
+          : new Date(v as string | Date);
+        return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+      };
+      const aDate = (a as Template & { updatedAt?: unknown; createdAt?: unknown }).updatedAt
+        ?? (a as Template & { createdAt?: unknown }).createdAt;
+      const bDate = (b as Template & { updatedAt?: unknown; createdAt?: unknown }).updatedAt
+        ?? (b as Template & { createdAt?: unknown }).createdAt;
+      return toTime(bDate) - toTime(aDate);
+    });
+
+  const getTemplateCategory = (template: Template) => {
+    if (template.description?.trim()) return template.description.trim();
+    return defaultTemplates[template.id] || 'Document';
+  };
+
+
+  if (pageView === 'list') {
+    return (
+      <>
+        <Box>
+          <Box
+            component="header"
+            sx={{
+              ...settingsPageStyles.header,
+              px: 0,
+              py: 0,
+              bgcolor: 'transparent',
+              borderBottom: 'none',
+              mb: 3,
+              alignItems: 'flex-start',
+              gap: 2,
+              flexWrap: 'wrap',
+            }}
+          >
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+              <Typography component="h1" sx={settingsPageStyles.title}>
+                Templates PDF
+                {templates.length > 0 && (
+                  <Box component="span" sx={{ color: tokens.colors.gray400, fontWeight: 400, ml: 0.75 }}>
+                    · {templates.length}
+                  </Box>
+                )}
+              </Typography>
+              <Typography sx={settingsPageStyles.sub}>
+                Personnalisez les documents générés automatiquement par la plateforme.
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+              <Button size="small" variant="outlined" startIcon={<DownloadIcon />} onClick={() => setOpenDialog(true)} sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}>Importer</Button>
+              <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => setOpenDialog(true)} sx={{ textTransform: 'none', borderRadius: tokens.radius.md, bgcolor: tokens.colors.brandNavy }}>Nouveau template</Button>
+            </Box>
+          </Box>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.75 }}>
+            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
+              <TextField size="small" placeholder="Rechercher un template…" value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)}
+                sx={{ flex: 1, maxWidth: 360, '& .MuiOutlinedInput-root': { borderRadius: tokens.radius.md, bgcolor: tokens.colors.bgPaper } }}
+                InputProps={{ startAdornment: (<Box sx={{ display: 'flex', alignItems: 'center', pl: 1, pr: 0.5, color: tokens.colors.gray400 }}><SearchIcon fontSize="small" /></Box>) }} />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 'auto', flexWrap: 'wrap' }}>
+                <Typography sx={{ fontSize: 11, color: tokens.colors.gray500 }}>Trier :</Typography>
+                <Select size="small" value={catalogSort} onChange={(e) => setCatalogSort(e.target.value as 'updated' | 'name')} sx={{ fontSize: 12, borderRadius: tokens.radius.md, bgcolor: tokens.colors.bgPaper }}>
+                  <MenuItem value="updated">Dernière modification</MenuItem>
+                  <MenuItem value="name">Nom (A → Z)</MenuItem>
+                </Select>
+                <Box sx={{ display: 'flex', border: `1px solid ${tokens.colors.gray200}`, borderRadius: tokens.radius.md, p: 0.25, bgcolor: tokens.colors.bgPaper }}>
+                  <IconButton size="small" onClick={() => setCatalogViewMode('grid')} sx={{ borderRadius: tokens.radius.sm, bgcolor: catalogViewMode === 'grid' ? tokens.colors.gray100 : 'transparent' }} title="Vue grille"><GridViewIcon fontSize="small" /></IconButton>
+                  <IconButton size="small" onClick={() => setCatalogViewMode('list')} sx={{ borderRadius: tokens.radius.sm, bgcolor: catalogViewMode === 'list' ? tokens.colors.gray100 : 'transparent' }} title="Vue liste"><ViewListIcon fontSize="small" /></IconButton>
+                </Box>
+              </Box>
+            </Box>
+            {loading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}><CircularProgress size={32} /></Box>
+            ) : sortedCatalogTemplates.length === 0 ? (
+              <Box sx={{ textAlign: 'center', py: 8 }}>
+                <SearchIcon sx={{ fontSize: 32, color: tokens.colors.gray300, mb: 1.5 }} />
+                <Typography sx={{ fontSize: 14, fontWeight: 500, color: tokens.colors.gray700, mb: 0.5 }}>Aucun résultat</Typography>
+                <Typography sx={{ fontSize: 12, color: tokens.colors.gray400 }}>{catalogQuery ? `Aucun template ne correspond à « ${catalogQuery} ».` : 'Aucun template pour le moment.'}</Typography>
+              </Box>
+            ) : catalogViewMode === 'grid' ? (
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 2 }}>
+                {sortedCatalogTemplates.map((template) => (
+                  <TemplateCatalogCard key={template.id} title={template.name} category={getTemplateCategory(template)} author={defaultTemplates[template.id] ? 'Défaut' : undefined} updatedAt={formatTemplateDate((template as Template & { updatedAt?: unknown }).updatedAt ?? (template as Template & { createdAt?: unknown }).createdAt)} onClick={() => handleOpenTemplate(template)} />
+                ))}
+              </Box>
+            ) : (
+              <Paper sx={{ border: `1px solid ${tokens.colors.divider}`, borderRadius: tokens.radius.lg, overflow: 'hidden' }}>
+                <Box sx={{ display: 'grid', gridTemplateColumns: '2fr 1fr 80px 1.5fr', gap: 1.5, px: 2, py: 1.25, bgcolor: tokens.colors.gray50, borderBottom: `1px solid ${tokens.colors.divider}`, fontSize: 11, fontWeight: 600, color: tokens.colors.gray500, textTransform: 'uppercase' }}>
+                  <span>Nom</span><span>Catégorie</span><span>Champs</span><span>Dernière modification</span>
+                </Box>
+                {sortedCatalogTemplates.map((template) => (
+                  <Box key={template.id} onClick={() => handleOpenTemplate(template)} sx={{ display: 'grid', gridTemplateColumns: '2fr 1fr 80px 1.5fr', gap: 1.5, px: 2, py: 1.25, alignItems: 'center', cursor: 'pointer', borderTop: `1px solid ${tokens.colors.gray50}`, '&:hover': { bgcolor: tokens.colors.gray50 } }}>
+                    <Typography sx={{ fontSize: 13, fontWeight: 500, color: tokens.colors.gray900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{template.name}{defaultTemplates[template.id] && <Chip label="Défaut" size="small" sx={{ ml: 1, height: 18, fontSize: 9, bgcolor: '#d1fae5', color: '#065f46' }} />}</Typography>
+                    <Typography sx={{ fontSize: 12, color: tokens.colors.gray500 }}>{getTemplateCategory(template)}</Typography>
+                    <Typography sx={{ fontSize: 12, color: tokens.colors.gray700 }}>{template.variables?.length ?? 0}</Typography>
+                    <Typography sx={{ fontSize: 12, color: tokens.colors.gray500 }}>{formatTemplateDate((template as Template & { updatedAt?: unknown }).updatedAt ?? (template as Template & { createdAt?: unknown }).createdAt) || '—'}</Typography>
+                  </Box>
+                ))}
+              </Paper>
+            )}
+          </Box>
+        </Box>
+        {renderDialogs()}
+        {renderSnackbar()}
+      </>
+    );
+  }
+
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: tokens.colors.surfaceAlt }}>
         {/* HEADER */}
-        <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: '1px solid #e0e0e0', bgcolor: 'white' }}>
+        <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: `1px solid ${tokens.colors.divider}`, bgcolor: tokens.colors.bgPaper }}>
             <Toolbar variant="dense" sx={{ justifyContent: 'space-between', minHeight: 64 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <FormControl size="small" sx={{ minWidth: 250 }}>
-                        <Select
-                            displayEmpty
-                            value={selectedTemplate?.id || ''}
-                            onChange={(e) => {
-                                const template = templates.find(t => t.id === e.target.value);
-                                setSelectedTemplate(template || null);
-                                setPdfLoadError(null); // Réinitialiser l'erreur lors du changement de template
-                            }}
-                            renderValue={(value) => {
-                                if (!value) return <Typography color="text.secondary">Sélectionner un modèle</Typography>;
-                                const template = templates.find(t => t.id === value);
-                                return template?.name;
-                            }}
-                        >
-                            <MenuItem value="" disabled>Sélectionner un modèle</MenuItem>
-                            {templates.map(t => (
-                                <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
+                    <IconButton size="small" onClick={handleBackToList} title="Retour aux templates"><ArrowBackIcon /></IconButton>
                     {selectedTemplate && (
                         <>
-                            <IconButton
-                                size="small"
-                                onClick={() => {
-                                    setNewTemplateName(selectedTemplate.name);
-                                    setRenameDialogOpen(true);
-                                }}
-                            >
-                                <EditIcon />
-                            </IconButton>
-                            <IconButton
-                                size="small"
-                                onClick={() => handleDeleteTemplate(selectedTemplate.id)}
-                                color="error"
-                            >
-                                <DeleteIcon />
-                            </IconButton>
+                            <Typography variant="subtitle1" fontWeight={600} sx={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedTemplate.name}</Typography>
+                            <IconButton size="small" onClick={() => { setNewTemplateName(selectedTemplate.name); setRenameDialogOpen(true); }}><EditIcon /></IconButton>
+                            <IconButton size="small" onClick={() => handleDeleteTemplate(selectedTemplate.id)} color="error"><DeleteIcon /></IconButton>
                         </>
                     )}
-                    <Button startIcon={<AddIcon />} size="small" onClick={() => setOpenDialog(true)}>
-                        Nouveau
-                    </Button>
                 </Box>
 
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -3979,24 +4106,63 @@ return (
                              >
                                 Dupliquer
                              </Button>
-                             <Button
-                                variant="contained"
-                                color="primary"
-                                onClick={handleSaveVariables}
-                                disabled={loading || !hasUnsavedChanges}
-                                startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
-                             >
-                                Enregistrer
-                             </Button>
+                             <Tooltip title="Enregistrer">
+                               <span>
+                                 <IconButton
+                                   color="primary"
+                                   size="small"
+                                   onClick={handleSaveVariables}
+                                   disabled={loading || !hasUnsavedChanges}
+                                   sx={{
+                                     bgcolor: 'primary.main',
+                                     color: 'primary.contrastText',
+                                     '&:hover': { bgcolor: 'primary.dark' },
+                                     '&.Mui-disabled': { bgcolor: 'action.disabledBackground', color: 'action.disabled' },
+                                   }}
+                                 >
+                                   {loading ? <CircularProgress size={18} color="inherit" /> : <SaveIcon fontSize="small" />}
+                                 </IconButton>
+                               </span>
+                             </Tooltip>
                         </>
                     )}
                 </Box>
             </Toolbar>
         </AppBar>
 
-        {/* MAIN CONTENT */}
-        <Box sx={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-            {/* CANVAS AREA */}
+        <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <TemplateEditorLayout
+            layers={<Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                <Tabs value={leftPanelTab === 'layers' ? 0 : 1} onChange={(_, value) => setLeftPanelTab(value === 0 ? 'layers' : 'pages')} variant="fullWidth" sx={{ borderBottom: `1px solid ${tokens.colors.divider}`, minHeight: 40 }}>
+                  <Tab label={`Calques (${selectedTemplate?.variables.length ?? 0})`} sx={{ minHeight: 40, fontSize: '0.75rem' }} />
+                  <Tab label={`Pages (${numPages || 1})`} sx={{ minHeight: 40, fontSize: '0.75rem' }} />
+                </Tabs>
+                <Box sx={{ flex: 1, overflow: 'auto', py: 0.5 }}>
+                  {leftPanelTab === 'layers' ? (
+                    Array.from({ length: numPages || 1 }, (_, i) => i + 1).map((page) => {
+                      const pageVariables = selectedTemplate?.variables.filter((v) => v.position.page === page) ?? [];
+                      return (
+                        <Box key={page} sx={{ mb: 0.5 }}>
+                          <Box onClick={() => setPageNumber(page)} sx={{ px: 1.5, py: 0.75, display: 'flex', alignItems: 'center', gap: 1, cursor: 'pointer', fontSize: 11, fontWeight: 600, color: pageNumber === page ? tokens.colors.gray900 : tokens.colors.gray500 }}>
+                            Page {page}
+                            <Typography component="span" sx={{ ml: 'auto', fontSize: 10, color: tokens.colors.gray400 }}>{pageVariables.length}</Typography>
+                          </Box>
+                          {pageVariables.length === 0 ? (
+                            <Typography sx={{ px: 2, py: 0.5, fontSize: 11, color: tokens.colors.gray300, fontStyle: 'italic' }}>Aucun champ</Typography>
+                          ) : pageVariables.map((variable) => (
+                            <LayerItem key={variable.id} label={variable.name || variable.rawText?.slice(0, 40) || 'Variable'} active={selectedPlacedVariable === variable.id} onClick={() => { setSelectedPlacedVariable(variable.id); setSelectedVariables(new Set([variable.id])); if (pageNumber !== page) setPageNumber(page); }} />
+                          ))}
+                        </Box>
+                      );
+                    })
+                  ) : (
+                    Array.from({ length: numPages || 1 }, (_, i) => i + 1).map((page) => (
+                      <LayerItem key={page} label={`Page ${page}`} active={pageNumber === page} onClick={() => setPageNumber(page)} />
+                    ))
+                  )}
+                </Box>
+              </Box>}
+            canvas={
             <Box
                 sx={{
                     flex: 1,
@@ -4053,26 +4219,13 @@ return (
                      </Box>
                 ) : (
                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'text.secondary' }}>
-                        <Typography>Sélectionnez ou créez un modèle pour commencer</Typography>
+                        <Typography>Chargement du modèle…</Typography>
                     </Box>
                 )}
             </Box>
-
-            {/* RIGHT SIDEBAR (INSPECTOR) */}
-            <Paper
-                square
-                elevation={0}
-                className="properties-sidebar"
-                sx={{
-                    width: 350,
-                    borderLeft: '1px solid #e0e0e0',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    bgcolor: 'white',
-                    zIndex: 10,
-                    height: '100%'
-                }}
-            >
+            }
+            inspector={
+            <Box className="properties-sidebar" sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
                 {selectedTemplate ? (
                     selectedPlacedVariable ? (
                         // STATE 2: PROPERTIES
@@ -4543,14 +4696,31 @@ return (
                 ) : (
                     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', alignItems: 'center', justifyContent: 'center', p: 3, textAlign: 'center' }}>
                          <TextSnippetIcon sx={{ fontSize: 40, color: 'text.disabled', mb: 2 }} />
-                         <Typography variant="body2" color="text.secondary">
-                             Aucun template sélectionné
-                         </Typography>
+                         <Typography variant="body2" color="text.secondary">Sélectionnez une variable sur le canvas</Typography>
                     </Box>
                 )}
-            </Paper>
+            </Box>
+            }
+          />
         </Box>
 
+        {renderDialogs()}
+        {renderSnackbar()}
+    </Box>
+  );
+
+  function renderSnackbar() {
+    return createPortal(
+      <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={() => setSnackbar(prev => ({ ...prev, open: false }))} anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }} sx={{ zIndex: 10000, position: 'fixed !important' }}>
+        <Alert onClose={() => setSnackbar(prev => ({ ...prev, open: false }))} severity={snackbar.severity} sx={{ zIndex: 10000, boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)' }}>{snackbar.message}</Alert>
+      </Snackbar>,
+      document.body
+    );
+  }
+
+  function renderDialogs() {
+    return (
+      <>
         {/* Dialogs */}
         <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
         <DialogTitle>Ajouter un nouveau template</DialogTitle>
@@ -4918,30 +5088,9 @@ return (
           )}
         </DialogContent>
       </Dialog>
-
-      <Snackbar 
-        open={snackbar.open} 
-        autoHideDuration={6000} 
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        sx={{ 
-          zIndex: 10000,
-          position: 'fixed !important'
-        }}
-      >
-        <Alert 
-          onClose={() => setSnackbar(prev => ({ ...prev, open: false }))} 
-          severity={snackbar.severity}
-          sx={{
-            zIndex: 10000,
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
-          }}
-        >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
-    </Box>
-  );
+      </>
+    );
+  }
 };
 
 export default TemplatesPDF;

@@ -20,6 +20,7 @@ import { loadStripe } from '@stripe/stripe-js';
 import { useSnackbar } from 'notistack';
 import { Link } from 'react-router-dom';
 import Footer from './Footer';
+import { tokens } from '../theme/tokens';
 
 interface PricingPlan {
   name: string;
@@ -30,34 +31,14 @@ interface PricingPlan {
 
 const plans: PricingPlan[] = [
   {
-    name: 'Basic',
-    price: '9.99€',
+    name: 'Premium',
+    price: '149,90€',
     features: [
-      'Fonctionnalité 1',
-      'Fonctionnalité 2',
-      'Fonctionnalité 3'
+      '2 mois gratuits',
+      'Toutes les fonctionnalités incluses',
+      'Support prioritaire'
     ],
-    priceId: import.meta.env.VITE_STRIPE_PRICE_BASIC
-  },
-  {
-    name: 'Pro',
-    price: '19.99€',
-    features: [
-      'Tout du plan Basic',
-      'Fonctionnalité 4',
-      'Fonctionnalité 5'
-    ],
-    priceId: import.meta.env.VITE_STRIPE_PRICE_PRO
-  },
-  {
-    name: 'Enterprise',
-    price: '49.99€',
-    features: [
-      'Tout du plan Pro',
-      'Fonctionnalité 6',
-      'Fonctionnalité 7'
-    ],
-    priceId: import.meta.env.VITE_STRIPE_PRICE_ENTERPRISE
+    priceId: import.meta.env.VITE_STRIPE_PRICE_PRO ?? import.meta.env.VITE_STRIPE_PRICE_ENTERPRISE
   }
 ];
 
@@ -150,14 +131,14 @@ export default function PricingPlans() {
               component={Link}
               to="/"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 400,
                 fontSize: '0.95rem',
                 textTransform: 'none',
                 px: 1.5,
                 transition: 'font-weight 0.2s',
                 '&:hover': {
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   fontWeight: 600,
                   opacity: 0.8
                 }
@@ -169,14 +150,14 @@ export default function PricingPlans() {
               component={Link}
               to="/features"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 400,
                 fontSize: '0.95rem',
                 textTransform: 'none',
                 px: 1.5,
                 transition: 'font-weight 0.2s',
                 '&:hover': {
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   fontWeight: 600,
                   opacity: 0.8
                 }
@@ -188,14 +169,14 @@ export default function PricingPlans() {
               component={Link}
               to="/pricing"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 400,
                 fontSize: '0.95rem',
                 textTransform: 'none',
                 px: 1.5,
                 transition: 'font-weight 0.2s',
                 '&:hover': {
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   fontWeight: 600,
                   opacity: 0.8
                 }
@@ -206,14 +187,14 @@ export default function PricingPlans() {
             <Button
               onClick={handleScrollToContact}
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 400,
                 fontSize: '0.95rem',
                 textTransform: 'none',
                 px: 1.5,
                 transition: 'font-weight 0.2s',
                 '&:hover': {
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   fontWeight: 600,
                   opacity: 0.8
                 }
@@ -234,7 +215,7 @@ export default function PricingPlans() {
                 fontWeight: 400,
                 fontSize: '0.85rem',
                 textTransform: 'none',
-                borderRadius: '20px',
+                borderRadius: tokens.radius.xl,
                 px: 3,
                 '&:hover': {
                   borderColor: '#000',
@@ -255,7 +236,7 @@ export default function PricingPlans() {
                 fontWeight: 400,
                 fontSize: '0.85rem',
                 textTransform: 'none',
-                borderRadius: '20px',
+                borderRadius: tokens.radius.xl,
                 px: 3,
                 '&:hover': {
                   bgcolor: '#000',
@@ -281,30 +262,70 @@ export default function PricingPlans() {
 
         <Box sx={{ 
           display: 'grid', 
-          gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' },
+          gridTemplateColumns: { xs: '1fr', md: '1fr' },
           gap: 3,
-          maxWidth: 1200,
+          maxWidth: 420,
           mx: 'auto'
         }}>
           {plans.map((plan) => (
-            <Card key={plan.name} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-              <CardContent sx={{ flexGrow: 1 }}>
+            <Card
+              key={plan.name}
+              sx={{
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                position: 'relative',
+                overflow: 'visible',
+                borderRadius: 3,
+                border: '2px solid #30D158',
+                boxShadow: '0 8px 32px 0 rgba(48,209,88,0.12)',
+                '&:hover': { boxShadow: '0 12px 40px 0 rgba(48,209,88,0.18)' }
+              }}
+            >
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: -14,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  px: 2.5,
+                  py: 1,
+                  borderRadius: '999px',
+                  bgcolor: '#30D158',
+                  color: '#fff',
+                  fontWeight: 700,
+                  fontSize: '0.8rem',
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  boxShadow: '0 4px 14px 0 rgba(48,209,88,0.4)',
+                  zIndex: 1
+                }}
+              >
+                2 mois gratuits
+              </Box>
+              <CardContent sx={{ flexGrow: 1, pt: 4 }}>
                 <Typography variant="h5" component="h2" gutterBottom>
                   {plan.name}
                 </Typography>
+                <Typography sx={{ color: '#30D158', fontWeight: 700, fontSize: '1.1rem', mb: 1 }}>
+                  Économisez 299,80€
+                </Typography>
                 <Typography variant="h4" component="div" gutterBottom>
-                  {plan.price}
-                  <Typography variant="body2" component="span" color="text.secondary">
-                    /mois
+                  0€
+                  <Typography variant="body2" component="span" color="text.secondary" sx={{ ml: 0.5 }}>
+                    les 2 premiers mois
                   </Typography>
                 </Typography>
-                <List>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  puis {plan.price}/mois
+                </Typography>
+                <List disablePadding>
                   {plan.features.map((feature, index) => (
                     <ListItem key={index} disablePadding sx={{ mb: 1 }}>
                       <ListItemIcon sx={{ minWidth: 36 }}>
-                        <CheckCircleIcon color="primary" fontSize="small" />
+                        <CheckCircleIcon sx={{ color: '#30D158' }} fontSize="small" />
                       </ListItemIcon>
-                      <ListItemText primary={feature} />
+                      <ListItemText primary={feature} primaryTypographyProps={{ fontWeight: index === 0 ? 600 : 400 }} />
                     </ListItem>
                   ))}
                 </List>
@@ -315,11 +336,17 @@ export default function PricingPlans() {
                   variant="contained"
                   onClick={() => handleSubscribe(plan.priceId)}
                   disabled={loading === plan.priceId}
+                  sx={{
+                    bgcolor: '#30D158',
+                    fontWeight: 600,
+                    py: 1.2,
+                    '&:hover': { bgcolor: '#28a745' }
+                  }}
                 >
                   {loading === plan.priceId ? (
                     <CircularProgress size={24} color="inherit" />
                   ) : (
-                    'Souscrire'
+                    "Profiter de l'offre"
                   )}
                 </Button>
               </Box>

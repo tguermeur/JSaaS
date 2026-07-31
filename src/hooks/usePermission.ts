@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
+import { isDefaultMemberReadPage } from '../utils/defaultMemberPermissions';
 
 /**
  * Interface pour les permissions d'une page
@@ -66,84 +67,89 @@ export function usePermission(pageId: string): UsePermissionReturn {
   // Seul le superadmin contourne les permissions. L'admin de structure est soumis aux docs Réglages > Accès.
   const isSuperAdmin = useMemo(() => userStatus === 'superadmin', [userStatus]);
 
-  // Écouter les permissions d'écriture
-  // Note: On ne fait pas de requête Firestore si l'utilisateur est superadmin uniquement
+  // Les permissions structure (sous-collection structures/.../permissions) ne concernent que
+  // les membres de la structure. Les contacts entreprise (status entreprise + companyId) ont
+  // leurs droits via contactAccess — lire permissions Firestore leur est interdit par les rules.
+  const isStructurePermissionSubject = useMemo(
+    () => ['admin', 'admin_structure', 'membre'].includes(userStatus),
+    [userStatus]
+  );
+
+  // Attente structureId plafonnée — évite un spinner infini si le profil est incomplet
+  const [waitingForStructure, setWaitingForStructure] = useState(
+    () => isStructurePermissionSubject && !!currentUser && !structureId
+  );
+
+  useEffect(() => {
+    if (!isStructurePermissionSubject || !userId || structureId) {
+      setWaitingForStructure(false);
+      return;
+    }
+    setWaitingForStructure(true);
+    const t = window.setTimeout(() => setWaitingForStructure(false), 8000);
+    return () => window.clearTimeout(t);
+  }, [isStructurePermissionSubject, userId, structureId]);
+
+  // Lecture unique (getDoc) — 1 round-trip au lieu de 2 listeners temps réel
   useEffect(() => {
     if (isSuperAdmin) {
       setLoadingWrite(false);
-      return;
-    }
-
-    if (!structureId || !pageId) {
-      setLoadingWrite(false);
-      return;
-    }
-
-    const writeDocRef = doc(db, 'structures', structureId, 'permissions', pageId);
-    
-    const unsubscribe = onSnapshot(
-      writeDocRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          setWritePermission({
-            allowedRoles: data.allowedRoles || [],
-            allowedPoles: data.allowedPoles || [],
-            allowedMembers: data.allowedMembers || [],
-          });
-        } else {
-          setWritePermission(null);
-        }
-        setLoadingWrite(false);
-      },
-      (err) => {
-        console.error(`Erreur lors du chargement des permissions d'écriture pour ${pageId}:`, err);
-        setError(err.message);
-        setLoadingWrite(false);
-      }
-    );
-
-    return () => unsubscribe();
-  }, [structureId, pageId, isSuperAdmin]);
-
-  // Écouter les permissions de lecture
-  useEffect(() => {
-    if (isSuperAdmin) {
       setLoadingRead(false);
       return;
     }
 
-    if (!structureId || !pageId) {
+    if (!isStructurePermissionSubject || !structureId || !pageId || !db) {
+      setLoadingWrite(false);
       setLoadingRead(false);
+      setWritePermission(null);
+      setReadPermission(null);
       return;
     }
 
-    const readDocRef = doc(db, 'structures', structureId, 'permissions', `${pageId}_read`);
-    
-    const unsubscribe = onSnapshot(
-      readDocRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          setReadPermission({
+    const firestore = db;
+    let cancelled = false;
+    setLoadingWrite(true);
+    setLoadingRead(true);
+
+    const load = async () => {
+      try {
+        const [writeSnap, readSnap] = await Promise.all([
+          getDoc(doc(firestore, 'structures', structureId, 'permissions', pageId)),
+          getDoc(doc(firestore, 'structures', structureId, 'permissions', `${pageId}_read`)),
+        ]);
+        if (cancelled) return;
+
+        const parse = (snap: typeof writeSnap): PagePermission | null => {
+          if (!snap.exists()) return null;
+          const data = snap.data();
+          return {
             allowedRoles: data.allowedRoles || [],
             allowedPoles: data.allowedPoles || [],
             allowedMembers: data.allowedMembers || [],
-          });
-        } else {
-          setReadPermission(null);
-        }
-        setLoadingRead(false);
-      },
-      (err) => {
-        console.error(`Erreur lors du chargement des permissions de lecture pour ${pageId}:`, err);
-        setError(err.message);
-        setLoadingRead(false);
-      }
-    );
+          };
+        };
 
-    return () => unsubscribe();
-  }, [structureId, pageId, isSuperAdmin]);
+        setWritePermission(parse(writeSnap));
+        setReadPermission(parse(readSnap));
+      } catch (err: unknown) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Erreur permissions';
+          console.error(`Erreur permissions pour ${pageId}:`, err);
+          setError(message);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingWrite(false);
+          setLoadingRead(false);
+        }
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [structureId, pageId, isSuperAdmin, isStructurePermissionSubject]);
 
   /**
    * Vérifie si l'utilisateur a une permission spécifique
@@ -174,19 +180,36 @@ export function usePermission(pageId: string): UsePermissionReturn {
     return poleMatch;
   };
 
-  // Calculer les permissions finales (avec logs à chaque résolution)
+  // admin / admin_structure : accès total structure (comportement pré-audit)
+  const isLegacyStructureAdmin = useMemo(
+    () => userStatus === 'admin' || userStatus === 'admin_structure',
+    [userStatus]
+  );
+
   const canWrite = useMemo(() => {
     if (isSuperAdmin) return true;
+    if (isLegacyStructureAdmin && structureId) return true;
     return hasPermission(writePermission);
-  }, [isSuperAdmin, writePermission, userStatus, userId, userPoles, pageId, structureId]);
+  }, [isSuperAdmin, isLegacyStructureAdmin, structureId, writePermission, userStatus, userId, userPoles, pageId]);
 
   const canRead = useMemo(() => {
     if (isSuperAdmin) return true;
+    if (isLegacyStructureAdmin && structureId) return true;
     if (canWrite) return true;
-    return hasPermission(readPermission);
-  }, [isSuperAdmin, canWrite, readPermission, userStatus, userId, userPoles, pageId, structureId]);
+    if (hasPermission(readPermission)) return true;
+    // Doc _read absent : même fallback membre que ProtectedRoute / Sidebar
+    if (
+      readPermission === null &&
+      !loadingRead &&
+      (userStatus === 'membre' || userStatus === 'member') &&
+      isDefaultMemberReadPage(pageId)
+    ) {
+      return true;
+    }
+    return false;
+  }, [isSuperAdmin, isLegacyStructureAdmin, structureId, canWrite, readPermission, loadingRead, userStatus, userId, userPoles, pageId]);
 
-  const loading = loadingWrite || loadingRead || !userData;
+  const loading = loadingWrite || loadingRead || waitingForStructure;
 
   return {
     canRead,

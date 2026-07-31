@@ -3,37 +3,30 @@ import {
   Box,
   TextField,
   Button,
-  Grid,
   FormControl,
-  InputLabel,
   Select,
   MenuItem,
   Typography,
   CircularProgress,
-  InputAdornment
+  Avatar,
+  IconButton,
+  Divider,
 } from '@mui/material';
 import {
-  Assignment as AssignmentIcon,
+  WorkOutline as WorkOutlineIcon,
+  Close as CloseIcon,
+  Check as CheckIcon,
+  Add as AddIcon,
   Business as BusinessIcon,
-  Person as PersonIcon,
-  Description as DescriptionIcon,
-  Add as AddIcon
+  CloudUpload as CloudUploadIcon,
 } from '@mui/icons-material';
-import { collection, getDocs, query, where, doc, getDoc, addDoc } from 'firebase/firestore';
+import { collection, getDocs, query, where, addDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import Autocomplete, { createFilterOptions } from '@mui/material/Autocomplete';
-// Storage sera utilisé pour l'upload de documents (à implémenter si nécessaire)
-import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-
-interface MissionType {
-  id: string;
-  title: string;
-  structureId: string;
-  studentProfile?: string;
-  courseApplication?: string;
-  missionLearning?: string;
-}
+import { tokens } from '../../theme/tokens';
+import UserNameText from '../common/UserNameText';
+import { getSafeDisplayName } from '../../utils/decryptUserUtils';
 
 export interface MissionFormData {
   number: string;
@@ -57,7 +50,13 @@ interface MissionFormProps {
   onSubmit: (data: MissionFormData) => void;
   onCancel: () => void;
   initialData?: Partial<MissionFormData>;
-  availableCharges?: Array<{id: string, displayName: string, photoURL?: string}>;
+  availableCharges?: Array<{ id: string; displayName: string; photoURL?: string }>;
+  /** Titre du dialog (ex. « Nouvelle étude ») */
+  title?: string;
+  /** Sous-titre sous le titre */
+  subtitle?: string;
+  /** Label du bouton principal */
+  submitLabel?: string;
 }
 
 interface CompanyData {
@@ -66,14 +65,116 @@ interface CompanyData {
   structureId: string;
 }
 
-interface User {
-  id: string;
-  displayName: string;
-}
-
 type CompanyOption = CompanyData & { inputValue?: string };
 
-const MissionForm: React.FC<MissionFormProps> = ({ onSubmit, onCancel, initialData, availableCharges = [] }) => {
+const INPUT_H = 40;
+
+const fieldSx = {
+  '& .MuiOutlinedInput-root': {
+    height: INPUT_H,
+    minHeight: INPUT_H,
+    boxSizing: 'border-box',
+    borderRadius: tokens.radius.md,
+    bgcolor: tokens.colors.bgPaper,
+    fontSize: 14,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    '& fieldset': { borderColor: tokens.colors.borderDefault },
+    '&:hover fieldset': { borderColor: tokens.colors.gray300 },
+    '&.Mui-focused fieldset': { borderColor: tokens.colors.brandNavy, borderWidth: 1.5 },
+    '&.MuiAutocomplete-inputRoot': {
+      paddingTop: '0 !important',
+      paddingBottom: '0 !important',
+      paddingLeft: '12px !important',
+      paddingRight: '8px !important',
+      justifyContent: 'flex-start',
+      '& .MuiAutocomplete-input': {
+        flex: '1 1 auto',
+        width: '100% !important',
+        minWidth: 0,
+        height: 'auto',
+        minHeight: 0,
+        padding: '0 !important',
+        margin: 0,
+        lineHeight: `${INPUT_H}px`,
+        textAlign: 'left',
+      },
+    },
+  },
+  '& .MuiInputBase-input': {
+    py: 0,
+    px: 1.5,
+    boxSizing: 'border-box',
+    textAlign: 'left',
+    '&::placeholder': { color: tokens.colors.textTertiary, opacity: 1 },
+  },
+  '& .MuiFormHelperText-root': { mx: 0.25, mt: 0.5 },
+};
+
+const selectSx = {
+  height: INPUT_H,
+  minHeight: INPUT_H,
+  boxSizing: 'border-box',
+  borderRadius: tokens.radius.md,
+  fontSize: 14,
+  bgcolor: tokens.colors.bgPaper,
+  '& .MuiOutlinedInput-notchedOutline': { borderColor: tokens.colors.borderDefault },
+  '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: tokens.colors.gray300 },
+  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+    borderColor: tokens.colors.brandNavy,
+    borderWidth: 1.5,
+  },
+  '& .MuiSelect-select': {
+    py: 0,
+    height: INPUT_H,
+    boxSizing: 'border-box',
+    display: 'flex',
+    alignItems: 'center',
+  },
+};
+
+const FieldLabel: React.FC<{ children: React.ReactNode; required?: boolean }> = ({ children, required }) => (
+  <Typography
+    component="label"
+    sx={{
+      display: 'block',
+      fontSize: 13,
+      fontWeight: 600,
+      color: tokens.colors.gray700,
+      mb: 0.75,
+    }}
+  >
+    {children}
+    {required && (
+      <Box component="span" sx={{ color: tokens.colors.error, ml: 0.25 }}>
+        *
+      </Box>
+    )}
+  </Typography>
+);
+
+const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <Typography
+    sx={{
+      ...tokens.typography.eyebrow,
+      color: tokens.colors.textTertiary,
+      mb: 1.75,
+      mt: 0.5,
+    }}
+  >
+    {children}
+  </Typography>
+);
+
+const MissionForm: React.FC<MissionFormProps> = ({
+  onSubmit,
+  onCancel,
+  initialData,
+  availableCharges = [],
+  title = 'Nouvelle mission',
+  subtitle = 'Renseignez les informations pour ouvrir une nouvelle mission.',
+  submitLabel = 'Créer la mission',
+}) => {
   const { currentUser, userData } = useAuth();
   const isEntreprise = userData?.status === 'entreprise';
   const [formData, setFormData] = useState<MissionFormData>({
@@ -91,86 +192,39 @@ const MissionForm: React.FC<MissionFormProps> = ({ onSubmit, onCancel, initialDa
     priceHT: initialData?.priceHT || 17.5,
     salary: initialData?.salary || '10',
     chargeId: initialData?.chargeId || currentUser?.uid || '',
-    chargeName: initialData?.chargeName || currentUser?.displayName || ''
+    chargeName: initialData?.chargeName || getSafeDisplayName(userData),
   });
   const [companies, setCompanies] = useState<CompanyData[]>([]);
   const [loading, setLoading] = useState(false);
-  const [newCompany, setNewCompany] = useState('');
   const [showErrors, setShowErrors] = useState(false);
   const [creatingCompany, setCreatingCompany] = useState(false);
-  
-  // États pour les entreprises (champs supplémentaires)
   const [locationType, setLocationType] = useState<'presentiel' | 'distanciel' | 'mixte'>('presentiel');
   const [address, setAddress] = useState('');
   const [duration, setDuration] = useState('');
   const [uploadedDocuments, setUploadedDocuments] = useState<File[]>([]);
-  const [uploadingDocs, setUploadingDocs] = useState(false);
 
   const filter = createFilterOptions<CompanyOption>();
+  const structureId = userData?.structureId as string | undefined;
 
   useEffect(() => {
     const fetchData = async () => {
-      if (!currentUser) return;
+      if (!currentUser || !structureId) return;
 
       try {
         setLoading(true);
-        
-        // Récupération des entreprises
-        const userStatus = currentUser?.status || 'user';
-        const userStructureId = currentUser?.structureId;
+        const companiesSnapshot = await getDocs(
+          query(collection(db, 'companies'), where('structureId', '==', structureId))
+        );
 
-        console.log("=== DEBUG MISSIONFORM ===");
-        console.log("Current user:", currentUser);
-        console.log("User status:", userStatus);
-        console.log("User structureId:", userStructureId);
-        console.log("Current user structureId:", currentUser?.structureId);
-
-        if (!userStructureId) {
-          console.error("StructureId non trouvé pour l'utilisateur");
-          return;
-        }
-
-        const companiesRef = collection(db, 'companies');
-        let companiesQuery;
-
-        // Pour le moment, on force le filtrage par structure pour tous les utilisateurs
-        // sauf si on veut explicitement voir toutes les entreprises (cas spécial)
-        if (userStatus === 'superadmin' && false) { // Désactivé temporairement
-          console.log("Utilisateur superadmin - récupération de toutes les entreprises");
-          companiesQuery = query(companiesRef);
-        } else {
-          console.log("Utilisateur normal - filtrage par structureId:", userStructureId);
-          companiesQuery = query(
-            companiesRef,
-            where('structureId', '==', userStructureId)
-          );
-        }
-
-        const companiesSnapshot = await getDocs(companiesQuery);
-        console.log("Nombre d'entreprises trouvées:", companiesSnapshot.docs.length);
-        
-        const companiesList = companiesSnapshot.docs.map(doc => {
-          const data = doc.data() as CompanyData;
-          console.log("Entreprise:", { id: doc.id, name: data.name, structureId: data.structureId });
-          return {
-            id: doc.id,
-            name: data.name,
-            structureId: data.structureId
-          };
+        const companiesList = companiesSnapshot.docs.map((d) => {
+          const data = d.data() as CompanyData;
+          return { id: d.id, name: data.name, structureId: data.structureId };
         });
 
-        console.log("Liste finale des entreprises:", companiesList);
-
-        // Vérifier si l'entreprise sélectionnée appartient à la structure de l'utilisateur
         if (formData.companyId && formData.companyId !== 'new') {
-          const selectedCompany = companiesList.find(c => c.id === formData.companyId);
+          const selectedCompany = companiesList.find((c) => c.id === formData.companyId);
           if (!selectedCompany) {
-            // Si l'entreprise sélectionnée n'appartient pas à la structure, réinitialiser la sélection
-            setFormData(prev => ({
-              ...prev,
-              companyId: '',
-              companyName: ''
-            }));
+            setFormData((prev) => ({ ...prev, companyId: '', companyName: '' }));
           }
         }
 
@@ -182,619 +236,586 @@ const MissionForm: React.FC<MissionFormProps> = ({ onSubmit, onCancel, initialDa
       }
     };
 
-    fetchData();
-  }, [currentUser]);
+    void fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, structureId]);
 
-  // Mettre à jour le numéro de mission quand initialData change
   useEffect(() => {
     if (initialData?.number) {
-      setFormData(prev => ({
-        ...prev,
-        number: initialData.number
-      }));
+      setFormData((prev) => ({ ...prev, number: initialData.number! }));
     }
   }, [initialData?.number]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    // Activer l'affichage des erreurs
-    setShowErrors(true);
-    
-    // Vérifier si le numéro de mission est renseigné
-    if (!formData.number.trim()) {
-      alert("Le numéro de mission est obligatoire");
-      return;
-    }
-    
-    // Attendre si une entreprise est en cours de création
-    if (creatingCompany) {
-      return;
-    }
-    
-    // Si l'entreprise n'est pas sélectionnée ou est marquée comme "new", créer l'entreprise
+  const ensureCompany = async (): Promise<{ id: string; name: string } | null> => {
     let finalCompanyId = formData.companyId;
     let finalCompanyName = formData.companyName;
-    
-    if (!finalCompanyId || finalCompanyId === 'new') {
-      // Vérifier qu'un nom d'entreprise a été fourni
-      if (!finalCompanyName || !finalCompanyName.trim()) {
-        alert("Veuillez sélectionner ou créer une entreprise");
-        return;
-      }
-      
-      // Créer automatiquement l'entreprise
-      if (currentUser && finalCompanyName.trim()) {
-        try {
-          setCreatingCompany(true);
-          
-          // Récupérer les informations de l'utilisateur
-          const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-          if (!userDoc.exists()) {
-            alert("Erreur: Impossible de récupérer les informations utilisateur");
-            setCreatingCompany(false);
-            return;
-          }
-          
-          const userData = userDoc.data() as { status: string; structureId: string };
-          const userStructureId = userData?.structureId;
-          
-          if (!userStructureId) {
-            alert("Erreur: Aucune structure associée à votre compte");
-            setCreatingCompany(false);
-            return;
-          }
-          
-          // Vérifier si l'entreprise existe déjà
-          const companiesRef = collection(db, 'companies');
-          const companiesQuery = query(
-            companiesRef,
-            where('structureId', '==', userStructureId),
-            where('name', '==', finalCompanyName.trim())
-          );
-          const existingCompanies = await getDocs(companiesQuery);
-          
-          if (!existingCompanies.empty) {
-            // L'entreprise existe déjà, utiliser celle-ci
-            const existingCompany = existingCompanies.docs[0];
-            finalCompanyId = existingCompany.id;
-            finalCompanyName = existingCompany.data().name;
-          } else {
-            // Créer l'entreprise
-            const newCompanyData = {
-              name: finalCompanyName.trim(),
-              structureId: userStructureId,
-              createdAt: new Date(),
-              createdBy: currentUser.uid
-            };
-            
-            const companyRef = await addDoc(collection(db, 'companies'), newCompanyData);
-            finalCompanyId = companyRef.id;
-            finalCompanyName = finalCompanyName.trim();
-            
-            // Mettre à jour la liste des entreprises
-            const newCompanyObj: CompanyData = {
-              id: companyRef.id,
-              name: finalCompanyName,
-              structureId: userStructureId
-            };
-            
-            setCompanies(prev => [...prev, newCompanyObj]);
-          }
-          
-          // Mettre à jour le formulaire avec la nouvelle entreprise
-          setFormData(prev => ({ 
-            ...prev, 
-            companyId: finalCompanyId, 
-            companyName: finalCompanyName 
-          }));
-          
-        } catch (error) {
-          console.error("Erreur lors de la création de l'entreprise:", error);
-          alert("Erreur lors de la création de l'entreprise. Veuillez réessayer.");
-          setCreatingCompany(false);
-          return;
-        } finally {
-          setCreatingCompany(false);
-        }
+
+    if (finalCompanyId && finalCompanyId !== 'new') {
+      return { id: finalCompanyId, name: finalCompanyName };
+    }
+
+    if (!finalCompanyName?.trim() || !currentUser || !structureId) return null;
+
+    setCreatingCompany(true);
+    try {
+      const companiesQuery = query(
+        collection(db, 'companies'),
+        where('structureId', '==', structureId),
+        where('name', '==', finalCompanyName.trim())
+      );
+      const existingCompanies = await getDocs(companiesQuery);
+
+      if (!existingCompanies.empty) {
+        const existingCompany = existingCompanies.docs[0];
+        finalCompanyId = existingCompany.id;
+        finalCompanyName = existingCompany.data().name;
       } else {
-        alert("Veuillez sélectionner ou créer une entreprise");
-        return;
+        const companyRef = await addDoc(collection(db, 'companies'), {
+          name: finalCompanyName.trim(),
+          structureId,
+          createdAt: new Date(),
+          createdBy: currentUser.uid,
+        });
+        finalCompanyId = companyRef.id;
+        finalCompanyName = finalCompanyName.trim();
+        setCompanies((prev) => [
+          ...prev,
+          { id: companyRef.id, name: finalCompanyName, structureId },
+        ]);
       }
+
+      setFormData((prev) => ({
+        ...prev,
+        companyId: finalCompanyId,
+        companyName: finalCompanyName,
+      }));
+      return { id: finalCompanyId, name: finalCompanyName };
+    } catch (error) {
+      console.error("Erreur lors de la création de l'entreprise:", error);
+      return null;
+    } finally {
+      setCreatingCompany(false);
     }
-    
-    // Vérifier que l'entreprise est bien sélectionnée après création
-    if (!finalCompanyId || finalCompanyId === 'new') {
-      alert("Erreur: Impossible de créer ou sélectionner l'entreprise");
-      return;
-    }
-    
-    // S'assurer que les valeurs par défaut sont incluses
-    const submissionData = {
-      ...formData,
-      companyId: finalCompanyId,
-      companyName: finalCompanyName,
-      priceHT: formData.priceHT || 17.5,
-      salary: formData.salary || '10',
-      chargeId: currentUser?.uid || '',
-      chargeName: currentUser?.displayName || ''
-    };
-    
-    console.log("MissionForm - Données de soumission:", {
-      companyId: submissionData.companyId,
-      companyName: submissionData.companyName,
-      number: submissionData.number
-    });
-    
-    onSubmit(submissionData);
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setShowErrors(true);
+
+    if (!formData.number.trim()) return;
+    if (creatingCompany) return;
+
+    const company = await ensureCompany();
+    if (!company) return;
+
+    const selectedCharge = availableCharges.find((c) => c.id === formData.chargeId);
+
+    onSubmit({
+      ...formData,
+      companyId: company.id,
+      companyName: company.name,
+      priceHT: formData.priceHT || 17.5,
+      salary: formData.salary || '10',
+      chargeId: formData.chargeId || currentUser?.uid || '',
+      chargeName: selectedCharge
+        ? getSafeDisplayName(selectedCharge)
+        : formData.chargeName || getSafeDisplayName(userData),
+      location: isEntreprise
+        ? locationType === 'distanciel'
+          ? 'Distanciel'
+          : address || locationType
+        : formData.location,
+    });
+  };
+
+  const companyValue: CompanyOption | null =
+    formData.companyId && formData.companyId !== 'new'
+      ? (companies.find((c) => c.id === formData.companyId) as CompanyOption) || null
+      : formData.companyName
+        ? ({ id: 'new', name: formData.companyName, structureId: '' } as CompanyOption)
+        : null;
+
+  const selectedCharge = availableCharges.find((u) => u.id === formData.chargeId);
+  const busy = loading || creatingCompany;
+
   return (
-    <Box 
-      sx={{ 
-        p: 3,
-        backgroundColor: '#ffffff',
+    <Box
+      component="form"
+      onSubmit={handleSubmit}
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        bgcolor: tokens.colors.bgPaper,
+        maxHeight: 'min(86vh, 820px)',
       }}
     >
-      <Typography 
-        variant="h5" 
-        sx={{ 
-          mb: 3, 
-          fontWeight: 600, 
-          color: '#1d1d1f',
+      {/* Header */}
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 1.75,
+          px: { xs: 2.5, sm: 3.5 },
+          pt: 3,
+          pb: 2.5,
         }}
       >
-        Nouvelle mission
-      </Typography>
-      
-      <Box component="form" onSubmit={handleSubmit}>
-        <Grid container spacing={3}>
-          {/* Numéro de mission - OBLIGATOIRE (uniquement pour les Juniors) */}
-          {!isEntreprise && (
-            <Grid item xs={12}>
+        <Box
+          sx={{
+            width: 44,
+            height: 44,
+            borderRadius: tokens.radius.lg,
+            bgcolor: 'rgba(23, 59, 108, 0.08)',
+            display: 'grid',
+            placeItems: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <WorkOutlineIcon sx={{ color: tokens.colors.brandNavy, fontSize: 22 }} />
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>
+          <Typography
+            sx={{
+              fontSize: 20,
+              fontWeight: 700,
+              color: tokens.colors.ink,
+              letterSpacing: '-0.02em',
+              lineHeight: 1.25,
+            }}
+          >
+            {title}
+          </Typography>
+          <Typography sx={{ mt: 0.5, fontSize: 13.5, color: tokens.colors.inkMuted, lineHeight: 1.45 }}>
+            {subtitle}
+          </Typography>
+        </Box>
+        <IconButton
+          onClick={onCancel}
+          size="small"
+          aria-label="Fermer"
+          sx={{
+            color: tokens.colors.textTertiary,
+            mt: -0.25,
+            '&:hover': { bgcolor: tokens.colors.gray100, color: tokens.colors.textPrimary },
+          }}
+        >
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+
+      {/* Body */}
+      <Box
+        sx={{
+          flex: 1,
+          overflowY: 'auto',
+          px: { xs: 2.5, sm: 3.5 },
+          pb: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2.75,
+        }}
+      >
+        <Box>
+          <SectionLabel>Informations générales</SectionLabel>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Box>
+              <FieldLabel required>{isEntreprise ? 'Titre de la mission' : 'Numéro de mission'}</FieldLabel>
               <TextField
                 fullWidth
-                label="Numéro de mission *"
+                size="small"
+                placeholder={isEntreprise ? 'Étude de marché — nouveau segment' : 'YYMMNN'}
                 value={formData.number}
                 onChange={(e) => setFormData({ ...formData, number: e.target.value })}
-                variant="outlined"
-                required
                 error={showErrors && !formData.number.trim()}
-                helperText={showErrors && !formData.number.trim() ? "Le numéro de mission est obligatoire" : "Format: YYMMNN (ex: 250904)"}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <AssignmentIcon sx={{ color: '#86868b' }} />
-                    </InputAdornment>
-                  ),
-                }}
+                helperText={
+                  showErrors && !formData.number.trim()
+                    ? 'Champ obligatoire'
+                    : !isEntreprise
+                      ? 'Format YYMMNN (ex. 250904)'
+                      : undefined
+                }
+                sx={fieldSx}
               />
-            </Grid>
-          )}
-          
-          {/* Titre de la mission - OBLIGATOIRE pour les entreprises */}
-          {isEntreprise && (
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Titre de la mission *"
-                value={formData.number || ''}
-                onChange={(e) => setFormData({ ...formData, number: e.target.value })}
-                variant="outlined"
-                required
-                error={showErrors && !formData.number.trim()}
-                helperText={showErrors && !formData.number.trim() ? "Le titre de la mission est obligatoire" : ""}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <AssignmentIcon sx={{ color: '#86868b' }} />
-                    </InputAdornment>
-                  ),
-                }}
-              />
-            </Grid>
-          )}
+            </Box>
 
-          {/* Entreprise - OBLIGATOIRE */}
-          <Grid item xs={12}>
-            <Autocomplete
-              value={
-                formData.companyId && formData.companyId !== 'new'
-                  ? (companies.find(c => c.id === formData.companyId) as CompanyOption || null)
-                  : formData.companyName
-                    ? ({ id: 'new', name: formData.companyName, structureId: '' } as CompanyOption)
-                    : null
-              }
-              onChange={async (event, newValue) => {
-                if (typeof newValue === 'string') {
-                  // Cas d'une saisie libre (freeSolo)
-                  setNewCompany(newValue);
-                  // Vérifier si l'entreprise existe déjà dans la liste
-                  const existingCompany = companies.find(c => c.name.toLowerCase() === newValue.toLowerCase());
-                  if (existingCompany) {
-                    setFormData({ ...formData, companyId: existingCompany.id, companyName: existingCompany.name });
-                  } else {
-                    setFormData({ ...formData, companyId: 'new', companyName: newValue });
-                  }
-                } else if (newValue && (newValue as CompanyOption).inputValue) {
-                  // Cas où l'utilisateur sélectionne "Ajouter [nom]"
-                  const companyName = (newValue as CompanyOption).inputValue!;
-                  setNewCompany(companyName);
-                  
-                  // Créer automatiquement l'entreprise
-                  if (currentUser && companyName.trim()) {
-                    try {
-                      setCreatingCompany(true);
-                      
-                      // Récupérer les informations de l'utilisateur
-                      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-                      if (!userDoc.exists()) {
-                        setCreatingCompany(false);
-                        return;
+            {!isEntreprise ? (
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+                  gap: 2,
+                }}
+              >
+                <Box>
+                  <FieldLabel required>Client / Entreprise</FieldLabel>
+                  <Autocomplete
+                    value={companyValue}
+                    onChange={(_event, newValue) => {
+                      if (typeof newValue === 'string') {
+                        const name = newValue.trim();
+                        if (!name) {
+                          setFormData((prev) => ({ ...prev, companyId: '', companyName: '' }));
+                          return;
+                        }
+                        const existing = companies.find((c) => c.name.toLowerCase() === name.toLowerCase());
+                        setFormData((prev) =>
+                          existing
+                            ? { ...prev, companyId: existing.id, companyName: existing.name }
+                            : { ...prev, companyId: 'new', companyName: name }
+                        );
+                      } else if (newValue?.inputValue) {
+                        // Option « Créer une entreprise » du menu
+                        setFormData((prev) => ({
+                          ...prev,
+                          companyId: 'new',
+                          companyName: newValue.inputValue!.trim(),
+                        }));
+                      } else if (newValue) {
+                        setFormData((prev) => ({
+                          ...prev,
+                          companyId: newValue.id,
+                          companyName: newValue.name,
+                        }));
+                      } else {
+                        setFormData((prev) => ({ ...prev, companyId: '', companyName: '' }));
                       }
-                      
-                      const userData = userDoc.data() as { status: string; structureId: string };
-                      const userStructureId = userData?.structureId;
-                      
-                      if (!userStructureId) {
-                        setCreatingCompany(false);
-                        return;
+                    }}
+                    filterOptions={(options, params) => {
+                      const filtered = filter(options, params);
+                      const input = params.inputValue.trim();
+                      if (
+                        input !== '' &&
+                        !options.some((opt) => opt.name.toLowerCase() === input.toLowerCase())
+                      ) {
+                        filtered.push({
+                          inputValue: input,
+                          id: `new:${input}`,
+                          name: input,
+                          structureId: '',
+                        });
                       }
-                      
-                      // Créer l'entreprise
-                      const newCompanyData = {
-                        name: companyName.trim(),
-                        structureId: userStructureId,
-                        createdAt: new Date(),
-                        createdBy: currentUser.uid
-                      };
-                      
-                      const companyRef = await addDoc(collection(db, 'companies'), newCompanyData);
-                      
-                      // Mettre à jour la liste des entreprises
-                      const newCompanyObj: CompanyData = {
-                        id: companyRef.id,
-                        name: companyName.trim(),
-                        structureId: userStructureId
-                      };
-                      
-                      setCompanies(prev => [...prev, newCompanyObj]);
-                      
-                      // Mettre à jour le formulaire avec la nouvelle entreprise
-                      setFormData({ 
-                        ...formData, 
-                        companyId: companyRef.id, 
-                        companyName: companyName.trim() 
-                      });
-                      setNewCompany('');
-                      
-                    } catch (error) {
-                      console.error("Erreur lors de la création de l'entreprise:", error);
-                      // En cas d'erreur, laisser l'option "new" pour permettre de réessayer
-                      setFormData({ ...formData, companyId: 'new', companyName: companyName });
-                    } finally {
-                      setCreatingCompany(false);
-                    }
-                  }
-                } else if (newValue && !(newValue as CompanyOption).inputValue) {
-                  // Cas d'une entreprise existante
-                  setFormData({ ...formData, companyId: newValue.id, companyName: newValue.name });
-                  setNewCompany('');
-                } else {
-                  // Cas de désélection
-                  setFormData({ ...formData, companyId: '', companyName: '' });
-                  setNewCompany('');
-                }
-              }}
-              filterOptions={(options, params) => {
-                const filtered = filter(options, params);
-                if (
-                  params.inputValue !== '' &&
-                  !options.some(opt => opt.name.toLowerCase() === params.inputValue.toLowerCase())
-                ) {
-                  filtered.push({
-                    inputValue: params.inputValue,
-                    id: 'new',
-                    name: `Ajouter "${params.inputValue}"`,
-                    structureId: ''
-                  } as CompanyOption);
-                }
-                return filtered;
-              }}
-              onInputChange={(event, newInputValue) => {
-                // Mettre à jour le nom de l'entreprise quand l'utilisateur tape
-                if (newInputValue && newInputValue !== formData.companyName) {
-                  // Vérifier si l'entreprise existe déjà dans la liste
-                  const existingCompany = companies.find(c => c.name.toLowerCase() === newInputValue.toLowerCase());
-                  if (existingCompany) {
-                    setFormData(prev => ({ 
-                      ...prev, 
-                      companyId: existingCompany.id, 
-                      companyName: existingCompany.name 
-                    }));
-                  } else {
-                    setFormData(prev => ({ 
-                      ...prev, 
-                      companyId: 'new', 
-                      companyName: newInputValue 
-                    }));
-                  }
-                  setNewCompany(newInputValue);
-                }
-              }}
-              selectOnFocus
-              clearOnBlur
-              handleHomeEndKeys
-              options={companies as CompanyOption[]}
-              loading={loading}
-              disabled={creatingCompany}
-              getOptionLabel={(option) => {
-                if (typeof option === 'string') {
-                  return option;
-                }
-                const opt = option as CompanyOption;
-                if (opt.inputValue) {
-                  return opt.inputValue;
-                }
-                return opt.name;
-              }}
-              renderOption={(props, option) => {
-                const isNewCompany = !!(option as CompanyOption).inputValue;
-                const companyName = isNewCompany 
-                  ? (option as CompanyOption).inputValue || ''
-                  : option.name;
-                
-                return (
-                  <li {...props} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px' }}>
-                    {isNewCompany ? (
-                      <>
-                        <Box
-                          sx={{
-                            width: 40,
-                            height: 40,
-                            borderRadius: '8px',
-                            backgroundColor: '#0071e3',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          <AddIcon sx={{ color: '#ffffff', fontSize: 20 }} />
-                        </Box>
-                        <Box>
-                          <Typography variant="body1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
-                            Créer "{companyName}"
-                          </Typography>
-                          <Typography variant="caption" sx={{ color: '#86868b' }}>
-                            Nouvelle entreprise
-                          </Typography>
-                        </Box>
-                      </>
-                    ) : (
-                      <>
-                        <Box
-                          sx={{
-                            width: 40,
-                            height: 40,
-                            borderRadius: '8px',
-                            backgroundColor: '#f5f5f7',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          <BusinessIcon sx={{ color: '#86868b', fontSize: 20 }} />
-                        </Box>
-                        <Typography variant="body1" sx={{ color: '#1d1d1f' }}>{option.name}</Typography>
-                      </>
+                      return filtered;
+                    }}
+                    selectOnFocus
+                    clearOnBlur={false}
+                    handleHomeEndKeys
+                    blurOnSelect
+                    options={companies as CompanyOption[]}
+                    loading={loading}
+                    disabled={creatingCompany}
+                    isOptionEqualToValue={(option, value) => option.id === value.id}
+                    getOptionLabel={(option) => {
+                      if (typeof option === 'string') return option;
+                      // Afficher le nom saisi, pas le libellé « Créer… »
+                      return option.inputValue ? option.inputValue : option.name;
+                    }}
+                    renderOption={(props, option) => {
+                      const { key, ...optionProps } = props as typeof props & { key?: React.Key };
+                      const isNew = !!option.inputValue;
+                      const name = isNew ? option.inputValue || '' : option.name;
+                      return (
+                        <li key={key ?? option.id} {...optionProps}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, py: 0.25, width: '100%' }}>
+                            <Box
+                              sx={{
+                                width: 32,
+                                height: 32,
+                                borderRadius: tokens.radius.sm,
+                                bgcolor: isNew ? tokens.colors.brandNavy : tokens.colors.bgSubtle,
+                                display: 'grid',
+                                placeItems: 'center',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {isNew ? (
+                                <AddIcon sx={{ color: '#fff', fontSize: 18 }} />
+                              ) : (
+                                <BusinessIcon sx={{ color: tokens.colors.textSecondary, fontSize: 18 }} />
+                              )}
+                            </Box>
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography sx={{ fontSize: 14, fontWeight: isNew ? 600 : 500 }}>
+                                {isNew ? `Créer « ${name} »` : name}
+                              </Typography>
+                              {isNew && (
+                                <Typography sx={{ fontSize: 12, color: tokens.colors.textSecondary }}>
+                                  Nouvelle entreprise
+                                </Typography>
+                              )}
+                            </Box>
+                          </Box>
+                        </li>
+                      );
+                    }}
+                    freeSolo
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        size="small"
+                        placeholder="Decathlon"
+                        error={showErrors && !formData.companyId && !formData.companyName.trim()}
+                        helperText={
+                          showErrors && !formData.companyId && !formData.companyName.trim()
+                            ? 'Sélectionnez ou créez une entreprise'
+                            : formData.companyId === 'new' && formData.companyName
+                              ? `Sera créée à l'enregistrement : ${formData.companyName}`
+                              : undefined
+                        }
+                        sx={fieldSx}
+                      />
                     )}
-                  </li>
-                );
-              }}
-              freeSolo
-              renderInput={(params) => (
+                  />
+                </Box>
+
+                <Box>
+                  <FieldLabel>Chargé de mission</FieldLabel>
+                  <FormControl fullWidth size="small">
+                    <Select
+                      displayEmpty
+                      value={formData.chargeId || ''}
+                      onChange={(e) => {
+                        const selected = availableCharges.find((u) => u.id === e.target.value);
+                        setFormData({
+                          ...formData,
+                          chargeId: e.target.value,
+                          chargeName: getSafeDisplayName(selected),
+                        });
+                      }}
+                      renderValue={() => {
+                        if (!selectedCharge) {
+                          return (
+                            <Typography sx={{ color: tokens.colors.textTertiary, fontSize: 14, lineHeight: 1 }}>
+                              Sélectionner…
+                            </Typography>
+                          );
+                        }
+                        return (
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                            <Avatar
+                              src={selectedCharge.photoURL || undefined}
+                              sx={{
+                                width: 22,
+                                height: 22,
+                                fontSize: 10,
+                                bgcolor: tokens.colors.brandNavy,
+                              }}
+                            >
+                              {selectedCharge.displayName?.charAt(0)?.toUpperCase()}
+                            </Avatar>
+                            <Typography
+                              sx={{
+                                fontSize: 14,
+                                fontWeight: 500,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {getSafeDisplayName(selectedCharge)}
+                            </Typography>
+                          </Box>
+                        );
+                      }}
+                      sx={selectSx}
+                    >
+                      {availableCharges.length === 0 && (
+                        <MenuItem disabled value="">
+                          Aucun membre disponible
+                        </MenuItem>
+                      )}
+                      {availableCharges.map((user) => (
+                        <MenuItem key={user.id} value={user.id}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
+                            <Avatar
+                              src={user.photoURL || undefined}
+                              sx={{
+                                width: 28,
+                                height: 28,
+                                fontSize: 12,
+                                bgcolor: tokens.colors.brandNavy,
+                              }}
+                            >
+                              {user.displayName?.charAt(0)?.toUpperCase()}
+                            </Avatar>
+                            <UserNameText user={user} component="span" sx={{ fontSize: 14 }} />
+                          </Box>
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+              </Box>
+            ) : (
+              <Box>
+                <FieldLabel required>Client / Entreprise</FieldLabel>
                 <TextField
-                  {...params}
-                  label="Entreprise *"
-                  variant="outlined"
-                  required
-                  error={showErrors && !formData.companyId}
-                  helperText={
-                    creatingCompany 
-                      ? "Création de l'entreprise en cours..." 
-                      : showErrors && !formData.companyId 
-                        ? "Veuillez sélectionner ou créer une entreprise" 
-                        : "Tapez pour rechercher ou créez une nouvelle entreprise"
+                  fullWidth
+                  size="small"
+                  placeholder="Nom de l'entreprise"
+                  value={formData.companyName}
+                  onChange={(e) =>
+                    setFormData({ ...formData, companyId: 'new', companyName: e.target.value })
                   }
-                  InputProps={{
-                    ...params.InputProps,
-                    startAdornment: (
-                      <>
-                        <InputAdornment position="start">
-                          {creatingCompany ? (
-                            <CircularProgress size={20} />
-                          ) : (
-                            <BusinessIcon sx={{ color: '#86868b' }} />
-                          )}
-                        </InputAdornment>
-                        {params.InputProps.startAdornment}
-                      </>
-                    ),
+                  error={showErrors && !formData.companyName.trim()}
+                  sx={fieldSx}
+                />
+              </Box>
+            )}
+
+            {isEntreprise && (
+              <Box>
+                <FieldLabel required>Description</FieldLabel>
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={3}
+                  maxRows={6}
+                  placeholder="Contexte, objectifs, livrables attendus…"
+                  value={formData.description}
+                  onChange={(e) => {
+                    const next = e.target.value.slice(0, 400);
+                    setFormData({ ...formData, description: next });
+                  }}
+                  error={showErrors && !formData.description.trim()}
+                  sx={{
+                    ...fieldSx,
+                    '& .MuiOutlinedInput-root': {
+                      height: 'auto',
+                      alignItems: 'flex-start',
+                    },
+                    '& .MuiInputBase-input': {
+                      height: 'auto',
+                      py: 1.25,
+                    },
                   }}
                 />
-              )}
-            />
-          </Grid>
+                <Typography
+                  sx={{
+                    mt: 0.75,
+                    textAlign: 'right',
+                    fontSize: 12,
+                    color: tokens.colors.textTertiary,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {formData.description.length}/400
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </Box>
 
-          {/* Chargé d'étude - OPTIONNEL (uniquement pour les Juniors) */}
-          {!isEntreprise && (
-            <Grid item xs={12}>
-              <TextField
-              fullWidth
-              select
-              label="Chargé d'étude"
-              value={formData.chargeId}
-              onChange={(e) => {
-                const selectedUser = availableCharges.find(user => user.id === e.target.value);
-                setFormData({ 
-                  ...formData, 
-                  chargeId: e.target.value,
-                  chargeName: selectedUser?.displayName || ''
-                });
-              }}
-              SelectProps={{
-                native: false,
-                renderValue: (value) => {
-                  const selectedUser = availableCharges.find(user => user.id === value);
-                  return selectedUser?.displayName || '';
-                }
-              }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <PersonIcon sx={{ color: '#86868b' }} />
-                  </InputAdornment>
-                ),
+        {isEntreprise && (
+          <Box>
+            <SectionLabel>Planning & recrutement</SectionLabel>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+                gap: 2,
               }}
             >
-              {availableCharges.map((user) => (
-                <MenuItem key={user.id} value={user.id}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {user.photoURL ? (
-                      <Box
-                        component="img"
-                        src={user.photoURL}
-                        alt={user.displayName}
-                        sx={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: '50%',
-                          objectFit: 'cover',
-                        }}
-                      />
-                    ) : (
-                      <Box
-                        sx={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: '50%',
-                          backgroundColor: '#0071e3',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          color: '#ffffff',
-                          fontSize: 12,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {user.displayName.charAt(0).toUpperCase()}
-                      </Box>
-                    )}
-                    <Typography>{user.displayName}</Typography>
-                  </Box>
-                </MenuItem>
-              ))}
-              </TextField>
-            </Grid>
-          )}
-          
-          {/* Champs spécifiques aux entreprises */}
-          {isEntreprise && (
-            <>
-              {/* Lieu */}
-              <Grid item xs={12} md={6}>
-                <FormControl fullWidth>
-                  <InputLabel>Lieu *</InputLabel>
+              <Box>
+                <FieldLabel required>Lieu</FieldLabel>
+                <FormControl fullWidth size="small">
                   <Select
                     value={locationType}
-                    label="Lieu *"
-                    onChange={(e) => setLocationType(e.target.value as 'presentiel' | 'distanciel' | 'mixte')}
-                    required
+                    onChange={(e) => setLocationType(e.target.value as typeof locationType)}
+                    sx={{
+                      borderRadius: tokens.radius.md,
+                      '& .MuiOutlinedInput-notchedOutline': { borderColor: tokens.colors.borderDefault },
+                    }}
                   >
                     <MenuItem value="presentiel">Présentiel</MenuItem>
                     <MenuItem value="distanciel">Distanciel</MenuItem>
                     <MenuItem value="mixte">Mixte</MenuItem>
                   </Select>
                 </FormControl>
-              </Grid>
-              
+              </Box>
               {(locationType === 'presentiel' || locationType === 'mixte') && (
-                <Grid item xs={12} md={6}>
+                <Box>
+                  <FieldLabel>Adresse</FieldLabel>
                   <TextField
                     fullWidth
-                    label="Adresse précise"
+                    size="small"
+                    placeholder="Adresse complète"
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
-                    variant="outlined"
-                    placeholder="Adresse complète si présentiel"
+                    sx={fieldSx}
                   />
-                </Grid>
+                </Box>
               )}
-              
-              {/* Nombre d'étudiants */}
-              <Grid item xs={12} md={6}>
+              <Box>
+                <FieldLabel required>Étudiants recherchés</FieldLabel>
                 <TextField
                   fullWidth
+                  size="small"
                   type="number"
-                  label="Nombre d'étudiants recherchés *"
-                  value={formData.studentCount}
-                  onChange={(e) => setFormData({ ...formData, studentCount: parseInt(e.target.value) || 0 })}
-                  variant="outlined"
-                  required
                   inputProps={{ min: 1 }}
+                  value={formData.studentCount || ''}
+                  onChange={(e) =>
+                    setFormData({ ...formData, studentCount: parseInt(e.target.value, 10) || 0 })
+                  }
+                  sx={fieldSx}
                 />
-              </Grid>
-              
-              {/* Dates */}
-              <Grid item xs={12} md={6}>
+              </Box>
+              <Box>
+                <FieldLabel>Durée estimée</FieldLabel>
                 <TextField
                   fullWidth
-                  type="date"
-                  label="Date de début *"
-                  value={formData.date ? new Date(formData.date).toISOString().split('T')[0] : ''}
-                  onChange={(e) => setFormData({ ...formData, date: e.target.value ? new Date(e.target.value) : null })}
-                  variant="outlined"
-                  required
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-              
-              <Grid item xs={12} md={6}>
-                <TextField
-                  fullWidth
-                  type="date"
-                  label="Date de fin *"
-                  value={formData.endDate ? new Date(formData.endDate).toISOString().split('T')[0] : ''}
-                  onChange={(e) => setFormData({ ...formData, endDate: e.target.value ? new Date(e.target.value) : null })}
-                  variant="outlined"
-                  required
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-              
-              <Grid item xs={12} md={6}>
-                <TextField
-                  fullWidth
-                  label="Durée estimée"
+                  size="small"
+                  placeholder="6 semaines"
                   value={duration}
                   onChange={(e) => setDuration(e.target.value)}
-                  variant="outlined"
-                  placeholder="Ex: 3 mois, 6 semaines..."
-                  helperText="Durée estimée de la mission"
+                  sx={fieldSx}
                 />
-              </Grid>
-              
-              {/* Upload de documents */}
-              <Grid item xs={12}>
-                <Box sx={{ border: '2px dashed #d1d1d6', borderRadius: '8px', p: 3, textAlign: 'center' }}>
-                  <CloudUploadIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-                  <Typography variant="body1" sx={{ mb: 2, fontWeight: 500 }}>
-                    Cahier des charges et annexes
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    Formats acceptés: PDF, Word (.doc, .docx). Taille max: 10MB par fichier.
+              </Box>
+              <Box>
+                <FieldLabel required>Date de début</FieldLabel>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  value={formData.date ? new Date(formData.date).toISOString().split('T')[0] : ''}
+                  onChange={(e) =>
+                    setFormData({ ...formData, date: e.target.value ? new Date(e.target.value) : null })
+                  }
+                  sx={fieldSx}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Box>
+              <Box>
+                <FieldLabel required>Date de fin</FieldLabel>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  value={formData.endDate ? new Date(formData.endDate).toISOString().split('T')[0] : ''}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      endDate: e.target.value ? new Date(e.target.value) : null,
+                    })
+                  }
+                  sx={fieldSx}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Box>
+              <Box sx={{ gridColumn: '1 / -1' }}>
+                <FieldLabel>Cahier des charges</FieldLabel>
+                <Box
+                  sx={{
+                    border: `1.5px dashed ${tokens.colors.gray300}`,
+                    borderRadius: tokens.radius.lg,
+                    p: 2.5,
+                    textAlign: 'center',
+                    bgcolor: tokens.colors.gray50,
+                  }}
+                >
+                  <CloudUploadIcon sx={{ fontSize: 28, color: tokens.colors.textTertiary, mb: 1 }} />
+                  <Typography sx={{ fontSize: 13, color: tokens.colors.textSecondary, mb: 1.5 }}>
+                    PDF ou Word · max 10 Mo
                   </Typography>
                   <input
                     accept=".pdf,.doc,.docx"
@@ -803,89 +824,98 @@ const MissionForm: React.FC<MissionFormProps> = ({ onSubmit, onCancel, initialDa
                     multiple
                     type="file"
                     onChange={(e) => {
-                      const files = Array.from(e.target.files || []);
-                      const validFiles = files.filter(file => {
-                        const isValidType = file.type === 'application/pdf' || 
-                                          file.type === 'application/msword' ||
-                                          file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-                        const isValidSize = file.size <= 10 * 1024 * 1024;
-                        return isValidType && isValidSize;
+                      const files = Array.from(e.target.files || []).filter((file) => {
+                        const okType =
+                          file.type === 'application/pdf' ||
+                          file.type === 'application/msword' ||
+                          file.type ===
+                            'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+                        return okType && file.size <= 10 * 1024 * 1024;
                       });
-                      setUploadedDocuments(prev => [...prev, ...validFiles]);
+                      setUploadedDocuments((prev) => [...prev, ...files]);
                     }}
                   />
                   <label htmlFor="mission-documents-upload">
-                    <Button variant="outlined" component="span" startIcon={<CloudUploadIcon />}>
-                      Sélectionner des fichiers
+                    <Button variant="outlined" size="small" component="span" startIcon={<CloudUploadIcon />}>
+                      Sélectionner
                     </Button>
                   </label>
                   {uploadedDocuments.length > 0 && (
-                    <Box sx={{ mt: 2, textAlign: 'left' }}>
-                      <Typography variant="subtitle2" sx={{ mb: 1 }}>Fichiers sélectionnés:</Typography>
+                    <Box sx={{ mt: 1.5, textAlign: 'left' }}>
                       {uploadedDocuments.map((file, idx) => (
-                        <Box key={idx} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                          <Typography variant="body2">{file.name}</Typography>
-                          <Button size="small" onClick={() => {
-                            setUploadedDocuments(prev => prev.filter((_, i) => i !== idx));
-                          }}>
-                            Supprimer
+                        <Box
+                          key={`${file.name}-${idx}`}
+                          sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                        >
+                          <Typography sx={{ fontSize: 13 }}>{file.name}</Typography>
+                          <Button
+                            size="small"
+                            onClick={() => setUploadedDocuments((prev) => prev.filter((_, i) => i !== idx))}
+                          >
+                            Retirer
                           </Button>
                         </Box>
                       ))}
                     </Box>
                   )}
                 </Box>
-              </Grid>
-            </>
-          )}
-          
-          {/* Description - OBLIGATOIRE pour les entreprises */}
-          <Grid item xs={12}>
-            <TextField
-              fullWidth
-              multiline
-              rows={isEntreprise ? 6 : 4}
-              label={isEntreprise ? "Description détaillée (Cahier des charges) *" : "Description"}
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              variant="outlined"
-              required={isEntreprise}
-              placeholder={isEntreprise ? "Décrivez en détail votre besoin, les objectifs, les compétences requises, les livrables attendus..." : "Décrivez la mission, les objectifs, les compétences requises..."}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <DescriptionIcon sx={{ color: '#86868b' }} />
-                  </InputAdornment>
-                ),
-              }}
-            />
-          </Grid>
-        </Grid>
-        
-        <Box sx={{ 
-          display: 'flex', 
-          justifyContent: 'flex-end', 
+              </Box>
+            </Box>
+          </Box>
+        )}
+      </Box>
+
+      {/* Footer */}
+      <Divider sx={{ borderColor: tokens.colors.divider, mt: 2 }} />
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
           gap: 2,
-          mt: 3
-        }}>
-          <Button 
-            onClick={onCancel}
-            disabled={loading || creatingCompany}
-          >
-            Annuler
-          </Button>
-          <Button 
-            type="submit" 
-            variant="contained" 
-            disabled={loading || creatingCompany}
-            startIcon={loading || creatingCompany ? <CircularProgress size={16} sx={{ color: '#ffffff' }} /> : null}
-          >
-            {creatingCompany ? 'Création...' : loading ? 'Création...' : 'Créer la mission'}
-          </Button>
-        </Box>
+          px: { xs: 2.5, sm: 3.5 },
+          py: 2,
+        }}
+      >
+        <Button
+          onClick={onCancel}
+          disabled={busy}
+          sx={{
+            textTransform: 'none',
+            color: tokens.colors.textSecondary,
+            fontWeight: 500,
+            fontSize: 14,
+            px: 1,
+            '&:hover': { bgcolor: 'transparent', color: tokens.colors.textPrimary },
+          }}
+        >
+          Annuler
+        </Button>
+        <Button
+          type="submit"
+          variant="contained"
+          disabled={busy}
+          startIcon={
+            busy ? <CircularProgress size={16} sx={{ color: '#fff' }} /> : <CheckIcon sx={{ fontSize: 18 }} />
+          }
+          sx={{
+            textTransform: 'none',
+            fontWeight: 600,
+            fontSize: 14,
+            px: 2.25,
+            py: 1,
+            borderRadius: tokens.radius.md,
+            bgcolor: tokens.colors.brandNavy,
+            boxShadow: 'none',
+            '&:hover': { bgcolor: tokens.colors.brandNavy700, boxShadow: tokens.shadows.sm },
+            '&.Mui-disabled': { bgcolor: tokens.colors.gray300, color: '#fff' },
+          }}
+        >
+          {creatingCompany ? 'Création…' : submitLabel}
+        </Button>
       </Box>
     </Box>
   );
 };
 
-export default MissionForm; 
+export default MissionForm;

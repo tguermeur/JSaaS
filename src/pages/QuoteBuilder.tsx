@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 
 // Déclaration TypeScript pour l'API EyeDropper
 declare global {
@@ -66,8 +67,13 @@ import { collection, doc, getDoc, getDocs, query, where, addDoc, updateDoc, setD
 import { db, storage } from '../firebase/config';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useAuth } from '../contexts/AuthContext';
+import { getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
 import { Document, Page, Text, View, StyleSheet, Font, Image as PDFImage, pdf } from '@react-pdf/renderer';
 import { PDFDownloadLink } from '@react-pdf/renderer';
+import { installPdfPolyfills } from '../utils/pdfPolyfill';
+import { tokens } from '../theme/tokens';
+
+installPdfPolyfills();
 
 // Types définis localement
 interface Mission {
@@ -269,7 +275,7 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: '#007AFF',
+    backgroundColor: tokens.colors.brandTeal,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 6 // Réduit de 12 à 6
@@ -344,7 +350,7 @@ const styles = StyleSheet.create({
   quoteTitle: {
     fontSize: 12,
     fontWeight: 'bold',
-    color: '#1d1d1f'
+    color: tokens.colors.textPrimary
   },
   
   quoteMeta: {
@@ -388,7 +394,7 @@ const styles = StyleSheet.create({
   tableRow: {
     flexDirection: 'row',
     padding: 6, // Réduit de 8 à 6
-    borderBottom: '1px solid #f0f0f0'
+    borderBottom: `1px solid ${tokens.colors.borderLight}`
   },
   
   tableCell: {
@@ -521,7 +527,7 @@ const styles = StyleSheet.create({
   characteristicsTitle: {
     fontSize: 12,
     fontWeight: 'bold',
-    color: '#1d1d1f',
+    color: tokens.colors.textPrimary,
     marginBottom: 8 // Réduit de 10 à 8
   },
   
@@ -1862,7 +1868,12 @@ ${structure.nom || structure.name || 'Notre équipe'}`
             etape: documentData.etape || 'Négociation',
             createdBy: documentData.createdBy || ''
           };
-          
+          if (missionData.chargeId && missionData.chargeName?.startsWith?.('ENC:')) {
+            try {
+              const chargeDoc = await getDoc(doc(db, 'users', missionData.chargeId));
+              missionData.chargeName = await getDecryptedUserDisplayName(missionData.chargeId, chargeDoc.data() || null);
+            } catch { /* garder la valeur en cas d'erreur */ }
+          }
           setMission(missionData);
           
           // Définir le titre par défaut du document
@@ -1881,6 +1892,12 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 id: missionDoc.id,
                 ...documentData
               } as Mission;
+              if (missionData.chargeId && missionData.chargeName?.startsWith?.('ENC:')) {
+                try {
+                  const chargeDoc = await getDoc(doc(db, 'users', missionData.chargeId));
+                  missionData.chargeName = await getDecryptedUserDisplayName(missionData.chargeId, chargeDoc.data() || null);
+                } catch { /* garder la valeur en cas d'erreur */ }
+              }
               setMission(missionData);
               
               const defaultTitle = `PC-${missionData.numeroMission || documentNumber}`;
@@ -1897,10 +1914,13 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           }
         } else {
           // Récupérer les données de la mission par numeroMission (rétrocompatibilité)
-          const missionsQuery = query(
-            collection(db, 'missions'),
-              where('numeroMission', '==', documentNumber)
-          );
+          const userDoc = currentUser ? await getDoc(doc(db, 'users', currentUser.uid)) : null;
+          const userStructureIdLocal = userDoc?.exists() ? userDoc.data()?.structureId : null;
+          const missionsQueryConstraints = [where('numeroMission', '==', documentNumber)];
+          if (userStructureIdLocal) {
+            missionsQueryConstraints.push(where('structureId', '==', userStructureIdLocal));
+          }
+          const missionsQuery = query(collection(db, 'missions'), ...missionsQueryConstraints);
           const missionsSnapshot = await getDocs(missionsQuery);
           
           if (missionsSnapshot.empty) {
@@ -1918,6 +1938,12 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               id: missionDoc.id,
               ...documentData
             } as Mission;
+            if (missionData.chargeId && missionData.chargeName?.startsWith?.('ENC:')) {
+              try {
+                const chargeDoc = await getDoc(doc(db, 'users', missionData.chargeId));
+                missionData.chargeName = await getDecryptedUserDisplayName(missionData.chargeId, chargeDoc.data() || null);
+              } catch { /* garder la valeur en cas d'erreur */ }
+            }
             setMission(missionData);
             
             // Définir le titre par défaut du document
@@ -2165,10 +2191,11 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               // Essayer de récupérer les données de l'entreprise directement par le nom
               try {
                 console.log('Trying to find company by name:', missionData.company);
-                const companiesQuery = query(
-                  collection(db, 'companies'),
-                  where('name', '==', missionData.company)
-                );
+                const companyQueryConstraints = [where('name', '==', missionData.company)];
+                if (missionData.structureId) {
+                  companyQueryConstraints.push(where('structureId', '==', missionData.structureId));
+                }
+                const companiesQuery = query(collection(db, 'companies'), ...companyQueryConstraints);
                 const companiesSnapshot = await getDocs(companiesQuery);
                 
                 if (!companiesSnapshot.empty) {
@@ -2389,10 +2416,11 @@ ${structure.nom || structure.name || 'Notre équipe'}`
             try {
               // D'abord, essayer de trouver l'entreprise par nom
               if (missionData.company) {
-                const companiesQuery = query(
-                  collection(db, 'companies'),
-                  where('name', '==', missionData.company)
-                );
+                const companyQueryConstraints2 = [where('name', '==', missionData.company)];
+                if (missionData.structureId) {
+                  companyQueryConstraints2.push(where('structureId', '==', missionData.structureId));
+                }
+                const companiesQuery = query(collection(db, 'companies'), ...companyQueryConstraints2);
                 const companiesSnapshot = await getDocs(companiesQuery);
                 
                 if (!companiesSnapshot.empty) {
@@ -3585,7 +3613,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           <IconButton
             onClick={() => navigate(-1)}
             sx={{
-              color: '#007AFF',
+              color: tokens.colors.brandTeal,
               '&:hover': {
                 backgroundColor: 'rgba(0, 122, 255, 0.08)',
               }
@@ -3600,7 +3628,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           component="h1" 
           sx={{ 
             fontWeight: '600', 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             position: 'absolute',
             left: '50%',
             transform: 'translateX(-50%)'
@@ -3614,8 +3642,8 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           startIcon={<SettingsIcon />}
           onClick={() => setOptionsOpen(!optionsOpen)}
           sx={{
-            borderColor: '#007AFF',
-            color: '#007AFF',
+            borderColor: tokens.colors.brandTeal,
+            color: tokens.colors.brandTeal,
             '&:hover': {
               borderColor: '#0056CC',
               backgroundColor: 'rgba(0, 122, 255, 0.04)',
@@ -3746,7 +3774,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         cursor: 'pointer',
                         border: '2px solid #e0e0e0',
                         '&:hover': {
-                          border: '2px solid #007AFF'
+                          border: `2px solid ${tokens.colors.brandTeal}`
                         }
                       }}
                       onClick={handleLogoClick}
@@ -3763,7 +3791,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         cursor: 'pointer',
                         border: '2px solid #e0e0e0',
                         '&:hover': {
-                          border: '2px solid #007AFF'
+                          border: `2px solid ${tokens.colors.brandTeal}`
                         }
                       }}
                       onClick={handleLogoClick}
@@ -3775,14 +3803,14 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         width: 80,
                         height: 80,
                         borderRadius: '50%',
-                        backgroundColor: '#007AFF',
+                        backgroundColor: tokens.colors.brandTeal,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         cursor: 'pointer',
                         border: '2px solid #e0e0e0',
                         '&:hover': {
-                          border: '2px solid #007AFF'
+                          border: `2px solid ${tokens.colors.brandTeal}`
                         }
                       }}
                     >
@@ -3980,7 +4008,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         cursor: 'pointer',
                         border: '2px solid #e0e0e0',
                         '&:hover': {
-                          border: '2px solid #007AFF'
+                          border: `2px solid ${tokens.colors.brandTeal}`
                         }
                       }}
                       onClick={() => {
@@ -3994,7 +4022,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         width: 80,
                         height: 80,
                         borderRadius: '50%',
-                        backgroundColor: '#f5f5f7',
+                        backgroundColor: tokens.colors.bgSubtle,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -4204,7 +4232,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 }
               }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Typography variant="h5" sx={{ fontWeight: '600', color: '#1d1d1f', fontSize: '1.25rem' }}>
+                  <Typography variant="h5" sx={{ fontWeight: '600', color: tokens.colors.textPrimary, fontSize: '1.25rem' }}>
                     Caractéristiques de la prestation
                   </Typography>
                 </Box>
@@ -4367,7 +4395,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               }
             }}>
                               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                <Typography variant="h5" sx={{ fontWeight: '600', color: '#1d1d1f', fontSize: '1.25rem' }}>Proposition commerciale</Typography>
+                <Typography variant="h5" sx={{ fontWeight: '600', color: tokens.colors.textPrimary, fontSize: '1.25rem' }}>Proposition commerciale</Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                   {showMissionDate && (
                     <TextField
@@ -4469,7 +4497,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                     gridTemplateColumns: billingType === 'rapide' ? '2fr 1fr 1fr 50px' : '2fr 1fr 1fr 1fr 1fr 50px',
                     gap: 1,
                     p: 1,
-                    borderBottom: '1px solid #f0f0f0',
+                    borderBottom: `1px solid ${tokens.colors.borderLight}`,
                     '&:hover': { bgcolor: '#fafafa' },
                     '@media print': { 
                       borderBottom: '1px solid #000',
@@ -4648,7 +4676,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                   gap: 1, 
                   mb: 1,
                   p: 1,
-                  bgcolor: '#f5f5f7',
+                  bgcolor: tokens.colors.bgSubtle,
                   borderRadius: '8px 8px 0 0',
                   border: '1px solid #e0e0e0',
                   borderBottom: 'none'
@@ -4752,7 +4780,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         applyTextAlignToSelection('left');
                       }}
                       sx={{
-                        bgcolor: freeFieldTextAlign === 'left' ? '#007AFF' : 'transparent',
+                        bgcolor: freeFieldTextAlign === 'left' ? tokens.colors.brandTeal : 'transparent',
                         color: freeFieldTextAlign === 'left' ? 'white' : '#8E8E93',
                         '&:hover': {
                           bgcolor: freeFieldTextAlign === 'left' ? '#0056CC' : '#E5E5EA'
@@ -4767,7 +4795,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         applyTextAlignToSelection('center');
                       }}
                       sx={{
-                        bgcolor: freeFieldTextAlign === 'center' ? '#007AFF' : 'transparent',
+                        bgcolor: freeFieldTextAlign === 'center' ? tokens.colors.brandTeal : 'transparent',
                         color: freeFieldTextAlign === 'center' ? 'white' : '#8E8E93',
                         '&:hover': {
                           bgcolor: freeFieldTextAlign === 'center' ? '#0056CC' : '#E5E5EA'
@@ -4782,7 +4810,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         applyTextAlignToSelection('right');
                       }}
                       sx={{
-                        bgcolor: freeFieldTextAlign === 'right' ? '#007AFF' : 'transparent',
+                        bgcolor: freeFieldTextAlign === 'right' ? tokens.colors.brandTeal : 'transparent',
                         color: freeFieldTextAlign === 'right' ? 'white' : '#8E8E93',
                         '&:hover': {
                           bgcolor: freeFieldTextAlign === 'right' ? '#0056CC' : '#E5E5EA'
@@ -4797,7 +4825,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         applyTextAlignToSelection('justify');
                       }}
                       sx={{
-                        bgcolor: freeFieldTextAlign === 'justify' ? '#007AFF' : 'transparent',
+                        bgcolor: freeFieldTextAlign === 'justify' ? tokens.colors.brandTeal : 'transparent',
                         color: freeFieldTextAlign === 'justify' ? 'white' : '#8E8E93',
                         '&:hover': {
                           bgcolor: freeFieldTextAlign === 'justify' ? '#0056CC' : '#E5E5EA'
@@ -5020,7 +5048,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <SettingsIcon sx={{ color: templateColor, fontSize: 20 }} />
-                  <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                     Options
                   </Typography>
                 </Box>
@@ -5039,7 +5067,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                     <ReceiptIcon sx={{ color: templateColor, fontSize: 20 }} />
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                       Type de facturation
                     </Typography>
                   </Box>
@@ -5063,7 +5091,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                     <PersonIcon sx={{ color: templateColor, fontSize: 20 }} />
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                       Client
                     </Typography>
                   </Box>
@@ -5097,7 +5125,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                     <BusinessIcon sx={{ color: templateColor, fontSize: 20 }} />
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                       Structure
                     </Typography>
                   </Box>
@@ -5131,7 +5159,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                     <AssignmentIcon sx={{ color: templateColor, fontSize: 20 }} />
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                       Mission
                     </Typography>
                   </Box>
@@ -5153,7 +5181,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                     <MenuIcon sx={{ color: templateColor, fontSize: 20 }} />
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                       Info complémentaires
                     </Typography>
                   </Box>
@@ -5229,7 +5257,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 <Box sx={{ mb: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                     <PaletteIcon sx={{ color: templateColor, fontSize: 20 }} />
-                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                       Couleur du template
                     </Typography>
                   </Box>
@@ -5244,7 +5272,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                           width: '48px',
                           height: '48px',
                           border: '2px solid #e0e0e0',
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           cursor: 'pointer',
                           padding: 0,
                           backgroundColor: templateColor
@@ -5256,15 +5284,15 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                     <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                       {[
                         '#6366f1', // Indigo (par défaut)
-                        '#007AFF', // Bleu Apple
-                        '#34C759', // Vert Apple
-                        '#FF9500', // Orange Apple
-                        '#FF3B30', // Rouge Apple
+                        tokens.colors.brandTeal, // Bleu Apple
+                        tokens.colors.success, // Vert Apple
+                        tokens.colors.warning, // Orange Apple
+                        tokens.colors.error, // Rouge Apple
                         '#AF52DE', // Violet Apple
                         '#5856D6', // Violet foncé
                         '#5AC8FA', // Bleu clair
                         '#FF2D55', // Rose
-                        '#FF9500', // Orange
+                        tokens.colors.warning, // Orange
                         '#FFCC00', // Jaune
                         '#32D74B'  // Vert clair
                       ].map((color) => (
@@ -5307,9 +5335,9 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                         sx={{
                           border: '1px solid #e0e0e0',
                           borderRadius: '6px',
-                          color: '#1d1d1f',
+                          color: tokens.colors.textPrimary,
                           '&:hover': {
-                            backgroundColor: '#f5f5f7',
+                            backgroundColor: tokens.colors.bgSubtle,
                             borderColor: templateColor
                           }
                         }}
@@ -5422,7 +5450,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
             textAlign: 'center', 
             mb: 4, 
             fontWeight: '400', 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             fontSize: '1.25rem',
             letterSpacing: '-0.01em'
           }}>
@@ -5571,7 +5599,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                       }
                     }}
                     sx={{
-                      color: '#007AFF',
+                      color: tokens.colors.brandTeal,
                       py: 2.5,
                       px: 3,
                       textTransform: 'none',
@@ -5591,9 +5619,9 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                     }}
                     startIcon={
                       pdfLoading ? (
-                        <CircularProgress size={16} sx={{ color: '#007AFF' }} />
+                        <CircularProgress size={16} sx={{ color: tokens.colors.brandTeal }} />
                       ) : (
-                        <DownloadIcon sx={{ fontSize: 18, color: '#007AFF' }} />
+                        <DownloadIcon sx={{ fontSize: 18, color: tokens.colors.brandTeal }} />
                       )
                     }
                   >
@@ -5693,7 +5721,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 }
               }}
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 py: 2.5,
                 px: 3,
                 textTransform: 'none',
@@ -5727,7 +5755,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
+            borderRadius: tokens.radius.lg,
             boxShadow: '0 20px 60px rgba(0, 0, 0, 0.1)'
           }
         }}
@@ -5736,7 +5764,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         <Box
           sx={{
             background: 'white',
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             p: 4,
             textAlign: 'center',
             borderBottom: '1px solid #F2F2F7'
@@ -5745,7 +5773,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
           <Typography variant="h5" sx={{ 
             fontWeight: '600', 
             mb: 2, 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             fontSize: '1.5rem'
           }}>
             Envoyer la proposition commerciale
@@ -5772,7 +5800,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               variant="outlined"
               sx={{
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   backgroundColor: 'white'
                 }
               }}
@@ -5788,7 +5816,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               variant="outlined"
               sx={{
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   backgroundColor: 'white'
                 }
               }}
@@ -5803,7 +5831,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               variant="outlined"
               sx={{
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   backgroundColor: 'white'
                 }
               }}
@@ -5821,7 +5849,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               placeholder="Votre message personnalisé..."
               sx={{
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   backgroundColor: 'white'
                 }
               }}
@@ -5834,11 +5862,11 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                 onClick={() => setEmailPopupOpen(false)}
                 sx={{
                   borderColor: '#E5E5EA',
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   py: 2,
                   px: 4,
                   textTransform: 'none',
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   borderWidth: '2px'
                 }}
               >
@@ -5883,12 +5911,12 @@ ${structure.nom || structure.name || 'Notre équipe'}`
                   }
                 }}
                 sx={{
-                  background: '#007AFF',
+                  background: tokens.colors.brandTeal,
                   color: 'white',
                   py: 2,
                   px: 4,
                   textTransform: 'none',
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   '&:hover': {
                     background: '#0056CC',
                   },
@@ -5920,13 +5948,13 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
+            borderRadius: tokens.radius.lg,
             p: 3
           }
         }}
       >
         <Box sx={{ p: 2 }}>
-          <Typography variant="h6" sx={{ mb: 2, fontWeight: 600, color: '#1d1d1f' }}>
+          <Typography variant="h6" sx={{ mb: 2, fontWeight: 600, color: tokens.colors.textPrimary }}>
             Enregistrer les préférences de template ?
           </Typography>
           <Typography variant="body2" sx={{ mb: 3, color: '#8E8E93' }}>
@@ -5950,7 +5978,7 @@ ${structure.nom || structure.name || 'Notre équipe'}`
               onClick={saveTemplatePreferences}
               variant="contained"
               sx={{
-                background: '#007AFF',
+                background: tokens.colors.brandTeal,
                 color: 'white',
                 textTransform: 'none',
                 '&:hover': {
@@ -5964,31 +5992,27 @@ ${structure.nom || structure.name || 'Notre équipe'}`
         </Box>
       </Dialog>
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        sx={{
-          zIndex: 10000,
-          position: 'fixed !important',
-          '& .MuiSnackbar-root': {
-            zIndex: 10000
-          }
-        }}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert 
-          onClose={() => setSnackbar({ ...snackbar, open: false })} 
-          severity={snackbar.severity}
-          sx={{
-            zIndex: 10000,
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
-            minWidth: '300px'
-          }}
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
+          onClose={() => setSnackbar({ ...snackbar, open: false })}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert 
+            onClose={() => setSnackbar({ ...snackbar, open: false })} 
+            severity={snackbar.severity}
+            sx={{
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+              minWidth: '300px'
+            }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

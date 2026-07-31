@@ -21,10 +21,13 @@ export interface FirestoreMission {
   campaignName?: string;
 }
 
-export const getMissions = async () => {
+export const getMissions = async (structureId?: string) => {
   try {
     const missionsRef = collection(db, 'missions');
-    const snapshot = await getDocs(missionsRef);
+    const q = structureId
+      ? query(missionsRef, where('structureId', '==', structureId))
+      : missionsRef;
+    const snapshot = await getDocs(q);
     return snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data()

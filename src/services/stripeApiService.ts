@@ -73,9 +73,7 @@ const callFirebaseFunction = async (functionName: string, data: any = {}) => {
 // Récupérer les clients Stripe
 export const getStripeCustomers = async (): Promise<StripeCustomer[]> => {
   try {
-    console.log('Récupération des clients Stripe via API HTTP...');
     const result = await callFirebaseFunction('getStripeCustomers');
-    console.log('Clients Stripe récupérés:', result.result);
     return result.result || [];
   } catch (error) {
     console.error('Erreur lors de la récupération des clients Stripe:', error);
@@ -86,9 +84,7 @@ export const getStripeCustomers = async (): Promise<StripeCustomer[]> => {
 // Récupérer l'historique des paiements
 export const fetchPaymentHistory = async (email: string): Promise<StripePayment[]> => {
   try {
-    console.log('Récupération de l\'historique des paiements via API HTTP...');
     const result = await callFirebaseFunction('fetchPaymentHistory', { email });
-    console.log('Paiements récupérés:', result.result);
     return result.result || [];
   } catch (error) {
     console.error('Erreur lors de la récupération des paiements:', error);

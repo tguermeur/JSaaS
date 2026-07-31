@@ -36,7 +36,7 @@ const SignUp: React.FC = () => {
       // Tentative d'inscription
       await createUserWithEmailAndPassword(auth, email, password);
       // Redirection vers le tableau de bord ou la page de profil après succès
-      navigate('/dashboard'); 
+      navigate('/app/dashboard'); 
     } catch (error) {
       console.error("Erreur d'inscription:", error);
       const authError = error as AuthError;

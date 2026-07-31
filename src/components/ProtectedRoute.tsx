@@ -1,10 +1,27 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box } from '@mui/material';
+import AccessDenied from './common/AccessDenied';
+import LoadingState from './common/LoadingState';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { type UserStatus, canAccessStructureContent, canAccessStudentContent } from '../utils/permissions';
+import { isDefaultMemberReadPage } from '../utils/defaultMemberPermissions';
+
+const DEBUG_ROUTE = import.meta.env.VITE_DEBUG_AUTH === 'true';
+const FIRESTORE_TIMEOUT_MS = 8000;
+
+async function getDocWithTimeout(
+  ref: ReturnType<typeof doc>,
+  timeoutMs = FIRESTORE_TIMEOUT_MS
+) {
+  return Promise.race([
+    getDoc(ref),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Firestore timeout')), timeoutMs)
+    ),
+  ]);
+}
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -15,27 +32,44 @@ interface ProtectedRouteProps {
   requiresStructureAccess?: boolean;
 }
 
-const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ 
-  children, 
+const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
+  children,
   requiredPermission,
-  requiresStructureAccess
+  requiresStructureAccess,
 }) => {
-  const { currentUser, userData: contextUserData, isContactWithAccess } = useAuth();
-  const location = useLocation();
+  const { currentUser, userData: contextUserData, loading: authLoading, isContactWithAccess } =
+    useAuth();
   const [loading, setLoading] = useState(true);
   const [hasAccess, setHasAccess] = useState(false);
 
-  // Utiliser userData du contexte si disponible, sinon récupérer depuis Firestore
-  const userData = useMemo(() => contextUserData, [contextUserData?.uid, contextUserData?.status, contextUserData?.structureId]);
-  const userId = useMemo(() => currentUser?.uid, [currentUser?.uid]);
-  const userStatus = useMemo(() => userData?.status, [userData?.status]);
+  const userId = currentUser?.uid;
+  const userStatus = contextUserData?.status as UserStatus | undefined;
+  const structureId = contextUserData?.structureId as string | undefined;
+
+  const permissionKey = useMemo(
+    () =>
+      requiredPermission
+        ? `${requiredPermission.pageId}:${requiredPermission.accessType}`
+        : '',
+    [requiredPermission?.pageId, requiredPermission?.accessType]
+  );
 
   useEffect(() => {
+    let cancelled = false;
+
+    const finish = (access: boolean) => {
+      if (cancelled) return;
+      setHasAccess(access);
+      setLoading(false);
+    };
+
     const checkAccess = async () => {
-      if (!currentUser || !userId) {
-        console.log('[ProtectedRoute] Pas d’utilisateur connecté → accès refusé');
-        setHasAccess(false);
-        setLoading(false);
+      if (authLoading) return;
+
+      setLoading(true);
+
+      if (!userId) {
+        finish(false);
         return;
       }
 
@@ -44,149 +78,137 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
         : { requiresStructureAccess };
 
       try {
-        // Utiliser userData du contexte si disponible, sinon récupérer depuis Firestore
-        let finalUserData = userData;
-        if (!finalUserData) {
-          const userDoc = await getDoc(doc(db, 'users', userId));
-          finalUserData = userDoc.data();
+        let finalUserData = contextUserData as Record<string, unknown> | null | undefined;
+        if (!finalUserData?.status) {
+          try {
+            const userDoc = await getDocWithTimeout(doc(db!, 'users', userId));
+            finalUserData = userDoc.exists() ? userDoc.data() : undefined;
+          } catch (err) {
+            console.warn('[ProtectedRoute] Lecture profil timeout/erreur:', err);
+          }
         }
-        const finalUserStatus = finalUserData?.status || userStatus;
 
-        // Seul le superadmin contourne les permissions. L'admin de structure est soumis aux docs Réglages > Accès.
-        if (finalUserStatus === 'superadmin') {
-          console.log('[ProtectedRoute] Accès accordé (superadmin)', { ...logCtx, status: finalUserStatus });
-          setHasAccess(true);
-          setLoading(false);
+        const finalUserStatus = (finalUserData?.status as UserStatus) || userStatus;
+
+        if (
+          (finalUserStatus === 'admin' || finalUserStatus === 'admin_structure') &&
+          finalUserData?.structureId
+        ) {
+          finish(true);
           return;
         }
 
-        // Vérifier l'accès basé sur le type de contenu (ancien système)
+        if (finalUserStatus === 'superadmin') {
+          if (DEBUG_ROUTE) console.log('[ProtectedRoute] Accès accordé (superadmin)', logCtx);
+          finish(true);
+          return;
+        }
+
         if (requiresStructureAccess !== undefined) {
           const structureAccess = requiresStructureAccess
             ? canAccessStructureContent(finalUserStatus)
-            : canAccessStudentContent(finalUserStatus) || canAccessStructureContent(finalUserStatus);
-          console.log('[ProtectedRoute] Vérification accès structure', {
-            ...logCtx,
-            requiresStructureAccess,
-            hasAccess: structureAccess,
-            status: finalUserStatus,
-          });
-          setHasAccess(structureAccess);
-          setLoading(false);
+            : canAccessStudentContent(finalUserStatus) ||
+              canAccessStructureContent(finalUserStatus);
+          finish(structureAccess);
           return;
         }
 
-        // Contacts avec accès (entreprise + companyId) : permissions gérées côté contact
-        if (isContactWithAccess && finalUserData?.status === 'entreprise' && finalUserData?.companyId) {
-          console.log('[ProtectedRoute] Accès accordé (contact avec accès)', logCtx);
-          setHasAccess(true);
-          setLoading(false);
+        if (
+          isContactWithAccess &&
+          finalUserStatus === 'entreprise' &&
+          finalUserData?.companyId
+        ) {
+          finish(true);
           return;
         }
 
-        // Vérification permissions par page (read/write)
+        if (requiredPermission && finalUserStatus === 'etudiant') {
+          finish(false);
+          return;
+        }
+
+        if (requiredPermission && finalUserStatus === 'entreprise') {
+          const allowed =
+            requiredPermission.pageId === 'dashboard' ||
+            (isContactWithAccess && !!finalUserData?.companyId);
+          finish(allowed);
+          return;
+        }
+
         if (requiredPermission && finalUserData?.structureId) {
           const docId =
             requiredPermission.accessType === 'read'
               ? `${requiredPermission.pageId}_read`
               : requiredPermission.pageId;
-          const docPath = `structures/${finalUserData.structureId}/permissions/${docId}`;
-          console.log('[ProtectedRoute] Vérification permission Firestore', {
-            pageId: requiredPermission.pageId,
-            accessType: requiredPermission.accessType,
-            docPath,
-          });
 
           try {
-            const permissionsRef = doc(
-              db,
-              'structures',
-              finalUserData.structureId,
-              'permissions',
-              docId
+            const permissionsDoc = await getDocWithTimeout(
+              doc(
+                db!,
+                'structures',
+                finalUserData.structureId as string,
+                'permissions',
+                docId
+              )
             );
-            const permissionsDoc = await getDoc(permissionsRef);
-            const permissions = permissionsDoc.data();
 
-            if (!permissions || !permissionsDoc.exists()) {
-              console.log('[ProtectedRoute] Accès refusé (document permission absent ou vide)', {
-                pageId: requiredPermission.pageId,
-                accessType: requiredPermission.accessType,
-              });
-              setHasAccess(false);
-              setLoading(false);
+            if (!permissionsDoc.exists()) {
+              // Comportement pré-audit : membres accès aux pages CRM de base si doc absent
+              const fallback =
+                finalUserStatus === 'membre' &&
+                requiredPermission.accessType === 'read' &&
+                isDefaultMemberReadPage(requiredPermission.pageId);
+              finish(fallback);
               return;
             }
 
-            const hasRoleAccess = permissions.allowedRoles?.includes(finalUserStatus as UserStatus);
-            const hasPoleAccess = (finalUserData.poles ?? []).some((pole: { poleId: string }) =>
-              permissions.allowedPoles?.includes(pole.poleId)
+            const permissions = permissionsDoc.data();
+            const hasRoleAccess = permissions?.allowedRoles?.includes(finalUserStatus);
+            const hasPoleAccess = ((finalUserData.poles as { poleId: string }[]) ?? []).some(
+              (pole) => permissions?.allowedPoles?.includes(pole.poleId)
             );
-            const hasMemberAccess = permissions.allowedMembers?.includes(userId);
-            const hasAccessResult = hasRoleAccess || hasPoleAccess || hasMemberAccess;
-
-            console.log('[ProtectedRoute] Résultat vérification permission', {
-              pageId: requiredPermission.pageId,
-              accessType: requiredPermission.accessType,
-              hasAccess: hasAccessResult,
-              role: hasRoleAccess,
-              pole: hasPoleAccess,
-              member: hasMemberAccess,
-              status: finalUserStatus,
-            });
-            setHasAccess(hasAccessResult);
+            const hasMemberAccess = permissions?.allowedMembers?.includes(userId);
+            finish(Boolean(hasRoleAccess || hasPoleAccess || hasMemberAccess));
           } catch (permissionError) {
-            console.error('[ProtectedRoute] Erreur lors de la vérification des permissions:', permissionError);
-            setHasAccess(false);
-            setLoading(false);
+            console.warn('[ProtectedRoute] Permissions timeout/erreur — accès membre par défaut:', permissionError);
+            finish(finalUserStatus === 'membre' || finalUserStatus === 'admin');
           }
           return;
         }
 
-        // Aucune permission requise (route sans requiredPermission)
-        console.log('[ProtectedRoute] Accès accordé (aucune permission requise)', logCtx);
-        setHasAccess(true);
+        finish(true);
       } catch (error) {
-        console.error('[ProtectedRoute] Erreur lors de la vérification des permissions:', error);
-        setHasAccess(false);
-      } finally {
-        setLoading(false);
+        console.error('[ProtectedRoute] Erreur vérification accès:', error);
+        finish(false);
       }
     };
 
-    checkAccess();
-  }, [userId, userStatus, userData?.structureId, userData?.poles, requiredPermission, requiresStructureAccess, currentUser, isContactWithAccess, userData]);
+    void checkAccess();
 
-  if (loading) {
-    return (
-      <Box sx={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        minHeight: '100vh' 
-      }}>
-        <CircularProgress />
-      </Box>
-    );
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    authLoading,
+    userId,
+    userStatus,
+    structureId,
+    permissionKey,
+    requiresStructureAccess,
+    isContactWithAccess,
+    contextUserData?.companyId,
+    contextUserData?.status,
+    contextUserData?.structureId,
+  ]);
+
+  if (authLoading || loading) {
+    return <LoadingState message="Vérification des permissions…" fullHeight />;
   }
 
   if (!hasAccess) {
     return (
-      <Box sx={{ 
-        width: '100%', 
-        px: { xs: 2, sm: 3, md: 4 },
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '60vh'
-      }}>
-        <Typography variant="h5" color="error" sx={{ mb: 2 }}>
-          Accès refusé
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Vous n'avez pas les permissions nécessaires pour accéder à cette page.
-        </Typography>
+      <Box sx={{ width: '100%', px: { xs: 2, sm: 3, md: 4 } }}>
+        <AccessDenied />
       </Box>
     );
   }
@@ -194,4 +216,4 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   return <>{children}</>;
 };
 
-export default ProtectedRoute; 
+export default ProtectedRoute;

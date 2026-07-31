@@ -4,8 +4,8 @@ import { ref, listAll, getMetadata } from 'firebase/storage';
 import { useAuth } from '../../contexts/AuthContext';
 import { getFirestore, doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { storage } from '../../firebase/config';
-import SettingsPageHeader from '../../components/settings/SettingsPageHeader';
-import SettingsCard from '../../components/settings/SettingsCard';
+import { settingsPageStyles, SettingsPanel } from '../../components/ds';
+import { tokens } from '../../theme/tokens';
 import { Storage as StorageIcon } from '@mui/icons-material';
 
 const Storage: React.FC = () => {
@@ -234,19 +234,36 @@ const Storage: React.FC = () => {
   }, [currentUser]);
 
   return (
-    <Box sx={{ 
-      p: 3, 
-      minHeight: '100vh'
-    }}>
-      <SettingsPageHeader 
-        title="Gestion du stockage"
-        subtitle="Surveillez l'utilisation de votre espace de stockage"
-        icon={<StorageIcon />}
-      />
+    <Box>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Box
+            sx={{
+              width: 40,
+              height: 40,
+              borderRadius: tokens.radius.md,
+              background: tokens.gradients.brand,
+              display: 'grid',
+              placeItems: 'center',
+              color: '#fff',
+              flexShrink: 0,
+            }}
+          >
+            <StorageIcon sx={{ fontSize: 20 }} />
+          </Box>
+          <Box>
+            <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+            <Typography component="h1" sx={settingsPageStyles.title}>Gestion du stockage</Typography>
+            <Typography sx={settingsPageStyles.sub}>
+              Surveillez l&apos;utilisation de votre espace de stockage
+            </Typography>
+          </Box>
+        </Box>
+      </Box>
 
       <Grid container spacing={3}>
         <Grid item xs={12}>
-          <SettingsCard title="Utilisation du stockage Firebase Storage">
+          <SettingsPanel title="Utilisation du stockage Firebase Storage">
             {loading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 4 }}>
                 <CircularProgress />
@@ -271,13 +288,13 @@ const Storage: React.FC = () => {
                       borderRadius: 5,
                       backgroundColor: 'grey.200',
                       '& .MuiLinearProgress-bar': {
-                        backgroundColor: storageInfo.percentage > 80 ? 'error.main' : 'primary.main'
+                        backgroundColor: storageInfo.percentage > 80 ? tokens.colors.error : tokens.colors.brandTeal,
                       }
                     }}
                   />
                 </Box>
 
-                <Box sx={{ mt: 3, p: 2, bgcolor: 'grey.50', borderRadius: 2 }}>
+                <Box sx={{ mt: 3, p: 2, bgcolor: tokens.colors.gray50, borderRadius: tokens.radius.md }}>
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                     <strong>Nombre total de fichiers :</strong> {storageInfo.fileCount.toLocaleString('fr-FR')}
                   </Typography>
@@ -296,7 +313,7 @@ const Storage: React.FC = () => {
                 </Typography>
               </>
             )}
-          </SettingsCard>
+          </SettingsPanel>
         </Grid>
       </Grid>
     </Box>

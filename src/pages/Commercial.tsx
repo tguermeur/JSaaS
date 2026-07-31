@@ -102,21 +102,29 @@ import {
   Info as InfoIcon,
   ViewColumn as ViewColumnIcon,
   ArrowUpward as ArrowUpwardIcon,
-  ArrowDownward as ArrowDownwardIcon
+  ArrowDownward as ArrowDownwardIcon,
+  WbSunny as TodayIcon,
+  TableChart as TableChartIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { getProspects, createProspect, deleteProspect, updateProspect } from '../firebase/prospects';
 import { getRelanceSuggestions, computeProspectScores, type RelanceSuggestion } from '../services/scoringService';
-import { decryptUsersList } from '../utils/decryptUserUtils';
-import { collection, query, where, getDocs, getDoc, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, addDoc, Timestamp, orderBy } from 'firebase/firestore';
+import { decryptUsersList, getSafeDisplayName } from '../utils/decryptUserUtils';
+import { batchDecryptForStructure } from '../utils/batchDecrypt';
+import UserNameText from '../components/common/UserNameText';
+import { collection, query, where, getDocs, getDoc, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, addDoc, Timestamp, orderBy, limit } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from '../firebase/config';
 import { getStructureTokens, StructureTokens } from '../services/tokenService';
 import { useNavigate } from 'react-router-dom';
 import { downloadExtension } from '../api/extension';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
-import { styled, alpha } from '@mui/material';
 import { fadeIn } from '../styles/animations';
+import { tokens } from '../theme/tokens';
+import { StyledCard, StyledButton, StyledTextField, StyledChip, StyledTableRow } from '../components/styled';
+import { AppPageShell, CommercialViewTabs } from '../components/ds';
+import { CommercialTodayView, CommercialAgendaView, CommercialTableView, type CommercialViewId } from './commercialViews';
+import { relanceState, toIsoDate } from '../utils/commercialRelance';
 import Papa from 'papaparse';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
@@ -344,14 +352,14 @@ const generateMandats = (): string[] => {
 const AVAILABLE_MANDATS = generateMandats();
 
 const APPLE_COLORS = {
-  primary: '#0071e3',
-  secondary: '#86868b',
-  background: '#f5f5f7',
-  surface: '#ffffff',
-  border: '#d2d2d7',
-  text: '#1d1d1f',
-  error: '#ff3b30',
-  success: '#34c759'
+  primary: tokens.colors.brandTeal,
+  secondary: tokens.colors.textSecondary,
+  background: tokens.colors.bgSubtle,
+  surface: tokens.colors.bgPaper,
+  border: tokens.colors.borderDefault,
+  text: tokens.colors.textPrimary,
+  error: tokens.colors.error,
+  success: tokens.colors.success
 };
 
 const APPLE_SHADOWS = {
@@ -364,52 +372,6 @@ const APPLE_TRANSITIONS = {
   default: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
   fast: 'all 0.1s cubic-bezier(0.4, 0, 0.2, 1)'
 };
-
-// --- STYLED COMPONENTS ---
-
-const StyledCard = styled(Paper)(({ theme }) => ({
-  borderRadius: '16px',
-  boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-  backgroundColor: '#ffffff',
-  transition: 'all 0.3s ease-in-out',
-  overflow: 'hidden'
-}));
-
-const StyledButton = styled(Button)(({ theme }) => ({
-  borderRadius: '12px',
-  textTransform: 'none',
-  fontWeight: 600,
-  padding: '8px 16px',
-  boxShadow: 'none',
-  '&:hover': {
-    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-  },
-}));
-
-const StyledTextField = styled(TextField)(({ theme }) => ({
-  '& .MuiOutlinedInput-root': {
-    borderRadius: '12px',
-    backgroundColor: '#f5f5f7',
-    '& fieldset': { border: 'none' },
-    '&:hover': { backgroundColor: '#e5e5ea' },
-    '&.Mui-focused': { 
-      backgroundColor: '#ffffff',
-      boxShadow: '0 0 0 2px #0071e3' 
-    },
-  },
-}));
-
-const StyledChip = styled(Chip)(({ theme }) => ({
-  borderRadius: '8px',
-  fontWeight: 600,
-  fontSize: '0.75rem',
-}));
-
-const StyledTableRow = styled(TableRow)<{ selected?: boolean }>(({ theme, selected }) => ({
-  transition: 'all 0.2s',
-  '&:hover': { backgroundColor: '#f5f5f7' },
-  ...(selected && { backgroundColor: 'rgba(0, 113, 227, 0.08)' }),
-}));
 
 // --- UTILS ---
 
@@ -508,7 +470,8 @@ const Commercial: React.FC = (): JSX.Element => {
   const [structureMembers, setStructureMembers] = useState<StructureMember[]>([]);
   
   // UI States
-  const [viewMode, setViewMode] = useState<'pipeline' | 'stats' | 'companies'>('companies');
+  const [viewMode, setViewMode] = useState<CommercialViewId>('today');
+  const [relancesDoneToday, setRelancesDoneToday] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [showSalonMode, setShowSalonMode] = useState(false);
@@ -732,7 +695,11 @@ const Commercial: React.FC = (): JSX.Element => {
   const fetchStructureMembers = useCallback(async () => {
     if (!userData?.structureId) return;
     try {
-      const q = query(collection(db, 'users'), where('structureId', '==', userData.structureId));
+      const q = query(
+        collection(db, 'users'),
+        where('structureId', '==', userData.structureId),
+        limit(150)
+      );
       const snapshot = await getDocs(q);
       const members = snapshot.docs.map(docSnap => {
         const data = docSnap.data();
@@ -759,27 +726,30 @@ const Commercial: React.FC = (): JSX.Element => {
     }
   }, [userData?.structureId]);
 
-  // Déchiffrer les infos prospects (téléphone, email, adresse) pour l'affichage
+  // Déchiffrer les infos prospects (téléphone, email, adresse) — batch 1 callable
   useEffect(() => {
     if (!prospects.length || !canRead) return;
     const run = async () => {
-      const next: Record<string, Partial<Prospect>> = {};
-      const functions = getFunctions();
-      const decryptProspect = httpsCallable(functions, 'decryptProspectDataForStructure');
-      for (const prospect of prospects) {
-        if (isEncrypted(prospect.telephone) || isEncrypted(prospect.email) || isEncrypted(prospect.adresse)) {
-          try {
-            const res = await decryptProspect({ prospectId: prospect.id });
-            const dec = (res.data as { decryptedData?: Partial<Prospect> })?.decryptedData;
-            if (dec) next[prospect.id] = dec;
-          } catch {
-            // ignorer si déchiffrement échoue
-          }
+      const toDecrypt = prospects.filter(
+        (prospect) =>
+          prospect.id &&
+          (isEncrypted(prospect.telephone) || isEncrypted(prospect.email) || isEncrypted(prospect.adresse))
+      );
+      if (!toDecrypt.length) return;
+      try {
+        const results = await batchDecryptForStructure<Partial<Prospect>>(
+          'prospect',
+          toDecrypt.map((p) => p.id as string),
+          ['telephone', 'phone', 'email', 'adresse']
+        );
+        if (Object.keys(results).length) {
+          setDecryptedProspects((prev) => ({ ...prev, ...results }));
         }
+      } catch {
+        // ignorer si déchiffrement échoue
       }
-      if (Object.keys(next).length) setDecryptedProspects(prev => ({ ...prev, ...next }));
     };
-    run();
+    void run();
   }, [prospects, canRead]);
 
   const fetchStructureTokens = useCallback(async () => {
@@ -1183,7 +1153,7 @@ const Commercial: React.FC = (): JSX.Element => {
         batch.set(activityRef, {
             type: 'modification',
             userId: userData?.uid || '',
-            userName: userData?.displayName || 'Utilisateur',
+            userName: getSafeDisplayName(userData, 'Utilisateur'),
             timestamp: serverTimestamp(),
             details: {
                 field: 'Propriétaire',
@@ -1522,10 +1492,10 @@ const Commercial: React.FC = (): JSX.Element => {
     
     // Funnel
     const funnel = [
-      { label: 'Nouveaux', count: prospects.filter(p => p.statut === 'non_qualifie').length, color: '#0071e3' },
-      { label: 'Contactés', count: prospects.filter(p => p.statut === 'contacte').length, color: '#5e5ce6' },
-      { label: 'Négo', count: prospects.filter(p => p.statut === 'negociation').length, color: '#bf5af2' },
-      { label: 'Clients', count: won, color: '#34c759' }
+      { label: 'Nouveaux', count: prospects.filter(p => p.statut === 'non_qualifie').length, color: tokens.colors.brandTeal },
+      { label: 'Contactés', count: prospects.filter(p => p.statut === 'contacte').length, color: tokens.colors.brandNavy300 },
+      { label: 'Négo', count: prospects.filter(p => p.statut === 'negociation').length, color: tokens.colors.brandTeal700 },
+      { label: 'Clients', count: won, color: tokens.colors.success }
     ];
 
     // By Owner
@@ -1556,19 +1526,37 @@ const Commercial: React.FC = (): JSX.Element => {
 
   const getStatusColor = (status: string) => {
     const colors: Record<string, string> = {
-      'non_qualifie': '#86868b',
-      'contacte': '#0071e3',
-      'a_recontacter': '#ff9f0a',
-      'negociation': '#bf5af2',
-      'abandon': '#ff3b30',
-      'deja_client': '#34c759'
+      'non_qualifie': tokens.colors.textSecondary,
+      'contacte': tokens.colors.brandTeal,
+      'a_recontacter': tokens.colors.warning,
+      'negociation': tokens.colors.brandTeal700,
+      'abandon': tokens.colors.error,
+      'deja_client': tokens.colors.success
     };
-    return colors[status] || '#86868b';
+    return colors[status] || tokens.colors.textSecondary;
   };
 
   const getProspectName = (p: Prospect) => p.nom || p.name || 'Sans nom';
   const getDisplayProspect = (p: Prospect): Prospect => ({ ...p, ...decryptedProspects[p.id] });
   const getProspectCompany = (p: Prospect) => p.entreprise || p.company || 'Sans entreprise';
+
+  const displayProspectsList = useMemo(
+    () => prospects.map(p => getDisplayProspect(p)),
+    [prospects, decryptedProspects],
+  );
+
+  const commercialMembers = useMemo(
+    () => structureMembers.map(m => ({ id: m.id, displayName: m.displayName })),
+    [structureMembers],
+  );
+
+  const dueRelanceCount = useMemo(
+    () => displayProspectsList.filter(p => {
+      const t = relanceState(p.dateRecontact).tone;
+      return t === 'late' || t === 'today';
+    }).length,
+    [displayProspectsList],
+  );
 
   const getFilteredProspects = () => {
     return prospects.filter(p => {
@@ -1854,7 +1842,7 @@ const Commercial: React.FC = (): JSX.Element => {
         await addDoc(activitiesRef, {
           type: 'modification',
           userId: currentUser?.uid || '',
-          userName: userData?.displayName || 'Utilisateur',
+          userName: getSafeDisplayName(userData, 'Utilisateur'),
           timestamp: serverTimestamp(),
           details: {
             field: 'Statut',
@@ -1918,7 +1906,7 @@ const Commercial: React.FC = (): JSX.Element => {
       await addDoc(activitiesRef, {
         type: 'modification',
         userId: currentUser.uid,
-        userName: userData?.displayName || 'Utilisateur',
+        userName: getSafeDisplayName(userData, 'Utilisateur'),
         timestamp: serverTimestamp(),
         details: {
           field: 'Date de relance',
@@ -2015,41 +2003,98 @@ const Commercial: React.FC = (): JSX.Element => {
     setRelanceDate('');
   };
 
+  const openRelanceSchedule = useCallback((prospectId: string, anchor?: HTMLElement | null) => {
+    const prospect = prospects.find(p => p.id === prospectId);
+    const defaultDate = prospect?.dateRecontact || (() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 3);
+      return toIsoDate(d);
+    })();
+    setRelanceProspectId(prospectId);
+    setRelanceDate(defaultDate);
+    if (anchor) {
+      setRelancePopoverAnchor(anchor);
+      return;
+    }
+    const centerElement = document.createElement('div');
+    centerElement.style.position = 'fixed';
+    centerElement.style.top = '50%';
+    centerElement.style.left = '50%';
+    centerElement.style.transform = 'translate(-50%, -50%)';
+    document.body.appendChild(centerElement);
+    setRelancePopoverAnchor(centerElement);
+  }, [prospects]);
+
+  const handleMarkRelanceDone = useCallback(async (prospect: Prospect) => {
+    if (!currentUser || !canWrite) return;
+    try {
+      await updateDoc(doc(db, 'prospects', prospect.id), {
+        dateRecontact: null,
+        updatedAt: serverTimestamp(),
+      });
+      const activitiesRef = collection(db, 'prospects', prospect.id, 'activities');
+      await addDoc(activitiesRef, {
+        type: 'modification',
+        userId: currentUser.uid,
+        userName: getSafeDisplayName(userData, 'Utilisateur'),
+        timestamp: serverTimestamp(),
+        details: {
+          field: 'Relance',
+          oldValue: prospect.dateRecontact || 'Programmée',
+          newValue: 'Effectuée',
+        },
+      });
+      setProspects(prev => prev.map(p => (p.id === prospect.id ? { ...p, dateRecontact: undefined } : p)));
+      setRelancesDoneToday(prev => prev + 1);
+      await fetchCalendarEvents();
+    } catch (err) {
+      console.error('Erreur marquage relance faite:', err);
+    }
+  }, [currentUser, canWrite, userData?.displayName, fetchCalendarEvents]);
+
+  const handleSnoozeRelance = useCallback(async (prospect: Prospect, days: number) => {
+    if (!currentUser || !canWrite) return;
+    const base = prospect.dateRecontact ? new Date(prospect.dateRecontact) : new Date();
+    base.setDate(base.getDate() + days);
+    const next = toIsoDate(base);
+    setRelanceProspectId(prospect.id);
+    setRelanceDate(next);
+    try {
+      await updateDoc(doc(db, 'prospects', prospect.id), {
+        dateRecontact: next,
+        updatedAt: serverTimestamp(),
+      });
+      setProspects(prev => prev.map(p => (p.id === prospect.id ? { ...p, dateRecontact: next } : p)));
+      await fetchCalendarEvents();
+    } catch (err) {
+      console.error('Erreur report relance:', err);
+    } finally {
+      setRelanceProspectId(null);
+      setRelanceDate('');
+    }
+  }, [currentUser, canWrite, fetchCalendarEvents]);
+
+  const commercialActions = useMemo(() => ({
+    onOpen: (id: string) => navigate(`/app/prospect/${id}`),
+    onAdd: () => setIsCreateDialogOpen(true),
+    onScheduleRelance: (p: Prospect, anchor?: HTMLElement | null) => openRelanceSchedule(p.id, anchor ?? null),
+    onMarkDone: (p: Prospect) => { void handleMarkRelanceDone(p); },
+    onSnooze: (p: Prospect, days: number) => { void handleSnoozeRelance(p, days); },
+    onCompose: (p: Prospect) => {
+      const email = getDisplayProspect(p).email;
+      if (email) window.location.href = `mailto:${email}`;
+    },
+    onLog: (p: Prospect) => navigate(`/app/prospect/${p.id}`),
+  }), [navigate, openRelanceSchedule, handleMarkRelanceDone, handleSnoozeRelance, decryptedProspects]);
+
   // --- SUB-COMPONENTS RENDER ---
 
   const renderKPIs = () => (
-    <Grid container spacing={3} sx={{ mb: 4 }}>
-      <Grid item xs={12} sm={6} md={4}>
-        <StyledCard sx={{ p: 3, position: 'relative', height: '100%' }}>
-          <Box sx={{ position: 'absolute', right: -20, top: -20, opacity: 0.1 }}>
-            <ShowChartIcon sx={{ fontSize: 100, color: '#0071e3' }} />
-        </Box>
-          <Typography variant="body2" color="text.secondary" fontWeight={600}>Total Prospects</Typography>
-          <Typography variant="h3" fontWeight={800} sx={{ my: 1, color: '#1d1d1f' }}>{stats.total}</Typography>
-          <Chip icon={<TrendingUpIcon />} label="+12% ce mois" size="small" sx={{ bgcolor: '#e3f2fd', color: '#0071e3', fontWeight: 600 }} />
-        </StyledCard>
-      </Grid>
-      <Grid item xs={12} sm={6} md={4}>
-        <StyledCard sx={{ p: 3, position: 'relative', height: '100%' }}>
-          <Box sx={{ position: 'absolute', right: -20, top: -20, opacity: 0.1 }}>
-            <TimerIcon sx={{ fontSize: 100, color: '#ff9f0a' }} />
-          </Box>
-          <Typography variant="body2" color="text.secondary" fontWeight={600}>Pipeline Actif</Typography>
-          <Typography variant="h3" fontWeight={800} sx={{ my: 1, color: '#1d1d1f' }}>{stats.active}</Typography>
-          <Chip label="En cours" size="small" sx={{ bgcolor: '#fff4e5', color: '#ff9f0a', fontWeight: 600 }} />
-        </StyledCard>
-      </Grid>
-      <Grid item xs={12} sm={6} md={4}>
-        <StyledCard sx={{ p: 3, position: 'relative', height: '100%' }}>
-          <Box sx={{ position: 'absolute', right: -20, top: -20, opacity: 0.1 }}>
-            <CheckCircleIcon sx={{ fontSize: 100, color: '#34c759' }} />
-          </Box>
-          <Typography variant="body2" color="text.secondary" fontWeight={600}>Taux de Conversion</Typography>
-          <Typography variant="h3" fontWeight={800} sx={{ my: 1, color: '#1d1d1f' }}>{stats.winRate}%</Typography>
-          <Chip icon={<TrendingUpIcon />} label="Performance" size="small" sx={{ bgcolor: '#eafbf1', color: '#34c759', fontWeight: 600 }} />
-        </StyledCard>
-      </Grid>
-    </Grid>
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: 'repeat(3, 1fr)' }, gap: 2, mb: 3 }}>
+      <KpiCard label="Total Prospects" value={stats.total} delta={12} deltaSuffix="%" sparkColor={tokens.colors.brandTeal} />
+      <KpiCard label="Pipeline Actif" value={stats.active} sparkColor={tokens.colors.warning} />
+      <KpiCard label="Taux de Conversion" value={`${stats.winRate}%`} sparkColor={tokens.colors.success} />
+    </Box>
   );
 
   const renderSidebar = () => {
@@ -2108,11 +2153,11 @@ const Commercial: React.FC = (): JSX.Element => {
             componentsProps={{
               tooltip: {
                 sx: {
-                  bgcolor: '#1d1d1f',
+                  bgcolor: tokens.colors.textPrimary,
                   maxWidth: 320,
                   fontSize: '0.875rem',
                   '& .MuiTooltip-arrow': {
-                    color: '#1d1d1f'
+                    color: tokens.colors.textPrimary
                   }
                 }
               }
@@ -2125,7 +2170,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 transition: 'all 0.2s',
                 '&:hover': {
                   transform: 'translateY(-2px)',
-                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)'
+                  boxShadow: tokens.shadows.lg
                 }
               }}
             >
@@ -2154,7 +2199,7 @@ const Commercial: React.FC = (): JSX.Element => {
                     }} />
                   </Box>
                   <Box>
-                    <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#1d1d1f' }}>
+                    <Typography variant="subtitle2" fontWeight={700} sx={{ color: tokens.colors.textPrimary }}>
                       Quota mensuel
                     </Typography>
                     <Typography variant="caption" color="text.secondary" fontWeight={600}>
@@ -2189,7 +2234,7 @@ const Commercial: React.FC = (): JSX.Element => {
                   width: '100%',
                   height: 8,
                   borderRadius: 4,
-                  bgcolor: '#f0f0f0',
+                  bgcolor: tokens.colors.borderLight,
                   '& .MuiLinearProgress-bar': {
                     bgcolor: structureTokens.tokensRemaining > 20 
                       ? APPLE_COLORS.success 
@@ -2223,11 +2268,11 @@ const Commercial: React.FC = (): JSX.Element => {
                 <ListItem 
                   key={p.id}
                   button 
-                  onClick={() => navigate(`/prospect/${p.id}`)}
+                  onClick={() => navigate(`/app/prospect/${p.id}`)}
                   sx={{
                     px: 0, 
                     py: 1.5, 
-                    borderBottom: '1px solid #f5f5f7',
+                    borderBottom: `1px solid ${tokens.colors.bgSubtle}`,
                     '&:last-child': { borderBottom: 'none' }
                   }}
                 >
@@ -2248,7 +2293,7 @@ const Commercial: React.FC = (): JSX.Element => {
             </List>
           ) : nextEvent ? (
              <Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, color: 'text.secondary', bgcolor: '#f5f5f7', p: 1, borderRadius: '8px' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, color: 'text.secondary', bgcolor: tokens.colors.bgSubtle, p: 1, borderRadius: tokens.radius.sm }}>
                     <CheckCircleIcon sx={{ color: '#34c759', fontSize: 20 }} />
                     <Typography variant="caption" fontWeight={600}>Aucune relance urgente</Typography>
                 </Box>
@@ -2260,7 +2305,7 @@ const Commercial: React.FC = (): JSX.Element => {
                     sx={{ 
                         p: 2, 
                         bgcolor: 'white', 
-                        borderRadius: '12px', 
+                        borderRadius: tokens.radius.md, 
                         border: '1px solid #e5e5ea',
                         borderLeft: `4px solid ${APPLE_COLORS.primary}`,
                         cursor: 'pointer',
@@ -2273,7 +2318,7 @@ const Commercial: React.FC = (): JSX.Element => {
                         <Chip 
                             label={new Date(nextEvent.start).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} 
                             size="small" 
-                            sx={{ bgcolor: '#f5f5f7', fontWeight: 700, fontSize: '0.7rem', height: 22, color: 'text.secondary' }} 
+                            sx={{ bgcolor: tokens.colors.bgSubtle, fontWeight: 700, fontSize: '0.7rem', height: 22, color: 'text.secondary' }} 
                         />
                          {nextEvent.type === 'meeting' && <GroupIcon fontSize="small" sx={{ color: '#ff9f0a', fontSize: 16 }} />}
                          {nextEvent.type === 'call' && <PhoneIcon fontSize="small" sx={{ color: '#30b0c7', fontSize: 16 }} />}
@@ -2318,7 +2363,7 @@ const Commercial: React.FC = (): JSX.Element => {
             </Box>
             <List disablePadding>
               {upcomingList.map(e => (
-                <ListItem key={e.id} sx={{ px: 0, py: 1.5, borderBottom: '1px solid #f5f5f7', '&:last-child': { borderBottom: 'none' } }}>
+                <ListItem key={e.id} sx={{ px: 0, py: 1.5, borderBottom: `1px solid ${tokens.colors.bgSubtle}`, '&:last-child': { borderBottom: 'none' } }}>
                   <Box>
                     <Typography variant="subtitle2" fontWeight={600}>{e.title}</Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -2334,7 +2379,7 @@ const Commercial: React.FC = (): JSX.Element => {
 
         {/* Leaderboard Card */}
         <StyledCard sx={{ p: 0, overflow: 'hidden' }}>
-          <Box sx={{ p: 3, bgcolor: '#fbfbfd', borderBottom: '1px solid #f0f0f0' }}>
+          <Box sx={{ p: 3, bgcolor: '#fbfbfd', borderBottom: `1px solid ${tokens.colors.borderLight}` }}>
             <Typography variant="h6" fontWeight={700}>Top Performers</Typography>
           </Box>
           <List disablePadding>
@@ -2370,7 +2415,7 @@ const Commercial: React.FC = (): JSX.Element => {
                   sx={{
                       height: 6, 
                       borderRadius: 3, 
-                      bgcolor: '#f0f0f0',
+                      bgcolor: tokens.colors.borderLight,
                       '& .MuiLinearProgress-bar': { bgcolor: step.color } 
                     }} 
                   />
@@ -2496,7 +2541,7 @@ const Commercial: React.FC = (): JSX.Element => {
                         position: 'absolute', 
                         bottom: `${(i / (yAxisTicks.length - 1)) * 100}%`, 
                         width: '100%', 
-                        borderBottom: i === 0 ? '1px solid #e5e5ea' : '1px dashed #f0f0f0',
+                        borderBottom: i === 0 ? '1px solid #e5e5ea' : `1px dashed ${tokens.colors.borderLight}`,
                         display: 'flex',
                         alignItems: 'flex-end'
                     }}>
@@ -2526,7 +2571,7 @@ const Commercial: React.FC = (): JSX.Element => {
                             height: `${(total / yAxisMax) * 100}%`, 
                             display: 'flex', 
                             flexDirection: 'column-reverse', 
-                            bgcolor: '#f5f5f7', 
+                            bgcolor: tokens.colors.bgSubtle, 
                             borderRadius: '6px 6px 0 0', 
                             overflow: 'hidden',
                             transition: 'height 0.5s',
@@ -2589,8 +2634,8 @@ const Commercial: React.FC = (): JSX.Element => {
                     ref={provided.innerRef}
                     {...provided.droppableProps}
                     sx={{
-                    bgcolor: snapshot.isDraggingOver ? `${getStatusColor(status)}10` : '#f5f5f7',
-                    borderRadius: '16px',
+                    bgcolor: snapshot.isDraggingOver ? `${getStatusColor(status)}10` : tokens.colors.bgSubtle,
+                    borderRadius: tokens.radius.lg,
                     p: 1.5,
                     minHeight: '100%',
                     transition: 'background-color 0.2s',
@@ -2606,11 +2651,11 @@ const Commercial: React.FC = (): JSX.Element => {
                             {...provided.draggableProps}
                             {...provided.dragHandleProps}
                           elevation={0}
-                          onClick={() => navigate(`/prospect/${prospect.id}`)}
+                          onClick={() => navigate(`/app/prospect/${prospect.id}`)}
                             sx={{
                               p: 2,
                             mb: 1.5,
-                            borderRadius: '12px',
+                            borderRadius: tokens.radius.md,
                             bgcolor: 'white',
                               border: '1px solid #e5e5ea',
                               cursor: 'grab',
@@ -2638,7 +2683,7 @@ const Commercial: React.FC = (): JSX.Element => {
                                 />
                               )}
                               {relanceSuggestions.some(r => r.id === prospect.id) && (
-                                <Chip label="Relancer" size="small" sx={{ height: 20, fontWeight: 600, fontSize: '0.65rem', bgcolor: 'rgba(255, 59, 48, 0.15)', color: '#ff3b30' }} />
+                                <RelancePill label="Relancer" tone="late" size="sm" />
                               )}
                               {prospect.favori && <TrophyIcon sx={{ fontSize: 16, color: '#ffd700' }} />}
                             </Box>
@@ -2682,7 +2727,7 @@ const Commercial: React.FC = (): JSX.Element => {
   const renderTable = () => (
     <TableContainer
       sx={{
-        borderRadius: '12px',
+        borderRadius: tokens.radius.md,
         overflow: 'hidden',
         border: '1px solid #e5e5ea',
         boxShadow: APPLE_SHADOWS.small
@@ -2690,8 +2735,8 @@ const Commercial: React.FC = (): JSX.Element => {
     >
       <Table size="medium">
         <TableHead>
-          <TableRow sx={{ bgcolor: '#f5f5f7', borderBottom: '1px solid #d2d2d7' }}>
-            <TableCell padding="checkbox" sx={{ fontWeight: 600, color: '#1d1d1f', borderBottom: '1px solid #d2d2d7' }}>
+          <TableRow sx={{ bgcolor: tokens.colors.bgSubtle, borderBottom: '1px solid #d2d2d7' }}>
+            <TableCell padding="checkbox" sx={{ fontWeight: 600, color: tokens.colors.textPrimary, borderBottom: '1px solid #d2d2d7' }}>
               <Checkbox
                 indeterminate={selectedProspects.length > 0 && selectedProspects.length < filteredSortedList.length}
                 checked={filteredSortedList.length > 0 && allSelectedInView}
@@ -2702,7 +2747,7 @@ const Commercial: React.FC = (): JSX.Element => {
               <TableCell
                 key={col.id}
                 sortDirection={sortConfig.key === col.sortKey ? sortConfig.direction : false}
-                sx={{ fontWeight: 600, color: '#1d1d1f', borderBottom: '1px solid #d2d2d7', whiteSpace: 'nowrap' }}
+                sx={{ fontWeight: 600, color: tokens.colors.textPrimary, borderBottom: '1px solid #d2d2d7', whiteSpace: 'nowrap' }}
               >
                 <TableSortLabel
                   active={sortConfig.key === col.sortKey}
@@ -2728,7 +2773,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 </TableSortLabel>
               </TableCell>
             ))}
-            <TableCell padding="checkbox" sx={{ fontWeight: 600, color: '#1d1d1f', borderBottom: '1px solid #d2d2d7', width: 48 }} />
+            <TableCell padding="checkbox" sx={{ fontWeight: 600, color: tokens.colors.textPrimary, borderBottom: '1px solid #d2d2d7', width: 48 }} />
           </TableRow>
         </TableHead>
         <TableBody>
@@ -2749,9 +2794,9 @@ const Commercial: React.FC = (): JSX.Element => {
                     }}
                     onBlur={() => { if (!quickAddName.trim()) setQuickAddOpen(false); }}
                     sx={{ flex: 1, maxWidth: 360 }}
-                    InputProps={{ sx: { borderRadius: '8px', bgcolor: 'white' } }}
+                    InputProps={{ sx: { borderRadius: tokens.radius.sm, bgcolor: 'white' } }}
                   />
-                  <Button size="small" variant="contained" onClick={handleQuickAddProspect} disabled={!quickAddName.trim() || quickAddSubmitting} sx={{ borderRadius: '8px', bgcolor: APPLE_COLORS.primary }}>
+                  <Button size="small" variant="contained" onClick={handleQuickAddProspect} disabled={!quickAddName.trim() || quickAddSubmitting} sx={{ borderRadius: tokens.radius.sm, bgcolor: APPLE_COLORS.primary }}>
                     {quickAddSubmitting ? <CircularProgress size={20} color="inherit" /> : 'Ajouter'}
                   </Button>
                   <IconButton size="small" onClick={() => { setQuickAddOpen(false); setQuickAddName(''); }}>
@@ -2767,7 +2812,7 @@ const Commercial: React.FC = (): JSX.Element => {
             return (
               <StyledTableRow
                 key={p.id}
-                onClick={() => navigate(`/prospect/${p.id}`)}
+                onClick={() => navigate(`/app/prospect/${p.id}`)}
                 sx={{ cursor: 'pointer' }}
                 selected={isSelected}
               >
@@ -2789,7 +2834,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 {displayColumns.includes('nom') && (
                   <TableCell>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                      <Avatar sx={{ width: 32, height: 32, bgcolor: '#f0f0f0', color: '#1d1d1f', fontSize: '0.875rem', fontWeight: 600 }}>
+                      <Avatar sx={{ width: 32, height: 32, bgcolor: tokens.colors.borderLight, color: tokens.colors.textPrimary, fontSize: '0.875rem', fontWeight: 600 }}>
                         {getProspectName(getDisplayProspect(p)).charAt(0)}
                       </Avatar>
                       <Typography variant="body2" fontWeight={500}>{getProspectName(getDisplayProspect(p))}</Typography>
@@ -2818,7 +2863,7 @@ const Commercial: React.FC = (): JSX.Element => {
                           fontSize: '0.75rem',
                           bgcolor: p.aiScore >= 70 ? 'rgba(52, 199, 89, 0.15)' : p.aiScore >= 40 ? 'rgba(255, 159, 10, 0.15)' : 'rgba(142, 142, 147, 0.15)',
                           color: p.aiScore >= 70 ? '#34c759' : p.aiScore >= 40 ? '#ff9f0a' : '#8e8e93',
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                         }}
                       />
                     ) : (
@@ -2941,7 +2986,7 @@ const Commercial: React.FC = (): JSX.Element => {
         }
         return (
           <div className="cursor-pointer py-1 px-2 rounded hover:bg-gray-50 min-h-[28px] flex items-center gap-2" onClick={e => { e.stopPropagation(); startEdit(); }}>
-            <Avatar sx={{ width: 24, height: 24, fontSize: '0.75rem', bgcolor: '#0071e3', color: 'white' }}>{owner.name.charAt(0)}</Avatar>
+            <Avatar sx={{ width: 24, height: 24, fontSize: '0.75rem', bgcolor: tokens.colors.brandTeal, color: 'white' }}>{owner.name.charAt(0)}</Avatar>
             <span className="text-gray-900 truncate">{owner.name}</span>
           </div>
         );
@@ -2957,7 +3002,7 @@ const Commercial: React.FC = (): JSX.Element => {
               fontSize: '0.75rem',
               bgcolor: score >= 70 ? 'rgba(52, 199, 89, 0.15)' : score >= 40 ? 'rgba(255, 159, 10, 0.15)' : 'rgba(142, 142, 147, 0.15)',
               color: score >= 70 ? '#34c759' : score >= 40 ? '#ff9f0a' : '#8e8e93',
-              borderRadius: '8px',
+              borderRadius: tokens.radius.sm,
             }}
           />
         ) : (
@@ -3040,7 +3085,7 @@ const Commercial: React.FC = (): JSX.Element => {
           onChange={e => setCompaniesSearch(e.target.value)}
           InputProps={{
             startAdornment: <InputAdornment position="start"><SearchIcon sx={{ color: '#6b7280', fontSize: 20 }} /></InputAdornment>,
-            sx: { borderRadius: '8px', bgcolor: '#f9fafb' }
+            sx: { borderRadius: tokens.radius.sm, bgcolor: '#f9fafb' }
           }}
           sx={{ maxWidth: 320 }}
         />
@@ -3062,7 +3107,7 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => setCompaniesColumnPickerAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        PaperProps={{ sx: { borderRadius: '12px', p: 1.5, minWidth: 260 } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.md, p: 1.5, minWidth: 260 } }}
       >
         <Typography variant="subtitle2" fontWeight={700} sx={{ px: 1, py: 0.5, mb: 0.5 }}>Colonnes visibles</Typography>
         <List dense>
@@ -3100,7 +3145,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 <tr
                   key={row.id}
                   className="border-b border-gray-100 hover:bg-gray-50/50 cursor-pointer"
-                  onClick={() => navigate(`/prospect/${row.original.id}`)}
+                  onClick={() => navigate(`/app/prospect/${row.original.id}`)}
                 >
                   {row.getVisibleCells().map(cell => (
                     <td key={cell.id} className="py-2 px-4 align-middle truncate" style={{ width: cell.column.getSize(), minWidth: cell.column.getSize(), maxWidth: cell.column.getSize() }}>
@@ -3131,26 +3176,11 @@ const Commercial: React.FC = (): JSX.Element => {
   }
 
   return (
-    <Box sx={{ 
-      p: 4, 
-      pb: 12, // Padding encore plus grand
-      minHeight: '100vh',
-      height: '100%', // Pour s'assurer que le fond suit le contenu
-      bgcolor: '#f2f2f7', // Gris Apple fond
-      overflowY: 'auto' // Gestion du scroll
-    }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
-        <Box>
-          <Typography variant="h4" fontWeight={800} sx={{ color: '#1d1d1f', mb: 1 }}>
-            Pilotage Commercial
-      </Typography>
-          <Typography variant="body1" color="text.secondary">
-            Gérez vos opportunités et suivez vos performances.
-          </Typography>
-        </Box>
-        
-        <Box sx={{ display: 'flex', gap: 2 }}>
+    <AppPageShell
+      eyebrow="Commercial"
+      title="Pilotage Commercial"
+      actions={
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
           {canWrite && selectedProspects.length > 0 && (
             <>
           <StyledButton
@@ -3161,8 +3191,8 @@ const Commercial: React.FC = (): JSX.Element => {
                   borderColor: APPLE_COLORS.primary,
                   color: APPLE_COLORS.primary,
               '&:hover': {
-                borderColor: '#0077ed',
-                bgcolor: 'rgba(0, 113, 227, 0.04)',
+                borderColor: tokens.colors.brandTeal700,
+                bgcolor: tokens.colors.primaryAlpha10,
               }
             }}
           >
@@ -3173,11 +3203,11 @@ const Commercial: React.FC = (): JSX.Element => {
               startIcon={<DeleteIcon />}
               onClick={() => setIsDeleteDialogOpen(true)}
               sx={{
-                borderColor: '#ff3b30',
-                color: '#ff3b30',
+                borderColor: tokens.colors.error,
+                color: tokens.colors.error,
                 '&:hover': {
-                  borderColor: '#ff3b30',
-                  bgcolor: 'rgba(255, 59, 48, 0.04)',
+                  borderColor: tokens.colors.error,
+                  bgcolor: tokens.colors.errorLight,
                 }
               }}
             >
@@ -3192,9 +3222,9 @@ const Commercial: React.FC = (): JSX.Element => {
                 startIcon={<RocketIcon />}
                 onClick={() => setIsGenerateTestDialogOpen(true)}
                 sx={{
-                  borderColor: '#34c759',
-                  color: '#34c759',
-                  '&:hover': { borderColor: '#30b350', bgcolor: 'rgba(52, 199, 89, 0.08)' }
+                  borderColor: tokens.colors.success,
+                  color: tokens.colors.success,
+                  '&:hover': { borderColor: tokens.colors.brandTeal700, bgcolor: tokens.colors.successLight }
                 }}
               >
                 Prospects de test
@@ -3231,11 +3261,11 @@ const Commercial: React.FC = (): JSX.Element => {
             componentsProps={{
               tooltip: {
                 sx: {
-                  bgcolor: '#1d1d1f',
+                  bgcolor: tokens.colors.textPrimary,
                   maxWidth: 400,
                   fontSize: '0.875rem',
                   '& .MuiTooltip-arrow': {
-                    color: '#1d1d1f'
+                    color: tokens.colors.textPrimary
                   }
                 }
               }
@@ -3265,8 +3295,8 @@ const Commercial: React.FC = (): JSX.Element => {
                 bgcolor: 'white',
                 border: `1px solid ${APPLE_COLORS.primary}`,
                 '&:hover': {
-                  bgcolor: 'rgba(0, 113, 227, 0.04)',
-                  borderColor: '#0077ed'
+                  bgcolor: tokens.colors.primaryAlpha10,
+                  borderColor: tokens.colors.brandTeal700
                 }
               }}
             >
@@ -3290,10 +3320,10 @@ const Commercial: React.FC = (): JSX.Element => {
                 sx={{ 
                   bgcolor: APPLE_COLORS.primary, 
                   color: 'white', 
-                  '&:hover': { bgcolor: '#0077ed' },
+                  '&:hover': { bgcolor: tokens.colors.brandTeal700 },
                   '&:disabled': {
-                    bgcolor: '#e5e5ea',
-                    color: '#86868b'
+                    bgcolor: tokens.colors.gray200,
+                    color: tokens.colors.textSecondary
                   }
                 }}
               >
@@ -3315,138 +3345,77 @@ const Commercial: React.FC = (): JSX.Element => {
             </>
           )}
         </Box>
-      </Box>
+      }
+    >
+    <Box sx={{ bgcolor: tokens.colors.surfaceAlt, minHeight: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column' }}>
 
-      {/* Error Alert */}
       {error && (
-        <Alert 
-          severity="error" 
+        <Alert
+          severity="error"
           onClose={() => setError(null)}
-          sx={{ mb: 3, borderRadius: '12px' }}
+          sx={{ m: 2, mb: 0, borderRadius: tokens.radius.md }}
         >
           {error}
         </Alert>
       )}
 
-      {/* KPI Section (Always Visible) */}
-      {renderKPIs()}
+      <Box sx={{ px: 2, pt: 2, pb: 1, flexShrink: 0 }}>
+        <CommercialViewTabs
+          active={viewMode}
+          onChange={id => setViewMode(id as CommercialViewId)}
+          tabs={[
+            { id: 'today', label: "Aujourd'hui", icon: <TodayIcon sx={{ fontSize: 16, color: viewMode === 'today' ? tokens.colors.brandTeal : tokens.colors.gray400 }} />, count: dueRelanceCount || undefined },
+            { id: 'agenda', label: 'Agenda', icon: <CalendarMonthIcon sx={{ fontSize: 16, color: viewMode === 'agenda' ? tokens.colors.brandTeal : tokens.colors.gray400 }} /> },
+            { id: 'table', label: 'Table', icon: <TableChartIcon sx={{ fontSize: 16, color: viewMode === 'table' ? tokens.colors.brandTeal : tokens.colors.gray400 }} />, count: prospects.length || undefined },
+          ]}
+        />
+      </Box>
 
-      {/* Main Grid Layout (sidebar droite masquée en vue Entreprises) */}
-      <Grid container spacing={4}>
-        <Grid item xs={12} lg={viewMode === 'companies' ? 12 : 9}>
-          <StyledCard sx={{ p: 2, minHeight: '600px' }}>
-            {/* Toolbar */}
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 2, mb: 3, px: 1 }}>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 2 }}>
-                <ToggleButtonGroup
-                  value={viewMode}
-                  exclusive
-                  onChange={(_, newMode) => newMode && setViewMode(newMode)}
-                  size="small"
-                  sx={{
-                    '& .MuiToggleButton-root': {
-                      border: 'none',
-                      borderRadius: '8px !important',
-                      mx: 0.5,
-                      px: 2,
-                      py: 1,
-                      fontWeight: 600,
-                      textTransform: 'none',
-                      '&.Mui-selected': { bgcolor: '#f5f5f7', color: 'black' }
-                    }
-                  }}
-                >
-                  <ToggleButton value="companies">
-                    <StoreIcon sx={{ mr: 1, fontSize: 20 }} /> Entreprises
-                  </ToggleButton>
-                  <ToggleButton value="pipeline">
-                    <ViewKanbanIcon sx={{ mr: 1, fontSize: 20 }} /> Pipeline
-                  </ToggleButton>
-                  <ToggleButton value="stats">
-                    <ShowChartIcon sx={{ mr: 1, fontSize: 20 }} /> Stats
-                  </ToggleButton>
-                </ToggleButtonGroup>
-              </Box>
-              <StyledTextField
-                placeholder="Rechercher..."
-                size="small"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                InputProps={{
-                  startAdornment: <SearchIcon sx={{ color: 'text.secondary', mr: 1 }} />
-                }}
-                sx={{ minWidth: 220 }}
-              />
-            </Box>
-
-            {/* View Content (animation zoom au changement de vue) */}
-            <Grow in key={viewMode} timeout={280} style={{ transformOrigin: 'center top' }}>
-              <Box sx={{ minHeight: 520 }}>
-                {viewMode === 'companies'
-                  ? renderCompaniesView()
-                  : viewMode === 'stats'
-                    ? renderStats()
-                    : (
-                      <>
-                        {/* Bloc À relancer (IA) */}
-                        {relanceSuggestions.length > 0 && (
-                          <Paper
-                            elevation={0}
-                            sx={{
-                              mb: 2,
-                              p: 2,
-                              borderRadius: '16px',
-                              border: '1px solid #ff9f0a',
-                              bgcolor: 'rgba(255, 159, 10, 0.06)',
-                            }}
-                          >
-                            <Typography variant="subtitle2" fontWeight={700} color="#c93400" sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <NotificationsIcon sx={{ fontSize: 20 }} />
-                              À relancer ({relanceSuggestions.length})
-                            </Typography>
-                            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                              {relanceSuggestions.slice(0, 8).map((s) => (
-                                <Chip
-                                  key={s.id}
-                                  label={`${s.nom}${s.entreprise ? ` · ${s.entreprise}` : ''}`}
-                                  onClick={() => navigate(`/prospect/${s.id}`)}
-                                  sx={{
-                                    borderRadius: '10px',
-                                    fontWeight: 500,
-                                    cursor: 'pointer',
-                                    '&:hover': { bgcolor: 'rgba(255, 159, 10, 0.2)' },
-                                  }}
-                                  size="small"
-                                />
-                              ))}
-                              {relanceSuggestions.length > 8 && (
-                                <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
-                                  +{relanceSuggestions.length - 8} autres
-                                </Typography>
-                              )}
-                            </Box>
-                          </Paper>
-                        )}
-                        {relanceSuggestionsLoading && relanceSuggestions.length === 0 && (
-                          <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <CircularProgress size={16} />
-                            <Typography variant="caption" color="text.secondary">Chargement des suggestions de relance...</Typography>
-                          </Box>
-                        )}
-                        {renderPipeline()}
-                      </>
-                    )}
-              </Box>
-            </Grow>
-          </StyledCard>
-        </Grid>
-
-        {viewMode !== 'companies' && (
-          <Grid item xs={12} lg={3}>
-            {renderSidebar()}
-          </Grid>
+      <Box sx={{ flex: 1, minHeight: 0, bgcolor: tokens.colors.bgPaper, borderTop: `1px solid ${tokens.colors.divider}` }}>
+        {viewMode === 'today' && (
+          <CommercialTodayView
+            prospects={displayProspectsList}
+            members={commercialMembers}
+            currentUserId={userData?.uid}
+            currentUserName={userData?.displayName || 'vous'}
+            doneToday={relancesDoneToday}
+            objective={objectiveTarget}
+            act={commercialActions}
+            getName={getProspectName}
+            getCompany={getProspectCompany}
+          />
         )}
-      </Grid>
+        {viewMode === 'agenda' && (
+          <CommercialAgendaView
+            prospects={displayProspectsList}
+            events={events}
+            members={commercialMembers}
+            canWrite={canWrite}
+            act={commercialActions}
+            getName={getProspectName}
+            getCompany={getProspectCompany}
+          />
+        )}
+        {viewMode === 'table' && (
+          <CommercialTableView
+            prospects={displayProspectsList}
+            members={commercialMembers}
+            canWrite={canWrite}
+            search={searchTerm}
+            onSearchChange={setSearchTerm}
+            filterStatus={filterTableStatus}
+            onFilterStatusChange={setFilterTableStatus}
+            filterOwnerId={filterTableOwnerId}
+            onFilterOwnerIdChange={setFilterTableOwnerId}
+            selectedIds={selectedProspects}
+            onToggleAll={setSelectedProspects}
+            onToggleOne={id => setSelectedProspects(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]))}
+            act={commercialActions}
+            getName={getProspectName}
+            getCompany={getProspectCompany}
+          />
+        )}
+      </Box>
 
       {/* Menu d'assignation */}
       <Menu
@@ -3474,7 +3443,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 acc.push(
                   <MenuItem key={member.id} onClick={() => handleAssignProspects(member.id)} sx={{ pl: 4 }}>
                     <Avatar sx={{ width: 24, height: 24, mr: 1, fontSize: '0.7rem' }}>{member.displayName.charAt(0)}</Avatar>
-                    {member.displayName}
+                    <UserNameText user={member} component="span" />
                   </MenuItem>
                 );
                 return acc;
@@ -3490,7 +3459,7 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => setTableColumnCustomizeAnchor(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        PaperProps={{ sx: { borderRadius: '12px', p: 1, minWidth: 220 } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.md, p: 1, minWidth: 220 } }}
       >
         <Typography variant="subtitle2" fontWeight={700} sx={{ px: 1.5, py: 1 }}>Colonnes visibles</Typography>
         <List dense>
@@ -3512,11 +3481,11 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => { setRowMenuAnchorEl(null); setRowMenuProspectId(null); }}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        PaperProps={{ sx: { borderRadius: '12px', minWidth: 180 } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.md, minWidth: 180 } }}
       >
         <MenuItem
           onClick={() => {
-            if (rowMenuProspectId) navigate(`/prospect/${rowMenuProspectId}`);
+            if (rowMenuProspectId) navigate(`/app/prospect/${rowMenuProspectId}`);
             setRowMenuAnchorEl(null);
             setRowMenuProspectId(null);
           }}
@@ -3548,7 +3517,7 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => setIsImportDialogOpen(false)}
         maxWidth="sm"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '16px' } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.lg } }}
       >
         <DialogTitle sx={{ fontWeight: 700 }}>Importer des prospects</DialogTitle>
         <DialogContent>
@@ -3618,7 +3587,7 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => setIsCreateDialogOpen(false)}
         maxWidth="sm"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '16px' } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.lg } }}
       >
         <DialogTitle sx={{ fontWeight: 700 }}>Nouveau Dossier Prospect</DialogTitle>
         <DialogContent>
@@ -3627,7 +3596,7 @@ const Commercial: React.FC = (): JSX.Element => {
               severity="error" 
               sx={{ 
                 mb: 2, 
-                borderRadius: '12px',
+                borderRadius: tokens.radius.md,
                 backgroundColor: '#ffebee',
                 border: '2px solid #ff3b30',
                 '& .MuiAlert-icon': {
@@ -3646,7 +3615,7 @@ const Commercial: React.FC = (): JSX.Element => {
             </Alert>
           )}
           {structureTokens && structureTokens.tokensRemaining > 0 && structureTokens.tokensRemaining <= 10 && (
-            <Alert severity="info" sx={{ mb: 2, borderRadius: '12px' }}>
+            <Alert severity="info" sx={{ mb: 2, borderRadius: tokens.radius.md }}>
               Attention : Il vous reste {structureTokens.tokensRemaining} token{structureTokens.tokensRemaining > 1 ? 's' : ''} ce mois-ci.
             </Alert>
           )}
@@ -3714,7 +3683,7 @@ const Commercial: React.FC = (): JSX.Element => {
               bgcolor: APPLE_COLORS.primary,
               '&:disabled': {
                 bgcolor: '#e5e5ea',
-                color: '#86868b'
+                color: tokens.colors.textSecondary
               }
             }}
           >
@@ -3732,7 +3701,7 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => setShowFullAgenda(false)}
         maxWidth="lg"
             fullWidth
-        PaperProps={{ sx: { borderRadius: '24px', height: '80vh', overflow: 'hidden' } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.xxl, height: '80vh', overflow: 'hidden' } }}
       >
         <Box sx={{ display: 'flex', height: '100%' }}>
           {/* Sidebar Création (1/3) */}
@@ -3788,7 +3757,7 @@ const Commercial: React.FC = (): JSX.Element => {
                   onChange={(e) => setNewEvent({...newEvent, type: e.target.value as any})}
                   InputLabelProps={{ shrink: true }}
                   InputProps={{
-                    sx: { borderRadius: '12px', bgcolor: '#f5f5f7', '& fieldset': { border: 'none' } },
+                    sx: { borderRadius: tokens.radius.md, bgcolor: tokens.colors.bgSubtle, '& fieldset': { border: 'none' } },
                     startAdornment: <InputAdornment position="start"><CategoryIcon sx={{ color: 'text.secondary' }} /></InputAdornment>
                   }}
                   variant="outlined"
@@ -3808,7 +3777,7 @@ const Commercial: React.FC = (): JSX.Element => {
                   onChange={(e) => setNewEvent({...newEvent, visibility: e.target.value as any})}
                   InputLabelProps={{ shrink: true }}
                   InputProps={{
-                    sx: { borderRadius: '12px', bgcolor: '#f5f5f7', '& fieldset': { border: 'none' } },
+                    sx: { borderRadius: tokens.radius.md, bgcolor: tokens.colors.bgSubtle, '& fieldset': { border: 'none' } },
                     startAdornment: <InputAdornment position="start"><VisibilityIcon sx={{ color: 'text.secondary' }} /></InputAdornment>
                   }}
                         variant="outlined"
@@ -3829,7 +3798,7 @@ const Commercial: React.FC = (): JSX.Element => {
                         maxHeight: 300, 
                         overflow: 'auto',
                         borderColor: '#e5e5ea',
-                        borderRadius: '12px'
+                        borderRadius: tokens.radius.md
                       }}
                     >
                       {/* Membres Devco groupés par mandat */}
@@ -3857,10 +3826,10 @@ const Commercial: React.FC = (): JSX.Element => {
                           const allSelected = selectedInGroup.length === members.length;
 
                           return (
-                            <Box key={`devco-${mandat}`} sx={{ borderBottom: '1px solid #f5f5f7' }}>
+                            <Box key={`devco-${mandat}`} sx={{ borderBottom: `1px solid ${tokens.colors.bgSubtle}` }}>
                               <ListSubheader 
                                 sx={{ 
-                                  bgcolor: '#f5f5f7',
+                                  bgcolor: tokens.colors.bgSubtle,
                                   display: 'flex',
                                   alignItems: 'center',
                                   justifyContent: 'space-between',
@@ -3942,7 +3911,7 @@ const Commercial: React.FC = (): JSX.Element => {
                                       </Avatar>
                                     </ListItemIcon>
                                     <ListItemText 
-                                      primary={member.displayName}
+                                      primary={<UserNameText user={member} component="span" />}
                                       primaryTypographyProps={{ variant: 'body2' }}
                                     />
                                   </ListItem>
@@ -3980,7 +3949,7 @@ const Commercial: React.FC = (): JSX.Element => {
                           const allSelected = selectedInGroup.length === members.length;
 
                           return (
-                            <Box key={`other-${mandat}`} sx={{ borderBottom: '1px solid #f5f5f7' }}>
+                            <Box key={`other-${mandat}`} sx={{ borderBottom: `1px solid ${tokens.colors.bgSubtle}` }}>
                               <ListSubheader 
                                 sx={{ 
                                   bgcolor: '#fafafa',
@@ -4064,7 +4033,7 @@ const Commercial: React.FC = (): JSX.Element => {
                                       </Avatar>
                                     </ListItemIcon>
                                     <ListItemText 
-                                      primary={member.displayName}
+                                      primary={<UserNameText user={member} component="span" />}
                                       primaryTypographyProps={{ variant: 'body2' }}
                                     />
                                   </ListItem>
@@ -4097,7 +4066,7 @@ const Commercial: React.FC = (): JSX.Element => {
                     fullWidth 
                     size="large" 
                     startIcon={<AddIcon />}
-                    sx={{ bgcolor: APPLE_COLORS.primary, py: 1.5, borderRadius: '12px', fontSize: '1rem' }}
+                    sx={{ bgcolor: APPLE_COLORS.primary, py: 1.5, borderRadius: tokens.radius.md, fontSize: '1rem' }}
                     onClick={handleCreateEvent}
                 >
                     Ajouter au calendrier
@@ -4112,7 +4081,7 @@ const Commercial: React.FC = (): JSX.Element => {
                   <Typography variant="h6" fontWeight={800}>Agenda de l'équipe</Typography>
                   <Typography variant="body2" color="text.secondary">Vue d'ensemble des événements à venir</Typography>
                           </Box>
-              <IconButton onClick={() => setShowFullAgenda(false)} sx={{ bgcolor: '#f5f5f7' }}><CloseIcon /></IconButton>
+              <IconButton onClick={() => setShowFullAgenda(false)} sx={{ bgcolor: tokens.colors.bgSubtle }}><CloseIcon /></IconButton>
             </Box>
 
             <Box sx={{ p: 4, overflowY: 'auto', flex: 1 }}>
@@ -4135,7 +4104,7 @@ const Commercial: React.FC = (): JSX.Element => {
                             <Box key={evt.id}>
                                 {isNewDay && (
                                     <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, mt: index > 0 ? 2 : 0 }}>
-                                        <Typography variant="subtitle2" fontWeight={700} sx={{ color: APPLE_COLORS.primary, bgcolor: 'rgba(0,113,227,0.1)', px: 1.5, py: 0.5, borderRadius: '8px' }}>
+                                        <Typography variant="subtitle2" fontWeight={700} sx={{ color: APPLE_COLORS.primary, bgcolor: 'rgba(0,113,227,0.1)', px: 1.5, py: 0.5, borderRadius: tokens.radius.sm }}>
                                             {date.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
                                         </Typography>
                                         <Box sx={{ flex: 1, height: '1px', bgcolor: '#e5e5ea', ml: 2 }} />
@@ -4148,9 +4117,9 @@ const Commercial: React.FC = (): JSX.Element => {
                             if (evt.prospectId || (evt.type === 'reminder' && evt.title?.includes('Relance:'))) {
                               const prospectId = evt.prospectId || (evt as any).prospectId || evt.id.replace('relance-', '');
                               if (prospectId && !prospectId.startsWith('relance-')) {
-                                navigate(`/prospect/${prospectId}`);
+                                navigate(`/app/prospect/${prospectId}`);
                               } else if (prospectId) {
-                                navigate(`/prospect/${prospectId.replace('relance-', '')}`);
+                                navigate(`/app/prospect/${prospectId.replace('relance-', '')}`);
                               }
                             } else if (!evt.id.startsWith('relance-')) {
                               handleEditEvent(evt);
@@ -4158,7 +4127,7 @@ const Commercial: React.FC = (): JSX.Element => {
                           }}
                           sx={{
                                         p: 2.5, 
-                                        borderRadius: '16px', 
+                                        borderRadius: tokens.radius.lg, 
                                         border: '1px solid #e5e5ea',
                                         display: 'flex', 
                                         gap: 2,
@@ -4167,7 +4136,7 @@ const Commercial: React.FC = (): JSX.Element => {
                                         '&:hover': { transform: 'translateY(-2px)', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', borderColor: APPLE_COLORS.primary }
                                     }}
                                 >
-                                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minWidth: 60, bgcolor: '#f5f5f7', borderRadius: '12px', p: 1, height: 'fit-content' }}>
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minWidth: 60, bgcolor: tokens.colors.bgSubtle, borderRadius: tokens.radius.md, p: 1, height: 'fit-content' }}>
                                         <Typography variant="caption" color="text.secondary" fontWeight={600}>{date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</Typography>
                                         <Box sx={{ my: 0.5 }}>
                                             {evt.type === 'meeting' && <GroupIcon fontSize="small" sx={{ color: '#ff9f0a' }} />}
@@ -4195,7 +4164,7 @@ const Commercial: React.FC = (): JSX.Element => {
                                             <Chip 
                                                 label={evt.type.charAt(0).toUpperCase() + evt.type.slice(1)} 
                                                 size="small" 
-                                                sx={{ height: 24, bgcolor: '#f5f5f7', fontWeight: 600, fontSize: '0.75rem' }} 
+                                                sx={{ height: 24, bgcolor: tokens.colors.bgSubtle, fontWeight: 600, fontSize: '0.75rem' }} 
                                             />
                                             {evt.invitedUsers && evt.invitedUsers.length > 0 && (
                                                 <Box sx={{ display: 'flex', alignItems: 'center' }}>
@@ -4231,7 +4200,7 @@ const Commercial: React.FC = (): JSX.Element => {
         }}
         maxWidth="sm"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '24px' } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.xxl } }}
       >
         <DialogTitle sx={{ fontWeight: 700, fontSize: '1.5rem', pb: 2 }}>
           Modifier l'événement
@@ -4277,7 +4246,7 @@ const Commercial: React.FC = (): JSX.Element => {
               onChange={(e) => setEditEventForm({...editEventForm, type: e.target.value as any})}
               InputLabelProps={{ shrink: true }}
               InputProps={{
-                sx: { borderRadius: '12px', bgcolor: '#f5f5f7', '& fieldset': { border: 'none' } },
+                sx: { borderRadius: tokens.radius.md, bgcolor: tokens.colors.bgSubtle, '& fieldset': { border: 'none' } },
                 startAdornment: <InputAdornment position="start"><CategoryIcon sx={{ color: 'text.secondary' }} /></InputAdornment>
               }}
               variant="outlined"
@@ -4297,7 +4266,7 @@ const Commercial: React.FC = (): JSX.Element => {
               onChange={(e) => setEditEventForm({...editEventForm, visibility: e.target.value as any})}
               InputLabelProps={{ shrink: true }}
               InputProps={{
-                sx: { borderRadius: '12px', bgcolor: '#f5f5f7', '& fieldset': { border: 'none' } },
+                sx: { borderRadius: tokens.radius.md, bgcolor: tokens.colors.bgSubtle, '& fieldset': { border: 'none' } },
                 startAdornment: <InputAdornment position="start"><VisibilityIcon sx={{ color: 'text.secondary' }} /></InputAdornment>
               }}
               variant="outlined"
@@ -4318,7 +4287,7 @@ const Commercial: React.FC = (): JSX.Element => {
                     maxHeight: 300, 
                     overflow: 'auto',
                     borderColor: '#e5e5ea',
-                    borderRadius: '12px'
+                    borderRadius: tokens.radius.md
                   }}
                 >
                   {/* Membres Devco groupés par mandat */}
@@ -4345,10 +4314,10 @@ const Commercial: React.FC = (): JSX.Element => {
                       const allSelected = selectedInGroup.length === members.length;
 
                       return (
-                        <Box key={`devco-${mandat}`} sx={{ borderBottom: '1px solid #f5f5f7' }}>
+                        <Box key={`devco-${mandat}`} sx={{ borderBottom: `1px solid ${tokens.colors.bgSubtle}` }}>
                           <ListSubheader 
                             sx={{ 
-                              bgcolor: '#f5f5f7',
+                              bgcolor: tokens.colors.bgSubtle,
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'space-between',
@@ -4430,7 +4399,7 @@ const Commercial: React.FC = (): JSX.Element => {
                                   </Avatar>
                                 </ListItemIcon>
                                 <ListItemText 
-                                  primary={member.displayName}
+                                  primary={<UserNameText user={member} component="span" />}
                                   primaryTypographyProps={{ variant: 'body2' }}
                                 />
                               </ListItem>
@@ -4467,7 +4436,7 @@ const Commercial: React.FC = (): JSX.Element => {
                       const allSelected = selectedInGroup.length === members.length;
 
                       return (
-                        <Box key={`other-${mandat}`} sx={{ borderBottom: '1px solid #f5f5f7' }}>
+                        <Box key={`other-${mandat}`} sx={{ borderBottom: `1px solid ${tokens.colors.bgSubtle}` }}>
                           <ListSubheader 
                             sx={{ 
                               bgcolor: '#fafafa',
@@ -4551,7 +4520,7 @@ const Commercial: React.FC = (): JSX.Element => {
                                   </Avatar>
                                 </ListItemIcon>
                                 <ListItemText 
-                                  primary={member.displayName}
+                                  primary={<UserNameText user={member} component="span" />}
                                   primaryTypographyProps={{ variant: 'body2' }}
                                 />
                               </ListItem>
@@ -4636,7 +4605,7 @@ const Commercial: React.FC = (): JSX.Element => {
         }}
         PaperProps={{
           sx: {
-            borderRadius: '16px',
+            borderRadius: tokens.radius.lg,
             p: 2.5,
             mt: 1,
             boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
@@ -4672,7 +4641,7 @@ const Commercial: React.FC = (): JSX.Element => {
               sx={{
                 textTransform: 'none',
                 fontSize: '0.8rem',
-                borderRadius: '8px',
+                borderRadius: tokens.radius.sm,
                 px: 2,
                 py: 0.75,
                 borderColor: '#e5e5ea',
@@ -4699,7 +4668,7 @@ const Commercial: React.FC = (): JSX.Element => {
               sx={{
                 textTransform: 'none',
                 fontSize: '0.8rem',
-                borderRadius: '8px',
+                borderRadius: tokens.radius.sm,
                 px: 2,
                 py: 0.75,
                 borderColor: '#e5e5ea',
@@ -4726,7 +4695,7 @@ const Commercial: React.FC = (): JSX.Element => {
               sx={{
                 textTransform: 'none',
                 fontSize: '0.8rem',
-                borderRadius: '8px',
+                borderRadius: tokens.radius.sm,
                 px: 2,
                 py: 0.75,
                 borderColor: '#e5e5ea',
@@ -4751,7 +4720,7 @@ const Commercial: React.FC = (): JSX.Element => {
             sx={{
               '& .MuiOutlinedInput-root': {
                 borderRadius: '10px',
-                bgcolor: '#f5f5f7',
+                bgcolor: tokens.colors.bgSubtle,
                 '& fieldset': {
                   borderColor: 'transparent'
                 },
@@ -4777,7 +4746,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 color: 'text.secondary',
                 textTransform: 'none',
                 fontSize: '0.875rem',
-                borderRadius: '8px',
+                borderRadius: tokens.radius.sm,
                 px: 2,
                 '&:hover': {
                   backgroundColor: 'rgba(0, 0, 0, 0.04)'
@@ -4794,7 +4763,7 @@ const Commercial: React.FC = (): JSX.Element => {
                 bgcolor: APPLE_COLORS.primary,
                 textTransform: 'none',
                 fontSize: '0.875rem',
-                borderRadius: '8px',
+                borderRadius: tokens.radius.sm,
                 px: 3,
                 boxShadow: 'none',
                 '&:hover': {
@@ -4815,13 +4784,13 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => setIsDeleteDialogOpen(false)}
         maxWidth="sm"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '16px' } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.lg } }}
       >
         <DialogTitle sx={{ fontWeight: 700, color: APPLE_COLORS.error }}>
           Confirmer la suppression
         </DialogTitle>
         <DialogContent>
-          <Alert severity="warning" sx={{ mb: 2, borderRadius: '12px' }}>
+          <Alert severity="warning" sx={{ mb: 2, borderRadius: tokens.radius.md }}>
             Cette action est irréversible.
           </Alert>
           <Typography variant="body1" sx={{ mb: 1 }}>
@@ -4860,7 +4829,7 @@ const Commercial: React.FC = (): JSX.Element => {
         onClose={() => !generateTestSubmitting && setIsGenerateTestDialogOpen(false)}
         maxWidth="xs"
         fullWidth
-        PaperProps={{ sx: { borderRadius: '16px' } }}
+        PaperProps={{ sx: { borderRadius: tokens.radius.lg } }}
       >
         <DialogTitle sx={{ fontWeight: 700 }}>
           Générer des prospects de test
@@ -4906,6 +4875,7 @@ const Commercial: React.FC = (): JSX.Element => {
         </DialogActions>
       </Dialog>
     </Box>
+    </AppPageShell>
   );
 };
 

@@ -28,50 +28,19 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { styled } from '@mui/material/styles';
+import { tokens } from '../theme/tokens';
+import { fadeIn, float, scaleIn } from '../styles/animations';
 
 // Animations Apple-style
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
-const scaleIn = keyframes`
-  from {
-    transform: scale(0.95);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-`;
-
-const float = keyframes`
-  0% {
-    transform: translateY(0px);
-  }
-  50% {
-    transform: translateY(-8px);
-  }
-  100% {
-    transform: translateY(0px);
-  }
-`;
 
 // Couleurs Apple
 const APPLE_COLORS = {
-  primary: '#0071e3',
-  secondary: '#86868b',
-  background: '#f5f5f7',
+  primary: tokens.colors.brandTeal,
+  secondary: tokens.colors.textSecondary,
+  background: tokens.colors.bgSubtle,
   surface: '#ffffff',
   border: '#d2d2d7',
-  text: '#1d1d1f',
+  text: tokens.colors.textPrimary,
   error: '#ff3b30',
   success: '#34c759',
   warning: '#ff9500',
@@ -90,7 +59,7 @@ const StyledContainer = styled(Container)(({ theme }) => ({
 }));
 
 const StyledPaper = styled(Paper)(({ theme }) => ({
-  borderRadius: '24px',
+  borderRadius: tokens.radius.xxl,
   boxShadow: '0 8px 32px rgba(0, 0, 0, 0.08)',
   backdropFilter: 'blur(20px)',
   backgroundColor: alpha(APPLE_COLORS.surface, 0.95),
@@ -111,8 +80,8 @@ const StyledPaper = styled(Paper)(({ theme }) => ({
 const StyledIconContainer = styled(Box)(({ theme }) => ({
   width: '60px',
   height: '60px',
-  borderRadius: '16px',
-  background: `linear-gradient(135deg, ${APPLE_COLORS.primary} 0%, #0051a8 100%)`,
+  borderRadius: tokens.radius.lg,
+  background: `linear-gradient(135deg, ${tokens.colors.brandNavy} 0%, ${tokens.colors.brandTeal} 100%)`,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -123,14 +92,14 @@ const StyledIconContainer = styled(Box)(({ theme }) => ({
 }));
 
 const StyledButton = styled(Button)(({ theme }) => ({
-  borderRadius: '16px',
+  borderRadius: tokens.radius.lg,
   textTransform: 'none',
   fontWeight: 600,
   fontSize: '16px',
   padding: '14px 32px',
   color: '#ffffff',
   transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-  background: `linear-gradient(135deg, ${APPLE_COLORS.primary} 0%, #0051a8 100%)`,
+  background: `linear-gradient(135deg, ${tokens.colors.brandNavy} 0%, ${tokens.colors.brandTeal} 100%)`,
   boxShadow: '0 4px 16px rgba(0, 113, 227, 0.3)',
   '&:hover': {
     transform: 'translateY(-2px)',
@@ -150,7 +119,7 @@ const StyledButton = styled(Button)(({ theme }) => ({
 }));
 
 const StyledSecondaryButton = styled(Button)(({ theme }) => ({
-  borderRadius: '16px',
+  borderRadius: tokens.radius.lg,
   textTransform: 'none',
   fontWeight: 500,
   fontSize: '16px',
@@ -168,7 +137,7 @@ const StyledSecondaryButton = styled(Button)(({ theme }) => ({
 
 const StyledInfoCard = styled(Box)(({ theme }) => ({
   background: alpha(APPLE_COLORS.background, 0.5),
-  borderRadius: '16px',
+  borderRadius: tokens.radius.lg,
   padding: theme.spacing(3),
   border: `1px solid ${alpha(APPLE_COLORS.border, 0.2)}`,
   marginBottom: theme.spacing(3),
@@ -179,7 +148,7 @@ const StyledFeatureItem = styled(Box)(({ theme }) => ({
   alignItems: 'center',
   gap: theme.spacing(2),
   padding: theme.spacing(1.5),
-  borderRadius: '12px',
+  borderRadius: tokens.radius.md,
   transition: 'all 0.2s ease',
   '&:hover': {
     background: alpha(APPLE_COLORS.primary, 0.05),
@@ -385,7 +354,7 @@ const CotisationPayment: React.FC = () => {
               sx={{
                 width: '60px',
                 height: '60px',
-                borderRadius: '16px',
+                borderRadius: tokens.radius.lg,
                 background: `linear-gradient(135deg, ${APPLE_COLORS.error} 0%, #d70015 100%)`,
                 display: 'flex',
                 alignItems: 'center',
@@ -413,7 +382,7 @@ const CotisationPayment: React.FC = () => {
             severity="error" 
             sx={{ 
               mb: 3,
-              borderRadius: '12px',
+              borderRadius: tokens.radius.md,
               border: `1px solid ${alpha(APPLE_COLORS.error, 0.2)}`,
             }}
           >
@@ -573,7 +542,7 @@ const CotisationPayment: React.FC = () => {
           gap: 1.5, 
           padding: 1.5,
           background: alpha(APPLE_COLORS.success, 0.05),
-          borderRadius: '12px',
+          borderRadius: tokens.radius.md,
           border: `1px solid ${alpha(APPLE_COLORS.success, 0.2)}`,
           marginBottom: 3,
         }}>

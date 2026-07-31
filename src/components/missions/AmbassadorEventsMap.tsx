@@ -345,7 +345,7 @@ export const AmbassadorEventsMap: React.FC = () => {
 
     const totalSlots = event.slots?.length || 0;
     const totalCapacity = event.slots?.reduce((acc, slot) => acc + slot.capacity, 0) || 0;
-    const totalRegistered = event.slots?.reduce((acc, slot) => acc + slot.assignedStudentIds.length, 0) || 0;
+    const totalRegistered = event.slots?.reduce((acc, slot) => acc + (slot.assignedStudentIds?.length ?? 0), 0) || 0;
     const fillRate = totalCapacity > 0 ? Math.round((totalRegistered / totalCapacity) * 100) : 0;
 
     // Couleur du marqueur selon le taux de remplissage

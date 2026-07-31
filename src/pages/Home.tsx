@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { createPortal } from 'react-dom';
 import { getFirebaseFunctions } from '../firebase/config';
 import { httpsCallable } from 'firebase/functions';
-import { useAuth } from '../contexts/AuthContext';
+import PageMeta from '../components/common/PageMeta';
+import PublicNav from '../components/layout/PublicNav';
 import { 
   Box, 
   Container, 
@@ -12,26 +13,16 @@ import {
   Card, 
   CardContent,
   TextField,
-  IconButton,
   useTheme,
   useMediaQuery,
-  AppBar,
-  Toolbar,
-  alpha,
-  keyframes,
   Snackbar,
   Alert,
   Dialog,
   DialogContent
 } from '@mui/material';
 import { 
-  LinkedIn, 
-  Twitter, 
-  Facebook, 
   Security, 
   Speed, 
-  Support, 
-  CheckCircle,
   Business,
   People,
   Assignment,
@@ -42,46 +33,12 @@ import {
   TrendingUp,
   Receipt,
   VerifiedUser,
-  Menu,
-  Close
 } from '@mui/icons-material';
 import Footer from '../components/Footer';
+import { tokens } from '../theme/tokens';
+import { fadeIn } from '../styles/animations';
 
 // Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
-const float = keyframes`
-  0% {
-    transform: translateY(0px);
-  }
-  50% {
-    transform: translateY(-10px);
-  }
-  100% {
-    transform: translateY(0px);
-  }
-`;
-
-const gradientFlow = keyframes`
-  0% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
-  100% {
-    background-position: 0% 50%;
-  }
-`;
 
 // Configuration du contenu par profil
 type ProfileType = 'junior' | 'company' | 'student' | null;
@@ -106,7 +63,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
   junior: {
     title: "Pilotez votre Junior de A à Z",
     subtitle: "Une gestion boostée à l'IA. La solution tout-en-un pour la gestion, le recrutement et la conformité de votre structure.",
-    cta: "Essai gratuit",
+    cta: "2 mois gratuits",
     ctaAction: () => {
       window.location.href = '/pricing';
     },
@@ -114,17 +71,17 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
       {
         title: "Gestion des missions",
     description: "Optimisez la gestion de vos missions étudiantes avec notre plateforme dédiée aux Juniors.",
-    icon: <Assignment sx={{ fontSize: 40, color: '#000' }} />
+    icon: <Assignment sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
   },
   {
         title: "Recrutement simplifié",
     description: "Trouvez et gérez vos étudiants en mission en quelques clics grâce à notre système de matching intelligent.",
-    icon: <People sx={{ fontSize: 40, color: '#000' }} />
+    icon: <People sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
   },
   {
     title: "Conformité RGPD",
     description: "Une solution 100% conforme aux normes françaises et européennes pour la gestion de vos données.",
-    icon: <Security sx={{ fontSize: 40, color: '#000' }} />
+    icon: <Security sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
   }
     ],
     steps: [
@@ -168,17 +125,17 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
       {
         title: "Facturation simplifiée",
         description: "Une seule facture pour toutes vos missions, sans complexité administrative supplémentaire.",
-        icon: <Receipt sx={{ fontSize: 40, color: '#000' }} />
+        icon: <Receipt sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
       },
       {
         title: "Profils sélectifs",
         description: "Accédez à des étudiants triés sur le volet, formés et encadrés par les juniors.",
-        icon: <VerifiedUser sx={{ fontSize: 40, color: '#000' }} />
+        icon: <VerifiedUser sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
       },
       {
         title: "Réactivité",
         description: "Bénéficiez d'une réponse rapide et d'une mise en relation efficace avec les meilleurs profils.",
-        icon: <Speed sx={{ fontSize: 40, color: '#000' }} />
+        icon: <Speed sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
       }
     ],
     steps: [
@@ -219,17 +176,17 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
       {
         title: "Paiement rapide",
         description: "Recevez votre rémunération rapidement et de manière sécurisée après chaque mission.",
-        icon: <Euro sx={{ fontSize: 40, color: '#000' }} />
+        icon: <Euro sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
       },
       {
         title: "Missions flexibles",
         description: "Choisissez des missions qui s'adaptent à votre emploi du temps étudiant.",
-        icon: <Schedule sx={{ fontSize: 40, color: '#000' }} />
+        icon: <Schedule sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
       },
       {
         title: "Expérience pro",
         description: "Développez vos compétences et enrichissez votre CV avec des missions concrètes.",
-        icon: <TrendingUp sx={{ fontSize: 40, color: '#000' }} />
+        icon: <TrendingUp sx={{ fontSize: 40, color: tokens.colors.marketingBlack }} />
       }
     ],
     steps: [
@@ -264,11 +221,8 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
 export default function Home(): JSX.Element {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const navigate = useNavigate();
-  const { isAuthenticated } = useAuth();
   const [selectedProfile, setSelectedProfile] = useState<ProfileType>(null);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [formData, setFormData] = useState({
     company: '',
     email: '',
@@ -511,405 +465,68 @@ export default function Home(): JSX.Element {
     }
   };
 
-  const handleNavigation = (path: string): void => {
-    navigate(path);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  const personaCardSx = {
+    p: { xs: 2, sm: 2.5, md: 3 },
+    height: '100%',
+    cursor: 'pointer',
+    border: `1px solid ${tokens.colors.borderSoft}`,
+    borderRadius: { xs: tokens.radius.xl, md: tokens.radius.xxxl },
+    bgcolor: tokens.colors.marketingWhite,
+    transition: tokens.transitions.default,
+    '&:hover': {
+      ...(isMobile ? {} : {
+        transform: 'translateY(-8px)',
+        boxShadow: tokens.shadows.pop,
+        '& .profile-icon': {
+          color: tokens.colors.marketingBlack,
+        }
+      }),
+      boxShadow: isMobile ? tokens.shadows.md : tokens.shadows.pop,
+      borderColor: tokens.colors.borderDefault,
+      '& .profile-icon': {
+        color: tokens.colors.marketingBlack,
+      }
+    },
+    '&:active': isMobile ? {
+      transform: 'scale(0.98)'
+    } : {}
+  };
+
+  const pillButtonSx = {
+    bgcolor: tokens.colors.marketingBlack,
+    color: tokens.colors.marketingWhite,
+    borderRadius: tokens.radius.xxl,
+    textTransform: 'none' as const,
+    fontWeight: 500,
+    boxShadow: 'none',
+    '&:hover': {
+      bgcolor: tokens.colors.marketingBlack,
+      opacity: 0.9,
+      boxShadow: tokens.shadows.lg,
+    },
   };
 
   return (
+    <>
+    <PageMeta
+      title="JS Connect — Plateforme pour Junior-Entreprises"
+      description="JS Connect : plateforme SaaS pour Junior Entreprises et Job Service. Missions, prospection, documents et recrutement."
+    />
     <Box sx={{ 
       minHeight: '100vh', 
       display: 'flex', 
       flexDirection: 'column', 
-      bgcolor: '#fff',
+      bgcolor: tokens.colors.marketingWhite,
       margin: 0,
       padding: 0,
       position: 'relative',
       overflowX: 'hidden'
     }}>
-      {/* Navigation Bar */}
-      <AppBar 
-        position="fixed" 
-        elevation={0} 
-        sx={{ 
-          bgcolor: 'rgba(255, 255, 255, 0.8)',
-          backdropFilter: 'blur(20px)',
-          borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
-          transition: 'all 0.3s ease-in-out',
-          top: 0,
-          left: 0,
-          right: 0,
-          margin: 0,
-          padding: 0,
-          '&:hover': {
-            bgcolor: 'rgba(255, 255, 255, 0.95)',
-          }
-        }}
-      >
-        <Toolbar sx={{ minHeight: '56px !important', py: 1.2, pl: { xs: 2, sm: 4 }, pr: { xs: 2, sm: 4 } }}>
-          <Box
-            component="img"
-            src="/images/logo.png"
-            alt="JS Connect Logo"
-            sx={{
-              height: { xs: 32, sm: 40 },
-              mr: { xs: 2, sm: 4 },
-              transition: 'transform 0.3s ease',
-              '&:hover': {
-                transform: 'scale(1.05)'
-              }
-            }}
-          />
-          {!isMobile && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, ml: { xs: 0, sm: 8 } }}>
-              <Button
-                onClick={() => handleNavigation('/')}
-                sx={{
-                  color: '#1d1d1f',
-                  fontWeight: 400,
-                  fontSize: '0.95rem',
-                  textTransform: 'none',
-                  px: 1.5,
-                  transition: 'font-weight 0.2s',
-                  '&:hover': {
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    opacity: 0.8
-                  }
-                }}
-              >
-                Accueil
-              </Button>
-              <Button
-                onClick={() => handleNavigation('/features')}
-                sx={{
-                  color: '#1d1d1f',
-                  fontWeight: 400,
-                  fontSize: '0.95rem',
-                  textTransform: 'none',
-                  px: 1.5,
-                  transition: 'font-weight 0.2s',
-                  '&:hover': {
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    opacity: 0.8
-                  }
-                }}
-              >
-                Fonctionnalités
-              </Button>
-              {/* Lien Tarifs : UNIQUEMENT visible pour Junior */}
-              {selectedProfile === 'junior' && (
-              <Button
-                onClick={() => handleNavigation('/pricing')}
-                sx={{
-                  color: '#1d1d1f',
-                  fontWeight: 400,
-                  fontSize: '0.95rem',
-                  textTransform: 'none',
-                  px: 1.5,
-                    transition: 'all 0.3s ease',
-                    animation: selectedProfile === 'junior' ? `${fadeIn} 0.3s ease-out` : 'none',
-                  '&:hover': {
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    opacity: 0.8
-                  }
-                }}
-              >
-                Tarifs
-              </Button>
-              )}
-              <Button
-                onClick={handleContactClick}
-                sx={{
-                  color: '#1d1d1f',
-                  fontWeight: 400,
-                  fontSize: '0.95rem',
-                  textTransform: 'none',
-                  px: 1.5,
-                  transition: 'font-weight 0.2s',
-                  '&:hover': {
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    opacity: 0.8
-                  }
-                }}
-              >
-                Contact
-              </Button>
-            </Box>
-          )}
-          <Box sx={{ flexGrow: 1 }} />
-          {isMobile ? (
-            <IconButton
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              sx={{ color: '#1d1d1f' }}
-            >
-              {mobileMenuOpen ? <Close /> : <Menu />}
-            </IconButton>
-          ) : (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              {isAuthenticated ? (
-                <Button
-                  onClick={() => handleNavigation('/app/dashboard')}
-                  variant="outlined"
-                  sx={{
-                    color: '#000',
-                    borderColor: '#000',
-                    fontWeight: 400,
-                    fontSize: '0.85rem',
-                    textTransform: 'none',
-                    borderRadius: '20px',
-                    px: { xs: 2, sm: 3 },
-                    '&:hover': {
-                      borderColor: '#000',
-                      bgcolor: '#000',
-                      color: '#fff'
-                    }
-                  }}
-                >
-                  Accéder à l'espace
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => handleNavigation('/login')}
-                  variant="outlined"
-                  sx={{
-                    color: '#000',
-                    borderColor: '#000',
-                    fontWeight: 400,
-                    fontSize: '0.85rem',
-                    textTransform: 'none',
-                    borderRadius: '20px',
-                    px: { xs: 2, sm: 3 },
-                    '&:hover': {
-                      borderColor: '#000',
-                      bgcolor: '#000',
-                      color: '#fff'
-                    }
-                  }}
-                >
-                  Connexion
-                </Button>
-              )}
-              {selectedProfile ? (
-              <Button
-                  onClick={() => {
-                    if (selectedProfile === 'student') {
-                      handleNavigation('/register?type=student');
-                    } else if (selectedProfile === 'company') {
-                      handleNavigation('/register?type=company');
-                    } else if (selectedProfile === 'junior') {
-                      handleNavigation('/register?type=structure');
-                    }
-                  }}
-                variant="contained"
-                sx={{
-                  bgcolor: '#000',
-                  color: '#fff',
-                  fontWeight: 400,
-                  fontSize: '0.85rem',
-                  textTransform: 'none',
-                  borderRadius: '20px',
-                  px: { xs: 2, sm: 3 },
-                    transition: 'all 0.3s ease',
-                    animation: `${fadeIn} 0.3s ease-out`,
-                  '&:hover': {
-                    bgcolor: '#000',
-                    opacity: 0.9
-                  }
-                }}
-              >
-                  {selectedProfile === 'student' && "S'inscrire"}
-                  {selectedProfile === 'company' && "Déposer une mission"}
-                  {selectedProfile === 'junior' && "Essai gratuit"}
-              </Button>
-              ) : (
-                <Button
-                  onClick={() => handleNavigation('/register?type=student')}
-                  variant="contained"
-                  sx={{
-                    bgcolor: '#000',
-                    color: '#fff',
-                    fontWeight: 400,
-                    fontSize: '0.85rem',
-                    textTransform: 'none',
-                    borderRadius: '20px',
-                    px: { xs: 2, sm: 3 },
-                    '&:hover': {
-                      bgcolor: '#000',
-                      opacity: 0.9
-                    }
-                  }}
-                >
-                  S'inscrire
-                </Button>
-              )}
-            </Box>
-          )}
-        </Toolbar>
-        {/* Menu mobile */}
-        {isMobile && mobileMenuOpen && (
-          <Box
-            sx={{
-              display: 'flex',
-              flexDirection: 'column',
-              p: 2,
-              bgcolor: 'rgba(255, 255, 255, 0.98)',
-              borderTop: '1px solid rgba(0, 0, 0, 0.1)',
-              gap: 1
-            }}
-          >
-            <Button
-              onClick={() => {
-                handleNavigation('/');
-                setMobileMenuOpen(false);
-              }}
-              sx={{
-                color: '#1d1d1f',
-                justifyContent: 'flex-start',
-                textTransform: 'none',
-                fontSize: '0.95rem',
-                py: 1.5
-              }}
-            >
-              Accueil
-            </Button>
-            <Button
-              onClick={() => {
-                handleNavigation('/features');
-                setMobileMenuOpen(false);
-              }}
-              sx={{
-                color: '#1d1d1f',
-                justifyContent: 'flex-start',
-                textTransform: 'none',
-                fontSize: '0.95rem',
-                py: 1.5
-              }}
-            >
-              Fonctionnalités
-            </Button>
-            {selectedProfile === 'junior' && (
-              <Button
-                onClick={() => {
-                  handleNavigation('/pricing');
-                  setMobileMenuOpen(false);
-                }}
-                sx={{
-                  color: '#1d1d1f',
-                  justifyContent: 'flex-start',
-                  textTransform: 'none',
-                  fontSize: '0.95rem',
-                  py: 1.5
-                }}
-              >
-                Tarifs
-              </Button>
-            )}
-            <Button
-              onClick={() => {
-                handleContactClick();
-                setMobileMenuOpen(false);
-              }}
-              sx={{
-                color: '#1d1d1f',
-                justifyContent: 'flex-start',
-                textTransform: 'none',
-                fontSize: '0.95rem',
-                py: 1.5
-              }}
-            >
-              Contact
-            </Button>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 1, pt: 2, borderTop: '1px solid rgba(0, 0, 0, 0.1)' }}>
-              {isAuthenticated ? (
-                <Button
-                  onClick={() => {
-                    handleNavigation('/app/dashboard');
-                    setMobileMenuOpen(false);
-                  }}
-                  variant="outlined"
-                  fullWidth
-                  sx={{
-                    color: '#000',
-                    borderColor: '#000',
-                    textTransform: 'none',
-                    borderRadius: '20px',
-                    py: 1.25
-                  }}
-                >
-                  Accéder à l'espace
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => {
-                    handleNavigation('/login');
-                    setMobileMenuOpen(false);
-                  }}
-                  variant="outlined"
-                  fullWidth
-                  sx={{
-                    color: '#000',
-                    borderColor: '#000',
-                    textTransform: 'none',
-                    borderRadius: '20px',
-                    py: 1.25
-                  }}
-                >
-                  Connexion
-                </Button>
-              )}
-              {selectedProfile ? (
-                <Button
-                  onClick={() => {
-                    if (selectedProfile === 'student') {
-                      handleNavigation('/register?type=student');
-                    } else if (selectedProfile === 'company') {
-                      handleNavigation('/register?type=company');
-                    } else if (selectedProfile === 'junior') {
-                      handleNavigation('/register?type=structure');
-                    }
-                    setMobileMenuOpen(false);
-                  }}
-                  variant="contained"
-                  fullWidth
-                  sx={{
-                    bgcolor: '#000',
-                    color: '#fff',
-                    textTransform: 'none',
-                    borderRadius: '20px',
-                    py: 1.25
-                  }}
-                >
-                  {selectedProfile === 'student' && "S'inscrire"}
-                  {selectedProfile === 'company' && "Déposer une mission"}
-                  {selectedProfile === 'junior' && "Essai gratuit"}
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => {
-                    handleNavigation('/register?type=student');
-                    setMobileMenuOpen(false);
-                  }}
-                  variant="contained"
-                  fullWidth
-                  sx={{
-                    bgcolor: '#000',
-                    color: '#fff',
-                    textTransform: 'none',
-                    borderRadius: '20px',
-                    py: 1.25
-                  }}
-                >
-                  S'inscrire
-                </Button>
-              )}
-            </Box>
-          </Box>
-        )}
-      </AppBar>
+      <PublicNav
+        selectedProfile={selectedProfile ?? 'junior'}
+        showPricing={selectedProfile === 'junior' || selectedProfile === null}
+        onContactClick={handleContactClick}
+      />
 
       {/* Profile Selector Modal */}
       <Dialog
@@ -926,8 +543,8 @@ export default function Home(): JSX.Element {
         disableScrollLock={false}
         PaperProps={{
           sx: {
-            borderRadius: { xs: '16px', md: '24px' },
-            bgcolor: '#fff',
+            borderRadius: { xs: tokens.radius.xl, md: tokens.radius.xxxl },
+            bgcolor: tokens.colors.marketingWhite,
             maxHeight: { xs: '95vh', md: '90vh' },
             m: { xs: 1, md: 2 },
             position: 'relative',
@@ -1004,7 +621,7 @@ export default function Home(): JSX.Element {
                     fontSize: { xs: '1.5rem', sm: '1.75rem', md: '2.5rem' },
                     lineHeight: 1.2,
                     letterSpacing: '-0.02em',
-                    color: '#1d1d1f',
+                    color: tokens.colors.ink,
                     mb: { xs: 0.5, md: 1 },
                     animation: `${fadeIn} 1s ease-out`
                   }}
@@ -1014,7 +631,7 @@ export default function Home(): JSX.Element {
                 <Typography 
                   variant="h6" 
                   sx={{ 
-                    color: '#666',
+                    color: tokens.colors.inkBody,
                     fontWeight: 400,
                     fontSize: { xs: '0.85rem', sm: '0.95rem', md: '1rem' },
                     animation: `${fadeIn} 1s ease-out 0.2s both`
@@ -1029,31 +646,8 @@ export default function Home(): JSX.Element {
                   elevation={0}
                   onClick={() => handleProfileSelect('junior')}
                   sx={{
-                    p: { xs: 2, sm: 2.5, md: 3 },
-                    height: '100%',
-                    cursor: 'pointer',
-                    border: '1px solid rgba(0,0,0,0.08)',
-                    borderRadius: { xs: '16px', md: '24px' },
-                    bgcolor: '#fff',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    ...personaCardSx,
                     animation: `${fadeIn} 1s ease-out 0.3s both`,
-                    '&:hover': {
-                      ...(isMobile ? {} : {
-                        transform: 'translateY(-8px) scale(1.02)',
-                        boxShadow: '0 20px 40px rgba(0,0,0,0.12)',
-                        '& .profile-icon': {
-                          transform: 'scale(1.1) rotate(5deg)',
-                        }
-                      }),
-                      boxShadow: isMobile ? '0 4px 12px rgba(0,0,0,0.08)' : '0 20px 40px rgba(0,0,0,0.12)',
-                      borderColor: 'rgba(0,0,0,0.15)',
-                      '& .profile-icon': {
-                        color: '#000'
-                      }
-                    },
-                    '&:active': isMobile ? {
-                      transform: 'scale(0.98)'
-                    } : {}
                   }}
                 >
                   <Box
@@ -1062,8 +656,8 @@ export default function Home(): JSX.Element {
                       display: 'flex',
                       justifyContent: 'center',
                       mb: { xs: 1.5, md: 2 },
-                      transition: 'all 0.3s ease',
-                      color: '#666'
+                      transition: tokens.transitions.default,
+                      color: tokens.colors.inkMuted
                     }}
                   >
                     <RocketLaunch sx={{ fontSize: { xs: 40, sm: 48, md: 56 } }} />
@@ -1077,7 +671,7 @@ export default function Home(): JSX.Element {
                       fontWeight: 600, 
                       mb: { xs: 1, md: 1.5 },
                       fontSize: { xs: '1rem', sm: '1.1rem', md: '1.25rem' },
-                      color: '#1d1d1f'
+                      color: tokens.colors.ink
                     }}
                   >
                     Junior
@@ -1085,7 +679,7 @@ export default function Home(): JSX.Element {
                   <Typography 
                     textAlign="center" 
                     sx={{ 
-                      color: '#666', 
+                      color: tokens.colors.inkBody, 
                       lineHeight: 1.5,
                       fontSize: { xs: '0.8rem', sm: '0.85rem', md: '0.9rem' }
                     }}
@@ -1099,31 +693,8 @@ export default function Home(): JSX.Element {
                   elevation={0}
                   onClick={() => handleProfileSelect('company')}
                   sx={{
-                    p: { xs: 2, sm: 2.5, md: 3 },
-                    height: '100%',
-                    cursor: 'pointer',
-                    border: '1px solid rgba(0,0,0,0.08)',
-                    borderRadius: { xs: '16px', md: '24px' },
-                    bgcolor: '#fff',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    ...personaCardSx,
                     animation: `${fadeIn} 1s ease-out 0.4s both`,
-                    '&:hover': {
-                      ...(isMobile ? {} : {
-                        transform: 'translateY(-8px) scale(1.02)',
-                        boxShadow: '0 20px 40px rgba(0,0,0,0.12)',
-                        '& .profile-icon': {
-                          transform: 'scale(1.1) rotate(5deg)',
-                        }
-                      }),
-                      boxShadow: isMobile ? '0 4px 12px rgba(0,0,0,0.08)' : '0 20px 40px rgba(0,0,0,0.12)',
-                      borderColor: 'rgba(0,0,0,0.15)',
-                      '& .profile-icon': {
-                        color: '#000'
-                      }
-                    },
-                    '&:active': isMobile ? {
-                      transform: 'scale(0.98)'
-                    } : {}
                   }}
                 >
                   <Box
@@ -1132,8 +703,8 @@ export default function Home(): JSX.Element {
                       display: 'flex',
                       justifyContent: 'center',
                       mb: { xs: 1.5, md: 2 },
-                      transition: 'all 0.3s ease',
-                      color: '#666'
+                      transition: tokens.transitions.default,
+                      color: tokens.colors.inkMuted
                     }}
                   >
                     <Business sx={{ fontSize: { xs: 40, sm: 48, md: 56 } }} />
@@ -1147,7 +718,7 @@ export default function Home(): JSX.Element {
                       fontWeight: 600, 
                       mb: { xs: 1, md: 1.5 },
                       fontSize: { xs: '1rem', sm: '1.1rem', md: '1.25rem' },
-                      color: '#1d1d1f'
+                      color: tokens.colors.ink
                     }}
                   >
                     Entreprise
@@ -1155,7 +726,7 @@ export default function Home(): JSX.Element {
                   <Typography 
                     textAlign="center" 
                     sx={{ 
-                      color: '#666', 
+                      color: tokens.colors.inkBody, 
                       lineHeight: 1.5,
                       fontSize: { xs: '0.8rem', sm: '0.85rem', md: '0.9rem' }
                     }}
@@ -1169,31 +740,8 @@ export default function Home(): JSX.Element {
                   elevation={0}
                   onClick={() => handleProfileSelect('student')}
                   sx={{
-                    p: { xs: 2, sm: 2.5, md: 3 },
-                    height: '100%',
-                    cursor: 'pointer',
-                    border: '1px solid rgba(0,0,0,0.08)',
-                    borderRadius: { xs: '16px', md: '24px' },
-                    bgcolor: '#fff',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    ...personaCardSx,
                     animation: `${fadeIn} 1s ease-out 0.5s both`,
-                    '&:hover': {
-                      ...(isMobile ? {} : {
-                        transform: 'translateY(-8px) scale(1.02)',
-                        boxShadow: '0 20px 40px rgba(0,0,0,0.12)',
-                        '& .profile-icon': {
-                          transform: 'scale(1.1) rotate(5deg)',
-                        }
-                      }),
-                      boxShadow: isMobile ? '0 4px 12px rgba(0,0,0,0.08)' : '0 20px 40px rgba(0,0,0,0.12)',
-                      borderColor: 'rgba(0,0,0,0.15)',
-                      '& .profile-icon': {
-                        color: '#000'
-                      }
-                    },
-                    '&:active': isMobile ? {
-                      transform: 'scale(0.98)'
-                    } : {}
                   }}
                 >
                   <Box
@@ -1202,8 +750,8 @@ export default function Home(): JSX.Element {
                       display: 'flex',
                       justifyContent: 'center',
                       mb: { xs: 1.5, md: 2 },
-                      transition: 'all 0.3s ease',
-                      color: '#666'
+                      transition: tokens.transitions.default,
+                      color: tokens.colors.inkMuted
                     }}
                   >
                     <School sx={{ fontSize: { xs: 40, sm: 48, md: 56 } }} />
@@ -1217,7 +765,7 @@ export default function Home(): JSX.Element {
                       fontWeight: 600, 
                       mb: { xs: 1, md: 1.5 },
                       fontSize: { xs: '1rem', sm: '1.1rem', md: '1.25rem' },
-                      color: '#1d1d1f'
+                      color: tokens.colors.ink
                     }}
                   >
                     Étudiant
@@ -1225,7 +773,7 @@ export default function Home(): JSX.Element {
                   <Typography 
                     textAlign="center" 
                     sx={{ 
-                      color: '#666', 
+                      color: tokens.colors.inkBody, 
                       lineHeight: 1.5,
                       fontSize: { xs: '0.8rem', sm: '0.85rem', md: '0.9rem' }
                     }}
@@ -1243,26 +791,12 @@ export default function Home(): JSX.Element {
       {selectedProfile && currentContent && (
       <Box 
         sx={{ 
-          pt: { xs: 12, md: 16 },
+          pt: { xs: 4, md: 8 },
           pb: { xs: 8, md: 12 },
-          bgcolor: '#fff',
-          position: 'relative',
-          overflow: 'hidden',
-          '&::before': {
-            content: '""',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
-            animation: `${gradientFlow} 15s ease infinite`,
-            backgroundSize: '200% 200%',
-            zIndex: 0
-          }
+          bgcolor: tokens.colors.marketingWhite,
         }}
       >
-        <Container maxWidth="lg" sx={{ position: 'relative', zIndex: 1 }}>
+        <Container maxWidth="lg">
           <Grid container spacing={4} alignItems="center">
             <Grid item xs={12} md={6}>
               <Box
@@ -1279,104 +813,58 @@ export default function Home(): JSX.Element {
                     fontSize: { xs: '1.75rem', sm: '2.25rem', md: '3.5rem' },
                     lineHeight: 1.2,
                     letterSpacing: '-0.02em',
-                    background: 'linear-gradient(45deg, #000 30%, #333 90%)',
-                    backgroundClip: 'text',
-                    textFillColor: 'transparent',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent'
+                    color: tokens.colors.marketingBlack,
                   }}
                 >
-                    {currentContent.title}
+                    {String(currentContent?.title ?? '')}
                 </Typography>
                 <Typography 
                   variant="h5" 
                   sx={{ 
                     mb: { xs: 3, md: 4 }, 
-                    color: '#666',
+                    color: tokens.colors.inkBody,
                     fontWeight: 400,
                     lineHeight: 1.5,
                     fontSize: { xs: '0.95rem', sm: '1.1rem', md: '1.25rem' },
                     animation: `${fadeIn} 1s ease-out 0.2s both`
                   }}
                 >
-                    {currentContent.subtitle}
+                    {String(currentContent?.subtitle ?? '')}
                 </Typography>
                 <Button
-                    onClick={currentContent.ctaAction}
+                    onClick={currentContent?.ctaAction ?? (() => {})}
                   variant="contained"
                   size="large"
                   sx={{
-                    bgcolor: '#000',
-                    color: '#fff',
+                    ...pillButtonSx,
                     px: { xs: 3, sm: 4 },
                     py: { xs: 1.25, sm: 1.5 },
-                    borderRadius: '20px',
                     fontSize: { xs: '0.95rem', sm: '1.1rem' },
-                    fontWeight: 500,
-                    transition: 'all 0.3s ease',
                     animation: `${fadeIn} 1s ease-out 0.4s both`,
-                    '&:hover': {
-                      bgcolor: '#333',
-                      transform: 'translateY(-2px)',
-                      boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
-                    }
                   }}
                 >
-                    {currentContent.cta}
+                    {String(currentContent?.cta ?? '')}
                 </Button>
               </Box>
             </Grid>
             <Grid item xs={12} md={6}>
               <Box
                 sx={{
-                  position: 'relative',
-                  display: { xs: 'none', md: 'block' },
-                  '&::before': {
-                    content: '""',
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: '100%',
-                    height: '100%',
-                    background: 'radial-gradient(circle at center, rgba(0,0,0,0.03) 0%, rgba(0,0,0,0) 70%)',
-                    borderRadius: '30px',
-                    zIndex: 0
-                  }
+                  display: { xs: 'none', md: 'flex' },
+                  justifyContent: 'center',
                 }}
               >
                 <Box
                   component="img"
                   src="/images/hero-illustration.png"
-                    alt="Platform"
+                  alt="Platform"
                   sx={{
                     width: '100%',
                     maxWidth: 600,
                     height: 'auto',
-                    borderRadius: '24px',
-                    boxShadow: '0 20px 40px rgba(0,0,0,0.08)',
-                    position: 'relative',
-                    zIndex: 1,
-                    transition: 'all 0.3s ease',
-                    '&:hover': {
-                      transform: 'translateY(-10px)',
-                      boxShadow: '0 30px 60px rgba(0,0,0,0.12)'
-                    }
-                  }}
-                />
-                <Box
-                  sx={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: '100%',
-                    height: '100%',
-                    background: 'linear-gradient(45deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.05) 100%)',
-                    borderRadius: '30px',
-                    filter: 'blur(20px)',
-                    zIndex: 0,
-                    animation: `${gradientFlow} 15s ease infinite`
+                    borderRadius: tokens.radius.xxxl,
+                    boxShadow: tokens.shadows.xl,
+                    transition: tokens.transitions.default,
                   }}
                 />
               </Box>
@@ -1388,7 +876,7 @@ export default function Home(): JSX.Element {
 
       {/* Features Section - Dynamic Content */}
       {selectedProfile && currentContent && (
-      <Box sx={{ py: { xs: 8, md: 12 }, bgcolor: '#fafafa' }}>
+      <Box sx={{ py: { xs: 8, md: 12 }, bgcolor: tokens.colors.surfaceAlt }}>
         <Container maxWidth="lg">
           <Typography 
             variant="h2" 
@@ -1399,6 +887,7 @@ export default function Home(): JSX.Element {
               fontWeight: 600,
               fontSize: { xs: '2rem', md: '2.5rem' },
               mb: 8,
+              color: tokens.colors.ink,
               animation: `${fadeIn} 1s ease-out`
             }}
           >
@@ -1439,13 +928,13 @@ export default function Home(): JSX.Element {
                       component="h3" 
                       textAlign="center" 
                       gutterBottom
-                      sx={{ fontWeight: 600, mb: 2 }}
+                      sx={{ fontWeight: 600, mb: 2, color: tokens.colors.ink }}
                     >
                       {feature.title}
                     </Typography>
                     <Typography 
                       textAlign="center" 
-                      sx={{ color: '#666', lineHeight: 1.6 }}
+                      sx={{ color: tokens.colors.inkBody, lineHeight: 1.6 }}
                     >
                       {feature.description}
                     </Typography>
@@ -1460,7 +949,7 @@ export default function Home(): JSX.Element {
 
       {/* How it works Section - Dynamic Content */}
       {selectedProfile && currentContent && (
-      <Box sx={{ py: { xs: 8, md: 12 } }}>
+      <Box sx={{ py: { xs: 8, md: 12 }, bgcolor: tokens.colors.marketingWhite }}>
         <Container maxWidth="lg">
           <Typography 
             variant="h2" 
@@ -1471,6 +960,7 @@ export default function Home(): JSX.Element {
               fontWeight: 600,
               fontSize: { xs: '2rem', md: '2.5rem' },
               mb: 8,
+              color: tokens.colors.ink,
               animation: `${fadeIn} 1s ease-out`
             }}
           >
@@ -1482,13 +972,13 @@ export default function Home(): JSX.Element {
                 <Box 
                   sx={{ 
                     textAlign: 'center',
-                    transition: 'all 0.3s ease',
+                    transition: tokens.transitions.default,
                     animation: `${fadeIn} 1s ease-out ${index * 0.1}s both`,
                     '&:hover': {
                       transform: 'translateY(-8px)',
                       '& .step-number': {
                         transform: 'scale(1.1)',
-                        color: '#000'
+                        color: tokens.colors.marketingBlack
                       }
                     }
                   }}
@@ -1497,10 +987,10 @@ export default function Home(): JSX.Element {
                     variant="h3" 
                     className="step-number"
                     sx={{ 
-                      color: '#666',
+                      color: tokens.colors.inkMuted,
                       fontWeight: 600,
                       mb: 2,
-                      transition: 'all 0.3s ease'
+                      transition: tokens.transitions.default
                     }}
                   >
                     {index + 1}
@@ -1508,11 +998,11 @@ export default function Home(): JSX.Element {
                   <Typography 
                     variant="h5" 
                     gutterBottom
-                    sx={{ fontWeight: 600, mb: 2 }}
+                    sx={{ fontWeight: 600, mb: 2, color: tokens.colors.ink }}
                   >
                     {step.title}
                   </Typography>
-                  <Typography sx={{ color: '#666', lineHeight: 1.6 }}>
+                  <Typography sx={{ color: tokens.colors.inkBody, lineHeight: 1.6 }}>
                     {step.description}
                   </Typography>
                 </Box>
@@ -1535,6 +1025,7 @@ export default function Home(): JSX.Element {
               fontWeight: 600,
               fontSize: { xs: '2rem', md: '2.5rem' },
               mb: 2,
+              color: tokens.colors.ink,
               animation: `${fadeIn} 1s ease-out`
             }}
           >
@@ -1545,7 +1036,7 @@ export default function Home(): JSX.Element {
             textAlign="center" 
             sx={{ 
               mb: 6,
-              color: '#666',
+              color: tokens.colors.inkBody,
               fontSize: '1.2rem',
               animation: `${fadeIn} 1s ease-out 0.2s both`
             }}
@@ -1568,12 +1059,11 @@ export default function Home(): JSX.Element {
                   variant="outlined"
                   sx={{ 
                     '& .MuiOutlinedInput-root': {
-                      borderRadius: '12px',
-                      bgcolor: '#fafafa',
-                      transition: 'all 0.3s ease',
+                      borderRadius: tokens.radius.md,
+                      bgcolor: tokens.colors.surfaceAlt,
+                      transition: tokens.transitions.default,
                       '&:hover': {
-                        bgcolor: '#f5f5f5',
-                        transform: 'translateY(-2px)'
+                        bgcolor: tokens.colors.bgSubtle,
                       }
                     }
                   }}
@@ -1591,12 +1081,11 @@ export default function Home(): JSX.Element {
                   variant="outlined"
                   sx={{ 
                     '& .MuiOutlinedInput-root': {
-                      borderRadius: '12px',
-                      bgcolor: '#fafafa',
-                      transition: 'all 0.3s ease',
+                      borderRadius: tokens.radius.md,
+                      bgcolor: tokens.colors.surfaceAlt,
+                      transition: tokens.transitions.default,
                       '&:hover': {
-                        bgcolor: '#f5f5f5',
-                        transform: 'translateY(-2px)'
+                        bgcolor: tokens.colors.bgSubtle,
                       }
                     }
                   }}
@@ -1615,12 +1104,11 @@ export default function Home(): JSX.Element {
                   variant="outlined"
                   sx={{ 
                     '& .MuiOutlinedInput-root': {
-                      borderRadius: '12px',
-                      bgcolor: '#fafafa',
-                      transition: 'all 0.3s ease',
+                      borderRadius: tokens.radius.md,
+                      bgcolor: tokens.colors.surfaceAlt,
+                      transition: tokens.transitions.default,
                       '&:hover': {
-                        bgcolor: '#f5f5f5',
-                        transform: 'translateY(-2px)'
+                        bgcolor: tokens.colors.bgSubtle,
                       }
                     }
                   }}
@@ -1633,22 +1121,14 @@ export default function Home(): JSX.Element {
                   size="large"
                   disabled={loading}
                   sx={{
-                    bgcolor: '#000',
-                    color: '#fff',
+                    ...pillButtonSx,
                     px: 6,
                     py: 1.5,
-                    borderRadius: '20px',
                     fontSize: '1.1rem',
-                    fontWeight: 500,
-                    transition: 'all 0.3s ease',
-                    '&:hover': {
-                      bgcolor: '#333',
-                      transform: 'translateY(-2px)',
-                      boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
-                    },
                     '&:disabled': {
-                      bgcolor: '#ccc',
-                      transform: 'none'
+                      bgcolor: tokens.colors.gray300,
+                      color: tokens.colors.marketingWhite,
+                      opacity: 1,
                     }
                   }}
                 >
@@ -1660,22 +1140,27 @@ export default function Home(): JSX.Element {
         </Container>
       </Box>
 
-      <Snackbar 
-        open={snackbar.open} 
-        autoHideDuration={6000} 
-        onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert 
-          onClose={handleCloseSnackbar} 
-          severity={snackbar.severity}
-          sx={{ width: '100%' }}
+      {createPortal(
+        <Snackbar 
+          open={snackbar.open} 
+          autoHideDuration={6000} 
+          onClose={handleCloseSnackbar}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert 
+            onClose={handleCloseSnackbar} 
+            severity={snackbar.severity}
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
 
       <Footer />
     </Box>
+    </>
   );
 } 

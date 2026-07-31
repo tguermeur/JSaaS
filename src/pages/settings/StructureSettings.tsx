@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -23,9 +24,11 @@ import {
   FormControl,
   Select,
   MenuItem,
-  Switch,
-  FormControlLabel,
-  CircularProgress
+  CircularProgress,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -47,14 +50,21 @@ import {
   Info as InfoIcon,
   Security as SecurityIcon,
   People as PeopleIcon,
-  Person as PersonIcon
+  Person as PersonIcon,
+  Link as LinkIcon,
+  ContentCopy as ContentCopyIcon
 } from '@mui/icons-material';
-import { doc, updateDoc, getDoc, setDoc, collection, query, where, getDocs, addDoc } from 'firebase/firestore';
+import { doc, updateDoc, getDoc, setDoc, collection, query, where, getDocs, addDoc, deleteField } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import SettingsCard from '../../components/settings/SettingsCard';
-import ImportMissionsEtudesDialog from '../../components/missions/ImportMissionsEtudesDialog';
+import { settingsPageStyles, DsToggle, SettingsPanelRow } from '../../components/ds';
+import ImportMissionsEtudesDialog, { type ImportValidationError, type DuplicateHint } from '../../components/missions/ImportMissionsEtudesDialog';
+import { tokens } from '../../theme/tokens';
+import { decryptUsersList, getSafeDisplayName } from '../../utils/decryptUserUtils';
+import UserNameText from '../../components/common/UserNameText';
 
 // Fonction utilitaire pour convertir les dates Firestore en Date
 const toDate = (dateValue: any): Date => {
@@ -82,6 +92,31 @@ const toDate = (dateValue: any): Date => {
   return new Date();
 };
 
+/** Valeur Firestore → chaîne affichable (évite des children React invalides). */
+const asDisplayString = (value: unknown, fallback = 'Non renseigné'): string => {
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return fallback;
+};
+
+/** Normalise les listes Firestore (string ou objet) pour éviter des children React invalides. */
+const normalizeStringList = (items: unknown): string[] => {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object' && 'domain' in item) {
+        return String((item as { domain?: unknown }).domain ?? '').trim();
+      }
+      if (item && typeof item === 'object' && 'name' in item) {
+        return String((item as { name?: unknown }).name ?? '').trim();
+      }
+      return String(item ?? '').trim();
+    })
+    .filter(Boolean);
+};
+
 const StructureSettings: React.FC = () => {
   const theme = useTheme();
   const { currentUser, userData } = useAuth();
@@ -89,8 +124,9 @@ const StructureSettings: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [hourlyRate, setHourlyRate] = useState<number>(0);
+  const [gratificationNetDefault, setGratificationNetDefault] = useState<number>(0);
+  const [gratificationBruteDefault, setGratificationBruteDefault] = useState<number>(0);
   const [daysUntilDue, setDaysUntilDue] = useState<number>(30);
-  const [programs, setPrograms] = useState<string[]>([]);
   const [structureType, setStructureType] = useState<'jobservice' | 'junior'>('jobservice');
   const [cotisationsEnabled, setCotisationsEnabled] = useState<boolean>(false);
   const [cotisationAmount, setCotisationAmount] = useState<number>(0);
@@ -98,12 +134,12 @@ const StructureSettings: React.FC = () => {
   const [cotisationDuration, setCotisationDuration] = useState<'end_of_school' | '1_year' | '2_years' | '3_years'>('1_year');
   const [stripeIntegrationEnabled, setStripeIntegrationEnabled] = useState<boolean>(false);
   const [stripePublishableKey, setStripePublishableKey] = useState<string>('');
-  const [stripeSecretKey, setStripeSecretKey] = useState<string>('');
+  const [stripeSecretKeyInput, setStripeSecretKeyInput] = useState<string>('');
+  const [stripeSecretConfigured, setStripeSecretConfigured] = useState(false);
   const [stripeProductId, setStripeProductId] = useState<string>('');
   const [stripeBuyButtonId, setStripeBuyButtonId] = useState<string>('');
   const [f2aRequiredForMembers, setF2aRequiredForMembers] = useState<boolean>(false);
   const [f2aRequiredForStudents, setF2aRequiredForStudents] = useState<boolean>(false);
-  const [newProgram, setNewProgram] = useState('');
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
@@ -117,6 +153,13 @@ const StructureSettings: React.FC = () => {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importedData, setImportedData] = useState<Record<string, unknown>[]>([]);
   const [importing, setImporting] = useState(false);
+  const [importProcessingAI, setImportProcessingAI] = useState(false);
+  const [importValidationErrors, setImportValidationErrors] = useState<ImportValidationError[]>([]);
+  const [importDuplicateHints, setImportDuplicateHints] = useState<DuplicateHint[]>([]);
+  const [confirmCreateCompaniesOpen, setConfirmCreateCompaniesOpen] = useState(false);
+  const [emailDomains, setEmailDomains] = useState<string[]>([]);
+  const [newEmailDomain, setNewEmailDomain] = useState('');
+  const [savingEmailDomains, setSavingEmailDomains] = useState(false);
   
   // Data for AI matching
   const [users, setUsers] = useState<any[]>([]);
@@ -148,9 +191,17 @@ const StructureSettings: React.FC = () => {
         const missionTypesQuery = query(collection(db, 'mission_types'), where('structureId', '==', structureId));
         const missionTypesSnap = await getDocs(missionTypesQuery);
         setMissionTypes(missionTypesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-        
-      } catch (error) {
-        console.error("Error fetching context data for import matching:", error);
+      } catch (error: unknown) {
+        const isPermissionDenied = error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'permission-denied';
+        if (isPermissionDenied) {
+          setUsers([]);
+          setCompanies([]);
+          setContacts([]);
+          setMissionTypes([]);
+        }
+        if (!isPermissionDenied) {
+          console.error('Error fetching context data for import matching:', error);
+        }
       }
     };
 
@@ -159,52 +210,71 @@ const StructureSettings: React.FC = () => {
     }
   }, [structureId, importDialogOpen]);
 
-  // Helper for fuzzy matching (Levenshtein distance based)
-  const findBestMatch = (input: string, candidates: any[], keys: string[], threshold = 0.7) => {
+  // Similarité Levenshtein pour matching typo-tolerant (coquilles)
+  const levenshteinSimilarity = (a: string, b: string): number => {
+    if (!a || !b) return 0;
+    const lenA = a.length, lenB = b.length;
+    if (lenA === 0 || lenB === 0) return 0;
+    let prevRow = Array(lenB + 1).fill(0).map((_, i) => i);
+    for (let i = 1; i <= lenA; i++) {
+      const currRow = [i];
+      for (let j = 1; j <= lenB; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        currRow[j] = Math.min(prevRow[j] + 1, currRow[j - 1] + 1, prevRow[j - 1] + cost);
+      }
+      prevRow = currRow;
+    }
+    const distance = prevRow[lenB];
+    return 1 - distance / Math.max(lenA, lenB);
+  };
+
+  const findBestMatch = (input: string, candidates: any[], keys: string[], threshold = 0.55) => {
     if (!input || !input.trim()) return null;
     const normalizedInput = input.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    
+
     let bestMatch = null;
     let bestScore = 0;
 
     for (const candidate of candidates) {
-      // Check each key (e.g. 'displayName', 'firstName', 'lastName')
       for (const key of keys) {
         const value = candidate[key];
         if (typeof value === 'string') {
           const normalizedValue = value.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          
-          // Exact match
-          if (normalizedValue === normalizedInput) {
-            return candidate;
-          }
-          
-          // Simple inclusion
+
+          if (normalizedValue === normalizedInput) return candidate;
+
           if (normalizedValue.includes(normalizedInput) || normalizedInput.includes(normalizedValue)) {
-             const score = Math.min(normalizedInput.length, normalizedValue.length) / Math.max(normalizedInput.length, normalizedValue.length);
-             if (score > bestScore) {
-               bestScore = score;
-               bestMatch = candidate;
-             }
+            const score = Math.min(normalizedInput.length, normalizedValue.length) / Math.max(normalizedInput.length, normalizedValue.length);
+            if (score > bestScore) {
+              bestScore = score;
+              bestMatch = candidate;
+            }
           }
-          
-          // Levenshtein-like similarity (simplified for brevity/performance without external lib)
-          // ... (Skipping complex implementation, relying on inclusion + basic checks for now)
+
+          const sim = levenshteinSimilarity(normalizedInput, normalizedValue);
+          if (sim > bestScore && sim >= threshold) {
+            bestScore = sim;
+            bestMatch = candidate;
+          }
         }
       }
-      
-      // Special check for User (First + Last name combination)
+
       if (candidate.firstName && candidate.lastName) {
         const fullName = `${candidate.firstName} ${candidate.lastName}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         const reverseName = `${candidate.lastName} ${candidate.firstName}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        
+
         if (fullName === normalizedInput || reverseName === normalizedInput) return candidate;
         if (fullName.includes(normalizedInput) || normalizedInput.includes(fullName)) {
-             const score = 0.9; 
-             if (score > bestScore) {
-               bestScore = score;
-               bestMatch = candidate;
-             }
+          if (0.9 > bestScore) {
+            bestScore = 0.9;
+            bestMatch = candidate;
+          }
+        }
+        const simFull = levenshteinSimilarity(normalizedInput, fullName);
+        const simRev = levenshteinSimilarity(normalizedInput, reverseName);
+        if (Math.max(simFull, simRev) > bestScore && Math.max(simFull, simRev) >= threshold) {
+          bestScore = Math.max(simFull, simRev);
+          bestMatch = candidate;
         }
       }
     }
@@ -212,17 +282,38 @@ const StructureSettings: React.FC = () => {
     return bestScore >= threshold ? bestMatch : null;
   };
 
+  const computeDuplicateHints = (
+    rows: Record<string, unknown>[],
+    type: 'mission' | 'etude'
+  ): DuplicateHint[] => {
+    const hints: DuplicateHint[] = [];
+    const key = (r: Record<string, unknown>, i: number) => {
+      if (type === 'etude') {
+        return `${String(r.numeroEtude ?? '').trim()}|${String(r.company ?? '').trim()}|${String(r.startDate ?? '').slice(0, 10)}`;
+      }
+      return `${String(r.company ?? '').trim()}|${String(r.title ?? '').trim()}|${String(r.startDate ?? '').slice(0, 10)}`;
+    };
+    const seen = new Map<string, number>();
+    rows.forEach((r, i) => {
+      const k = key(r, i);
+      if (!k || k === '||') return;
+      if (seen.has(k)) hints.push({ rowIndex: i, suggestedDuplicateOf: seen.get(k)! });
+      else seen.set(k, i);
+    });
+    return hints;
+  };
+
   const [savingStates, setSavingStates] = useState<{
     hourlyRate: boolean;
+    gratification: boolean;
     daysUntilDue: boolean;
-    programs: boolean;
     structureType: boolean;
     cotisations: boolean;
     f2a: boolean;
   }>({
     hourlyRate: false,
+    gratification: false,
     daysUntilDue: false,
-    programs: false,
     structureType: false,
     cotisations: false,
     f2a: false
@@ -231,6 +322,8 @@ const StructureSettings: React.FC = () => {
   // États pour suivre les valeurs originales et les modifications
   const [originalValues, setOriginalValues] = useState<{
     hourlyRate: number;
+    gratificationNetDefault: number;
+    gratificationBruteDefault: number;
     daysUntilDue: number;
     structureType: 'jobservice' | 'junior';
     cotisationsEnabled: boolean;
@@ -238,13 +331,15 @@ const StructureSettings: React.FC = () => {
     cotisationDuration: 'end_of_school' | '1_year' | '2_years' | '3_years';
     stripeIntegrationEnabled: boolean;
     stripePublishableKey: string;
-    stripeSecretKey: string;
+    stripeSecretConfigured: boolean;
     stripeProductId: string;
     stripeBuyButtonId: string;
     f2aRequiredForMembers: boolean;
     f2aRequiredForStudents: boolean;
   }>({
     hourlyRate: 0,
+    gratificationNetDefault: 0,
+    gratificationBruteDefault: 0,
     daysUntilDue: 30,
     structureType: 'jobservice',
     cotisationsEnabled: false,
@@ -252,7 +347,7 @@ const StructureSettings: React.FC = () => {
     cotisationDuration: '1_year',
     stripeIntegrationEnabled: false,
     stripePublishableKey: '',
-    stripeSecretKey: '',
+    stripeSecretConfigured: false,
     stripeProductId: '',
     stripeBuyButtonId: '',
     f2aRequiredForMembers: false,
@@ -261,12 +356,14 @@ const StructureSettings: React.FC = () => {
 
   const [hasChanges, setHasChanges] = useState<{
     hourlyRate: boolean;
+    gratification: boolean;
     daysUntilDue: boolean;
     structureType: boolean;
     cotisations: boolean;
     f2a: boolean;
   }>({
     hourlyRate: false,
+    gratification: false,
     daysUntilDue: false,
     structureType: false,
     cotisations: false,
@@ -280,6 +377,7 @@ const StructureSettings: React.FC = () => {
     id: string;
     firstName: string;
     lastName: string;
+    displayName?: string;
     email: string;
     subscriptionPaidAt: Date;
     subscriptionExpiresAt: Date;
@@ -350,6 +448,8 @@ const StructureSettings: React.FC = () => {
       if (structureDoc.exists()) {
         const data = structureDoc.data();
         const hourlyRateValue = data.hourlyRate || 0;
+        const gratificationNetValue = data.defaultGratificationNet ?? 0;
+        const gratificationBruteValue = data.defaultGratificationBrute ?? 0;
         const daysUntilDueValue = data.daysUntilDue || 30;
         const structureTypeValue = data.structureType || 'jobservice';
         const cotisationsEnabledValue = data.cotisationsEnabled || false;
@@ -357,13 +457,15 @@ const StructureSettings: React.FC = () => {
         const cotisationDurationValue = data.cotisationDuration || '1_year';
         const stripeIntegrationEnabledValue = data.stripeIntegrationEnabled || false;
         const stripePublishableKeyValue = data.stripePublishableKey || '';
-        const stripeSecretKeyValue = data.stripeSecretKey || '';
+        const stripeSecretConfiguredValue = !!(data.stripeSecretConfigured || data.stripeSecretKey);
         const stripeProductIdValue = data.stripeProductId || '';
         const stripeBuyButtonIdValue = data.stripeBuyButtonId || '';
         const f2aRequiredForMembersValue = data.f2aRequiredForMembers || false;
         const f2aRequiredForStudentsValue = data.f2aRequiredForStudents || false;
 
         setHourlyRate(hourlyRateValue);
+        setGratificationNetDefault(gratificationNetValue);
+        setGratificationBruteDefault(gratificationBruteValue);
         setDaysUntilDue(daysUntilDueValue);
         setStructureType(structureTypeValue);
         setCotisationsEnabled(cotisationsEnabledValue);
@@ -372,31 +474,36 @@ const StructureSettings: React.FC = () => {
         setCotisationDuration(cotisationDurationValue);
         setStripeIntegrationEnabled(stripeIntegrationEnabledValue);
         setStripePublishableKey(stripePublishableKeyValue);
-        setStripeSecretKey(stripeSecretKeyValue);
+        setStripeSecretConfigured(stripeSecretConfiguredValue);
+        setStripeSecretKeyInput('');
         setStripeProductId(stripeProductIdValue);
         setStripeBuyButtonId(stripeBuyButtonIdValue);
         setF2aRequiredForMembers(f2aRequiredForMembersValue);
         setF2aRequiredForStudents(f2aRequiredForStudentsValue);
         
+        setEmailDomains(normalizeStringList(data.emailDomains ?? data.domaines));
+
         // Charger les informations de l'organisation
         setOrganization({
-          name: data.nom || 'Structure non détectée',
-          logo: data.logo || '',
-          address: data.address || data.adresse || 'Non renseigné',
-          city: data.city || data.ville || 'Non renseigné',
-          postalCode: data.postalCode || data.codePostal || 'Non renseigné',
-          phone: data.phone || data.telephone || 'Non renseigné',
-          email: data.email || 'Non renseigné',
-          website: data.website || data.siteWeb || 'Non renseigné',
-          description: data.description || 'Non renseigné',
-          siret: data.siret || '',
-          tvaNumber: data.tvaNumber || '',
-          apeCode: data.apeCode || ''
+          name: asDisplayString(data.nom, 'Structure non détectée'),
+          logo: asDisplayString(data.logo, ''),
+          address: asDisplayString(data.address ?? data.adresse),
+          city: asDisplayString(data.city ?? data.ville),
+          postalCode: asDisplayString(data.postalCode ?? data.codePostal),
+          phone: asDisplayString(data.phone ?? data.telephone),
+          email: asDisplayString(data.email),
+          website: asDisplayString(data.website ?? data.siteWeb),
+          description: asDisplayString(data.description),
+          siret: asDisplayString(data.siret, ''),
+          tvaNumber: asDisplayString(data.tvaNumber, ''),
+          apeCode: asDisplayString(data.apeCode, '')
         });
 
         // Sauvegarder les valeurs originales
         setOriginalValues({
           hourlyRate: hourlyRateValue,
+          gratificationNetDefault: gratificationNetValue,
+          gratificationBruteDefault: gratificationBruteValue,
           daysUntilDue: daysUntilDueValue,
           structureType: structureTypeValue,
           cotisationsEnabled: cotisationsEnabledValue,
@@ -404,20 +511,12 @@ const StructureSettings: React.FC = () => {
           cotisationDuration: cotisationDurationValue,
           stripeIntegrationEnabled: stripeIntegrationEnabledValue,
           stripePublishableKey: stripePublishableKeyValue,
-          stripeSecretKey: stripeSecretKeyValue,
+          stripeSecretConfigured: stripeSecretConfiguredValue,
           stripeProductId: stripeProductIdValue,
           stripeBuyButtonId: stripeBuyButtonIdValue,
           f2aRequiredForMembers: f2aRequiredForMembersValue,
           f2aRequiredForStudents: f2aRequiredForStudentsValue
         });
-      }
-
-      const programsDoc = await getDoc(doc(db, 'programs', sid));
-      if (programsDoc.exists()) {
-        const data = programsDoc.data();
-        setPrograms(data.programs || []);
-      } else {
-        setPrograms([]);
       }
 
       // Charger les utilisateurs avec des cotisations payées
@@ -448,13 +547,15 @@ const StructureSettings: React.FC = () => {
           id: doc.id,
           firstName: data.firstName || '',
           lastName: data.lastName || '',
+          displayName: data.displayName || '',
           email: data.email || '',
           subscriptionPaidAt: toDate(data.subscriptionPaidAt),
           subscriptionExpiresAt: toDate(data.subscriptionExpiresAt)
         };
       });
-      
-      setUsersWithSubscriptions(users);
+
+      const decrypted = await decryptUsersList(users);
+      setUsersWithSubscriptions(decrypted);
     } catch (error) {
       console.error('Erreur lors du chargement des utilisateurs avec cotisations:', error);
     } finally {
@@ -466,6 +567,8 @@ const StructureSettings: React.FC = () => {
   const checkForChanges = () => {
     setHasChanges({
       hourlyRate: hourlyRate !== originalValues.hourlyRate,
+      gratification: gratificationNetDefault !== originalValues.gratificationNetDefault ||
+                    gratificationBruteDefault !== originalValues.gratificationBruteDefault,
       daysUntilDue: daysUntilDue !== originalValues.daysUntilDue,
       structureType: structureType !== originalValues.structureType,
       cotisations: cotisationsEnabled !== originalValues.cotisationsEnabled ||
@@ -473,7 +576,8 @@ const StructureSettings: React.FC = () => {
                   cotisationDuration !== originalValues.cotisationDuration ||
                   stripeIntegrationEnabled !== originalValues.stripeIntegrationEnabled ||
                   stripePublishableKey !== originalValues.stripePublishableKey ||
-                  stripeSecretKey !== originalValues.stripeSecretKey ||
+                  stripeSecretKeyInput.trim() !== '' ||
+                  stripeSecretConfigured !== originalValues.stripeSecretConfigured ||
                   stripeProductId !== originalValues.stripeProductId ||
                   stripeBuyButtonId !== originalValues.stripeBuyButtonId,
       f2a: f2aRequiredForMembers !== originalValues.f2aRequiredForMembers ||
@@ -484,8 +588,8 @@ const StructureSettings: React.FC = () => {
   // Effet pour vérifier les changements
   useEffect(() => {
     checkForChanges();
-  }, [hourlyRate, daysUntilDue, structureType, cotisationsEnabled, cotisationAmount, cotisationDuration,
-      stripeIntegrationEnabled, stripePublishableKey, stripeSecretKey, stripeProductId, stripeBuyButtonId,
+  }, [hourlyRate, gratificationNetDefault, gratificationBruteDefault, daysUntilDue, structureType, cotisationsEnabled, cotisationAmount, cotisationDuration,
+      stripeIntegrationEnabled, stripePublishableKey, stripeSecretKeyInput, stripeSecretConfigured, stripeProductId, stripeBuyButtonId,
       f2aRequiredForMembers, f2aRequiredForStudents]);
 
   const handleSaveHourlyRate = async () => {
@@ -514,6 +618,31 @@ const StructureSettings: React.FC = () => {
     }
   };
 
+  const handleSaveGratification = async () => {
+    if (!structureId) return;
+
+    try {
+      setSavingStates(prev => ({ ...prev, gratification: true }));
+      await updateDoc(doc(db, 'structures', structureId), {
+        defaultGratificationNet: gratificationNetDefault,
+        defaultGratificationBrute: gratificationBruteDefault
+      });
+
+      setOriginalValues(prev => ({
+        ...prev,
+        gratificationNetDefault,
+        gratificationBruteDefault
+      }));
+
+      showSnackbar('Gratifications par défaut mises à jour avec succès', 'success');
+    } catch (error) {
+      console.error('Erreur lors de la mise à jour des gratifications:', error);
+      showSnackbar('Erreur lors de la mise à jour des gratifications', 'error');
+    } finally {
+      setSavingStates(prev => ({ ...prev, gratification: false }));
+    }
+  };
+
   const handleSaveDaysUntilDue = async () => {
     if (!structureId) return;
 
@@ -535,23 +664,6 @@ const StructureSettings: React.FC = () => {
       showSnackbar('Erreur lors de la mise à jour de la configuration des factures', 'error');
     } finally {
       setSavingStates(prev => ({ ...prev, daysUntilDue: false }));
-    }
-  };
-
-  const handleSavePrograms = async () => {
-    if (!structureId) return;
-
-    try {
-      setSavingStates(prev => ({ ...prev, programs: true }));
-      await updateDoc(doc(db, 'structures', structureId), {
-        programs
-      });
-      showSnackbar('Programmes mis à jour avec succès', 'success');
-    } catch (error) {
-      console.error('Erreur lors de la mise à jour des programmes:', error);
-      showSnackbar('Erreur lors de la mise à jour des programmes', 'error');
-    } finally {
-      setSavingStates(prev => ({ ...prev, programs: false }));
     }
   };
 
@@ -584,133 +696,341 @@ const StructureSettings: React.FC = () => {
     }
   };
 
-  const handleFileParsed = (rows: Record<string, unknown>[]) => {
+  // Étapes missions (cohérent avec MissionDetails)
+  const MISSION_ETAPES = ['Négociation', 'Recrutement', 'Date de mission', 'Facturation', 'Audit', 'Archivé'] as const;
+  const normalizeEtape = (v: string): string => {
+    const s = (v || '').toString().trim().toLowerCase();
+    const map: Record<string, string> = {
+      'négociation': 'Négociation', 'negociation': 'Négociation', 'négoc': 'Négociation',
+      'recrutement': 'Recrutement', 'recrut': 'Recrutement',
+      'date de mission': 'Date de mission', 'date mission': 'Date de mission', 'mission': 'Date de mission',
+      'facturation': 'Facturation', 'facturé': 'Facturation', 'facture': 'Facturation',
+      'audit': 'Audit',
+      'archivé': 'Archivé', 'archive': 'Archivé', 'clôturé': 'Archivé', 'cloture': 'Archivé', 'termine': 'Archivé', 'terminé': 'Archivé',
+    };
+    if (map[s]) return map[s];
+    const canonical = MISSION_ETAPES.find((e) => e.toLowerCase() === s);
+    return canonical || 'Négociation';
+  };
+  const normalizeStatus = (v: string): string => {
+    const s = (v || '').toString().trim().toLowerCase();
+    if (/en attente|attente|pending/i.test(s)) return 'En attente';
+    if (/en cours|cours|en_cours|in progress/i.test(s)) return 'En cours';
+    if (/terminé|termine|done|completed/i.test(s)) return 'Terminé';
+    if (/annulé|annule|canceled/i.test(s)) return 'Annulé';
+    return v || 'En attente';
+  };
+
+  // Statuts autorisés pour les études (cohérent avec EtudeDetails getStatusColor)
+  const normalizeStatusEtude = (v: string): string => {
+    const s = (v || '').toString().trim().toLowerCase();
+    if (/en attente|attente|pending/i.test(s)) return 'En attente';
+    if (/en cours|cours|en_cours|in progress/i.test(s)) return 'En cours';
+    if (/terminé|termine|done|completed/i.test(s)) return 'Terminé';
+    return 'En attente';
+  };
+
+  const parseDateToDbFormat = (dateStr: string): string => {
+    if (!dateStr || !String(dateStr).trim()) return '';
+    const raw = String(dateStr).trim();
+    // Déjà au format ISO (YYYY-MM-DD ou avec heure) → garder cohérent pour affichage
+    if (/^\d{4}-\d{2}-\d{2}(T|\s|$)/.test(raw)) {
+      const isoDate = raw.slice(0, 10);
+      const date = new Date(isoDate);
+      if (!isNaN(date.getTime())) return date.toISOString();
+    }
+    const parts = raw.split(/[/\-.]/).map((p) => p.trim());
+    if (parts.length === 3) {
+      const [a, b, c] = parts;
+      const y = c.length === 4 ? c : a.length === 4 ? a : null;
+      const iso = y === c
+        ? `${c}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`  // DD/MM/YYYY ou DD-MM-YYYY
+        : y === a
+          ? `${a}-${b.padStart(2, '0')}-${c.padStart(2, '0')}`  // YYYY-MM-DD
+          : `${c}-${b.padStart(2, '0')}-${a.padStart(2, '0')}`;
+      const date = new Date(iso);
+      if (!isNaN(date.getTime())) return date.toISOString();
+    }
+    const date = new Date(raw);
+    if (!isNaN(date.getTime())) return date.toISOString();
+    return '';
+  };
+
+  const buildImportedDataFromRows = (rows: Record<string, unknown>[]): Record<string, unknown>[] => {
     if (structureType === 'junior') {
-      const etudes = rows.map((row: any) => ({
-        numeroEtude: row.numeroEtude || '',
-        company: row.company || '',
-        location: row.location || '',
-        startDate: row.startDate || '',
-        endDate: row.endDate || '',
-        consultantCount: parseInt(row.consultantCount) || 0,
-        hours: parseInt(row.hours) || 0,
-        status: row.status || 'En attente',
-        structureId: structureId || '',
-        chargeId: currentUser?.uid || '',
-        chargeName: currentUser?.displayName || '',
-        isPublic: true,
-        etape: 'Négociation' as const
-      }));
-      setImportedData(etudes);
-    } else {
-      const missions = rows.map((row: any) => {
-        const studentCountVal = row.studentCount != null && row.studentCount !== '' ? parseInt(String(row.studentCount), 10) : 0;
-        const hoursVal = row.hours != null && row.hours !== '' ? parseInt(String(row.hours), 10) : 0;
-        const priceHTVal = row.priceHT != null && row.priceHT !== '' ? parseFloat(String(row.priceHT).replace(',', '.')) : undefined;
-        const prixHTVal = row.prixHT != null && row.prixHT !== '' ? parseFloat(String(row.prixHT).replace(',', '.')) : priceHTVal;
-        
-        // AI/Fuzzy Matching
-        const rawChargeName = (row.chargeName || row.charge_name || '').toString().trim();
-        const matchedCharge = findBestMatch(rawChargeName, users, ['displayName', 'firstName', 'lastName']);
-        
-        const rawCompanyName = (row.company || row.entreprise || '').toString().trim();
-        const matchedCompany = findBestMatch(rawCompanyName, companies, ['name']);
-        
-        const rawContactName = (row.contact || row.contactName || '').toString().trim();
-        const potentialContacts = matchedCompany ? contacts.filter(c => c.companyId === matchedCompany.id) : contacts;
-        const matchedContact = findBestMatch(rawContactName, potentialContacts, ['firstName', 'lastName', 'email']);
-
-        const rawTypeName = (row.type || row.typeMission || '').toString().trim();
-        const matchedType = findBestMatch(rawTypeName, missionTypes, ['name']);
-
-        // Date Parsing Helper
-        const parseDate = (dateStr: string) => {
-            if (!dateStr) return '';
-            let date = new Date(dateStr);
-            if (!isNaN(date.getTime())) return date.toISOString();
-            const parts = dateStr.split('/');
-            if (parts.length === 3) {
-                date = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-                if (!isNaN(date.getTime())) return date.toISOString();
-            }
-            return ''; 
-        };
-
-        // Students Parsing
-        const rawStudents = (row.students || row.etudiants || '').toString().trim();
-        const assignedStudents = [];
-        if (rawStudents) {
-            const studentEntries = rawStudents.split(';');
-            for (const entry of studentEntries) {
-                const [name, hours] = entry.split(':');
-                const matchedStudent = findBestMatch(name, users, ['displayName', 'firstName', 'lastName']);
-                if (matchedStudent) {
-                    assignedStudents.push({ 
-                        userId: matchedStudent.id, 
-                        name: `${matchedStudent.firstName} ${matchedStudent.lastName}`,
-                        hours: hours ? parseFloat(hours) : 0
-                    });
-                }
-            }
-        }
-
-        const contactEmail = (row.contactEmail || row.contact_email || matchedContact?.email || '').toString().trim();
-        const contactFirstName = (row.contactFirstName || row.contact_firstName || row.contactPrenom || matchedContact?.firstName || '').toString().trim();
-        const contactLastName = (row.contactLastName || row.contact_lastName || row.contactNom || matchedContact?.lastName || '').toString().trim();
-        const contactPhone = (row.contactPhone || row.contact_phone || row.contactTelephone || matchedContact?.phone || '').toString().trim();
-        const contactPosition = (row.contactPosition || row.contact_position || row.contactPoste || matchedContact?.position || '').toString().trim();
-        
-        const contact =
-          contactEmail || contactFirstName || contactLastName || contactPhone || contactPosition
-            ? { email: contactEmail || undefined, firstName: contactFirstName || undefined, lastName: contactLastName || undefined, phone: contactPhone || undefined, position: contactPosition || undefined }
-            : undefined;
-
+      return rows.map((row: any) => {
+        const rawChargeName = (row.chargeName || row.charge_etudes || row.charge_name || '').toString().trim();
+        const matchedCharge = rawChargeName ? findBestMatch(rawChargeName, users, ['displayName', 'firstName', 'lastName']) : null;
+        const startDateRaw = (row.startDate || row.start_date || row.dateDebut || row.debut || '').toString().trim();
+        const endDateRaw = (row.endDate || row.end_date || row.dateFin || row.fin || '').toString().trim();
+        const parsedStart = parseDateToDbFormat(startDateRaw);
+        const parsedEnd = parseDateToDbFormat(endDateRaw);
         return {
-          numeroMission: (row.numeroMission || row.numero_mission || '').toString().trim(),
-          
-          company: matchedCompany ? matchedCompany.name : rawCompanyName,
-          companyId: matchedCompany ? matchedCompany.id : undefined,
-          
-          location: (row.location || row.lieu || '').toString().trim(),
-          
-          startDate: parseDate((row.startDate || row.start_date || row.dateDebut || '').toString()),
-          endDate: parseDate((row.endDate || row.end_date || row.dateFin || '').toString()),
-          
-          studentCount: isNaN(studentCountVal) ? 0 : studentCountVal,
-          hours: isNaN(hoursVal) ? 0 : hoursVal,
-          status: (row.status || row.statut || 'En attente').toString().trim(),
+          numeroEtude: row.numeroEtude || '',
+          company: row.company || '',
+          location: row.location || '',
+          startDate: parsedStart || parsedEnd,
+          endDate: parsedEnd,
+          consultantCount: parseInt(row.consultantCount) || 0,
+          hours: parseInt(row.hours) || 0,
+          status: normalizeStatusEtude((row.status || 'En attente').toString()),
           structureId: structureId || '',
-          
           chargeId: matchedCharge ? matchedCharge.id : (currentUser?.uid || ''),
-          chargeName: matchedCharge ? `${matchedCharge.firstName} ${matchedCharge.lastName}` : (rawChargeName || currentUser?.displayName || ''),
-          
-          title: (row.title || row.titre || row.description || '').toString().trim(),
-          description: (row.description || row.description || '').toString().trim(),
-          priceHT: prixHTVal ?? priceHTVal,
-          prixHT: prixHTVal ?? priceHTVal,
-          totalTTC: row.totalTTC ? parseFloat(String(row.totalTTC).replace(',', '.')) : undefined,
-          
-          missionTypeId: matchedType ? matchedType.id : undefined,
-          type: matchedType ? matchedType.name : 'standard', 
-          
-          salary: (row.salary || row.remuneration || '').toString().trim(),
-          mandat: (row.mandat || '').toString().trim(),
-          etape: (row.etape || 'Négociation').toString().trim(),
-          isPublic: row.isPublic !== 'false' && row.isPublic !== '0',
-          
-          contactId: matchedContact ? matchedContact.id : undefined,
-          contact,
-          
-          expenses: (row.expenses || row.depenses || '').toString(),
-          expenseReportsAmount: row.expenseReports ? parseFloat(String(row.expenseReports).replace(',', '.')) : 0,
-          assignedStudents, 
-          
-          isImported: true,
-          source: 'import_csv'
+          chargeName: matchedCharge ? getSafeDisplayName(matchedCharge) : (rawChargeName || getSafeDisplayName(userData)),
+          isPublic: true,
+          etape: 'Négociation' as const
         };
       });
-      setImportedData(missions);
     }
+    return rows.map((row: any) => {
+      const studentCountVal = row.studentCount != null && row.studentCount !== '' ? parseInt(String(row.studentCount), 10) : 0;
+      const hoursVal = row.hours != null && row.hours !== '' ? parseInt(String(row.hours), 10) : 0;
+      const priceHTVal = row.priceHT != null && row.priceHT !== '' ? parseFloat(String(row.priceHT).replace(',', '.')) : undefined;
+      const prixHTVal = row.prixHT != null && row.prixHT !== '' ? parseFloat(String(row.prixHT).replace(',', '.')) : priceHTVal;
+
+      const rawChargeName = (row.chargeName || row.charge_name || '').toString().trim();
+      const matchedCharge = findBestMatch(rawChargeName, users, ['displayName', 'firstName', 'lastName']);
+      const rawCompanyName = (row.company || row.entreprise || '').toString().trim();
+      const matchedCompany = findBestMatch(rawCompanyName, companies, ['name']);
+      const rawContactName = (row.contact || row.contactName || '').toString().trim();
+      const potentialContacts = matchedCompany ? contacts.filter(c => c.companyId === matchedCompany.id) : contacts;
+      const matchedContact = findBestMatch(rawContactName, potentialContacts, ['firstName', 'lastName', 'email']);
+      const rawTypeName = (row.type || row.typeMission || '').toString().trim();
+      const matchedType = findBestMatch(rawTypeName, missionTypes, ['name']);
+
+      const rawStudents = (row.students || row.etudiants || '').toString().trim();
+      const assignedStudents: { userId: string; name: string; hours: number }[] = [];
+      if (rawStudents) {
+        const studentEntries = rawStudents.split(';');
+        for (const entry of studentEntries) {
+          const [name, hours] = entry.split(':');
+          const matchedStudent = findBestMatch(name?.trim(), users, ['displayName', 'firstName', 'lastName']);
+          if (matchedStudent) {
+            assignedStudents.push({
+              userId: matchedStudent.id,
+              name: getSafeDisplayName(matchedStudent),
+              hours: hours ? parseFloat(String(hours).replace(',', '.')) : 0
+            });
+          }
+        }
+      }
+
+      const contactEmail = (row.contactEmail || row.contact_email || matchedContact?.email || '').toString().trim();
+      const contactFirstName = (row.contactFirstName || row.contact_firstName || row.contactPrenom || matchedContact?.firstName || '').toString().trim();
+      const contactLastName = (row.contactLastName || row.contact_lastName || row.contactNom || matchedContact?.lastName || '').toString().trim();
+      const contactPhone = (row.contactPhone || row.contact_phone || row.contactTelephone || matchedContact?.phone || '').toString().trim();
+      const contactPosition = (row.contactPosition || row.contact_position || row.contactPoste || matchedContact?.position || '').toString().trim();
+      const contact =
+        contactEmail || contactFirstName || contactLastName || contactPhone || contactPosition
+          ? { email: contactEmail || undefined, firstName: contactFirstName || undefined, lastName: contactLastName || undefined, phone: contactPhone || undefined, position: contactPosition || undefined }
+          : undefined;
+
+      const totalTTCVal = (row.totalTTC != null && row.totalTTC !== ''
+        ? parseFloat(String(row.totalTTC).replace(/\s/g, '').replace(',', '.'))
+        : (row.montantFacture != null && row.montantFacture !== '' ? parseFloat(String(row.montantFacture).replace(/\s/g, '').replace(',', '.')) : undefined));
+
+      return {
+        numeroMission: (row.numeroMission || row.numero_mission || '').toString().trim(),
+        company: matchedCompany ? matchedCompany.name : rawCompanyName,
+        companyId: matchedCompany ? matchedCompany.id : undefined,
+        location: (row.location || row.lieu || '').toString().trim(),
+        startDate: parseDateToDbFormat((row.startDate || row.start_date || row.dateDebut || '').toString()),
+        endDate: parseDateToDbFormat((row.endDate || row.end_date || row.dateFin || '').toString()),
+        studentCount: isNaN(studentCountVal) ? 0 : studentCountVal,
+        hours: isNaN(hoursVal) ? 0 : hoursVal,
+        status: normalizeStatus((row.status || row.statut || 'En attente').toString()),
+        structureId: structureId || '',
+        chargeId: matchedCharge ? matchedCharge.id : (currentUser?.uid || ''),
+        chargeName: matchedCharge ? getSafeDisplayName(matchedCharge) : (rawChargeName || getSafeDisplayName(userData)),
+        title: (row.title || row.titre || row.description || '').toString().trim(),
+        description: (row.description || '').toString().trim(),
+        priceHT: prixHTVal ?? priceHTVal,
+        prixHT: prixHTVal ?? priceHTVal,
+        totalTTC: totalTTCVal,
+        missionTypeId: matchedType ? matchedType.id : undefined,
+        type: matchedType ? matchedType.name : 'standard',
+        salary: (row.salary || row.remuneration || '').toString().trim(),
+        mandat: (row.mandat || '').toString().trim(),
+        etape: normalizeEtape((row.etape || 'Négociation').toString()),
+        isPublic: row.isPublic !== 'false' && row.isPublic !== '0',
+        contactId: matchedContact ? matchedContact.id : undefined,
+        contact,
+        expenses: (row.expenses || row.depenses || '').toString(),
+        expenseReportsAmount: row.expenseReports ? parseFloat(String(row.expenseReports).replace(',', '.')) : 0,
+        assignedStudents,
+        isImported: true,
+        source: 'import_csv'
+      };
+    });
+  };
+
+  // Repli client si la Cloud Function (getImportColumnMapping) n'est pas déployée ou échoue
+  const getFallbackMapping = (headers: string[], type: 'mission' | 'etude'): Record<string, string> => {
+    const normalize = (s: string) => s.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const etude: Record<string, string> = {
+      'n° étude': 'numeroEtude', 'no étude': 'numeroEtude', 'numero etude': 'numeroEtude', 'n° etude': 'numeroEtude',
+      'client / entreprise': 'company', 'client': 'company', 'entreprise': 'company', 'client/entreprise': 'company',
+      'ville': 'location', 'lieu': 'location',
+      'début': 'startDate', 'date début': 'startDate', 'date de début': 'startDate', 'date': 'startDate',
+      'fin': 'endDate', 'date fin': 'endDate', 'date de fin': 'endDate',
+      'nb consultants': 'consultantCount', 'consultants': 'consultantCount', 'nb consultant': 'consultantCount',
+      'heures': 'hours',
+      'chargé d\'études': 'chargeName', 'charge etudes': 'chargeName', 'chargé d\'etudes': 'chargeName',
+      'chargé': 'chargeName', 'charge': 'chargeName', 'chargé detudes': 'chargeName', 'charge detudes': 'chargeName',
+      'chargé d\'étude': 'chargeName', 'charge étude': 'chargeName',
+      'montant facture': 'montantFacture',
+      'statut': 'status',
+    };
+    const mission: Record<string, string> = {
+      'n° mission': 'numeroMission', 'no mission': 'numeroMission', 'numero mission': 'numeroMission',
+      'entreprise': 'company', 'client': 'company',
+      'titre': 'title', 'intitulé': 'title',
+      'lieu': 'location', 'ville': 'location',
+      'date début': 'startDate', 'début': 'startDate', 'date de début': 'startDate',
+      'date fin': 'endDate', 'fin': 'endDate', 'date de fin': 'endDate',
+      'étudiants': 'studentCount', 'etudiants': 'studentCount', 'nb étudiants': 'studentCount',
+      'heures': 'hours',
+      'chargé': 'chargeName', 'charge': 'chargeName', 'chargé de mission': 'chargeName', 'charge de mission': 'chargeName',
+      'prix ht': 'priceHT', 'prixht': 'priceHT',
+      'total ttc': 'totalTTC', 'totalttc': 'totalTTC', 'montant facture': 'totalTTC', 'facture ttc': 'totalTTC', 'montant ttc': 'totalTTC', 'facture': 'totalTTC',
+      'statut': 'status',
+      'étape': 'etape', 'etape': 'etape',
+      'salary': 'salary', 'rémunération': 'salary', 'remuneration': 'salary',
+      'mandat': 'mandat',
+      'type': 'type',
+    };
+    const map = type === 'etude' ? etude : mission;
+    const out: Record<string, string> = {};
+    headers.forEach((h) => {
+      const n = normalize(h);
+      if (map[n]) out[h] = map[n];
+      else if (type === 'etude' && (n === 'numeroetude' || n === 'n etude' || n === 'n° etude')) out[h] = 'numeroEtude';
+      else if (type === 'mission' && (n === 'numero mission' || n === 'n mission')) out[h] = 'numeroMission';
+    });
+    return out;
+  };
+
+  const applyMapping = (rows: Record<string, unknown>[], mapping: Record<string, string>): Record<string, unknown>[] =>
+    rows.map((row: Record<string, unknown>) => {
+      const out: Record<string, unknown> = {};
+      for (const [csvH, internalKey] of Object.entries(mapping)) {
+        if (row[csvH] !== undefined) out[internalKey] = row[csvH];
+      }
+      return out;
+    });
+
+  const handleFileParsed = async (rawRows: Record<string, unknown>[]) => {
+    if (!structureId) {
+      showSnackbar('Structure non chargée', 'error');
+      return;
+    }
+    if (!rawRows.length) {
+      setImportedData([]);
+      setImportValidationErrors([]);
+      setImportDuplicateHints([]);
+      return;
+    }
+    setImportProcessingAI(true);
+    setImportValidationErrors([]);
+    setImportDuplicateHints([]);
+    try {
+      const type: 'mission' | 'etude' = structureType === 'junior' ? 'etude' : 'mission';
+      const expectedKeys = type === 'etude'
+        ? ['numeroEtude', 'company', 'location', 'startDate', 'endDate', 'consultantCount', 'hours', 'chargeName', 'montantFacture', 'status']
+        : ['numeroMission', 'company', 'title', 'location', 'startDate', 'endDate', 'studentCount', 'hours', 'chargeName', 'priceHT', 'totalTTC', 'salary', 'mandat', 'status', 'etape'];
+      const headers = (Object.keys(rawRows[0] as Record<string, unknown>) as string[]).filter((h) => String(h ?? '').trim() !== '');
+      const needMapping = headers.length > 0 && !headers.every((h: string) => expectedKeys.includes(h));
+
+      let rowsWithInternalKeys: Record<string, unknown>[] = rawRows;
+      if (needMapping) {
+        let mapping: Record<string, string> = {};
+        try {
+          if (headers.length > 0) {
+            const functions = getFunctions();
+            const getMapping = httpsCallable<
+              { type: 'mission' | 'etude'; headers: string[]; structureId: string },
+              { mapping: Record<string, string> }
+            >(functions, 'getImportColumnMapping');
+            const res = await getMapping({ type, headers, structureId: structureId! });
+            const data = res.data as { mapping?: Record<string, string> };
+            mapping = data?.mapping ?? {};
+          }
+        } catch {
+          // Repli client si la Cloud Function n'est pas déployée ou échoue (400, 404, CORS, etc.)
+          mapping = headers.length > 0 ? getFallbackMapping(headers, type) : {};
+        }
+        if (Object.keys(mapping).length > 0) {
+          rowsWithInternalKeys = applyMapping(rawRows, mapping);
+        }
+      }
+
+      let normalized = rowsWithInternalKeys;
+      let validationErrors: ImportValidationError[] = [];
+      try {
+        const serializedRows = rowsWithInternalKeys.map((row) => {
+          const o: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(row)) {
+            if (v !== undefined && v !== null) o[k] = v;
+          }
+          return o;
+        });
+        const functions = getFunctions();
+        const normalize = httpsCallable<
+          { type: 'mission' | 'etude'; rows: Record<string, unknown>[]; structureId: string },
+          { normalizedRows: Record<string, unknown>[]; validationErrors: ImportValidationError[] }
+        >(functions, 'normalizeAndValidateImportRows');
+        const res = await normalize({ type, rows: serializedRows, structureId: structureId! });
+        const data = res.data as { normalizedRows?: Record<string, unknown>[]; validationErrors?: ImportValidationError[] };
+        normalized = Array.isArray(data?.normalizedRows) ? data.normalizedRows : rowsWithInternalKeys;
+        validationErrors = Array.isArray(data?.validationErrors) ? data.validationErrors : [];
+      } catch {
+        // Garder les lignes sans normalisation IA en cas d'erreur
+      }
+
+      const duplicateHints = computeDuplicateHints(normalized, type);
+      const built = buildImportedDataFromRows(normalized);
+      setImportedData(built);
+      setImportValidationErrors(validationErrors);
+      setImportDuplicateHints(duplicateHints);
+    } catch (err) {
+      console.error('Erreur traitement import IA:', err);
+      showSnackbar('Erreur lors du traitement des données (mapping ou IA). Vous pouvez utiliser le modèle CSV.', 'error');
+      setImportedData([]);
+    } finally {
+      setImportProcessingAI(false);
+    }
+  };
+
+  const importCompaniesToCreate = React.useMemo(() => {
+    const names = new Set<string>();
+    (importedData as any[]).forEach((row: any) => {
+      const company = (row.company || '').toString().trim();
+      if (company && !row.companyId) names.add(company);
+    });
+    return Array.from(names);
+  }, [importedData]);
+
+  const handleImportClick = () => {
+    if (importCompaniesToCreate.length > 0) {
+      setConfirmCreateCompaniesOpen(true);
+    } else {
+      handleImport();
+    }
+  };
+
+  const getOrCreateCompanyId = async (sid: string, companyName: string): Promise<string> => {
+    const name = (companyName || '').trim();
+    if (!name) return '';
+    const companiesRef = collection(db, 'companies');
+    const q = query(companiesRef, where('structureId', '==', sid), where('name', '==', name));
+    const snap = await getDocs(q);
+    if (!snap.empty) return snap.docs[0].id;
+    const newRef = await addDoc(companiesRef, {
+      name,
+      structureId: sid,
+      createdAt: new Date(),
+    });
+    return newRef.id;
   };
 
   const handleImport = async () => {
@@ -719,19 +1039,14 @@ const StructureSettings: React.FC = () => {
       setImporting(true);
       if (structureType === 'junior') {
         for (const etude of importedData as any[]) {
-          let companyId: string | undefined;
-          if (etude.company) {
-            try {
-              const companyQuery = query(collection(db, 'companies'), where('name', '==', etude.company));
-              const companySnapshot = await getDocs(companyQuery);
-              if (!companySnapshot.empty) companyId = companySnapshot.docs[0].id;
-            } catch {
-              // ignore
-            }
+          let companyId: string | undefined = etude.companyId;
+          if (!companyId && etude.company) {
+            companyId = await getOrCreateCompanyId(structureId, etude.company);
           }
           await addDoc(collection(db, 'etudes'), {
             ...etude,
-            companyId,
+            structureId: structureId || etude.structureId || '',
+            companyId: companyId || undefined,
             createdAt: new Date(),
             createdBy: currentUser.uid,
             permissions: { viewers: [], editors: [currentUser.uid] }
@@ -741,17 +1056,21 @@ const StructureSettings: React.FC = () => {
       } else {
         for (const mission of importedData as any[]) {
           const { assignedStudents, ...rest } = mission;
-          
+          let companyId: string | undefined = rest.companyId;
+          if (!companyId && rest.company) {
+            companyId = await getOrCreateCompanyId(structureId, rest.company);
+          }
           const missionRef = await addDoc(collection(db, 'missions'), {
             ...rest,
+            companyId: companyId || rest.companyId || '',
             createdAt: new Date(),
             createdBy: currentUser.uid,
             permissions: { viewers: [], editors: [currentUser.uid] }
           });
 
           if (assignedStudents && assignedStudents.length > 0) {
-              const studentIds = assignedStudents.map((s: any) => s.userId);
-              await updateDoc(missionRef, { assignedStudentIds: studentIds });
+            const studentIds = assignedStudents.map((s: any) => s.userId);
+            await updateDoc(missionRef, { assignedStudentIds: studentIds });
           }
         }
         showSnackbar('Missions importées avec succès', 'success');
@@ -764,6 +1083,52 @@ const StructureSettings: React.FC = () => {
     } finally {
       setImporting(false);
     }
+  };
+
+  // Télécharger un CSV de test complexe (en-têtes variés, fautes de frappe, doublons, colonnes montant facture / chargé d'études)
+  const escapeCsvCell = (v: string): string => {
+    const s = String(v ?? '');
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+
+  const downloadTestCsv = () => {
+    if (structureType === 'junior') {
+      const headers = ['N° Étude', 'Client / Entreprise', 'Ville', 'Début', 'Fin', 'Nb consultants', 'Heures', 'Chargé d\'études', 'Montant facture', 'Statut'];
+      const rows = [
+        ['ETUDE-2024-001', 'Acm Corp', 'Paris', '01/03/2024', '31/03/2024', '3', '40', 'Mare Martin', '4500', 'En attente'],
+        ['ETUDE-2024-002', 'Beta S.A.', 'Lyon', '15/04/2024', '15/05/2024', '2', '25', 'Jean Dupond', '2200', 'en cour'],
+        ['ETUDE-2024-003', 'Gama & Co', 'Nantes', '01/06/2024', '30/06/2024', '4', '60', 'Lisa Perin', '7200', 'Terminée'],
+        ['ETUDE-2024-001', 'Acme Corp', 'Paris', '01/03/2024', '31/03/2024', '3', '40', 'Marie Martin', '4500', 'En attente'],
+        ['ETUDE-2024-004', 'Dleta', 'Bordeaux', '10/08/2024', '05/08/2024', '2', '20', '', '1800', 'En Cours'],
+        ['ETUDE-2024-005', 'Entreprise Test Sarl', 'Lille', '02/09/2024', '30/09/2024', '1', '15', 'Thomas Bertrand', '1500', 'en attente'],
+      ];
+      const lines = [headers.map(escapeCsvCell).join(','), ...rows.map((r) => r.map(escapeCsvCell).join(','))];
+      const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'test_import_etudes_complexe.csv';
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } else {
+      const headers = ['N° Mission', 'Entreprise', 'Titre', 'Lieu', 'Date début', 'Date fin', 'Étudiants', 'Heures', 'Chargé de mission', 'Prix HT', 'Montant facture', 'Statut', 'Étape'];
+      const rows = [
+        ['M-001', 'Acm Corp', 'Audit process', 'Paris', '01/03/2024', '31/03/2024', '2', '40', 'Mare Martin', '1200', '1440', 'En cour', 'Négociaton'],
+        ['M-002', 'Beta S.A.', 'Etude marché', 'Lyon', '15/04/2024', '15/05/2024', '1', '25', 'J. Dupont', '800', '960', 'terminé', 'Facturation'],
+        ['M-003', 'Gama & Co', 'Conseil stratégie', 'Nantes', '01/06/2024', '30/06/2024', '3', '60', 'L. Perrin', '2500', '3000', 'En attente', 'Recrutment'],
+        ['M-001', 'Acme Corp', 'Audit process', 'Paris', '01/03/2024', '31/03/2024', '2', '40', 'Marie Martin', '1200', '1 440', 'En cours', 'Négociation'],
+        ['M-004', 'Dleta', 'Mission test', 'Bordeaux', '10/08/2024', '05/08/2024', '1', '10', '', '500', '600', 'en attente', 'Date de mission'],
+        ['M-005', 'Entreprise Dupuis SA', 'Support évènementiel', 'Marseille', '12/09/2024', '14/09/2024', '4', '32', 'Sophie Lefebvres', '1800', '2 160', 'En cours', 'Date de mission'],
+      ];
+      const lines = [headers.map(escapeCsvCell).join(','), ...rows.map((r) => r.map(escapeCsvCell).join(','))];
+      const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'test_import_missions_complexe.csv';
+      link.click();
+      URL.revokeObjectURL(link.href);
+    }
+    showSnackbar('CSV de test téléchargé. Importez-le via le bouton ci-dessus.', 'success');
   };
 
   const downloadImportTemplate = () => {
@@ -800,24 +1165,32 @@ const StructureSettings: React.FC = () => {
 
     // Validation des clés Stripe si l'intégration est activée
     if (stripeIntegrationEnabled) {
-      if (!stripePublishableKey.trim() || !stripeSecretKey.trim() || !stripeProductId.trim() || !stripeBuyButtonId.trim()) {
-        showSnackbar('Veuillez remplir toutes les clés Stripe', 'error');
+      if (!stripePublishableKey.trim() || (!stripeSecretConfigured && !stripeSecretKeyInput.trim()) || !stripeProductId.trim() || !stripeBuyButtonId.trim()) {
+        showSnackbar('Veuillez remplir toutes les clés Stripe (la clé secrète est enregistrée côté serveur)', 'error');
         return;
       }
     }
 
     try {
       setSavingStates(prev => ({ ...prev, cotisations: true }));
+
+      if (stripeIntegrationEnabled && stripeSecretKeyInput.trim()) {
+        const saveSecret = httpsCallable(getFunctions(), 'saveStructureStripeSecret');
+        await saveSecret({ structureId, secretKey: stripeSecretKeyInput.trim() });
+        setStripeSecretConfigured(true);
+        setStripeSecretKeyInput('');
+      }
       
-      const cotisationsData: any = {
+      const cotisationsData: Record<string, unknown> = {
         cotisationsEnabled,
         cotisationAmount: cotisationsEnabled ? cotisationAmount : 0,
         cotisationDuration: cotisationsEnabled ? cotisationDuration : '1_year',
         stripeIntegrationEnabled: stripeIntegrationEnabled,
         stripePublishableKey: stripeIntegrationEnabled ? stripePublishableKey : '',
-        stripeSecretKey: stripeIntegrationEnabled ? stripeSecretKey : '',
         stripeProductId: stripeIntegrationEnabled ? stripeProductId : '',
-        stripeBuyButtonId: stripeIntegrationEnabled ? stripeBuyButtonId : ''
+        stripeBuyButtonId: stripeIntegrationEnabled ? stripeBuyButtonId : '',
+        stripeSecretConfigured: stripeIntegrationEnabled ? (stripeSecretConfigured || !!stripeSecretKeyInput.trim()) : false,
+        stripeSecretKey: deleteField(),
       };
 
       await updateDoc(doc(db, 'structures', structureId), cotisationsData);
@@ -830,7 +1203,7 @@ const StructureSettings: React.FC = () => {
         cotisationDuration: cotisationsEnabled ? cotisationDuration : '1_year',
         stripeIntegrationEnabled,
         stripePublishableKey: stripeIntegrationEnabled ? stripePublishableKey : '',
-        stripeSecretKey: stripeIntegrationEnabled ? stripeSecretKey : '',
+        stripeSecretConfigured: stripeIntegrationEnabled ? true : false,
         stripeProductId: stripeIntegrationEnabled ? stripeProductId : '',
         stripeBuyButtonId: stripeIntegrationEnabled ? stripeBuyButtonId : ''
       }));
@@ -868,82 +1241,6 @@ const StructureSettings: React.FC = () => {
       showSnackbar('Erreur lors de la mise à jour de la configuration F2A', 'error');
     } finally {
       setSavingStates(prev => ({ ...prev, f2a: false }));
-    }
-  };
-
-  const handleAddProgram = async () => {
-    if (!currentUser?.uid) {
-      showSnackbar("Vous devez être connecté", "error");
-      return;
-    }
-
-    if (!newProgram.trim()) {
-      showSnackbar("Le nom du programme ne peut pas être vide", "error");
-      return;
-    }
-
-    try {
-      setSavingStates(prev => ({ ...prev, programs: true }));
-      
-      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-      if (!userDoc.exists()) {
-        showSnackbar("Utilisateur non trouvé", "error");
-        return;
-      }
-
-      const userData = userDoc.data();
-      const { structureId, ecole } = userData;
-
-      if (!structureId || !ecole) {
-        showSnackbar("Informations de structure manquantes", "error");
-        return;
-      }
-
-      const programsRef = doc(db, 'programs', structureId);
-      const programsDoc = await getDoc(programsRef);
-
-      if (!programsDoc.exists()) {
-        await setDoc(programsRef, {
-          schoolName: ecole,
-          programs: [newProgram.trim()]
-        });
-      } else {
-        const existingPrograms = programsDoc.data().programs || [];
-        await updateDoc(programsRef, {
-          programs: [...existingPrograms, newProgram.trim()]
-        });
-      }
-      
-      setPrograms(prev => [...prev, newProgram.trim()]);
-      setNewProgram('');
-      showSnackbar('Programme ajouté avec succès', 'success');
-    } catch (error) {
-      console.error('Erreur complète:', error);
-      showSnackbar('Erreur lors de l\'ajout du programme', 'error');
-    } finally {
-      setSavingStates(prev => ({ ...prev, programs: false }));
-    }
-  };
-
-  const handleDeleteProgram = async (index: number) => {
-    if (!structureId) return;
-
-    try {
-      setSavingStates(prev => ({ ...prev, programs: true }));
-      const programsRef = doc(db, 'programs', structureId);
-      const updatedPrograms = programs.filter((_, i) => i !== index);
-      
-      await updateDoc(programsRef, {
-        programs: updatedPrograms
-      });
-      
-      setPrograms(updatedPrograms);
-      showSnackbar('Programme supprimé avec succès', 'success');
-    } catch (error) {
-      console.error('Erreur lors de la suppression du programme:', error);
-      showSnackbar('Erreur lors de la suppression du programme', 'error');
-    } finally {
-      setSavingStates(prev => ({ ...prev, programs: false }));
     }
   };
 
@@ -994,6 +1291,60 @@ const StructureSettings: React.FC = () => {
       showSnackbar('Erreur lors de la mise à jour des informations', 'error');
     } finally {
       setSavingOrgInfo(false);
+    }
+  };
+
+  const normalizeDomain = (d: string) => {
+    const t = d.trim().toLowerCase();
+    return t.startsWith('@') ? t : '@' + t;
+  };
+
+  // Domaines personnels interdits pour l'inscription (ex. gmail.com)
+  const BLOCKED_EMAIL_DOMAINS = ['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.fr', 'outlook.com', 'hotmail.com', 'hotmail.fr', 'live.fr', 'live.com', 'orange.fr', 'free.fr', 'laposte.net', 'wanadoo.fr', 'sfr.fr', 'bbox.fr', 'icloud.com', 'me.com', 'msn.com'];
+
+  const handleAddEmailDomain = () => {
+    const domain = newEmailDomain.trim();
+    if (!domain) return;
+    const normalized = normalizeDomain(domain);
+    const domainName = normalized.startsWith('@') ? normalized.slice(1) : normalized;
+    if (BLOCKED_EMAIL_DOMAINS.includes(domainName)) {
+      showSnackbar('Les domaines personnels (Gmail, Yahoo, Outlook, etc.) ne sont pas autorisés. Utilisez un domaine professionnel ou de votre établissement.', 'error');
+      return;
+    }
+    if (emailDomains.includes(normalized)) return;
+    setEmailDomains((prev) => [...prev, normalized]);
+    setNewEmailDomain('');
+  };
+
+  const handleRemoveEmailDomain = (index: number) => {
+    setEmailDomains((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSaveEmailDomains = async () => {
+    if (!structureId) return;
+    try {
+      setSavingEmailDomains(true);
+      await updateDoc(doc(db, 'structures', structureId), {
+        emailDomains,
+        domaines: emailDomains,
+        updatedAt: new Date()
+      });
+      showSnackbar('Domaines email enregistrés', 'success');
+    } catch (err) {
+      console.error(err);
+      showSnackbar('Erreur lors de l\'enregistrement des domaines', 'error');
+    } finally {
+      setSavingEmailDomains(false);
+    }
+  };
+
+  const handleCopySignupLink = async () => {
+    const url = `${window.location.origin}/register?type=student`;
+    try {
+      await navigator.clipboard.writeText(url);
+      showSnackbar('Lien d\'inscription copié dans le presse-papier', 'success');
+    } catch {
+      showSnackbar('Impossible de copier le lien', 'error');
     }
   };
 
@@ -1059,24 +1410,15 @@ const StructureSettings: React.FC = () => {
   }
 
   return (
-    <Box sx={{ 
-      p: 3,
-      maxWidth: 1400,
-      mx: 'auto',
-      '@keyframes pulse': {
-        '0%': { opacity: 1 },
-        '50%': { opacity: 0.7 },
-        '100%': { opacity: 1 },
-      },
-    }}>
-      {/* En-tête */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700, mb: 1, color: '#1d1d1f' }}>
-          Paramètres de la structure
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Gérez les informations et la configuration de votre structure
-        </Typography>
+    <Box sx={{ maxWidth: 1400, mx: 'auto' }}>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3 }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Paramètres de la structure</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Gérez les informations et la configuration de votre structure
+          </Typography>
+        </Box>
       </Box>
 
       <Grid container spacing={3}>
@@ -1086,8 +1428,8 @@ const StructureSettings: React.FC = () => {
             title="Informations de la structure"
             subtitle="Gérez les informations générales de votre structure"
             icon={<InfoIcon sx={{ fontSize: 16 }} />}
-            gradient="linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)"
-            iconColor="#6366f1"
+            gradient={tokens.gradients.brand}
+            iconColor={tokens.colors.brandTeal}
           >
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
               <IconButton
@@ -1101,9 +1443,9 @@ const StructureSettings: React.FC = () => {
                 size="small"
                 sx={{
                   borderRadius: '6px',
-                  color: '#86868b',
+                  color: tokens.colors.textSecondary,
                   '&:hover': {
-                    backgroundColor: '#f5f5f7'
+                    backgroundColor: tokens.colors.bgSubtle
                   }
                 }}
                 disabled={savingOrgInfo}
@@ -1118,17 +1460,17 @@ const StructureSettings: React.FC = () => {
                   {/* Logo Section */}
                   <Grid item xs={12} md={3}>
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                      {(logoPreview || organization.logo) && (
+                      {(logoPreview || organization.logo) ? (
                         <Avatar
                           src={logoPreview || organization.logo}
                           sx={{
                             width: 120,
                             height: 120,
-                            borderRadius: '16px',
+                            borderRadius: tokens.radius.lg,
                             border: '2px solid #e5e5ea'
                           }}
                         />
-                      )}
+                      ) : null}
                       <Box sx={{ width: '100%' }}>
                         <input
                           id="logo-upload"
@@ -1147,27 +1489,27 @@ const StructureSettings: React.FC = () => {
                             if (input) input.click();
                           }}
                           sx={{
-                            borderRadius: '8px',
+                            borderRadius: tokens.radius.sm,
                             textTransform: 'none',
                             border: '1px solid #d1d1d6',
-                            color: '#1d1d1f',
+                            color: tokens.colors.textPrimary,
                             '&:hover': {
                               border: '1px solid #86868b',
-                              backgroundColor: '#f5f5f7'
+                              backgroundColor: tokens.colors.bgSubtle
                             }
                           }}
                         >
                           Changer le logo
                         </Button>
                       </Box>
-                      {logoFile && (
+                      {logoFile ? (
                         <Button
                           variant="contained"
                           onClick={handleUploadLogo}
                           disabled={loading}
                           fullWidth
                           sx={{
-                            borderRadius: '8px',
+                            borderRadius: tokens.radius.sm,
                             textTransform: 'none',
                             backgroundColor: '#0071e3',
                             '&:hover': {
@@ -1177,7 +1519,7 @@ const StructureSettings: React.FC = () => {
                         >
                           {loading ? 'Téléchargement...' : 'Télécharger'}
                         </Button>
-                      )}
+                      ) : null}
                     </Box>
                   </Grid>
 
@@ -1193,7 +1535,7 @@ const StructureSettings: React.FC = () => {
                       onChange={handleOrgChange}
               sx={{ 
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1216,7 +1558,7 @@ const StructureSettings: React.FC = () => {
                       onChange={handleOrgChange}
                     sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1239,7 +1581,7 @@ const StructureSettings: React.FC = () => {
                       onChange={handleOrgChange}
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1262,7 +1604,7 @@ const StructureSettings: React.FC = () => {
                       onChange={handleOrgChange}
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1285,7 +1627,7 @@ const StructureSettings: React.FC = () => {
                       onChange={handleOrgChange}
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1308,7 +1650,7 @@ const StructureSettings: React.FC = () => {
                       onChange={handleOrgChange}
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1331,7 +1673,7 @@ const StructureSettings: React.FC = () => {
                       onChange={handleOrgChange}
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1356,7 +1698,7 @@ const StructureSettings: React.FC = () => {
                       rows={3}
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1380,7 +1722,7 @@ const StructureSettings: React.FC = () => {
                       placeholder="Entrez le numéro SIRET"
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1404,7 +1746,7 @@ const StructureSettings: React.FC = () => {
                       placeholder="Entrez le numéro de TVA"
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1428,7 +1770,7 @@ const StructureSettings: React.FC = () => {
                       placeholder="Entrez le code APE"
                       sx={{
                         '& .MuiOutlinedInput-root': {
-                          borderRadius: '8px',
+                          borderRadius: tokens.radius.sm,
                           '& .MuiOutlinedInput-notchedOutline': {
                             border: '1px solid #d1d1d6'
                           },
@@ -1448,7 +1790,7 @@ const StructureSettings: React.FC = () => {
               </Box>
             ) : (
               <Grid container spacing={3}>
-                {organization.logo && (
+                {organization.logo ? (
                   <Grid item xs={12} md={3}>
                     <Box sx={{ display: 'flex', justifyContent: 'center' }}>
                       <Avatar
@@ -1456,24 +1798,24 @@ const StructureSettings: React.FC = () => {
                         sx={{
                           width: 120,
                           height: 120,
-                          borderRadius: '16px',
+                          borderRadius: tokens.radius.lg,
                           border: '2px solid #e5e5ea'
                         }}
                       />
                     </Box>
                   </Grid>
-                )}
+                ) : null}
                 <Grid item xs={12} md={organization.logo ? 9 : 12}>
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <Box>
-                      <Typography variant="h5" sx={{ fontWeight: 700, mb: 1, color: '#1d1d1f' }}>
+                      <Typography variant="h5" sx={{ fontWeight: 700, mb: 1, color: tokens.colors.textPrimary }}>
                         {organization.name}
                       </Typography>
-                      {organization.description && organization.description !== 'Non renseigné' && (
+                      {(organization.description && organization.description !== 'Non renseigné') ? (
                         <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
                           {organization.description}
                         </Typography>
-                      )}
+                      ) : null}
                     </Box>
                     <Divider />
                     <Grid container spacing={2}>
@@ -1501,24 +1843,24 @@ const StructureSettings: React.FC = () => {
                         <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>Site web</Typography>
                         <Typography variant="body1" sx={{ fontWeight: 500 }}>{organization.website}</Typography>
                       </Grid>
-                      {organization.siret && (
+                      {organization.siret ? (
                         <Grid item xs={12} sm={4}>
                           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>SIRET</Typography>
                           <Typography variant="body1" sx={{ fontWeight: 500 }}>{organization.siret}</Typography>
                         </Grid>
-                      )}
-                      {organization.tvaNumber && (
+                      ) : null}
+                      {organization.tvaNumber ? (
                         <Grid item xs={12} sm={4}>
                           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>N° de TVA</Typography>
                           <Typography variant="body1" sx={{ fontWeight: 500 }}>{organization.tvaNumber}</Typography>
                         </Grid>
-                      )}
-                      {organization.apeCode && (
+                      ) : null}
+                      {organization.apeCode ? (
                         <Grid item xs={12} sm={4}>
                           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>Code APE</Typography>
                           <Typography variant="body1" sx={{ fontWeight: 500 }}>{organization.apeCode}</Typography>
                         </Grid>
-                      )}
+                      ) : null}
                     </Grid>
                   </Box>
                 </Grid>
@@ -1527,9 +1869,74 @@ const StructureSettings: React.FC = () => {
           </SettingsCard>
         </Grid>
 
+        {/* Domaine(s) email pour l'inscription + lien d'inscription */}
+        <Grid item xs={12}>
+          <SettingsCard
+            title="Domaine(s) email pour l'inscription"
+            subtitle="Les membres qui s'inscrivent avec une adresse @votredomaine seront rattachés à votre structure. Configurez au moins un domaine puis copiez le lien d'inscription."
+            icon={<LinkIcon sx={{ fontSize: 16 }} />}
+          >
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+                {emailDomains.map((domain, index) => (
+                  <Chip
+                    key={domain}
+                    label={domain}
+                    onDelete={() => handleRemoveEmailDomain(index)}
+                    size="small"
+                    sx={{ fontWeight: 500 }}
+                  />
+                ))}
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <TextField
+                      size="small"
+                      placeholder="ex: junior-ecp.fr"
+                      value={newEmailDomain}
+                      onChange={(e) => setNewEmailDomain(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddEmailDomain())}
+                      sx={{ width: 180 }}
+                    />
+                    <Button size="small" variant="outlined" onClick={handleAddEmailDomain} disabled={!newEmailDomain.trim()}>
+                      <AddIcon sx={{ mr: 0.5 }} /> Ajouter
+                    </Button>
+                  </Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Les domaines personnels (Gmail, Yahoo, Outlook, etc.) ne sont pas autorisés.
+                  </Typography>
+                </Box>
+              </Box>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={handleSaveEmailDomains}
+                  disabled={savingEmailDomains || emailDomains.length === 0}
+                  startIcon={savingEmailDomains ? <CircularProgress size={16} /> : <SaveIcon />}
+                >
+                  {savingEmailDomains ? 'Enregistrement…' : 'Enregistrer les domaines'}
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={handleCopySignupLink}
+                  startIcon={<ContentCopyIcon />}
+                >
+                  Copier le lien d'inscription
+                </Button>
+              </Box>
+              {emailDomains.length === 0 ? (
+                <Typography variant="caption" color="text.secondary">
+                  Configurez au moins un domaine (ex. @votre-ecole.fr) et enregistrez pour que le lien d'inscription associe les nouveaux membres à votre structure. Les adresses personnelles (Gmail, etc.) ne sont pas acceptées à l'inscription.
+                </Typography>
+              ) : null}
+            </Box>
+          </SettingsCard>
+        </Grid>
+
         {/* Section Configuration */}
         <Grid item xs={12}>
-          <Typography variant="h5" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+          <Typography variant="h5" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
             Configuration
           </Typography>
         </Grid>
@@ -1540,23 +1947,23 @@ const StructureSettings: React.FC = () => {
             title="Type de structure"
             subtitle={isSuperAdmin ? 'Choisissez le type de votre structure' : 'Job Service ou Junior Entreprise (modifiable par un superadmin uniquement)'}
             icon={<BusinessIcon sx={{ fontSize: 16 }} />}
-            gradient="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-            iconColor="#667eea"
+            gradient={tokens.gradients.brand}
+            iconColor={tokens.colors.brandTeal}
           >
-            {!isSuperAdmin && (
+            {!isSuperAdmin ? (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
                 Réservé aux superadmins
               </Typography>
-            )}
+            ) : null}
             <FormControl fullWidth sx={{ mb: 2.5 }} disabled={!isSuperAdmin}>
                   <Select
                     value={structureType}
                     onChange={(e) => setStructureType(e.target.value as 'jobservice' | 'junior')}
                     sx={{ 
-                  borderRadius: '8px',
+                  borderRadius: tokens.radius.sm,
                       '& .MuiOutlinedInput-notchedOutline': {
                     border: '1px solid #d1d1d6',
-                    borderRadius: '8px'
+                    borderRadius: tokens.radius.sm
                       },
                       '&:hover .MuiOutlinedInput-notchedOutline': {
                     border: '1px solid #86868b'
@@ -1576,7 +1983,7 @@ const StructureSettings: React.FC = () => {
                     </MenuItem>
                     <MenuItem value="junior">
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                        <BusinessIcon sx={{ color: theme.palette.secondary.main, fontSize: 18 }} />
+                        <BusinessIcon sx={{ color: tokens.colors.brandTeal, fontSize: 18 }} />
                         <Typography variant="body1" sx={{ fontWeight: 500 }}>
                           Junior Entreprise
                         </Typography>
@@ -1586,7 +1993,7 @@ const StructureSettings: React.FC = () => {
                 </FormControl>
 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                  {hasChanges.structureType && (
+                  {hasChanges.structureType ? (
                     <Chip
                       label="Modifications non sauvegardées"
                       color="warning"
@@ -1599,7 +2006,7 @@ const StructureSettings: React.FC = () => {
                         animation: 'pulse 2s infinite'
                       }}
                     />
-                  )}
+                  ) : null}
                   <Button
                     variant="contained"
                     onClick={handleSaveStructureType}
@@ -1615,8 +2022,8 @@ const StructureSettings: React.FC = () => {
                   fontSize: '0.875rem',
                       background: hasChanges.structureType 
                     ? '#0071e3'
-                    : '#f5f5f7',
-                  color: hasChanges.structureType ? '#ffffff' : '#86868b',
+                    : tokens.colors.bgSubtle,
+                  color: hasChanges.structureType ? '#ffffff' : tokens.colors.textSecondary,
                       boxShadow: hasChanges.structureType 
                     ? '0 2px 8px rgba(0, 113, 227, 0.2)'
                         : 'none',
@@ -1630,8 +2037,8 @@ const StructureSettings: React.FC = () => {
                       : 'none'
                       },
                       '&:disabled': {
-                    background: '#f5f5f7',
-                    color: '#86868b',
+                    background: tokens.colors.bgSubtle,
+                    color: tokens.colors.textSecondary,
                     boxShadow: 'none'
                       }
                     }}
@@ -1651,39 +2058,50 @@ const StructureSettings: React.FC = () => {
             gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
             iconColor="#10b981"
           >
-            <Button
-              variant="outlined"
-              fullWidth
-              startIcon={<CloudUploadIcon />}
-              onClick={() => setImportDialogOpen(true)}
-              sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: 500 }}
-            >
-              {structureType === 'junior' ? 'Importer des études' : 'Importer des missions'}
-            </Button>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <Button
+                variant="outlined"
+                fullWidth
+                startIcon={<CloudUploadIcon />}
+                onClick={() => setImportDialogOpen(true)}
+                sx={{ borderRadius: tokens.radius.sm, textTransform: 'none', fontWeight: 500 }}
+              >
+                {structureType === 'junior' ? 'Importer des études' : 'Importer des missions'}
+              </Button>
+              <Button
+                variant="text"
+                fullWidth
+                size="small"
+                onClick={downloadTestCsv}
+                sx={{ textTransform: 'none', fontSize: '0.75rem', color: 'text.secondary' }}
+              >
+                Télécharger un CSV de test complexe
+              </Button>
+            </Box>
           </SettingsCard>
         </Grid>
 
-        {/* Taux horaire */}
+        {/* Taux horaire (Job Service) / Coût JEH (Junior Entreprise) */}
         <Grid item xs={12} md={4}>
           <SettingsCard
-            title="Taux horaire"
-            subtitle="Taux horaire par défaut"
+            title={structureType === 'junior' ? 'Coût JEH' : 'Taux horaire'}
+            subtitle={structureType === 'junior' ? 'Coût par Journée Étudiant Homme (JEH)' : 'Taux horaire par défaut'}
             icon={<EuroIcon sx={{ fontSize: 16 }} />}
             gradient="linear-gradient(135deg, #10b981 0%, #059669 100%)"
             iconColor="#10b981"
           >
                 <TextField
-                  label="Taux horaire HT"
+                  label={structureType === 'junior' ? 'Coût JEH (€)' : 'Taux horaire HT'}
                   type="number"
                   value={hourlyRate}
                   onChange={(e) => setHourlyRate(Number(e.target.value))}
                   InputProps={{
-                    endAdornment: <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap' }}>€/h</Typography>,
+                    endAdornment: <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap' }}>{structureType === 'junior' ? '€/JEH' : '€/h'}</Typography>,
                     sx: { 
-                    borderRadius: '8px',
+                    borderRadius: tokens.radius.sm,
                       '& .MuiOutlinedInput-notchedOutline': {
                       border: '1px solid #d1d1d6',
-                      borderRadius: '8px'
+                      borderRadius: tokens.radius.sm
                       },
                       '&:hover .MuiOutlinedInput-notchedOutline': {
                       border: '1px solid #86868b'
@@ -1697,21 +2115,22 @@ const StructureSettings: React.FC = () => {
               sx={{ mb: 2.5 }}
                 />
 
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                  {hasChanges.hourlyRate && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 1.5 }}>
+                  {hasChanges.hourlyRate ? (
                     <Chip
                       label="Modifications non sauvegardées"
                       color="warning"
                       size="small"
                       icon={<ErrorIcon />}
                       sx={{ 
-                  borderRadius: '6px',
-                  fontWeight: 500,
-                  fontSize: '0.75rem',
-                        animation: 'pulse 2s infinite'
+                        borderRadius: '6px',
+                        fontWeight: 500,
+                        fontSize: '0.75rem',
+                        animation: 'pulse 2s infinite',
+                        alignSelf: 'flex-start'
                       }}
                     />
-                  )}
+                  ) : null}
                   <Button
                     variant="contained"
                     onClick={handleSaveHourlyRate}
@@ -1719,14 +2138,14 @@ const StructureSettings: React.FC = () => {
                     startIcon={savingStates.hourlyRate ? <LinearProgress sx={{ width: 20, height: 20 }} /> : <SaveIcon />}
                     fullWidth
                     sx={{ 
-                    borderRadius: '8px',
+                    borderRadius: tokens.radius.sm,
                     py: 1.25,
                     textTransform: 'none',
                     fontWeight: 500,
                       background: hasChanges.hourlyRate 
                       ? '#0071e3'
-                      : '#f5f5f7',
-                    color: hasChanges.hourlyRate ? '#ffffff' : '#86868b',
+                      : tokens.colors.bgSubtle,
+                    color: hasChanges.hourlyRate ? '#ffffff' : tokens.colors.textSecondary,
                       boxShadow: hasChanges.hourlyRate 
                       ? '0 2px 8px rgba(0, 113, 227, 0.2)'
                         : 'none',
@@ -1740,13 +2159,135 @@ const StructureSettings: React.FC = () => {
                         : 'none'
                       },
                       '&:disabled': {
-                      background: '#f5f5f7',
-                      color: '#86868b',
+                      background: tokens.colors.bgSubtle,
+                      color: tokens.colors.textSecondary,
                       boxShadow: 'none'
                       }
                     }}
                   >
                     {savingStates.hourlyRate ? 'Enregistrement...' : hasChanges.hourlyRate ? 'Enregistrer' : 'Enregistré'}
+                  </Button>
+                </Box>
+          </SettingsCard>
+        </Grid>
+
+        {/* Gratification par défaut (nette et brute) */}
+        <Grid item xs={12} md={4}>
+          <SettingsCard
+            title="Gratification par défaut"
+            subtitle="Gratification nette et brute par défaut"
+            icon={<EuroIcon sx={{ fontSize: 16 }} />}
+            gradient={tokens.gradients.brand}
+            iconColor={tokens.colors.brandTeal}
+          >
+                <TextField
+                  label="Gratification nette (€)"
+                  type="number"
+                  value={gratificationNetDefault}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? 0 : parseFloat(e.target.value);
+                    setGratificationNetDefault(isNaN(v) ? gratificationNetDefault : v);
+                  }}
+                  inputProps={{ step: 0.01, min: 0 }}
+                  InputProps={{
+                    endAdornment: <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap' }}>€</Typography>,
+                    sx: {
+                      borderRadius: tokens.radius.sm,
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        border: '1px solid #d1d1d6',
+                        borderRadius: tokens.radius.sm
+                      },
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        border: '1px solid #86868b'
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        border: '2px solid #0071e3'
+                      }
+                    }
+                  }}
+                  fullWidth
+                  sx={{ mb: 1.5 }}
+                />
+                <TextField
+                  label="Gratification brute (€)"
+                  type="number"
+                  value={gratificationBruteDefault}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? 0 : parseFloat(e.target.value);
+                    setGratificationBruteDefault(isNaN(v) ? gratificationBruteDefault : v);
+                  }}
+                  inputProps={{ step: 0.01, min: 0 }}
+                  InputProps={{
+                    endAdornment: <Typography variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap' }}>€</Typography>,
+                    sx: {
+                      borderRadius: tokens.radius.sm,
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        border: '1px solid #d1d1d6',
+                        borderRadius: tokens.radius.sm
+                      },
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        border: '1px solid #86868b'
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        border: '2px solid #0071e3'
+                      }
+                    }
+                  }}
+                  fullWidth
+                  sx={{ mb: 2.5 }}
+                />
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 1.5 }}>
+                  {hasChanges.gratification ? (
+                    <Chip
+                      label="Modifications non sauvegardées"
+                      color="warning"
+                      size="small"
+                      icon={<ErrorIcon />}
+                      sx={{
+                        borderRadius: '6px',
+                        fontWeight: 500,
+                        fontSize: '0.75rem',
+                        animation: 'pulse 2s infinite',
+                        alignSelf: 'flex-start'
+                      }}
+                    />
+                  ) : null}
+                  <Button
+                    variant="contained"
+                    onClick={handleSaveGratification}
+                    disabled={savingStates.gratification || !hasChanges.gratification}
+                    startIcon={savingStates.gratification ? <LinearProgress sx={{ width: 20, height: 20 }} /> : <SaveIcon />}
+                    fullWidth
+                    sx={{
+                      borderRadius: tokens.radius.sm,
+                      py: 1.25,
+                      textTransform: 'none',
+                      fontWeight: 500,
+                      background: hasChanges.gratification
+                        ? '#0071e3'
+                        : tokens.colors.bgSubtle,
+                      color: hasChanges.gratification ? '#ffffff' : tokens.colors.textSecondary,
+                      boxShadow: hasChanges.gratification
+                        ? '0 2px 8px rgba(0, 113, 227, 0.2)'
+                        : 'none',
+                      transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                      '&:hover': {
+                        background: hasChanges.gratification
+                          ? '#0077ed'
+                          : '#e5e5ea',
+                        boxShadow: hasChanges.gratification
+                          ? '0 4px 12px rgba(0, 113, 227, 0.3)'
+                          : 'none'
+                      },
+                      '&:disabled': {
+                        background: tokens.colors.bgSubtle,
+                        color: tokens.colors.textSecondary,
+                        boxShadow: 'none'
+                      }
+                    }}
+                  >
+                    {savingStates.gratification ? 'Enregistrement...' : hasChanges.gratification ? 'Enregistrer' : 'Enregistré'}
                   </Button>
                 </Box>
           </SettingsCard>
@@ -1769,10 +2310,10 @@ const StructureSettings: React.FC = () => {
                   InputProps={{
                     endAdornment: <Typography variant="body2" color="text.secondary">jours</Typography>,
                     sx: { 
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       '& .MuiOutlinedInput-notchedOutline': {
                     border: '1px solid #d1d1d6',
-                    borderRadius: '8px'
+                    borderRadius: tokens.radius.sm
                       },
                       '&:hover .MuiOutlinedInput-notchedOutline': {
                     border: '1px solid #86868b'
@@ -1786,21 +2327,22 @@ const StructureSettings: React.FC = () => {
               sx={{ mb: 2.5 }}
                 />
 
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                  {hasChanges.daysUntilDue && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 1.5 }}>
+                  {hasChanges.daysUntilDue ? (
                     <Chip
                       label="Modifications non sauvegardées"
                       color="warning"
                       size="small"
                       icon={<ErrorIcon />}
                       sx={{ 
-                  borderRadius: '6px',
-                  fontWeight: 500,
-                  fontSize: '0.75rem',
-                        animation: 'pulse 2s infinite'
+                        borderRadius: '6px',
+                        fontWeight: 500,
+                        fontSize: '0.75rem',
+                        animation: 'pulse 2s infinite',
+                        alignSelf: 'flex-start'
                       }}
                     />
-                  )}
+                  ) : null}
                   <Button
                     variant="contained"
                     onClick={handleSaveDaysUntilDue}
@@ -1808,14 +2350,14 @@ const StructureSettings: React.FC = () => {
                     startIcon={savingStates.daysUntilDue ? <LinearProgress sx={{ width: 20, height: 20 }} /> : <SaveIcon />}
                     fullWidth
                     sx={{ 
-                    borderRadius: '8px',
+                    borderRadius: tokens.radius.sm,
                     py: 1.25,
                     textTransform: 'none',
                     fontWeight: 500,
                       background: hasChanges.daysUntilDue 
                       ? '#0071e3'
-                      : '#f5f5f7',
-                    color: hasChanges.daysUntilDue ? '#ffffff' : '#86868b',
+                      : tokens.colors.bgSubtle,
+                    color: hasChanges.daysUntilDue ? '#ffffff' : tokens.colors.textSecondary,
                       boxShadow: hasChanges.daysUntilDue 
                       ? '0 2px 8px rgba(0, 113, 227, 0.2)'
                         : 'none',
@@ -1829,8 +2371,8 @@ const StructureSettings: React.FC = () => {
                         : 'none'
                       },
                       '&:disabled': {
-                      background: '#f5f5f7',
-                      color: '#86868b',
+                      background: tokens.colors.bgSubtle,
+                      color: tokens.colors.textSecondary,
                       boxShadow: 'none'
                       }
                     }}
@@ -1851,69 +2393,32 @@ const StructureSettings: React.FC = () => {
             iconColor="#ef4444"
           >
             <Box sx={{ mb: 2.5 }}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={f2aRequiredForMembers}
-                    onChange={(e) => setF2aRequiredForMembers(e.target.checked)}
-                    color="error"
-                    sx={{
-                      '& .MuiSwitch-switchBase.Mui-checked': {
-                        color: '#ef4444',
-                        '&:hover': {
-                          backgroundColor: 'rgba(239, 68, 68, 0.08)'
-                        }
-                      },
-                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                        backgroundColor: '#ef4444'
-                      }
-                    }}
-                  />
-                }
-                label={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <PeopleIcon sx={{ fontSize: 18, color: '#86868b' }} />
-                    <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                      Obligatoire pour les membres
-                    </Typography>
-                  </Box>
-                }
-                sx={{ mb: 2, '& .MuiFormControlLabel-label': { flex: 1 } }}
-              />
+              <SettingsPanelRow
+                label="Obligatoire pour les membres"
+                hint="Appliquer le F2A à tous les membres de la structure"
+              >
+                <DsToggle
+                  checked={f2aRequiredForMembers}
+                  onChange={setF2aRequiredForMembers}
+                  accent={tokens.colors.error}
+                />
+              </SettingsPanelRow>
 
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={f2aRequiredForStudents}
-                    onChange={(e) => setF2aRequiredForStudents(e.target.checked)}
-                    color="error"
-                    sx={{
-                      '& .MuiSwitch-switchBase.Mui-checked': {
-                        color: '#ef4444',
-                        '&:hover': {
-                          backgroundColor: 'rgba(239, 68, 68, 0.08)'
-                        }
-                      },
-                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                        backgroundColor: '#ef4444'
-                      }
-                    }}
-                  />
-                }
-                label={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <PersonIcon sx={{ fontSize: 18, color: '#86868b' }} />
-                    <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                      Obligatoire pour les étudiants
-                    </Typography>
-                  </Box>
-                }
-                sx={{ '& .MuiFormControlLabel-label': { flex: 1 } }}
-              />
+              <SettingsPanelRow
+                label="Obligatoire pour les étudiants"
+                hint="Appliquer le F2A à tous les étudiants"
+                last
+              >
+                <DsToggle
+                  checked={f2aRequiredForStudents}
+                  onChange={setF2aRequiredForStudents}
+                  accent={tokens.colors.error}
+                />
+              </SettingsPanelRow>
             </Box>
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-              {hasChanges.f2a && (
+              {hasChanges.f2a ? (
                 <Chip
                   label="Modifications non sauvegardées"
                   color="warning"
@@ -1927,7 +2432,7 @@ const StructureSettings: React.FC = () => {
                     alignSelf: 'flex-start'
                   }}
                 />
-              )}
+              ) : null}
               <Button
                 variant="contained"
                 onClick={handleSaveF2A}
@@ -1943,8 +2448,8 @@ const StructureSettings: React.FC = () => {
                   fontSize: '0.875rem',
                   background: hasChanges.f2a 
                     ? '#0071e3'
-                    : '#f5f5f7',
-                  color: hasChanges.f2a ? '#ffffff' : '#86868b',
+                    : tokens.colors.bgSubtle,
+                  color: hasChanges.f2a ? '#ffffff' : tokens.colors.textSecondary,
                   boxShadow: hasChanges.f2a 
                     ? '0 2px 8px rgba(0, 113, 227, 0.2)'
                     : 'none',
@@ -1958,8 +2463,8 @@ const StructureSettings: React.FC = () => {
                       : 'none'
                   },
                   '&:disabled': {
-                    background: '#f5f5f7',
-                    color: '#86868b',
+                    background: tokens.colors.bgSubtle,
+                    color: tokens.colors.textSecondary,
                     boxShadow: 'none'
                   }
                 }}
@@ -1972,7 +2477,7 @@ const StructureSettings: React.FC = () => {
 
         {/* Section Cotisations et Programmes */}
         <Grid item xs={12}>
-          <Typography variant="h5" sx={{ fontWeight: 600, mb: 2, mt: 2, color: '#1d1d1f' }}>
+          <Typography variant="h5" sx={{ fontWeight: 600, mb: 2, mt: 2, color: tokens.colors.textPrimary }}>
             Cotisations et Programmes
           </Typography>
         </Grid>
@@ -1986,8 +2491,10 @@ const StructureSettings: React.FC = () => {
             gradient="linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
             iconColor="#f59e0b"
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Box />
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Contacter le support pour les réglages techniques.
+            </Alert>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', mb: 2 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                     <Chip
                       label={cotisationsEnabled ? 'Activées' : 'Désactivées'}
@@ -2005,9 +2512,9 @@ const StructureSettings: React.FC = () => {
                       size="small"
                       sx={{
                         borderRadius: '6px',
-                        color: '#86868b',
+                        color: tokens.colors.textSecondary,
                         '&:hover': {
-                          backgroundColor: '#f5f5f7'
+                          backgroundColor: tokens.colors.bgSubtle
                         },
                         transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
                       }}
@@ -2026,31 +2533,16 @@ const StructureSettings: React.FC = () => {
                     transform: cotisationsExpanded ? 'translateY(0)' : 'translateY(-20px)'
                   }}
                 >
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={cotisationsEnabled}
-                        onChange={(e) => setCotisationsEnabled(e.target.checked)}
-                        color="success"
-                        sx={{
-                          '& .MuiSwitch-switchBase.Mui-checked': {
-                            color: '#f59e0b',
-                            '&:hover': {
-                              backgroundColor: 'rgba(245, 158, 11, 0.08)'
-                            }
-                          },
-                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                            backgroundColor: '#f59e0b'
-                          }
-                        }}
-                      />
-                    }
-                    label="Activer les cotisations"
-                sx={{ mb: 2, '& .MuiFormControlLabel-label': { fontWeight: 500, fontSize: '0.875rem' } }}
-                  />
+                  <SettingsPanelRow label="Activer les cotisations" last={!cotisationsEnabled}>
+                    <DsToggle
+                      checked={cotisationsEnabled}
+                      onChange={setCotisationsEnabled}
+                      accent={tokens.colors.warning}
+                    />
+                  </SettingsPanelRow>
 
-                  {cotisationsEnabled && (
-                <Box sx={{ mb: 2.5 }}>
+                  {cotisationsEnabled ? (
+                    <Box sx={{ mb: 2.5 }}>
                   <Grid container spacing={2}>
                         {/* Montant de la cotisation */}
                         <Grid item xs={12} md={6}>
@@ -2092,10 +2584,10 @@ const StructureSettings: React.FC = () => {
                             fullWidth
                             sx={{ 
                               '& .MuiOutlinedInput-root': { 
-                                borderRadius: '8px',
+                                borderRadius: tokens.radius.sm,
                                 '& .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #d1d1d6',
-                                  borderRadius: '8px'
+                                  borderRadius: tokens.radius.sm
                                 },
                                 '&:hover .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #86868b'
@@ -2115,10 +2607,10 @@ const StructureSettings: React.FC = () => {
                               value={cotisationDuration}
                               onChange={(e) => setCotisationDuration(e.target.value as 'end_of_school' | '1_year' | '2_years' | '3_years')}
                               sx={{ 
-                            borderRadius: '8px',
+                            borderRadius: tokens.radius.sm,
                                 '& .MuiOutlinedInput-notchedOutline': {
                               border: '1px solid #d1d1d6',
-                              borderRadius: '8px'
+                              borderRadius: tokens.radius.sm
                                 },
                                 '&:hover .MuiOutlinedInput-notchedOutline': {
                               border: '1px solid #86868b'
@@ -2185,30 +2677,15 @@ const StructureSettings: React.FC = () => {
                         </Grid>
                       </Grid>
 
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={stripeIntegrationEnabled}
-                            onChange={(e) => setStripeIntegrationEnabled(e.target.checked)}
-                            color="primary"
-                            sx={{
-                              '& .MuiSwitch-switchBase.Mui-checked': {
-                                color: '#667eea',
-                                '&:hover': {
-                                  backgroundColor: 'rgba(102, 126, 234, 0.08)'
-                                }
-                              },
-                              '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                                backgroundColor: '#667eea'
-                              }
-                            }}
-                          />
-                        }
-                        label="Intégrer Stripe"
-                    sx={{ mt: 2, mb: 2, '& .MuiFormControlLabel-label': { fontWeight: 500, fontSize: '0.875rem' } }}
-                      />
+                      <SettingsPanelRow label="Intégrer Stripe" last={!stripeIntegrationEnabled}>
+                        <DsToggle
+                          checked={stripeIntegrationEnabled}
+                          onChange={setStripeIntegrationEnabled}
+                          accent={tokens.colors.brandTeal}
+                        />
+                      </SettingsPanelRow>
 
-                      {stripeIntegrationEnabled && (
+                      {stripeIntegrationEnabled ? (
                     <Box sx={{ mt: 2 }}>
                       <Grid container spacing={2}>
                             <Grid item xs={12} md={6}>
@@ -2219,10 +2696,10 @@ const StructureSettings: React.FC = () => {
                                 fullWidth
                                 sx={{ 
                                   '& .MuiOutlinedInput-root': { 
-                                borderRadius: '8px',
+                                borderRadius: tokens.radius.sm,
                                     '& .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #d1d1d6',
-                                  borderRadius: '8px'
+                                  borderRadius: tokens.radius.sm
                                     },
                                     '&:hover .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #86868b'
@@ -2239,16 +2716,17 @@ const StructureSettings: React.FC = () => {
                             <Grid item xs={12} md={6}>
                               <TextField
                                 label="Clé secrète Stripe"
-                                value={stripeSecretKey}
-                                onChange={(e) => setStripeSecretKey(e.target.value)}
+                                value={stripeSecretKeyInput}
+                                onChange={(e) => setStripeSecretKeyInput(e.target.value)}
                                 fullWidth
                                 type="password"
+                                placeholder={stripeSecretConfigured ? '•••••••• (déjà configurée — laisser vide pour conserver)' : 'sk_...'}
                                 sx={{ 
                                   '& .MuiOutlinedInput-root': { 
-                                borderRadius: '8px',
+                                borderRadius: tokens.radius.sm,
                                     '& .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #d1d1d6',
-                                  borderRadius: '8px'
+                                  borderRadius: tokens.radius.sm
                                     },
                                     '&:hover .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #86868b'
@@ -2258,7 +2736,7 @@ const StructureSettings: React.FC = () => {
                                     }
                                   } 
                                 }}
-                                helperText="sk_..."
+                                helperText={stripeSecretConfigured ? 'Clé enregistrée côté serveur. Saisir une nouvelle valeur pour la remplacer.' : 'sk_... (jamais stockée dans Firestore)'}
                               />
                             </Grid>
                             
@@ -2270,10 +2748,10 @@ const StructureSettings: React.FC = () => {
                                 fullWidth
                                 sx={{ 
                                   '& .MuiOutlinedInput-root': { 
-                                borderRadius: '8px',
+                                borderRadius: tokens.radius.sm,
                                     '& .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #d1d1d6',
-                                  borderRadius: '8px'
+                                  borderRadius: tokens.radius.sm
                                     },
                                     '&:hover .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #86868b'
@@ -2295,10 +2773,10 @@ const StructureSettings: React.FC = () => {
                                 fullWidth
                                 sx={{ 
                                   '& .MuiOutlinedInput-root': { 
-                                borderRadius: '8px',
+                                borderRadius: tokens.radius.sm,
                                     '& .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #d1d1d6',
-                                  borderRadius: '8px'
+                                  borderRadius: tokens.radius.sm
                                     },
                                     '&:hover .MuiOutlinedInput-notchedOutline': {
                                   border: '1px solid #86868b'
@@ -2313,16 +2791,16 @@ const StructureSettings: React.FC = () => {
                             </Grid>
                           </Grid>
                         </Box>
-                      )}
+                      ) : null}
                     </Box>
-                  )}
+                  ) : null}
 
                   {/* Section Utilisateurs avec cotisations payées */}
               <Divider sx={{ my: 2, borderColor: '#e5e5ea' }} />
                   
                 <Box sx={{ mb: 2.5 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                  <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.9375rem' }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.9375rem' }}>
                         Utilisateurs avec cotisations payées ({usersWithSubscriptions.length})
                       </Typography>
                       <IconButton
@@ -2330,9 +2808,9 @@ const StructureSettings: React.FC = () => {
                     size="small"
                         sx={{
                       borderRadius: '6px',
-                      color: '#86868b',
+                      color: tokens.colors.textSecondary,
                           '&:hover': {
-                        backgroundColor: '#f5f5f7'
+                        backgroundColor: tokens.colors.bgSubtle
                           },
                       transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
                         }}
@@ -2359,11 +2837,11 @@ const StructureSettings: React.FC = () => {
                           textAlign: 'center', 
                           py: 4,
                           bgcolor: 'rgba(245, 158, 11, 0.05)',
-                      borderRadius: '8px',
+                      borderRadius: tokens.radius.sm,
                       border: '1px solid #e5e5ea'
                         }}>
-                      <PaymentIcon sx={{ fontSize: 32, color: '#86868b', mb: 1.5, opacity: 0.4 }} />
-                      <Typography variant="h6" sx={{ fontWeight: 600, mb: 0.5, color: '#1d1d1f', fontSize: '0.9375rem' }}>
+                      <PaymentIcon sx={{ fontSize: 32, color: tokens.colors.textSecondary, mb: 1.5, opacity: 0.4 }} />
+                      <Typography variant="h6" sx={{ fontWeight: 600, mb: 0.5, color: tokens.colors.textPrimary, fontSize: '0.9375rem' }}>
                             Aucune cotisation payée
                           </Typography>
                           <Typography color="text.secondary" variant="body1">
@@ -2380,7 +2858,7 @@ const StructureSettings: React.FC = () => {
                                 mb: 1,
                                 p: 2,
                             border: '1px solid #e5e5ea',
-                                borderRadius: '8px',
+                                borderRadius: tokens.radius.sm,
                             background: '#ffffff',
                             transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
                                 maxWidth: 'calc(100% - 4px)',
@@ -2396,18 +2874,20 @@ const StructureSettings: React.FC = () => {
                                   sx={{
                                     width: 28,
                                     height: 28,
-                                bgcolor: '#f5f5f7',
-                                color: '#1d1d1f',
+                                bgcolor: tokens.colors.bgSubtle,
+                                color: tokens.colors.textPrimary,
                                     fontWeight: 600,
                                     fontSize: '0.75rem'
                                   }}
                                 >
-                                  {user.firstName?.[0]}{user.lastName?.[0]}
+                                  {`${user.firstName?.[0] ?? ''}${user.lastName?.[0] ?? ''}`.trim() || '?'}
                                 </Avatar>
                                 <Box sx={{ flex: 1, minWidth: 0, mr: 1 }}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.25, fontSize: '0.875rem' }}>
-                                    {user.firstName} {user.lastName}
-                                  </Typography>
+                                  <UserNameText
+                                    user={user}
+                                    variant="body2"
+                                    sx={{ fontWeight: 600, mb: 0.25, fontSize: '0.875rem' }}
+                                  />
                                   <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
                                     {user.email}
                                   </Typography>
@@ -2458,7 +2938,7 @@ const StructureSettings: React.FC = () => {
                   </Box>
 
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                  {hasChanges.cotisations && (
+                  {hasChanges.cotisations ? (
                     <Chip
                       label="Modifications non sauvegardées"
                       color="warning"
@@ -2471,7 +2951,7 @@ const StructureSettings: React.FC = () => {
                         animation: 'pulse 2s infinite'
                       }}
                     />
-                  )}
+                  ) : null}
                   <Button
                     variant="contained"
                     onClick={handleSaveCotisations}
@@ -2487,8 +2967,8 @@ const StructureSettings: React.FC = () => {
                   fontSize: '0.875rem',
                       background: hasChanges.cotisations 
                       ? '#0071e3'
-                      : '#f5f5f7',
-                    color: hasChanges.cotisations ? '#ffffff' : '#86868b',
+                      : tokens.colors.bgSubtle,
+                    color: hasChanges.cotisations ? '#ffffff' : tokens.colors.textSecondary,
                       boxShadow: hasChanges.cotisations 
                       ? '0 2px 8px rgba(0, 113, 227, 0.2)'
                         : 'none',
@@ -2502,8 +2982,8 @@ const StructureSettings: React.FC = () => {
                         : 'none'
                       },
                       '&:disabled': {
-                      background: '#f5f5f7',
-                      color: '#86868b',
+                      background: tokens.colors.bgSubtle,
+                      color: tokens.colors.textSecondary,
                       boxShadow: 'none'
                       }
                     }}
@@ -2514,211 +2994,89 @@ const StructureSettings: React.FC = () => {
                 </Box>
           </SettingsCard>
         </Grid>
-
-        {/* Programmes */}
-        <Grid item xs={12} lg={4}>
-          <SettingsCard
-            title="Programmes"
-            subtitle="Programmes de formation disponibles"
-            icon={<SchoolIcon sx={{ fontSize: 16 }} />}
-            gradient="linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)"
-            iconColor="#8b5cf6"
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', mb: 2 }}>
-                  <Chip
-                    label={`${programs.length} programme${programs.length > 1 ? 's' : ''}`}
-                    color="primary"
-                    variant="outlined"
-                    size="small"
-                    sx={{ 
-                  borderRadius: '6px',
-                  fontWeight: 500,
-                  fontSize: '0.75rem'
-                    }}
-                  />
-                </Box>
-
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2.5 }}>
-                  <TextField
-                    label="Nouveau programme"
-                    value={newProgram}
-                    onChange={(e) => setNewProgram(e.target.value)}
-                    placeholder="Entrez le nom du programme"
-                    fullWidth
-                    sx={{ 
-                      '& .MuiOutlinedInput-root': { 
-                    borderRadius: '8px',
-                        '& .MuiOutlinedInput-notchedOutline': {
-                      border: '1px solid #d1d1d6',
-                      borderRadius: '8px'
-                        },
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                      border: '1px solid #86868b'
-                        },
-                        '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                      border: '2px solid #0071e3'
-                        }
-                      } 
-                    }}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter' && !savingStates.programs) {
-                        e.preventDefault();
-                        handleAddProgram();
-                      }
-                    }}
-                  />
-                  <Button
-                    variant="outlined"
-                    onClick={handleAddProgram}
-                    disabled={savingStates.programs || !newProgram.trim()}
-                    startIcon={savingStates.programs ? <LinearProgress sx={{ width: 20, height: 20 }} /> : <AddIcon />}
-                    sx={{ 
-                  borderRadius: '8px', 
-                      minWidth: 120,
-                  py: 1.25,
-                  textTransform: 'none',
-                  border: '1px solid #d1d1d6',
-                  color: '#1d1d1f',
-                  fontWeight: 500,
-                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                      '&:hover': {
-                    border: '1px solid #86868b',
-                    backgroundColor: '#f5f5f7'
-                      }
-                    }}
-                  >
-                    {savingStates.programs ? 'Ajout...' : 'Ajouter'}
-                  </Button>
-                </Box>
-
-                <Divider sx={{ my: 3, borderColor: 'rgba(139, 92, 246, 0.1)' }} />
-
-                {programs.length === 0 ? (
-                  <Box sx={{ textAlign: 'center', py: 4 }}>
-                    <Box
-                      sx={{
-                        width: 80,
-                        height: 80,
-                      borderRadius: '12px',
-                      background: '#f5f5f7',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        mx: 'auto',
-                        mb: 2
-                      }}
-                    >
-                  <SchoolIcon sx={{ fontSize: 32, color: '#86868b' }} />
-                    </Box>
-                    <Typography color="text.secondary" variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
-                      Aucun programme
-                    </Typography>
-                    <Typography color="text.secondary" variant="body1">
-                      Commencez par ajouter votre premier programme
-                    </Typography>
-                  </Box>
-                ) : (
-                  <List sx={{ p: 0 }}>
-                    {programs.map((program, index) => (
-                      <Paper
-                        key={index}
-                        elevation={0}
-                        sx={{
-                          mb: 2,
-                      border: '1px solid #e5e5ea',
-                      borderRadius: '8px',
-                      background: '#ffffff',
-                      transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                          '&:hover': {
-                        border: '1px solid #d1d1d6',
-                        background: '#fafafa',
-                        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)'
-                          }
-                        }}
-                      >
-                        <ListItem
-                          sx={{ py: 2 }}
-                          secondaryAction={
-                            <Tooltip title="Supprimer">
-                              <IconButton
-                                edge="end"
-                                onClick={() => handleDeleteProgram(index)}
-                                color="error"
-                                size="small"
-                                sx={{
-                                  borderRadius: '8px',
-                                  '&:hover': {
-                                    backgroundColor: 'rgba(239, 68, 68, 0.1)'
-                                  }
-                                }}
-                              >
-                                <DeleteIcon />
-                              </IconButton>
-                            </Tooltip>
-                          }
-                        >
-                          <ListItemText
-                            primary={
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                                <Box
-                                  sx={{
-                                    width: 32,
-                                    height: 32,
-                                    borderRadius: '8px',
-                                background: '#f5f5f7',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center'
-                                  }}
-                                >
-                              <SchoolIcon sx={{ fontSize: 16, color: '#86868b' }} />
-                                </Box>
-                                <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                                  {program}
-                                </Typography>
-                              </Box>
-                            }
-                          />
-                        </ListItem>
-                      </Paper>
-                    ))}
-                  </List>
-                )}
-          </SettingsCard>
-        </Grid>
       </Grid>
 
       <ImportMissionsEtudesDialog
         open={importDialogOpen}
-        onClose={() => { setImportDialogOpen(false); setImportedData([]); }}
+        onClose={() => {
+          setImportDialogOpen(false);
+          setImportedData([]);
+          setImportValidationErrors([]);
+          setImportDuplicateHints([]);
+        }}
         type={structureType === 'junior' ? 'etude' : 'mission'}
         importedData={importedData}
         onFileParsed={handleFileParsed}
-        onImport={handleImport}
+        onImport={handleImportClick}
         onDownloadTemplate={downloadImportTemplate}
         importing={importing}
+        processingAI={importProcessingAI}
+        validationErrors={importValidationErrors}
+        duplicateHints={importDuplicateHints}
       />
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      <Dialog
+        open={confirmCreateCompaniesOpen}
+        onClose={() => setConfirmCreateCompaniesOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 2 } }}
       >
-        <Alert
+        <DialogTitle sx={{ fontWeight: 600 }}>
+          Créer les entreprises manquantes ?
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Les entreprises suivantes n&apos;existent pas encore dans votre liste. Souhaitez-vous les créer avant l&apos;import ? Elles apparaîtront dans la page Entreprises.
+          </Typography>
+          <List dense sx={{ bgcolor: 'grey.50', borderRadius: 1 }}>
+            {importCompaniesToCreate.filter((n) => n && String(n).trim()).map((name, i) => (
+              <ListItem key={`${i}-${String(name)}`}>
+                <ListItemText primary={String(name)} primaryTypographyProps={{ fontWeight: 500 }} />
+              </ListItem>
+            ))}
+          </List>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setConfirmCreateCompaniesOpen(false)} color="inherit">
+            Annuler
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setConfirmCreateCompaniesOpen(false);
+              handleImport();
+            }}
+          >
+            Créer les entreprises et importer
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          severity={snackbar.severity}
-          icon={snackbar.severity === 'success' ? <CheckCircleIcon /> : <ErrorIcon />}
-          sx={{ 
-            borderRadius: '16px',
-            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.15)',
-            backdropFilter: 'blur(20px)',
-            border: '1px solid rgba(255, 255, 255, 0.3)'
-          }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            icon={snackbar.severity === 'success' ? <CheckCircleIcon /> : <ErrorIcon />}
+            sx={{
+              borderRadius: tokens.radius.lg,
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.15)',
+              backdropFilter: 'blur(20px)',
+              border: '1px solid rgba(255, 255, 255, 0.3)'
+            }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

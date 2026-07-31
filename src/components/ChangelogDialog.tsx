@@ -28,6 +28,7 @@ import {
   Schedule as ScheduleIcon,
   LocationOn as LocationIcon
 } from '@mui/icons-material';
+import { tokens } from '../theme/tokens';
 
 const Transition = React.forwardRef(function Transition(
   props: TransitionProps & {
@@ -40,39 +41,38 @@ const Transition = React.forwardRef(function Transition(
 
 const StyledDialog = styled(Dialog)(({ theme }) => ({
   '& .MuiDialog-paper': {
-    borderRadius: '16px',
+    borderRadius: tokens.radius.lg,
     maxWidth: '900px',
     width: '90%',
     maxHeight: '90vh',
-    background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
+    background: theme.palette.background.paper,
     overflow: 'hidden'
   }
 }));
 
 const FeatureCard = styled(Card)(({ theme }) => ({
   height: '100%',
-  borderRadius: '12px',
+  borderRadius: tokens.radius.md,
   transition: 'all 0.3s ease',
-  background: 'rgba(255, 255, 255, 0.95)',
-  backdropFilter: 'blur(10px)',
-  border: '1px solid rgba(255, 255, 255, 0.5)',
+  background: theme.palette.background.paper,
+  border: `1px solid ${theme.palette.divider}`,
   '&:hover': {
     transform: 'translateY(-4px)',
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
-    border: '1px solid rgba(102, 126, 234, 0.3)'
+    boxShadow: theme.shadows[4],
+    border: `1px solid ${theme.palette.primary.main}`
   }
 }));
 
 const IconWrapper = styled(Box)(({ theme }) => ({
   width: '56px',
   height: '56px',
-  borderRadius: '12px',
+  borderRadius: tokens.radius.md,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   marginBottom: theme.spacing(2),
-  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-  boxShadow: '0 4px 12px rgba(102, 126, 234, 0.3)',
+  background: tokens.gradients.brand,
+  boxShadow: `0 4px 12px ${tokens.colors.primaryAlpha20}`,
   '& .MuiSvgIcon-root': {
     fontSize: '32px',
     color: 'white'
@@ -80,8 +80,8 @@ const IconWrapper = styled(Box)(({ theme }) => ({
 }));
 
 const AmbassadorIconWrapper = styled(IconWrapper)({
-  background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-  boxShadow: '0 4px 12px rgba(240, 147, 251, 0.3)'
+  background: 'linear-gradient(135deg, #21BDA3 0%, #178873 100%)',
+  boxShadow: '0 4px 12px rgba(33, 189, 163, 0.3)'
 });
 
 const EventIconWrapper = styled(IconWrapper)({
@@ -110,7 +110,7 @@ const ChangelogDialog: React.FC<ChangelogDialogProps> = ({ open, onClose }) => {
       <DialogTitle sx={{ 
             pb: 1, 
             pt: 3,
-            background: 'transparent',
+            background: 'none',
             position: 'relative'
           }}>
             <IconButton
@@ -140,18 +140,16 @@ const ChangelogDialog: React.FC<ChangelogDialogProps> = ({ open, onClose }) => {
                   mb: 2,
                   fontWeight: 600,
                   fontSize: '0.9rem',
-                  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  background: tokens.gradients.brand,
                   color: 'white',
-                  boxShadow: '0 4px 12px rgba(102, 126, 234, 0.3)'
+                  boxShadow: `0 4px 12px ${tokens.colors.primaryAlpha20}`
                 }}
               />
               <Typography
                 variant="h4"
                 sx={{
                   fontWeight: 700,
-                  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
+                  color: tokens.colors.textPrimary,
                   mb: 1
                 }}
               >
@@ -302,19 +300,16 @@ const ChangelogDialog: React.FC<ChangelogDialogProps> = ({ open, onClose }) => {
               size="large"
               fullWidth
               sx={{
-                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                color: 'white',
                 py: 1.5,
                 fontSize: '1rem',
                 fontWeight: 600,
                 textTransform: 'none',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(102, 126, 234, 0.3)',
-                transition: 'all 0.3s ease',
+                borderRadius: tokens.radius.md,
+                boxShadow: tokens.shadows.button,
+                transition: tokens.transitions.default,
                 '&:hover': {
-                  background: 'linear-gradient(135deg, #5568d3 0%, #65398d 100%)',
                   transform: 'translateY(-2px)',
-                  boxShadow: '0 6px 16px rgba(102, 126, 234, 0.4)'
+                  boxShadow: tokens.shadows.lg,
                 }
               }}
             >

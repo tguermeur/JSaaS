@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -46,8 +47,6 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Breadcrumbs,
-  Link,
   Stack,
   alpha,
   Menu,
@@ -56,7 +55,7 @@ import {
   Portal
 } from '@mui/material';
 import {
-  ArrowBack as ArrowBackIcon,
+  ChevronLeft as ChevronLeftIcon,
   Edit as EditIcon,
   Save as SaveIcon,
   Cancel as CancelIcon,
@@ -79,8 +78,7 @@ import {
   PowerSettingsNew as PowerSettingsNewIcon,
   People as PeopleIcon,
   Folder as FolderIcon,
-  Home as HomeIcon,
-  NavigateNext as NavigateNextIcon,
+  Dashboard as DashboardIcon,
   Timeline as TimelineIcon,
   Assessment as AssessmentIcon,
   Description as DescriptionTabIcon,
@@ -100,68 +98,66 @@ import {
   PlayArrow as PlayArrowIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
-import { decryptUserDisplayData } from '../utils/decryptUserUtils';
+import { decryptUserDisplayData, decryptUsersList, getDecryptedUserDisplayName, getSafeDisplayName } from '../utils/decryptUserUtils';
+import { prepareDecryptedDocumentContext } from '../utils/documentDecryptUtils';
+import UserReferenceText from '../components/common/UserReferenceText';
+import UserNameText from '../components/common/UserNameText';
+import UserAvatarInitials from '../components/common/UserAvatarInitials';
 import { db, storage } from '../firebase/config';
-import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, deleteDoc, deleteField, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, deleteDoc, deleteField, writeBatch, limit } from 'firebase/firestore';
+import { ASSOCIATED_QUERY_LIMIT } from '../hooks/useEtudeAssociatedData';
 import { getDownloadURL, ref, uploadBytes, deleteObject } from 'firebase/storage';
-import { keyframes } from '@mui/system';
 import { styled } from '@mui/material';
+import { tokens } from '../theme/tokens';
+import { dsTabsSx, dsDetailHeaderSx, dsPageCanvasSx } from '../components/ds';
+import { PersonRow } from '../components/ds/MissionDetailsPrimitives';
+import {
+  ETUDE_DETAIL_TABS,
+  useEtudeDetailTabs,
+  type EtudeDetailTabId,
+} from '../hooks/useEtudeDetailTabs';
+import {
+  EtudeDetailShell,
+} from './etudeDetails/EtudeDetailShell';
+import { EtudeDetailSidebarPanel } from './etudeDetails/EtudeDetailSidebarPanel';
+import { OverviewTab } from './etudeDetails/OverviewTab';
+import { PlanningTab } from './etudeDetails/PlanningTab';
+import { RecruitmentTab } from './etudeDetails/RecruitmentTab';
+import { DocumentsTab } from './etudeDetails/DocumentsTab';
+import { ComplianceTab } from './etudeDetails/ComplianceTab';
+import { fadeInUp, slideInUp, slideInLeft, pulse, scaleIn } from '../styles/animations';
 import { uploadCompanyLogo } from '../firebase/storage';
 import DocumentGeneratorDialog from '../components/DocumentGeneratorDialog';
 import { DocumentType, TemplateVariable } from '../types/templates';
 import { PDFDocument } from 'pdf-lib';
+import {
+  EtudeEtape,
+  ETUDE_ETAPE_LABELS,
+  ETUDE_ETAPE_ORDER,
+  ETUDE_ETAPE_COLORS,
+  statusToEtape,
+  Avenant,
+  ConsultantJehAllocation,
+  QualityChecklist,
+  BudgetItem as BudgetItemType,
+} from '../types/etude';
+import {
+  addAvenant,
+  getAvenants,
+  updateAvenant,
+  deleteAvenant,
+  updateConsultantAllocations,
+  updateQualityChecklist,
+  updateBudgetItemInvoiceStatus,
+} from '../services/etudeService';
 
-// Animations
-const fadeInUp = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(30px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
-const slideInUp = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-`;
-
-const slideInLeft = keyframes`
-  from {
-    opacity: 0;
-    transform: translateX(-30px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-`;
-
-const pulse = keyframes`
-  0% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.05);
-  }
-  100% {
-    transform: scale(1);
-  }
-`;
+// Animations imported from '../styles/animations'
 
 // Styles personnalisés
 const StyledTextField = styled(TextField)(({ theme }) => ({
   '& .MuiOutlinedInput-root': {
-    borderRadius: '12px',
-    transition: 'all 0.3s ease-in-out',
+    borderRadius: tokens.radius.md,
+    transition: tokens.transitions.default,
     '&:hover': {
       '& .MuiOutlinedInput-notchedOutline': {
         borderColor: theme.palette.primary.main,
@@ -172,22 +168,18 @@ const StyledTextField = styled(TextField)(({ theme }) => ({
 
 const StyledDialog = styled(Dialog)(({ theme }) => ({
   '& .MuiDialog-paper': {
-    borderRadius: '24px',
+    borderRadius: tokens.radius.xxl,
     boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
     animation: `${scaleIn} 0.3s ease-out`,
   },
 }));
 
-const scaleIn = keyframes`
-  from {
-    transform: scale(0.95);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-`;
+// scaleIn imported from '../styles/animations'
+
+// Aligné sur MissionDetails : mêmes statuts/étapes que les missions (Tresorerie, Audit)
+export type EtudeStatus = 'Négociation' | 'Recrutement' | 'Date de mission' | 'Facturation' | 'Audit' | 'Archivé';
+
+export const ETUDE_STATUS_OPTIONS: EtudeStatus[] = ['Négociation', 'Recrutement', 'Date de mission', 'Facturation', 'Audit', 'Archivé'];
 
 interface EtudeData {
   id?: string;
@@ -201,7 +193,7 @@ interface EtudeData {
   consultantCount?: number;
   hours?: number | null;
   jeh?: number | null;
-  status: string;
+  status: string; // EtudeStatus en pratique, string pour rétrocompatibilité
   structureId?: string;
   chargeId: string;
   chargeIds?: string[];
@@ -214,13 +206,18 @@ interface EtudeData {
   createdAt?: any;
   createdBy?: string;
   isPublic: boolean;
-  etape: 'Négociation' | 'Recrutement' | 'Facturation' | 'Audit';
+  etape: EtudeEtape;
   permissions?: {
     viewers: string[];
     editors: string[];
   };
   isArchived?: boolean;
   pricingType?: 'jeh' | 'hourly';
+  // Champs JE enrichis
+  consultantAllocations?: ConsultantJehAllocation[];
+  qualityChecklist?: QualityChecklist;
+  satisfactionScore?: number;
+  mandat?: string;
 }
 
 interface ChargeData {
@@ -315,8 +312,9 @@ interface Document {
   name: string;
   type: 'powerpoint' | 'pdf' | 'excel' | 'word' | 'other';
   url: string;
-  uploadedAt: Date;
+  uploadedAt: Date | { toDate?: () => Date };
   uploadedBy: string;
+  uploadedByName?: string;
   size: number;
   isDraft?: boolean;
   etudeId?: string;
@@ -410,36 +408,35 @@ interface HistoryEntry {
   sessionId?: string;
 }
 
-interface TabPanelProps {
-  children?: React.ReactNode;
-  index: number;
-  value: number;
-}
+const RecruitmentUserAvatar: React.FC<{
+  userId: string;
+  displayName?: string;
+  email?: string;
+}> = ({ userId, displayName, email }) => (
+  <UserAvatarInitials user={{ id: userId, displayName, email }} />
+);
 
-function TabPanel(props: TabPanelProps) {
-  const { children, value, index, ...other } = props;
-
-  return (
-    <div
-      role="tabpanel"
-      hidden={value !== index}
-      id={`simple-tabpanel-${index}`}
-      aria-labelledby={`simple-tab-${index}`}
-      {...other}
-    >
-      {value === index && (
-        <Box sx={{ p: 3 }}>
-          {children}
-        </Box>
-      )}
-    </div>
-  );
-}
+const RecruitmentUserName: React.FC<{
+  userId: string;
+  displayName?: string;
+  email: string;
+  sx?: object;
+  variant?: 'body1' | 'body2' | 'h6' | 'h5';
+}> = ({ userId, displayName, email, sx, variant = 'body2' }) => (
+  <UserReferenceText
+    userId={userId}
+    name={displayName}
+    fallback={email.split('@')[0] || 'Utilisateur'}
+    variant={variant}
+    sx={sx}
+  />
+);
 
 const EtudeDetails: React.FC = () => {
   const { etudeNumber } = useParams<{ etudeNumber: string }>();
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
+  const userStructureId = userData?.structureId || null;
   
   const [etude, setEtude] = useState<EtudeData | null>(null);
   const [originalEtude, setOriginalEtude] = useState<EtudeData | null>(null);
@@ -448,7 +445,7 @@ const EtudeDetails: React.FC = () => {
   const [availableCharges, setAvailableCharges] = useState<ChargeData[]>([]);
   const [availableCompanies, setAvailableCompanies] = useState<string[]>([]);
   const [availableMissionTypes, setAvailableMissionTypes] = useState<MissionDescription[]>([]);
-  const [tabValue, setTabValue] = useState(0);
+  const [activeTab, setActiveTab] = useState<EtudeDetailTabId>('overview');
   const [planningTasks, setPlanningTasks] = useState<PlanningTask[]>([]);
   const [recruitmentTasks, setRecruitmentTasks] = useState<RecruitmentTask[]>([]);
   const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
@@ -460,10 +457,16 @@ const EtudeDetails: React.FC = () => {
   const [deletingDocument, setDeletingDocument] = useState<string | null>(null);
   const [notes, setNotes] = useState<EtudeNote[]>([]);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
-  const [snackbar, setSnackbar] = useState({
+  const [snackbar, setSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    severity: 'success' | 'error' | 'info' | 'warning';
+    actionLabel?: string;
+    actionUrl?: string;
+  }>({
     open: false,
     message: '',
-    severity: 'success' as 'success' | 'error' | 'info' | 'warning'
+    severity: 'success'
   });
   const [jehLinked, setJehLinked] = useState(true);
   const [pendingModifications, setPendingModifications] = useState<string[]>([]);
@@ -794,12 +797,15 @@ const EtudeDetails: React.FC = () => {
       try {
         setLoading(true);
         
-        // Récupérer les détails de l'étude
+        // Récupérer les détails de l'étude (filtrer par structure si connue pour respecter les règles Firestore)
         const etudesRef = collection(db, 'etudes');
-        const etudeQuery = query(
-          etudesRef,
-          where('numeroEtude', '==', etudeNumber)
-        );
+        const etudeQuery = userStructureId
+          ? query(
+              etudesRef,
+              where('structureId', '==', userStructureId),
+              where('numeroEtude', '==', etudeNumber)
+            )
+          : query(etudesRef, where('numeroEtude', '==', etudeNumber));
         
         const etudeSnapshot = await getDocs(etudeQuery);
         
@@ -814,19 +820,21 @@ const EtudeDetails: React.FC = () => {
         }
 
         const etudeDoc = etudeSnapshot.docs[0];
-        const etudeData = { id: etudeDoc.id, ...etudeDoc.data() } as EtudeData;
-        
+        let etudeData = { id: etudeDoc.id, ...etudeDoc.data() } as EtudeData;
+
         // Récupérer les informations de l'entreprise (ID, nom et logo)
         if (etudeData.company) {
           try {
             const companiesRef = collection(db, 'companies');
-            const companyQuery = query(companiesRef, where('name', '==', etudeData.company));
+            const companyConstraints = [where('name', '==', etudeData.company)];
+            if (etudeData.structureId) companyConstraints.push(where('structureId', '==', etudeData.structureId));
+            const companyQuery = query(companiesRef, ...companyConstraints);
             const companySnapshot = await getDocs(companyQuery);
             
             if (!companySnapshot.empty) {
               const companyDoc = companySnapshot.docs[0];
               const companyData = companyDoc.data();
-              etudeData.companyId = companyDoc.id; // Récupérer l'ID de l'entreprise
+              etudeData.companyId = companyDoc.id;
               etudeData.companyLogo = companyData.logo || null;
             }
           } catch (error) {
@@ -834,9 +842,17 @@ const EtudeDetails: React.FC = () => {
           }
         }
         
+        // Charger les avenants
+        try {
+          const avenants = await getAvenants(etudeDoc.id);
+          (etudeData as any)._avenants = avenants;
+        } catch {
+          (etudeData as any)._avenants = [];
+        }
+
         setEtude(etudeData);
         setOriginalEtude(etudeData);
-        
+
         // Initialiser le type de tarification
         setPricingType(etudeData.pricingType || 'jeh');
 
@@ -850,19 +866,27 @@ const EtudeDetails: React.FC = () => {
           );
           
           const usersSnapshot = await getDocs(usersQuery);
-          const chargesList = usersSnapshot.docs.map(doc => {
+          const chargesListRaw = usersSnapshot.docs.map(doc => {
             const userData = doc.data();
             return {
               id: doc.id,
               displayName: userData.displayName || 'Utilisateur sans nom',
+              firstName: userData.firstName,
+              lastName: userData.lastName,
               photoURL: userData.photoURL
             };
           });
+          const chargesListDecrypted = await decryptUsersList(chargesListRaw);
+          const chargesList = chargesListDecrypted.map(u => ({
+            id: u.id,
+            displayName: u.displayName || 'Utilisateur sans nom',
+            photoURL: (chargesListRaw.find(r => r.id === u.id) as any)?.photoURL
+          }));
           setAvailableCharges(chargesList);
         }
 
         // Charger les données associées
-        await loadAssociatedData(etudeDoc.id);
+        await loadAssociatedData(etudeDoc.id, etudeData.structureId);
 
         // Charger les données complètes pour le générateur de documents
         await loadCompleteDataForGenerator(etudeData);
@@ -915,7 +939,7 @@ const EtudeDetails: React.FC = () => {
     };
 
     fetchEtudeDetails();
-  }, [etudeNumber, currentUser, navigate]);
+  }, [etudeNumber, currentUser, navigate, userStructureId]);
 
   // Fonction pour charger les données complètes pour le générateur de documents
   const loadCompleteDataForGenerator = async (etudeData: EtudeData) => {
@@ -1103,41 +1127,75 @@ const EtudeDetails: React.FC = () => {
     if (!text || !etude) return text;
 
     try {
-      const company = companyFullData;
-      const contactData = contacts.find(c => c.isDefault) || contacts[0];
-      const chargeData = cachedData?.chargeData;
-      const userData = cachedData?.userData || studentData;
+      const rawContact = contacts.find(c => c.isDefault) || contacts[0];
+      let userDataRaw = cachedData?.userData || studentData;
+      let chargeDataRaw = cachedData?.chargeData;
+      let structureDataResolved = structureData || structureFullData;
+      let companyDataRaw = companyFullData;
       const presidentFullName = cachedData?.presidentFullName || '';
+
+      const userIdForDecrypt = userDataRaw?.id as string | undefined;
+      const decryptedCtx = await prepareDecryptedDocumentContext({
+        userId: userIdForDecrypt,
+        userData: userDataRaw,
+        chargeId: etude.chargeId,
+        chargeData: chargeDataRaw,
+        contactId: rawContact?.id,
+        contactData: rawContact ? { ...rawContact } : null,
+        companyId: companyDataRaw?.id,
+        companyData: companyDataRaw,
+        structureId: etude.structureId || structureFullData?.id,
+        structureData: structureDataResolved,
+      });
+
+      const decryptedUserData = decryptedCtx.userData ?? userDataRaw;
+      const chargeData = decryptedCtx.chargeData ?? chargeDataRaw;
+      const contactData = decryptedCtx.contactData ?? rawContact;
+      const company = decryptedCtx.companyData ?? companyDataRaw;
+      structureDataResolved = decryptedCtx.structureData ?? structureDataResolved;
 
       // Calculer les totaux
       const totalHT = etude.prixHT || 0;
       const tva = totalHT * 0.2;
       const totalTTC = totalHT + tva;
 
-      // Décrypter les données utilisateur si nécessaire
-      let decryptedUserData = userData;
-      if (userData?.id || (userData && (userData.displayName?.startsWith('ENC:') || userData.firstName?.startsWith('ENC:') || userData.lastName?.startsWith('ENC:')))) {
+      let etudeCdmLabel = etude.chargeName || '[Chargé d\'étude non disponible]';
+      if (etude.chargeId) {
         try {
-          const userId = userData.id || studentId;
-          if (userId) {
-            decryptedUserData = await decryptUserDisplayData(userId, {
-              displayName: userData.displayName,
-              firstName: userData.firstName,
-              lastName: userData.lastName
-            });
-            // Conserver les autres champs
-            decryptedUserData = { ...userData, ...decryptedUserData };
-          }
-        } catch (error) {
-          console.warn('Erreur lors du décryptage des données utilisateur:', error);
-          decryptedUserData = userData;
+          etudeCdmLabel = await getDecryptedUserDisplayName(
+            etude.chargeId,
+            chargeData || { displayName: etude.chargeName }
+          );
+        } catch {
+          etudeCdmLabel = getSafeDisplayName(chargeData || { displayName: etude.chargeName }) || etudeCdmLabel;
         }
       }
+
+      const contact = contactData as {
+        lastName?: string;
+        firstName?: string;
+        email?: string;
+        phone?: string;
+        position?: string;
+        linkedin?: string;
+      } | null | undefined;
+      const companyInfo = company as {
+        name?: string;
+        nSiret?: string;
+        address?: string;
+        city?: string;
+        country?: string;
+        phone?: string;
+        email?: string;
+        website?: string;
+        description?: string;
+      } | null | undefined;
+      const structureResolved = structureDataResolved as Record<string, string | undefined> | null | undefined;
 
       const replacements: { [key: string]: string } = {
         // Balises de l'étude
         '<etude_numero>': etude.numeroEtude || '[Numéro d\'étude non disponible]',
-        '<etude_cdm>': etude.chargeName || '[Chargé d\'étude non disponible]',
+        '<etude_cdm>': etudeCdmLabel,
         '<etude_date_debut>': etude.startDate ? new Date(etude.startDate).toLocaleDateString('fr-FR') : '[Date de début non disponible]',
         '<etude_date_fin>': etude.endDate ? new Date(etude.endDate).toLocaleDateString('fr-FR') : '[Date de fin non disponible]',
         '<etude_lieu>': etude.location || '[Lieu non disponible]',
@@ -1184,35 +1242,35 @@ const EtudeDetails: React.FC = () => {
         '<user_niveau_etude>': decryptedUserData?.studyLevel || '[Niveau d\'études non disponible]',
         
         // Balises de contact
-        '<contact_nom>': contactData?.lastName || '[Nom du contact non disponible]',
-        '<contact_prenom>': contactData?.firstName || '[Prénom du contact non disponible]',
-        '<contact_email>': contactData?.email || '[Email du contact non disponible]',
-        '<contact_telephone>': contactData?.phone || '[Téléphone du contact non disponible]',
-        '<contact_poste>': contactData?.position || '[Poste du contact non disponible]',
-        '<contact_linkedin>': contactData?.linkedin || '[LinkedIn du contact non disponible]',
-        '<contact_nom_complet>': `${contactData?.firstName || ''} ${contactData?.lastName || ''}`.trim() || '[Nom complet du contact non disponible]',
+        '<contact_nom>': contact?.lastName || '[Nom du contact non disponible]',
+        '<contact_prenom>': contact?.firstName || '[Prénom du contact non disponible]',
+        '<contact_email>': contact?.email || '[Email du contact non disponible]',
+        '<contact_telephone>': contact?.phone || '[Téléphone du contact non disponible]',
+        '<contact_poste>': contact?.position || '[Poste du contact non disponible]',
+        '<contact_linkedin>': contact?.linkedin || '[LinkedIn du contact non disponible]',
+        '<contact_nom_complet>': `${contact?.firstName || ''} ${contact?.lastName || ''}`.trim() || '[Nom complet du contact non disponible]',
         
         // Balises de la structure
-        '<structure_nom>': structureData?.nom || structureFullData?.nom || '[Nom de la structure non disponible]',
-        '<structure_address>': structureData?.address || structureFullData?.address || '[Adresse de la structure non disponible]',
-        '<structure_phone>': structureData?.phone || structureFullData?.phone || '[Téléphone de la structure non disponible]',
-        '<structure_email>': structureData?.email || structureFullData?.email || '[Email de la structure non disponible]',
-        '<structure_siret>': structureData?.siret || structureFullData?.siret || '[SIRET de la structure non disponible]',
-        '<structure_tvaNumber>': structureData?.tvaNumber || structureFullData?.tvaNumber || '[Numéro de TVA de la structure non disponible]',
-        '<structure_apeCode>': structureData?.apeCode || structureFullData?.apeCode || '[Code APE de la structure non disponible]',
+        '<structure_nom>': structureResolved?.nom || '[Nom de la structure non disponible]',
+        '<structure_address>': structureResolved?.address || '[Adresse de la structure non disponible]',
+        '<structure_phone>': structureResolved?.phone || '[Téléphone de la structure non disponible]',
+        '<structure_email>': structureResolved?.email || '[Email de la structure non disponible]',
+        '<structure_siret>': structureResolved?.siret || '[SIRET de la structure non disponible]',
+        '<structure_tvaNumber>': structureResolved?.tvaNumber || '[Numéro de TVA de la structure non disponible]',
+        '<structure_apeCode>': structureResolved?.apeCode || '[Code APE de la structure non disponible]',
         '<structure_president_nom_complet>': presidentFullName || '[Président non disponible]',
         
         // Balises pour l'entreprise
-        '<entreprise_nom>': company?.name || etude.company || '[Nom entreprise non disponible]',
-        '<entreprise_siren>': company?.nSiret ? company.nSiret.substring(0, 9) : '[SIREN non disponible]',
-        '<entreprise_nsiret>': company?.nSiret || '[SIRET non disponible]',
-        '<entreprise_adresse>': company?.address || '[Adresse entreprise non disponible]',
-        '<entreprise_ville>': company?.city || '[Ville entreprise non disponible]',
-        '<entreprise_pays>': company?.country || '[Pays entreprise non disponible]',
-        '<entreprise_telephone>': company?.phone || '[Téléphone entreprise non disponible]',
-        '<entreprise_email>': company?.email || '[Email entreprise non disponible]',
-        '<entreprise_site_web>': company?.website || '[Site web entreprise non disponible]',
-        '<entreprise_description>': company?.description || '[Description entreprise non disponible]',
+        '<entreprise_nom>': companyInfo?.name || etude.company || '[Nom entreprise non disponible]',
+        '<entreprise_siren>': companyInfo?.nSiret ? companyInfo.nSiret.substring(0, 9) : '[SIREN non disponible]',
+        '<entreprise_nsiret>': companyInfo?.nSiret || '[SIRET non disponible]',
+        '<entreprise_adresse>': companyInfo?.address || '[Adresse entreprise non disponible]',
+        '<entreprise_ville>': companyInfo?.city || '[Ville entreprise non disponible]',
+        '<entreprise_pays>': companyInfo?.country || '[Pays entreprise non disponible]',
+        '<entreprise_telephone>': companyInfo?.phone || '[Téléphone entreprise non disponible]',
+        '<entreprise_email>': companyInfo?.email || '[Email entreprise non disponible]',
+        '<entreprise_site_web>': companyInfo?.website || '[Site web entreprise non disponible]',
+        '<entreprise_description>': companyInfo?.description || '[Description entreprise non disponible]',
         
         // Balises du chargé d'étude
         '<charge_email>': chargeData?.email || '',
@@ -1487,8 +1545,24 @@ const EtudeDetails: React.FC = () => {
         chargeDataPromise,
         presidentFullNamePromise
       ]);
-      
-      console.log('✅ Toutes les données récupérées en parallèle');
+
+      const decryptedCtx = await prepareDecryptedDocumentContext({
+        userId: studentId,
+        userData,
+        chargeId: etude.chargeId,
+        chargeData,
+        contactId: (contacts.find(c => c.isDefault) || contacts[0])?.id,
+        contactData: (() => {
+          const c = contacts.find(ct => ct.isDefault) || contacts[0];
+          return c ? { ...c } : null;
+        })(),
+        companyId: companyFullData?.id,
+        companyData: companyFullData,
+        structureId: etude.structureId || structureFullData?.id,
+        structureData: structureData ?? structureFullData,
+      });
+
+      console.log('✅ Toutes les données récupérées et déchiffrées en parallèle');
 
       // 4. Traiter chaque variable du template
       if (forceDownload) {
@@ -1519,9 +1593,9 @@ const EtudeDetails: React.FC = () => {
             valueToReplace = '';
           }
 
-          const value = await replaceTags(valueToReplace, userData, structureData, {}, {
-            userData,
-            chargeData,
+          const value = await replaceTags(valueToReplace, decryptedCtx.userData ?? userData, decryptedCtx.structureData ?? structureData, {}, {
+            userData: decryptedCtx.userData ?? userData,
+            chargeData: decryptedCtx.chargeData ?? chargeData,
             presidentFullName
           });
 
@@ -1855,10 +1929,17 @@ const EtudeDetails: React.FC = () => {
       console.error('❌ Erreur lors de la génération du document:', error);
       setDownloadProgress(null);
       const errorMessage = error instanceof Error ? error.message : 'Erreur lors de la génération du document';
+      const isTemplateError = errorMessage.includes('Aucun template assigné') || errorMessage.includes("template assigné n'existe plus");
       setSnackbar({
         open: true,
-        message: errorMessage,
-        severity: 'error'
+        message: isTemplateError
+          ? 'Aucun template assigné pour ce type de document.'
+          : errorMessage,
+        severity: 'error',
+        ...(isTemplateError && {
+          actionLabel: 'Assigner une template',
+          actionUrl: '/app/settings/template-assignment'
+        })
       });
       throw error;
     } finally {
@@ -1909,11 +1990,11 @@ const EtudeDetails: React.FC = () => {
     }
   };
 
-  const loadAssociatedData = async (etudeId: string) => {
+  const loadAssociatedData = async (etudeId: string, structureId?: string) => {
     try {
       // Charger les tâches de planning
       const planningRef = collection(db, 'planningTasks');
-      const planningQuery = query(planningRef, where('etudeId', '==', etudeId));
+      const planningQuery = query(planningRef, where('etudeId', '==', etudeId), limit(ASSOCIATED_QUERY_LIMIT));
       const planningSnapshot = await getDocs(planningQuery);
       const planningData = planningSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -1923,7 +2004,7 @@ const EtudeDetails: React.FC = () => {
 
       // Charger les tâches de recrutement
       const recruitmentRef = collection(db, 'recruitmentTasks');
-      const recruitmentQuery = query(recruitmentRef, where('etudeId', '==', etudeId));
+      const recruitmentQuery = query(recruitmentRef, where('etudeId', '==', etudeId), limit(ASSOCIATED_QUERY_LIMIT));
       const recruitmentSnapshot = await getDocs(recruitmentQuery);
       const recruitmentData = recruitmentSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -1940,7 +2021,7 @@ const EtudeDetails: React.FC = () => {
 
       // Charger les postes de budget
       const budgetRef = collection(db, 'budgetItems');
-      const budgetQuery = query(budgetRef, where('etudeId', '==', etudeId));
+      const budgetQuery = query(budgetRef, where('etudeId', '==', etudeId), limit(ASSOCIATED_QUERY_LIMIT));
       const budgetSnapshot = await getDocs(budgetQuery);
       const budgetData = budgetSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -1953,7 +2034,7 @@ const EtudeDetails: React.FC = () => {
 
       // Charger les documents
       const documentsRef = collection(db, 'documents');
-      const documentsQuery = query(documentsRef, where('etudeId', '==', etudeId));
+      const documentsQuery = query(documentsRef, where('etudeId', '==', etudeId), limit(ASSOCIATED_QUERY_LIMIT));
       const documentsSnapshot = await getDocs(documentsQuery);
       const documentsData = documentsSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -1963,7 +2044,7 @@ const EtudeDetails: React.FC = () => {
 
       // Charger les notes
       const notesRef = collection(db, 'etudeNotes');
-      const notesQuery = query(notesRef, where('etudeId', '==', etudeId));
+      const notesQuery = query(notesRef, where('etudeId', '==', etudeId), limit(ASSOCIATED_QUERY_LIMIT));
       const notesSnapshot = await getDocs(notesQuery);
       const notesData = notesSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -1973,7 +2054,7 @@ const EtudeDetails: React.FC = () => {
 
       // Charger l'historique
       const historyRef = collection(db, 'etudeHistory');
-      const historyQuery = query(historyRef, where('etudeId', '==', etudeId));
+      const historyQuery = query(historyRef, where('etudeId', '==', etudeId), limit(ASSOCIATED_QUERY_LIMIT));
       const historySnapshot = await getDocs(historyQuery);
       const historyData = historySnapshot.docs.map(doc => ({
         id: doc.id,
@@ -1985,7 +2066,7 @@ const EtudeDetails: React.FC = () => {
       if (etude?.companyId) {
         try {
           const contactsRef = collection(db, 'contacts');
-          const contactsQuery = query(contactsRef, where('companyId', '==', etude.companyId));
+          const contactsQuery = query(contactsRef, where('companyId', '==', etude.companyId), limit(ASSOCIATED_QUERY_LIMIT));
           const contactsSnapshot = await getDocs(contactsQuery);
           const contactsData = contactsSnapshot.docs.map(doc => ({
             id: doc.id,
@@ -1995,13 +2076,15 @@ const EtudeDetails: React.FC = () => {
         } catch (error) {
           console.warn('Erreur lors du chargement des contacts via companyId:', error);
         }
-      } else if (etude?.company) {
-        // Si pas de companyId, essayer de trouver l'entreprise par nom
+      } else if (etude?.company && structureId) {
+        // Si pas de companyId, essayer de trouver l'entreprise par nom (même structure uniquement)
         try {
-          
-          // D'abord, trouver l'entreprise par nom
           const companiesRef = collection(db, 'companies');
-          const companiesQuery = query(companiesRef, where('name', '==', etude.company));
+          const companiesQuery = query(
+            companiesRef,
+            where('name', '==', etude.company),
+            where('structureId', '==', structureId)
+          );
           const companiesSnapshot = await getDocs(companiesQuery);
           
           if (!companiesSnapshot.empty) {
@@ -2010,7 +2093,7 @@ const EtudeDetails: React.FC = () => {
             
             // Maintenant chercher les contacts avec l'ID de l'entreprise
             const contactsRef = collection(db, 'contacts');
-            const contactsQuery = query(contactsRef, where('companyId', '==', companyDoc.id));
+            const contactsQuery = query(contactsRef, where('companyId', '==', companyDoc.id), limit(ASSOCIATED_QUERY_LIMIT));
             const contactsSnapshot = await getDocs(contactsQuery);
             const contactsData = contactsSnapshot.docs.map(doc => ({
               id: doc.id,
@@ -2252,7 +2335,7 @@ const EtudeDetails: React.FC = () => {
       await Promise.all(updatePromises.filter(Boolean));
       
       // Recharger les postes de budget
-      await loadAssociatedData(etude.id);
+      await loadAssociatedData(etude.id, etude.structureId);
       
     } catch (error) {
       console.error('Erreur lors de la mise à jour des postes de budget:', error);
@@ -2423,7 +2506,7 @@ const EtudeDetails: React.FC = () => {
         details,
         type: 'etude',
         userId: currentUser.uid,
-        userName: currentUser.displayName || 'Utilisateur inconnu'
+        userName: getSafeDisplayName(userData) || currentUser.email || 'Utilisateur inconnu'
       };
 
       await addDoc(collection(db, 'etudeHistory'), {
@@ -2484,7 +2567,7 @@ const EtudeDetails: React.FC = () => {
           details: `Modifications apportées à l'étude ${etude.numeroEtude}`,
           type: 'etude',
           userId: currentUser.uid,
-          userName: currentUser.displayName || 'Utilisateur inconnu',
+          userName: getSafeDisplayName(userData) || currentUser.email || 'Utilisateur inconnu',
           modifications,
           sessionId
         };
@@ -2519,7 +2602,7 @@ const EtudeDetails: React.FC = () => {
         content: newNote.trim(),
         createdAt: new Date(),
         createdBy: currentUser.uid,
-        createdByName: currentUser.displayName || 'Utilisateur inconnu',
+        createdByName: getSafeDisplayName(userData) || currentUser.email || 'Utilisateur inconnu',
         etudeId: etude.id,
         etudeNumber: etude.numeroEtude
       };
@@ -2591,16 +2674,15 @@ const EtudeDetails: React.FC = () => {
     setDocumentPreviewOpen(true);
   };
 
-  const handleDocumentDownload = async (document: Document) => {
+  const handleDocumentDownload = async (doc: Document) => {
     try {
-      if (document.url) {
-        // Si le document a une URL, télécharger depuis cette URL
-        const link = document.createElement('a');
-        link.href = document.url;
-        link.download = document.name;
-        document.body.appendChild(link);
+      if (doc.url) {
+        const link = window.document.createElement('a');
+        link.href = doc.url;
+        link.download = doc.name;
+        window.document.body.appendChild(link);
         link.click();
-        document.body.removeChild(link);
+        window.document.body.removeChild(link);
       } else {
         // Si pas d'URL, afficher un message d'erreur
         setSnackbar({
@@ -2715,14 +2797,14 @@ const EtudeDetails: React.FC = () => {
     
     try {
       for (const documentId of selectedDocuments) {
-        const document = documents.find(doc => doc.id === documentId);
-        if (document && document.url) {
-          const link = document.createElement('a');
-          link.href = document.url;
-          link.download = document.name;
-          document.body.appendChild(link);
+        const docItem = documents.find(doc => doc.id === documentId);
+        if (docItem?.url) {
+          const link = window.document.createElement('a');
+          link.href = docItem.url;
+          link.download = docItem.name;
+          window.document.body.appendChild(link);
           link.click();
-          document.body.removeChild(link);
+          window.document.body.removeChild(link);
         }
       }
       
@@ -3117,15 +3199,19 @@ const EtudeDetails: React.FC = () => {
       const usersQuery = query(usersRef, where('structureId', '==', etude?.structureId));
       const usersSnapshot = await getDocs(usersQuery);
       
-      const allUsers = usersSnapshot.docs.map(doc => ({
+      const allUsersRaw = usersSnapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       })) as Array<{
         id: string;
         displayName?: string;
+        firstName?: string;
+        lastName?: string;
         email?: string;
         photoURL?: string;
       }>;
+
+      const allUsers = await decryptUsersList(allUsersRaw);
       
       // Récupérer les candidatures existantes pour cette tâche (acceptées ou ajoutées manuellement)
       const applicationsRef = collection(db, 'applications');
@@ -3170,7 +3256,7 @@ const EtudeDetails: React.FC = () => {
           recruitmentTaskId: selectedTaskForAddStudent.id, // Ajouter ce champ requis
           userId: studentId,
           userEmail: student.email,
-          userDisplayName: student.displayName || student.email?.split('@')[0] || 'Utilisateur',
+          userDisplayName: getSafeDisplayName(student) || student.email?.split('@')[0] || 'Utilisateur',
           userPhotoURL: student.photoURL || null,
           status: 'Ajouté manuellement' as const, // Utiliser 'Ajouté manuellement' pour être cohérent
           submittedAt: new Date(),
@@ -3357,7 +3443,7 @@ const EtudeDetails: React.FC = () => {
         // Recharge complète des données associées pour synchroniser toutes les vues/tables
         try {
           if (etude?.id) {
-            await loadAssociatedData(etude.id);
+            await loadAssociatedData(etude.id, etude.structureId);
           }
         } catch (e) {
           console.warn('Recharge des données associées échouée:', e);
@@ -3537,9 +3623,10 @@ const EtudeDetails: React.FC = () => {
     try {
       const applicationsRef = collection(db, 'applications');
       const q = query(
-        applicationsRef, 
+        applicationsRef,
         where('missionId', '==', taskId),
-        where('status', 'in', ['Acceptée', 'Ajouté manuellement'])
+        where('status', 'in', ['Acceptée', 'Ajouté manuellement']),
+        limit(ASSOCIATED_QUERY_LIMIT)
       );
       const snapshot = await getDocs(q);
       
@@ -3592,26 +3679,43 @@ const EtudeDetails: React.FC = () => {
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file || !etude?.id) return;
+    if (!file || !etude?.id || !storage) return;
 
     try {
-      // Simuler l'upload (dans un vrai projet, utiliser Firebase Storage)
-      const documentData: Document = {
-        id: Date.now().toString(),
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `etudes/${etude.id}/documents/${Date.now()}_${safeName}`;
+      const storageRef = ref(storage, storagePath);
+      await uploadBytes(storageRef, file, { contentType: file.type });
+      const downloadUrl = await getDownloadURL(storageRef);
+
+      const uploadedByName = getSafeDisplayName(userData) || currentUser?.email || 'Utilisateur';
+      const documentPayload = {
         name: file.name,
         type: getFileType(file.name),
-        url: URL.createObjectURL(file),
+        url: downloadUrl,
         uploadedAt: new Date(),
         uploadedBy: currentUser?.uid || '',
+        uploadedByName,
+        size: file.size,
+        etudeId: etude.id
+      };
+
+      const docRef = await addDoc(collection(db, 'documents'), documentPayload);
+
+      const newDocument: Document = {
+        id: docRef.id,
+        name: file.name,
+        type: getFileType(file.name),
+        url: downloadUrl,
+        uploadedAt: new Date(),
+        uploadedBy: currentUser?.uid || '',
+        uploadedByName,
         size: file.size
       };
 
-      await addDoc(collection(db, 'documents'), {
-        ...documentData,
-        etudeId: etude.id
-      });
-
-      setDocuments([...documents, documentData]);
+      setDocuments([...documents, newDocument]);
+      setDocumentDialogOpen(false);
+      if (event.target) (event.target as HTMLInputElement).value = '';
       setSnackbar({
         open: true,
         message: 'Document uploadé avec succès',
@@ -3697,6 +3801,16 @@ const EtudeDetails: React.FC = () => {
     });
   };
 
+  const formatDocumentUploadDate = (uploadedAt: Document['uploadedAt']): string => {
+    if (!uploadedAt) return '—';
+    const date = typeof uploadedAt === 'object' && uploadedAt !== null && 'toDate' in uploadedAt && typeof (uploadedAt as { toDate: () => Date }).toDate === 'function'
+      ? (uploadedAt as { toDate: () => Date }).toDate()
+      : uploadedAt instanceof Date
+        ? uploadedAt
+        : new Date(String(uploadedAt));
+    return isNaN(date.getTime()) ? '—' : date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
   // Fonction utilitaire pour formater les dates de manière sécurisée
   const formatSafeDate = (date: any, options?: Intl.DateTimeFormatOptions): string => {
     if (!date) return 'Non définie';
@@ -3761,8 +3875,21 @@ const EtudeDetails: React.FC = () => {
     return dateObj.toLocaleTimeString('fr-FR');
   };
 
+  // Couleurs pour les anciennes valeurs de statut (rétrocompatibilité)
   const getStatusColor = (status: string) => {
     switch (status) {
+      case 'Négociation':
+        return 'warning';
+      case 'Recrutement':
+        return 'info';
+      case 'Date de mission':
+        return 'primary';
+      case 'Facturation':
+        return 'primary';
+      case 'Audit':
+        return 'success';
+      case 'Archivé':
+        return 'default';
       case 'En cours':
         return 'primary';
       case 'Terminé':
@@ -3773,6 +3900,28 @@ const EtudeDetails: React.FC = () => {
         return 'default';
     }
   };
+
+  // Nouveau workflow d'étapes JE
+  const currentEtape: EtudeEtape = etude?.etape && ETUDE_ETAPE_ORDER.includes(etude.etape as EtudeEtape)
+    ? (etude.etape as EtudeEtape)
+    : statusToEtape((etude?.status || 'Négociation') as any);
+  const currentEtapeIndex = ETUDE_ETAPE_ORDER.indexOf(currentEtape);
+  const etapeProgress = ((currentEtapeIndex + 1) / ETUDE_ETAPE_ORDER.length) * 100;
+
+  // Qualité checklist
+  const qualityChecklist: QualityChecklist = etude?.qualityChecklist || {
+    conventionSignee: false,
+    assuranceVerifiee: false,
+    pvRecetteObtenu: false,
+    satisfactionEnvoyee: false,
+    bvEmis: false,
+    facturePayee: false,
+    rapportPedagogiqueRedige: false,
+  };
+  const qualityItems = Object.entries(qualityChecklist);
+  const qualityDone = qualityItems.filter(([, v]) => v).length;
+  const qualityTotal = qualityItems.length;
+  const qualityPercent = Math.round((qualityDone / qualityTotal) * 100);
 
   // Fonctions pour le planning visuel
   const generateTimelineWeeks = (): string[] => {
@@ -3962,16 +4111,16 @@ const EtudeDetails: React.FC = () => {
       case 'Basse':
         return '#2ed573';
       default:
-        return '#667eea';
+        return tokens.colors.primary;
     }
   };
 
   const getBudgetItemColor = (color: string): string => {
-    return color || '#667eea';
+    return color || tokens.colors.primary;
   };
 
   const availableColors = [
-    '#667eea', // Bleu
+    tokens.colors.primary, // Bleu
     '#ff6b6b', // Rouge
     '#4ecdc4', // Turquoise
     '#45b7d1', // Bleu clair
@@ -4415,7 +4564,7 @@ const EtudeDetails: React.FC = () => {
           title: 'Nouveau poste',
           description: '',
           budget: 0,
-          color: '#667eea',
+          color: tokens.colors.primary,
           startDate: dates.startDate,
           endDate: dates.endDate,
           status: 'Planifié',
@@ -4435,7 +4584,7 @@ const EtudeDetails: React.FC = () => {
           title: 'Nouveau poste',
           description: '',
           budget: 0,
-          color: '#667eea',
+          color: tokens.colors.primary,
           status: 'Planifié'
         });
         
@@ -4566,7 +4715,7 @@ const EtudeDetails: React.FC = () => {
           title: updatedItem.title,
           description: updatedItem.description || '',
           budget: updatedItem.budget,
-          color: updatedItem.color || '#667eea',
+          color: updatedItem.color || tokens.colors.primary,
           startDate: updatedItem.startDate,
           endDate: updatedItem.endDate,
           status: updatedItem.status || 'Planifié',
@@ -4587,7 +4736,7 @@ const EtudeDetails: React.FC = () => {
           title: updatedItem.title,
           description: updatedItem.description || '',
           budget: updatedItem.budget,
-          color: updatedItem.color || '#667eea',
+          color: updatedItem.color || tokens.colors.primary,
           startDate: updatedItem.startDate,
           endDate: updatedItem.endDate,
           status: updatedItem.status || 'Planifié',
@@ -4671,6 +4820,31 @@ const EtudeDetails: React.FC = () => {
     }
   };
 
+  const tabCounts = useEtudeDetailTabs({
+    recruitmentTasks,
+    documents,
+    avenants: (etude as EtudeData & { _avenants?: unknown[] })?._avenants,
+  });
+
+  const etudeTabIcons: Record<EtudeDetailTabId, React.ReactElement> = {
+    overview: <DashboardIcon />,
+    planning: <TimelineIcon />,
+    recruitment: <PeopleIcon />,
+    documents: <FolderIcon />,
+    compliance: <CheckCircleIcon />,
+  };
+
+  const handleToggleEtudePublic = async (value: boolean) => {
+    if (!etude?.id) return;
+    try {
+      await updateDoc(doc(db, 'etudes', etude.id), { isPublic: value, updatedAt: new Date() });
+      setEtude({ ...etude, isPublic: value });
+      setOriginalEtude((prev) => (prev ? { ...prev, isPublic: value } : prev));
+    } catch (error) {
+      console.error('Erreur mise à jour visibilité:', error);
+    }
+  };
+
   if (loading) {
     return (
       <Box sx={{ 
@@ -4678,18 +4852,18 @@ const EtudeDetails: React.FC = () => {
         justifyContent: 'center', 
         alignItems: 'center', 
         height: '100vh',
-        bgcolor: '#f5f5f7'
+        bgcolor: tokens.colors.bgSubtle
       }}>
         <Box sx={{ textAlign: 'center' }}>
           <CircularProgress 
             size={60} 
             sx={{ 
-              color: '#667eea',
+              color: tokens.colors.primary,
               mb: 2,
               animation: `${pulse} 2s infinite`
             }} 
           />
-          <Typography variant="h6" sx={{ color: '#1d1d1f', fontWeight: 500 }}>
+          <Typography variant="h6" sx={{ color: tokens.colors.textPrimary, fontWeight: 500 }}>
             Chargement de l'étude...
           </Typography>
         </Box>
@@ -4705,208 +4879,144 @@ const EtudeDetails: React.FC = () => {
     );
   }
 
+  const updatedAtLabel = (() => {
+    const raw = (etude as EtudeData & { updatedAt?: { toDate?: () => Date } | Date | string }).updatedAt ?? etude.createdAt;
+    if (!raw) return undefined;
+    const date = typeof (raw as { toDate?: () => Date }).toDate === 'function'
+      ? (raw as { toDate: () => Date }).toDate()
+      : new Date(raw as string | Date);
+    return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+  })();
+
   return (
-    <Box sx={{ 
-      minHeight: '100vh',
-      bgcolor: '#f5f5f7',
-      display: 'flex',
-      flexDirection: 'column',
-      overflow: 'hidden'
-    }}>
-      {/* Header moderne */}
-      <Box sx={{ 
-        bgcolor: 'white',
-        color: '#1d1d1f',
-        py: 2,
-        px: 3,
-        position: 'relative',
-        overflow: 'hidden',
-        borderBottom: '1px solid #e5e5e7',
-        flexShrink: 0
-      }}>
-        {/* Breadcrumb */}
-        <Breadcrumbs 
-          separator={<NavigateNextIcon fontSize="small" sx={{ color: '#86868b' }} />}
-          sx={{ mb: 2, color: '#86868b' }}
-        >
-          <Link
-            color="inherit"
-            href="#"
-            onClick={(e) => { e.preventDefault(); navigate('/app/etude'); }}
-            sx={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              textDecoration: 'none',
-              color: '#667eea',
-              '&:hover': { textDecoration: 'underline' }
-            }}
-          >
-            <HomeIcon sx={{ mr: 0.5, fontSize: 20 }} />
-            Études
-          </Link>
-          <Typography sx={{ color: '#1d1d1f', fontWeight: 500 }}>
-            Étude {etude.numeroEtude}
-          </Typography>
-        </Breadcrumbs>
-
-        {/* Header principal */}
-        <Box sx={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'space-between',
-          position: 'relative',
-          zIndex: 1
-        }}>
-          <Box sx={{ animation: `${slideInLeft} 0.6s ease-out` }}>
-            <Typography 
-              variant="h4" 
-              sx={{ 
-                fontWeight: 800,
-                mb: 1,
-                textShadow: '0 2px 4px rgba(0,0,0,0.1)'
-              }}
+    <Box sx={dsPageCanvasSx}>
+      <Box sx={{ ...dsDetailHeaderSx, px: { xs: 2, md: 4 }, pt: 2, pb: 0 }}>
+        <Box sx={{ maxWidth: 1400, mx: 'auto' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Button
+              startIcon={<ChevronLeftIcon />}
+              onClick={() => navigate('/app/etude')}
+              sx={{ color: tokens.colors.textSecondary, textTransform: 'none' }}
             >
-              Étude {etude.numeroEtude}
-            </Typography>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <Chip 
-                label={etude.status} 
-                color={getStatusColor(etude.status) as any}
-                sx={{ 
-                  fontWeight: 600,
-                  fontSize: '0.875rem',
-                  height: 28,
-                  '& .MuiChip-label': { px: 1.5 }
-                }}
-              />
-              <Chip 
-                label={etude.etape} 
-                variant="outlined"
-                sx={{ 
-                  fontWeight: 500,
-                  fontSize: '0.875rem',
-                  height: 28,
-                  borderColor: '#667eea',
-                  color: '#667eea',
-                  '& .MuiChip-label': { px: 1.5 }
-                }}
-              />
+              Retour aux études
+            </Button>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+              {editing ? (
+                <>
+                  <Button
+                    size="small"
+                    startIcon={<SaveIcon />}
+                    variant="contained"
+                    onClick={handleSave}
+                    sx={{ textTransform: 'none' }}
+                  >
+                    Enregistrer
+                  </Button>
+                  <Button
+                    size="small"
+                    startIcon={<CancelIcon />}
+                    variant="outlined"
+                    onClick={handleCancel}
+                    sx={{ textTransform: 'none' }}
+                  >
+                    Annuler
+                  </Button>
+                </>
+              ) : (
+                <Tooltip title="Modifier">
+                  <IconButton onClick={() => setEditing(true)}><EditIcon /></IconButton>
+                </Tooltip>
+              )}
             </Box>
           </Box>
-
-          {/* Logo et nom de l'entreprise à droite */}
-          <Box sx={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: 2,
-            animation: `${fadeInUp} 0.6s ease-out 0.2s both`
-          }}>
-            <Box sx={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: 1.5,
-              p: 1.5,
-              borderRadius: 2,
-              bgcolor: '#f8f9fa',
-              border: '1px solid #e5e5e7'
-            }}>
-              <Avatar
-                src={etude.companyLogo || undefined}
-                sx={{ 
-                  width: 32, 
-                  height: 32,
-                  bgcolor: etude.companyLogo ? 'transparent' : '#667eea',
-                  fontSize: '0.875rem',
-                  fontWeight: 600,
-                  '& img': {
-                    objectFit: 'cover',
-                    borderRadius: '50%'
-                  }
-                }}
-              >
-                {etude.company?.charAt(0)?.toUpperCase() || 'E'}
-              </Avatar>
-              <Typography 
-                variant="body2" 
-                sx={{ 
-                  fontWeight: 600,
-                  color: '#1d1d1f',
-                  fontSize: '0.875rem'
-                }}
-              >
-                {etude.company}
-              </Typography>
-            </Box>
+          <Typography component="h1" sx={{ fontSize: '1.25rem', fontWeight: 600, color: tokens.colors.gray900, mb: 1 }}>
+            Étude #{etude.numeroEtude}
+            {etude.isArchived && (
+              <Chip label="Archivée" size="small" sx={{ ml: 1.5, verticalAlign: 'middle' }} />
+            )}
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5, flexWrap: 'wrap' }}>
+            <Chip
+              label={etude.status}
+              size="small"
+              color={getStatusColor(etude.status) as 'default' | 'primary' | 'secondary' | 'error' | 'info' | 'success' | 'warning'}
+              sx={{ fontWeight: 600 }}
+            />
+            <Chip
+              label={ETUDE_ETAPE_LABELS[currentEtape]}
+              size="small"
+              variant="outlined"
+              sx={{
+                fontWeight: 500,
+                borderColor: ETUDE_ETAPE_COLORS[currentEtape],
+                color: ETUDE_ETAPE_COLORS[currentEtape],
+              }}
+            />
+            <LinearProgress
+              variant="determinate"
+              value={etapeProgress}
+              sx={{
+                flex: 1,
+                minWidth: 120,
+                maxWidth: 240,
+                height: 6,
+                borderRadius: 3,
+                bgcolor: tokens.colors.gray100,
+                '& .MuiLinearProgress-bar': {
+                  borderRadius: 3,
+                  bgcolor: ETUDE_ETAPE_COLORS[currentEtape],
+                },
+              }}
+            />
           </Box>
+          <Tabs
+            value={activeTab}
+            onChange={(_, value: EtudeDetailTabId) => setActiveTab(value)}
+            variant="scrollable"
+            scrollButtons="auto"
+            sx={{ mt: 1, ...dsTabsSx }}
+          >
+            {ETUDE_DETAIL_TABS.map((tab) => {
+              const count =
+                tab.id === 'recruitment' ? tabCounts.recruitment
+                  : tab.id === 'documents' ? tabCounts.documents
+                    : tab.id === 'compliance' ? tabCounts.compliance
+                      : null;
+              return (
+                <Tab
+                  key={tab.id}
+                  value={tab.id}
+                  icon={etudeTabIcons[tab.id]}
+                  iconPosition="start"
+                  label={count != null && count > 0 ? `${tab.label} (${count})` : tab.label}
+                />
+              );
+            })}
+          </Tabs>
         </Box>
       </Box>
 
-      {/* Contenu principal */}
-      <Box sx={{ 
-        px: 3, 
-        position: 'relative', 
-        zIndex: 2,
-        flex: 1,
-        pb: 4,
-        mt: 0,
-        overflow: 'auto'
-      }}>
-        {/* Onglets stylisés */}
-        <Paper sx={{ 
-          mb: 3, 
-          mt: 2,
-          borderRadius: 3,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
-          overflow: 'hidden'
-        }}>
-          <Tabs 
-            value={tabValue} 
-            onChange={(e, newValue) => setTabValue(newValue)}
-            sx={{
-              bgcolor: 'white',
-              '& .MuiTab-root': {
-                minHeight: 64,
-                fontSize: '0.875rem',
-                fontWeight: 600,
-                textTransform: 'none',
-                '&.Mui-selected': {
-                  color: '#667eea',
-                  '& .MuiSvgIcon-root': {
-                    color: '#667eea'
-                  }
-                }
-              },
-              '& .MuiTabs-indicator': {
-                height: 3,
-                bgcolor: '#667eea'
-              }
-            }}
-          >
-            <Tab 
-              label="Informations générales" 
-              icon={<SettingsIcon />} 
-              iconPosition="start"
-            />
-            <Tab 
-              label="Planning & Budget" 
-              icon={<TimelineIcon />} 
-              iconPosition="start"
-            />
-            <Tab 
-              label="Recrutement" 
-              icon={<PeopleIcon />} 
-              iconPosition="start"
-            />
-            <Tab 
-              label="Documents" 
-              icon={<DescriptionTabIcon />} 
-              iconPosition="start"
-            />
-          </Tabs>
-        </Paper>
-
-        {/* Tab Content */}
-        <TabPanel value={tabValue} index={0}>
+      <EtudeDetailShell
+        sidebar={
+          <EtudeDetailSidebarPanel
+            numeroEtude={etude.numeroEtude}
+            mandat={etude.mandat}
+            missionTypeLabel={etude.missionTypeName || undefined}
+            createdById={etude.createdBy}
+            updatedAtLabel={updatedAtLabel}
+            chargeId={etude.chargeId}
+            chargeName={etude.chargeName}
+            companyName={etude.company}
+            companyLogo={etude.companyLogo}
+            statusLabel={etude.status}
+            etapeLabel={ETUDE_ETAPE_LABELS[currentEtape]}
+            isPublic={etude.isPublic}
+            onTogglePublic={(value) => void handleToggleEtudePublic(value)}
+          />
+        }
+      >
+        {activeTab === 'overview' && (
+        <OverviewTab>
           <Grid container spacing={3}>
             {/* Informations principales */}
             <Grid item xs={12} md={8}>
@@ -4918,58 +5028,9 @@ const EtudeDetails: React.FC = () => {
                 animation: `${fadeInUp} 0.6s ease-out`
               }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
                     Informations générales
                   </Typography>
-                  <Box>
-                    {editing ? (
-                      <>
-                        <Button
-                          startIcon={<SaveIcon />}
-                          onClick={handleSave}
-                          variant="contained"
-                          sx={{ 
-                            mr: 1,
-                            bgcolor: '#667eea',
-                            '&:hover': { bgcolor: '#5a6fd8' }
-                          }}
-                        >
-                          Sauvegarder
-                        </Button>
-                        <Button
-                          startIcon={<CancelIcon />}
-                          onClick={handleCancel}
-                          variant="outlined"
-                          sx={{ 
-                            borderColor: '#d2d2d7',
-                            color: '#1d1d1f',
-                            '&:hover': { 
-                              borderColor: '#1d1d1f',
-                              bgcolor: 'rgba(0,0,0,0.04)'
-                            }
-                          }}
-                        >
-                          Annuler
-                        </Button>
-                      </>
-                    ) : (
-                      <Button
-                        startIcon={<EditIcon />}
-                        onClick={() => setEditing(true)}
-                        variant="outlined"
-                        sx={{ 
-                          borderColor: '#667eea',
-                          color: '#667eea',
-                          '&:hover': { 
-                            borderColor: '#5a6fd8',
-                            bgcolor: 'rgba(102, 126, 234, 0.04)'
-                          }
-                        }}
-                      >
-                        Modifier
-                      </Button>
-                    )}
-                  </Box>
                 </Box>
 
                 <Grid container spacing={3}>
@@ -4979,11 +5040,11 @@ const EtudeDetails: React.FC = () => {
                       alignItems: 'center', 
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
-                      <BusinessIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <BusinessIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Entreprise
                       </Typography>
                     </Box>
@@ -4998,7 +5059,9 @@ const EtudeDetails: React.FC = () => {
                               // Récupérer l'ID de l'entreprise sélectionnée
                               try {
                                 const companiesRef = collection(db, 'companies');
-                                const companyQuery = query(companiesRef, where('name', '==', e.target.value));
+                                const companyConstraints = [where('name', '==', e.target.value)];
+                                if (userStructureId) companyConstraints.push(where('structureId', '==', userStructureId));
+                                const companyQuery = query(companiesRef, ...companyConstraints);
                                 const companySnapshot = await getDocs(companyQuery);
                                 
                                 if (!companySnapshot.empty) {
@@ -5023,12 +5086,12 @@ const EtudeDetails: React.FC = () => {
                               borderRadius: 2,
                               '&:hover': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#667eea'
+                                  borderColor: tokens.colors.primary
                                 }
                               },
                               '&.Mui-focused': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#667eea'
+                                  borderColor: tokens.colors.primary
                                 }
                               }
                             }
@@ -5044,7 +5107,7 @@ const EtudeDetails: React.FC = () => {
                           ))}
                           <MenuItem value="__new__" sx={{ 
                             borderTop: '1px solid #e5e5e7',
-                            color: '#667eea',
+                            color: tokens.colors.primary,
                             fontWeight: 500
                           }}>
                             + Ajouter une nouvelle entreprise
@@ -5056,7 +5119,7 @@ const EtudeDetails: React.FC = () => {
                         variant="body1" 
                         sx={{ 
                           fontWeight: 500, 
-                          color: '#1d1d1f', 
+                          color: tokens.colors.textPrimary, 
                           pl: 2,
                           cursor: 'pointer',
                           '&:hover': { textDecoration: 'underline' }
@@ -5081,11 +5144,11 @@ const EtudeDetails: React.FC = () => {
                       alignItems: 'center', 
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
-                      <LocationIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <LocationIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Localisation
                       </Typography>
                     </Box>
@@ -5100,19 +5163,19 @@ const EtudeDetails: React.FC = () => {
                             borderRadius: 2,
                             '&:hover': {
                               '& .MuiOutlinedInput-notchedOutline': {
-                                borderColor: '#667eea'
+                                borderColor: tokens.colors.primary
                               }
                             },
                             '&.Mui-focused': {
                               '& .MuiOutlinedInput-notchedOutline': {
-                                borderColor: '#667eea'
+                                borderColor: tokens.colors.primary
                               }
                             }
                           }
                         }}
                       />
                     ) : (
-                      <Typography variant="body1" sx={{ fontWeight: 500, color: '#1d1d1f', pl: 2 }}>
+                      <Typography variant="body1" sx={{ fontWeight: 500, color: tokens.colors.textPrimary, pl: 2 }}>
                         {etude.location || 'Non définie'}
                       </Typography>
                     )}
@@ -5124,11 +5187,11 @@ const EtudeDetails: React.FC = () => {
                       alignItems: 'center', 
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
-                      <CalendarIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <CalendarIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Date de début
                       </Typography>
                     </Box>
@@ -5146,12 +5209,12 @@ const EtudeDetails: React.FC = () => {
                               borderRadius: 2,
                               '&:hover': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#667eea'
+                                  borderColor: tokens.colors.primary
                                 }
                               },
                               '&.Mui-focused': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#667eea'
+                                  borderColor: tokens.colors.primary
                                 }
                               }
                             }
@@ -5165,9 +5228,9 @@ const EtudeDetails: React.FC = () => {
                             minWidth: 'auto',
                             px: 2,
                             borderColor: '#d2d2d7',
-                            color: '#86868b',
+                            color: tokens.colors.textSecondary,
                             '&:hover': {
-                              borderColor: '#86868b',
+                              borderColor: tokens.colors.textSecondary,
                               bgcolor: 'rgba(134, 134, 139, 0.04)'
                             }
                           }}
@@ -5176,7 +5239,7 @@ const EtudeDetails: React.FC = () => {
                         </Button>
                       </Box>
                     ) : (
-                      <Typography variant="body1" sx={{ fontWeight: 500, color: '#1d1d1f', pl: 2 }}>
+                      <Typography variant="body1" sx={{ fontWeight: 500, color: tokens.colors.textPrimary, pl: 2 }}>
                         {formatDate(etude.startDate)}
                       </Typography>
                     )}
@@ -5188,11 +5251,11 @@ const EtudeDetails: React.FC = () => {
                       alignItems: 'center', 
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
-                      <CalendarIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <CalendarIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Date de fin
                       </Typography>
                     </Box>
@@ -5216,12 +5279,12 @@ const EtudeDetails: React.FC = () => {
                               borderRadius: 2,
                               '&:hover': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: etude.endDate && etude.startDate && etude.endDate < etude.startDate ? '#ff4757' : '#667eea'
+                                  borderColor: etude.endDate && etude.startDate && etude.endDate < etude.startDate ? '#ff4757' : tokens.colors.primary
                                 }
                               },
                               '&.Mui-focused': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: etude.endDate && etude.startDate && etude.endDate < etude.startDate ? '#ff4757' : '#667eea'
+                                  borderColor: etude.endDate && etude.startDate && etude.endDate < etude.startDate ? '#ff4757' : tokens.colors.primary
                                 }
                               },
                               '&.Mui-error': {
@@ -5240,9 +5303,9 @@ const EtudeDetails: React.FC = () => {
                             minWidth: 'auto',
                             px: 2,
                             borderColor: '#d2d2d7',
-                            color: '#86868b',
+                            color: tokens.colors.textSecondary,
                             '&:hover': {
-                              borderColor: '#86868b',
+                              borderColor: tokens.colors.textSecondary,
                               bgcolor: 'rgba(134, 134, 139, 0.04)'
                             }
                           }}
@@ -5251,7 +5314,7 @@ const EtudeDetails: React.FC = () => {
                         </Button>
                       </Box>
                     ) : (
-                      <Typography variant="body1" sx={{ fontWeight: 500, color: '#1d1d1f', pl: 2 }}>
+                      <Typography variant="body1" sx={{ fontWeight: 500, color: tokens.colors.textPrimary, pl: 2 }}>
                         {formatDate(etude.endDate)}
                       </Typography>
                     )}
@@ -5263,11 +5326,11 @@ const EtudeDetails: React.FC = () => {
                       alignItems: 'center', 
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
-                      <AssignmentIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <AssignmentIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Type de mission
                       </Typography>
                     </Box>
@@ -5293,12 +5356,12 @@ const EtudeDetails: React.FC = () => {
                               borderRadius: 2,
                               '&:hover': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#667eea'
+                                  borderColor: tokens.colors.primary
                                 }
                               },
                               '&.Mui-focused': {
                                 '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#667eea'
+                                  borderColor: tokens.colors.primary
                                 }
                               }
                             }
@@ -5314,7 +5377,7 @@ const EtudeDetails: React.FC = () => {
                           ))}
                           <MenuItem value="__new__" sx={{ 
                             borderTop: '1px solid #e5e5e7',
-                            color: '#667eea',
+                            color: tokens.colors.primary,
                             fontWeight: 500
                           }}>
                             + Ajouter un nouveau type de mission
@@ -5322,9 +5385,91 @@ const EtudeDetails: React.FC = () => {
                         </Select>
                       </FormControl>
                     ) : (
-                      <Typography variant="body1" sx={{ fontWeight: 500, color: '#1d1d1f', pl: 2 }}>
+                      <Typography variant="body1" sx={{ fontWeight: 500, color: tokens.colors.textPrimary, pl: 2 }}>
                         {etude.missionTypeName || 'Non défini'}
                       </Typography>
+                    )}
+                  </Grid>
+
+                  <Grid item xs={12} sm={6}>
+                    <Box sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      mb: 2,
+                      p: 2,
+                      bgcolor: tokens.colors.bgDefault,
+                      borderRadius: 2
+                    }}>
+                      <PowerSettingsNewIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
+                        Étape
+                      </Typography>
+                    </Box>
+                    {editing ? (
+                      <FormControl fullWidth>
+                        <Select
+                          value={currentEtape}
+                          onChange={(e) => {
+                            const newEtape = e.target.value as EtudeEtape;
+                            setEtude({ ...etude, etape: newEtape, status: ETUDE_ETAPE_LABELS[newEtape] });
+                          }}
+                          displayEmpty
+                          sx={{
+                            '& .MuiOutlinedInput-root': {
+                              borderRadius: 2,
+                              '&:hover': {
+                                '& .MuiOutlinedInput-notchedOutline': {
+                                  borderColor: tokens.colors.primary
+                                }
+                              },
+                              '&.Mui-focused': {
+                                '& .MuiOutlinedInput-notchedOutline': {
+                                  borderColor: tokens.colors.primary
+                                }
+                              }
+                            }
+                          }}
+                        >
+                          {ETUDE_ETAPE_ORDER.map((e) => (
+                            <MenuItem key={e} value={e}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: ETUDE_ETAPE_COLORS[e] }} />
+                                {ETUDE_ETAPE_LABELS[e]}
+                              </Box>
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : (
+                      <Box sx={{ pl: 2, width: '100%' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                          <Chip
+                            size="small"
+                            label={ETUDE_ETAPE_LABELS[currentEtape]}
+                            sx={{
+                              bgcolor: ETUDE_ETAPE_COLORS[currentEtape],
+                              color: '#fff',
+                              fontWeight: 600,
+                            }}
+                          />
+                          <Typography variant="caption" sx={{ color: tokens.colors.textSecondary }}>
+                            {currentEtapeIndex + 1}/{ETUDE_ETAPE_ORDER.length}
+                          </Typography>
+                        </Box>
+                        <LinearProgress
+                          variant="determinate"
+                          value={etapeProgress}
+                          sx={{
+                            height: 6,
+                            borderRadius: 3,
+                            bgcolor: '#e0e0e0',
+                            '& .MuiLinearProgress-bar': {
+                              borderRadius: 3,
+                              bgcolor: ETUDE_ETAPE_COLORS[currentEtape],
+                            },
+                          }}
+                        />
+                      </Box>
                     )}
                   </Grid>
 
@@ -5335,12 +5480,12 @@ const EtudeDetails: React.FC = () => {
                       justifyContent: 'space-between',
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
                       <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                        <WorkHistoryIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                        <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                        <WorkHistoryIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                        <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                           Nombre de JEH / Heures
                         </Typography>
                       </Box>
@@ -5348,7 +5493,7 @@ const EtudeDetails: React.FC = () => {
                         <IconButton
                           onClick={(event) => setPricingMenuAnchor(event.currentTarget)}
                           sx={{
-                            color: '#86868b',
+                            color: tokens.colors.textSecondary,
                             p: 0,
                             '&:hover': {
                               bgcolor: 'rgba(134, 134, 139, 0.1)'
@@ -5375,12 +5520,12 @@ const EtudeDetails: React.FC = () => {
                                   borderRadius: 2,
                                   '&:hover': {
                                     '& .MuiOutlinedInput-notchedOutline': {
-                                      borderColor: '#667eea'
+                                      borderColor: tokens.colors.primary
                                     }
                                   },
                                   '&.Mui-focused': {
                                     '& .MuiOutlinedInput-notchedOutline': {
-                                      borderColor: '#667eea'
+                                      borderColor: tokens.colors.primary
                                     }
                                   }
                                 }
@@ -5389,7 +5534,7 @@ const EtudeDetails: React.FC = () => {
                             <IconButton
                               onClick={() => setJehLinked(!jehLinked)}
                               sx={{
-                                color: jehLinked ? '#667eea' : '#86868b',
+                                color: jehLinked ? tokens.colors.primary : tokens.colors.textSecondary,
                                 '&:hover': {
                                   bgcolor: jehLinked ? 'rgba(102, 126, 234, 0.1)' : 'rgba(134, 134, 139, 0.1)'
                                 }
@@ -5409,12 +5554,12 @@ const EtudeDetails: React.FC = () => {
                                   borderRadius: 2,
                                   '&:hover': {
                                     '& .MuiOutlinedInput-notchedOutline': {
-                                      borderColor: '#667eea'
+                                      borderColor: tokens.colors.primary
                                     }
                                   },
                                   '&.Mui-focused': {
                                     '& .MuiOutlinedInput-notchedOutline': {
-                                      borderColor: '#667eea'
+                                      borderColor: tokens.colors.primary
                                     }
                                   }
                                 }
@@ -5434,12 +5579,12 @@ const EtudeDetails: React.FC = () => {
                                 borderRadius: 2,
                                 '&:hover': {
                                   '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#667eea'
+                                    borderColor: tokens.colors.primary
                                   }
                                 },
                                 '&.Mui-focused': {
                                   '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#667eea'
+                                    borderColor: tokens.colors.primary
                                   }
                                 }
                               }
@@ -5448,7 +5593,7 @@ const EtudeDetails: React.FC = () => {
                         )}
                       </Box>
                     ) : (
-                      <Typography variant="body1" sx={{ fontWeight: 500, color: '#1d1d1f', pl: 2 }}>
+                      <Typography variant="body1" sx={{ fontWeight: 500, color: tokens.colors.textPrimary, pl: 2 }}>
                         {pricingType === 'jeh' 
                           ? `${etude.jeh || 0} JEH (${etude.hours || 0} heures)`
                           : `${etude.hours || 0} heures`
@@ -5463,11 +5608,11 @@ const EtudeDetails: React.FC = () => {
                       alignItems: 'center', 
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
-                      <DescriptionIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <DescriptionIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Description
                       </Typography>
                     </Box>
@@ -5484,19 +5629,19 @@ const EtudeDetails: React.FC = () => {
                             borderRadius: 2,
                             '&:hover': {
                               '& .MuiOutlinedInput-notchedOutline': {
-                                borderColor: '#667eea'
+                                borderColor: tokens.colors.primary
                               }
                             },
                             '&.Mui-focused': {
                               '& .MuiOutlinedInput-notchedOutline': {
-                                borderColor: '#667eea'
+                                borderColor: tokens.colors.primary
                               }
                             }
                           }
                         }}
                       />
                     ) : (
-                      <Typography variant="body1" sx={{ color: '#1d1d1f', pl: 2, lineHeight: 1.6 }}>
+                      <Typography variant="body1" sx={{ color: tokens.colors.textPrimary, pl: 2, lineHeight: 1.6 }}>
                         {etude.description || 'Aucune description'}
                       </Typography>
                     )}
@@ -5508,11 +5653,11 @@ const EtudeDetails: React.FC = () => {
                       alignItems: 'center', 
                       mb: 2,
                       p: 2,
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       borderRadius: 2
                     }}>
-                      <PersonIcon sx={{ mr: 2, color: '#667eea', fontSize: 28 }} />
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <PersonIcon sx={{ mr: 2, color: tokens.colors.primary, fontSize: 28 }} />
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Chargés d'étude
                       </Typography>
                     </Box>
@@ -5529,7 +5674,7 @@ const EtudeDetails: React.FC = () => {
                                 ...etude,
                                 chargeIds: selectedIds,
                                 chargeId: selectedIds[0] || '',
-                                chargeName: selectedCharges.map(c => c.displayName).join(', '),
+                                chargeName: selectedCharges.map(c => getSafeDisplayName(c)).join(', '),
                                 chargePhotoURL: selectedCharges[0]?.photoURL || null
                               });
                             }}
@@ -5543,7 +5688,7 @@ const EtudeDetails: React.FC = () => {
                                       label={charge?.displayName || value}
                                       size="small"
                                       sx={{ 
-                                        bgcolor: '#667eea',
+                                        bgcolor: tokens.colors.primary,
                                         color: 'white',
                                         '& .MuiChip-deleteIcon': {
                                           color: 'white'
@@ -5559,12 +5704,12 @@ const EtudeDetails: React.FC = () => {
                                 borderRadius: 2,
                                 '&:hover': {
                                   '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#667eea'
+                                    borderColor: tokens.colors.primary
                                   }
                                 },
                                 '&.Mui-focused': {
                                   '& .MuiOutlinedInput-notchedOutline': {
-                                    borderColor: '#667eea'
+                                    borderColor: tokens.colors.primary
                                   }
                                 }
                               }
@@ -5597,43 +5742,17 @@ const EtudeDetails: React.FC = () => {
                             {etude.chargeIds.map((chargeId) => {
                               const charge = availableCharges.find(c => c.id === chargeId);
                               return (
-                                <Box key={chargeId} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                  <Avatar
-                                    src={charge?.photoURL}
-                                    sx={{ 
-                                      width: 32, 
-                                      height: 32,
-                                      border: '2px solid white',
-                                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                                      fontSize: '0.875rem'
-                                    }}
-                                  >
-                                    {charge?.displayName?.charAt(0)}
-                                  </Avatar>
-                                  <Typography variant="body1" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
-                                    {charge?.displayName}
-                                  </Typography>
-                                </Box>
+                                <PersonRow
+                                  key={chargeId}
+                                  userId={chargeId}
+                                  name={charge?.displayName}
+                                  subtitle={undefined}
+                                />
                               );
                             })}
                           </Box>
                         ) : (
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                            <Avatar
-                              src={etude.chargePhotoURL}
-                              sx={{ 
-                                width: 40, 
-                                height: 40,
-                                border: '2px solid white',
-                                boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-                              }}
-                            >
-                              {etude.chargeName?.charAt(0)}
-                            </Avatar>
-                            <Typography variant="body1" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
-                              {etude.chargeName}
-                            </Typography>
-                          </Box>
+                          <PersonRow userId={etude.chargeId} name={etude.chargeName} />
                         )}
                       </Box>
                     )}
@@ -5661,7 +5780,7 @@ const EtudeDetails: React.FC = () => {
                     setPricingMenuAnchor(null);
                   }}
                   sx={{
-                    color: pricingType === 'jeh' ? '#667eea' : '#1d1d1f',
+                    color: pricingType === 'jeh' ? tokens.colors.primary : tokens.colors.textPrimary,
                     fontWeight: pricingType === 'jeh' ? 600 : 400,
                     '&:hover': {
                       bgcolor: 'rgba(102, 126, 234, 0.08)'
@@ -5675,7 +5794,7 @@ const EtudeDetails: React.FC = () => {
                         width: 6, 
                         height: 6, 
                         borderRadius: '50%', 
-                        bgcolor: '#667eea' 
+                        bgcolor: tokens.colors.primary 
                       }} />
                     )}
                   </Box>
@@ -5687,7 +5806,7 @@ const EtudeDetails: React.FC = () => {
                     setPricingMenuAnchor(null);
                   }}
                   sx={{
-                    color: pricingType === 'hourly' ? '#667eea' : '#1d1d1f',
+                    color: pricingType === 'hourly' ? tokens.colors.primary : tokens.colors.textPrimary,
                     fontWeight: pricingType === 'hourly' ? 600 : 400,
                     '&:hover': {
                       bgcolor: 'rgba(102, 126, 234, 0.08)'
@@ -5701,7 +5820,7 @@ const EtudeDetails: React.FC = () => {
                         width: 6, 
                         height: 6, 
                         borderRadius: '50%', 
-                        bgcolor: '#667eea' 
+                        bgcolor: tokens.colors.primary 
                       }} />
                     )}
                   </Box>
@@ -5720,7 +5839,7 @@ const EtudeDetails: React.FC = () => {
                 animation: `${fadeInUp} 0.6s ease-out 0.2s both`
               }}>
                 <CardContent sx={{ p: 3 }}>
-                  <Typography variant="h6" sx={{ fontWeight: 700, mb: 3, color: '#1d1d1f' }}>
+                  <Typography variant="h6" sx={{ fontWeight: 700, mb: 3, color: tokens.colors.textPrimary }}>
                     Historique
                   </Typography>
                   
@@ -5731,27 +5850,27 @@ const EtudeDetails: React.FC = () => {
                         sx={{ 
                           mb: 2, 
                           p: 2, 
-                          bgcolor: '#f8f9fa', 
+                          bgcolor: tokens.colors.bgDefault, 
                           borderRadius: 2,
                           animation: `${fadeInUp} 0.6s ease-out ${index * 0.1}s both`
                         }}
                       >
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1d1d1f', mb: 0.5 }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary, mb: 0.5 }}>
                           {entry.action}
                         </Typography>
-                        <Typography variant="body2" sx={{ color: '#86868b', mb: 1 }}>
+                        <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, mb: 1 }}>
                           {entry.details}
                         </Typography>
                         
                         {/* Affichage des modifications détaillées */}
                         {entry.modifications && entry.modifications.length > 0 && (
-                          <Box sx={{ mb: 1, pl: 1, borderLeft: '3px solid #667eea' }}>
+                          <Box sx={{ mb: 1, pl: 1, borderLeft: `3px solid ${tokens.colors.brandTeal}` }}>
                             {entry.modifications.map((modification, modIndex) => (
                               <Typography 
                                 key={modIndex} 
                                 variant="body2" 
                                 sx={{ 
-                                  color: '#1d1d1f', 
+                                  color: tokens.colors.textPrimary, 
                                   fontSize: '0.875rem',
                                   mb: 0.5,
                                   display: 'flex',
@@ -5765,7 +5884,7 @@ const EtudeDetails: React.FC = () => {
                                     width: 6, 
                                     height: 6, 
                                     borderRadius: '50%', 
-                                    bgcolor: '#667eea',
+                                    bgcolor: tokens.colors.primary,
                                     flexShrink: 0
                                   }} 
                                 />
@@ -5776,7 +5895,7 @@ const EtudeDetails: React.FC = () => {
                         )}
                         
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Typography variant="caption" sx={{ color: '#86868b' }}>
+                          <Typography variant="caption" sx={{ color: tokens.colors.textSecondary }}>
                             {formatSafeDate(entry.date, {
                               day: '2-digit',
                               month: '2-digit',
@@ -5785,15 +5904,19 @@ const EtudeDetails: React.FC = () => {
                               minute: '2-digit'
                             })}
                           </Typography>
-                          <Typography variant="caption" sx={{ color: '#667eea', fontWeight: 500 }}>
-                            {entry.userName}
-                          </Typography>
+                          <UserReferenceText
+                            userId={entry.userId}
+                            name={entry.userName}
+                            fallback="Utilisateur"
+                            variant="caption"
+                            sx={{ color: tokens.colors.primary, fontWeight: 500 }}
+                          />
                         </Box>
                       </Box>
                     ))}
                     {historyEntries.length === 0 && (
                       <Box sx={{ textAlign: 'center', py: 2 }}>
-                        <Typography variant="body2" sx={{ color: '#86868b' }}>
+                        <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                           Aucun historique disponible
                         </Typography>
                       </Box>
@@ -5810,7 +5933,7 @@ const EtudeDetails: React.FC = () => {
               }}>
                 <CardContent sx={{ p: 3 }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                    <Typography variant="h6" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                    <Typography variant="h6" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
                       Notes
                     </Typography>
                     <Button
@@ -5819,10 +5942,10 @@ const EtudeDetails: React.FC = () => {
                       variant="outlined"
                       size="small"
                       sx={{ 
-                        borderColor: '#667eea',
-                        color: '#667eea',
+                        borderColor: tokens.colors.primary,
+                        color: tokens.colors.primary,
                         '&:hover': { 
-                          borderColor: '#5a6fd8',
+                          borderColor: tokens.colors.primaryDark,
                           bgcolor: 'rgba(102, 126, 234, 0.04)'
                         }
                       }}
@@ -5838,16 +5961,16 @@ const EtudeDetails: React.FC = () => {
                         sx={{ 
                           mb: 2, 
                           p: 2, 
-                          bgcolor: '#f8f9fa', 
+                          bgcolor: tokens.colors.bgDefault, 
                           borderRadius: 2,
                           animation: `${fadeInUp} 0.6s ease-out ${index * 0.1}s both`
                         }}
                       >
-                        <Typography variant="body2" sx={{ color: '#1d1d1f', mb: 1, lineHeight: 1.5 }}>
+                        <Typography variant="body2" sx={{ color: tokens.colors.textPrimary, mb: 1, lineHeight: 1.5 }}>
                           {note.content}
                         </Typography>
                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Typography variant="caption" sx={{ color: '#86868b' }}>
+                          <Typography variant="caption" sx={{ color: tokens.colors.textSecondary }}>
                             {formatSafeDate(note.createdAt, {
                               day: '2-digit',
                               month: '2-digit',
@@ -5860,7 +5983,7 @@ const EtudeDetails: React.FC = () => {
                             size="small"
                             onClick={() => handleDeleteNote(note.id)}
                             sx={{ 
-                              color: '#86868b',
+                              color: tokens.colors.textSecondary,
                               '&:hover': {
                                 color: '#ff4757',
                                 bgcolor: 'rgba(255, 71, 87, 0.1)'
@@ -5874,7 +5997,7 @@ const EtudeDetails: React.FC = () => {
                     ))}
                     {notes.length === 0 && (
                       <Box sx={{ textAlign: 'center', py: 2 }}>
-                        <Typography variant="body2" sx={{ color: '#86868b' }}>
+                        <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                           Aucune note
                         </Typography>
                       </Box>
@@ -5884,12 +6007,13 @@ const EtudeDetails: React.FC = () => {
               </Card>
             </Grid>
           </Grid>
-        </TabPanel>
+        </OverviewTab>
+        )}
 
-        {/* Planning & Budget Tab */}
-        <TabPanel value={tabValue} index={1}>
+        {activeTab === 'planning' && (
+        <PlanningTab>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-            <Typography variant="h4" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+            <Typography variant="h4" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
               Planning & Budget
             </Typography>
             <Button
@@ -5917,7 +6041,7 @@ const EtudeDetails: React.FC = () => {
               }}>
                 {/* Header du planning */}
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
                     Planning visuel
                 </Typography>
 
@@ -5930,14 +6054,14 @@ const EtudeDetails: React.FC = () => {
                       variant="contained"
                       size="small"
                         sx={{ 
-                        bgcolor: '#667eea',
+                        bgcolor: tokens.colors.primary,
                         color: 'white',
                         borderRadius: 2,
                         px: 2,
                         py: 0.5,
                         fontSize: '0.875rem',
                         textTransform: 'none',
-                        '&:hover': { bgcolor: '#5a6fd8' }
+                        '&:hover': { bgcolor: tokens.colors.primaryDark }
                       }}
                     >
                       Vision planning
@@ -5966,7 +6090,7 @@ const EtudeDetails: React.FC = () => {
                           }}
                           disabled={maxWeeks <= Math.max(4, getMinRequiredWeeks())}
                           sx={{ 
-                            color: maxWeeks <= Math.max(4, getMinRequiredWeeks()) ? '#d2d2d7' : '#667eea',
+                            color: maxWeeks <= Math.max(4, getMinRequiredWeeks()) ? '#d2d2d7' : tokens.colors.primary,
                             p: 0.5,
                             '&:hover': { bgcolor: 'rgba(102, 126, 234, 0.1)' }
                           }}
@@ -6010,7 +6134,7 @@ const EtudeDetails: React.FC = () => {
                           }}
                         />
                         <Typography variant="caption" sx={{ 
-                          color: '#86868b', 
+                          color: tokens.colors.textSecondary, 
                           fontSize: '0.7rem',
                           fontWeight: 500
                         }}>
@@ -6020,7 +6144,7 @@ const EtudeDetails: React.FC = () => {
                           size="small"
                           onClick={() => setMaxWeeks(prev => prev + 1)}
                           sx={{ 
-                            color: '#667eea',
+                            color: tokens.colors.primary,
                             p: 0.5,
                             '&:hover': { bgcolor: 'rgba(102, 126, 234, 0.1)' }
                           }}
@@ -6055,7 +6179,7 @@ const EtudeDetails: React.FC = () => {
                           })}
                           disabled={timelineZoom <= 0.25}
                           sx={{ 
-                            color: timelineZoom <= 0.25 ? '#d2d2d7' : '#667eea',
+                            color: timelineZoom <= 0.25 ? '#d2d2d7' : tokens.colors.primary,
                             '&:hover': { bgcolor: 'rgba(102, 126, 234, 0.1)' }
                           }}
                         >
@@ -6069,7 +6193,7 @@ const EtudeDetails: React.FC = () => {
                           justifyContent: 'center'
                         }}>
                           <Typography variant="caption" sx={{ 
-                            color: '#86868b', 
+                            color: tokens.colors.textSecondary, 
                             fontWeight: 600,
                             fontSize: '0.75rem'
                           }}>
@@ -6091,7 +6215,7 @@ const EtudeDetails: React.FC = () => {
                           })}
                           disabled={timelineZoom >= 3}
                           sx={{ 
-                            color: timelineZoom >= 3 ? '#d2d2d7' : '#667eea',
+                            color: timelineZoom >= 3 ? '#d2d2d7' : tokens.colors.primary,
                             '&:hover': { bgcolor: 'rgba(102, 126, 234, 0.1)' }
                           }}
                         >
@@ -6123,7 +6247,7 @@ const EtudeDetails: React.FC = () => {
                     pb: 1
                   }}>
                     <Box sx={{ width: 120, flexShrink: 0 }}>
-                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Postes de budget
                           </Typography>
                     </Box>
@@ -6139,7 +6263,7 @@ const EtudeDetails: React.FC = () => {
                         >
                           <Typography variant="caption" sx={{ 
                             fontWeight: 600, 
-                            color: '#86868b',
+                            color: tokens.colors.textSecondary,
                             fontSize: '0.75rem'
                           }}>
                             {week}
@@ -6166,7 +6290,7 @@ const EtudeDetails: React.FC = () => {
                           <Box sx={{ width: 120, flexShrink: 0 }}>
                             <Typography variant="body2" sx={{ 
                               fontWeight: 500, 
-                              color: '#1d1d1f',
+                              color: tokens.colors.textPrimary,
                               fontSize: '0.875rem'
                             }}>
                               {item.title}
@@ -6325,7 +6449,7 @@ const EtudeDetails: React.FC = () => {
                         <Box sx={{ width: 120, flexShrink: 0 }}>
                           <Typography variant="body2" sx={{ 
                             fontWeight: 500, 
-                            color: '#86868b',
+                            color: tokens.colors.textSecondary,
                             fontSize: '0.875rem',
                             fontStyle: 'italic'
                           }}>
@@ -6361,7 +6485,7 @@ const EtudeDetails: React.FC = () => {
                             bgcolor: 'rgba(102, 126, 234, 0.02)',
                             transition: 'all 0.2s ease',
                             '&:hover': {
-                              borderColor: '#667eea',
+                              borderColor: tokens.colors.primary,
                               bgcolor: 'rgba(102, 126, 234, 0.05)'
                             }
                           }} />
@@ -6385,7 +6509,7 @@ const EtudeDetails: React.FC = () => {
                                 width: `${Math.abs(selectionEnd - selectionStart)}%`,
                                 height: '100%',
                                 bgcolor: 'rgba(102, 126, 234, 0.3)',
-                                border: '2px solid #667eea',
+                                border: `2px solid ${tokens.colors.brandTeal}`,
                                 borderRadius: 1
                               }} />
                             </Box>
@@ -6398,7 +6522,7 @@ const EtudeDetails: React.FC = () => {
                               top: '50%',
                               left: '50%',
                               transform: 'translate(-50%, -50%)',
-                              color: '#86868b',
+                              color: tokens.colors.textSecondary,
                               fontSize: '0.75rem',
                               pointerEvents: 'none',
                               textAlign: 'center'
@@ -6424,7 +6548,7 @@ const EtudeDetails: React.FC = () => {
                         <Box sx={{ 
                           textAlign: 'center', 
                           py: 8,
-                          color: '#86868b'
+                          color: tokens.colors.textSecondary
                         }}>
                           <CalendarMonthIcon sx={{ fontSize: 48, mb: 2, opacity: 0.5 }} />
                           <Typography variant="h6" sx={{ mb: 1, fontWeight: 500 }}>
@@ -6434,7 +6558,7 @@ const EtudeDetails: React.FC = () => {
                             Commencez par ajouter votre premier poste de budget
                           </Typography>
                           <Typography variant="caption" sx={{ 
-                            color: '#667eea',
+                            color: tokens.colors.primary,
                             fontStyle: 'italic',
                             display: 'block'
                           }}>
@@ -6456,20 +6580,20 @@ const EtudeDetails: React.FC = () => {
                 animation: `${fadeInUp} 0.6s ease-out 0.2s both`
               }}>
                 <CardContent sx={{ p: 3 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700, mb: 3, color: '#1d1d1f' }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, mb: 3, color: tokens.colors.textPrimary }}>
                     Montant total
                   </Typography>
-                  <Typography variant="h3" sx={{ fontWeight: 800, color: '#667eea', mb: 2 }}>
+                  <Typography variant="h3" sx={{ fontWeight: 800, color: tokens.colors.primary, mb: 2 }}>
                     {calculateTotalBudget().toFixed(2)} € HT
                   </Typography>
                   
                   {/* Barre de progression marge vs rémunération */}
                   <Box sx={{ mt: 3 }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-                      <Typography variant="caption" sx={{ color: '#667eea', fontWeight: 600 }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.primary, fontWeight: 600 }}>
                         Marge: {calculateMargin().toFixed(2)}€
                       </Typography>
-                      <Typography variant="caption" sx={{ color: '#86868b', fontWeight: 500 }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, fontWeight: 500 }}>
                         Rémunération: {calculateTotalRemunerationCost().toFixed(2)}€ ({calculateRemunerationPercentage().toFixed(1)}%)
                       </Typography>
                     </Box>
@@ -6477,7 +6601,7 @@ const EtudeDetails: React.FC = () => {
                     <Box sx={{ 
                       width: '100%', 
                       height: 8, 
-                      bgcolor: '#f0f0f0', 
+                      bgcolor: tokens.colors.borderLight, 
                       borderRadius: 4,
                       overflow: 'hidden',
                       position: 'relative'
@@ -6485,17 +6609,17 @@ const EtudeDetails: React.FC = () => {
                       <Box sx={{ 
                         width: `${100 - calculateRemunerationPercentage()}%`,
                         height: '100%',
-                        bgcolor: '#667eea',
+                        bgcolor: tokens.colors.primary,
                         borderRadius: 4,
                         transition: 'width 0.3s ease-in-out'
                       }} />
                     </Box>
                     
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
-                      <Typography variant="caption" sx={{ color: '#667eea', fontWeight: 600 }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.primary, fontWeight: 600 }}>
                         Marge {(100 - calculateRemunerationPercentage()).toFixed(1)}%
                       </Typography>
-                      <Typography variant="caption" sx={{ color: '#86868b', fontWeight: 600 }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, fontWeight: 600 }}>
                         Coût {calculateRemunerationPercentage().toFixed(1)}%
                       </Typography>
                     </Box>
@@ -6504,12 +6628,13 @@ const EtudeDetails: React.FC = () => {
               </Card>
             </Grid>
           </Grid>
-        </TabPanel>
+        </PlanningTab>
+        )}
 
-        {/* Recrutement Tab */}
-        <TabPanel value={tabValue} index={2}>
+        {activeTab === 'recruitment' && (
+        <RecruitmentTab>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-            <Typography variant="h4" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+            <Typography variant="h4" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
               Recrutement
             </Typography>
             <Button
@@ -6523,8 +6648,8 @@ const EtudeDetails: React.FC = () => {
                 setNewRecruitmentTask({});
               }}
               sx={{
-                bgcolor: '#667eea',
-                '&:hover': { bgcolor: '#5a6fd8' },
+                bgcolor: tokens.colors.primary,
+                '&:hover': { bgcolor: tokens.colors.primaryDark },
                 borderRadius: 2,
                 textTransform: 'none',
                 fontWeight: 600
@@ -6543,19 +6668,19 @@ const EtudeDetails: React.FC = () => {
                 boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
                 animation: `${fadeInUp} 0.6s ease-out 0.2s both`
               }}>
-                <Typography variant="h5" sx={{ fontWeight: 700, mb: 3, color: '#1d1d1f' }}>
+                <Typography variant="h5" sx={{ fontWeight: 700, mb: 3, color: tokens.colors.textPrimary }}>
                   Tâches de recrutement
                 </Typography>
                 {/* Postes de budget intégrés */}
                 <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1, color: '#1d1d1f' }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1, color: tokens.colors.textPrimary }}>
                     Postes de budget
                   </Typography>
                   {budgetItems.length > 0 ? (
                     <TableContainer>
                       <Table>
                         <TableHead>
-                          <TableRow sx={{ bgcolor: '#f8f9fa' }}>
+                          <TableRow sx={{ bgcolor: tokens.colors.bgDefault }}>
                             <TableCell sx={{ fontWeight: 600 }}>Poste</TableCell>
                             <TableCell sx={{ fontWeight: 600 }}>Montant HT</TableCell>
                             <TableCell sx={{ fontWeight: 600 }}>
@@ -6593,7 +6718,7 @@ const EtudeDetails: React.FC = () => {
                               sx={{ 
                                 animation: `${fadeInUp} 0.6s ease-out ${index * 0.1}s both`,
                                 '&:hover': {
-                                  bgcolor: '#f8f9fa',
+                                  bgcolor: tokens.colors.bgDefault,
                                   cursor: 'pointer'
                                 }
                               }}
@@ -6648,12 +6773,12 @@ const EtudeDetails: React.FC = () => {
                                       variant="body2" 
                                       sx={{ 
                                         fontWeight: 600, 
-                                        color: '#667eea',
+                                        color: tokens.colors.primary,
                                         cursor: 'pointer',
                                         textDecoration: 'underline',
                                         transition: 'all 0.2s ease',
                                         '&:hover': {
-                                          color: '#5a6fd8',
+                                          color: tokens.colors.primaryDark,
                                           backgroundColor: 'rgba(102, 126, 234, 0.1)',
                                           borderRadius: '4px',
                                           padding: '2px 4px',
@@ -6698,7 +6823,7 @@ const EtudeDetails: React.FC = () => {
                                         label={`Lié à ${item.linkedBudgetItems.length} poste(s)`}
                                         size="small"
                                         sx={{ 
-                                          bgcolor: '#667eea',
+                                          bgcolor: tokens.colors.primary,
                                           color: 'white',
                                           fontSize: '0.7rem'
                                         }}
@@ -6736,7 +6861,7 @@ const EtudeDetails: React.FC = () => {
                   ) : (
                     <Box sx={{ textAlign: 'center', py: 4 }}>
                       <TimelineIcon sx={{ fontSize: 48, color: '#d2d2d7', mb: 1 }} />
-                      <Typography variant="body2" sx={{ color: '#86868b' }}>
+                      <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                         Aucun poste de budget
                       </Typography>
                     </Box>
@@ -6755,7 +6880,7 @@ const EtudeDetails: React.FC = () => {
                       sx={{ 
                         animation: `${fadeInUp} 0.6s ease-out ${index * 0.1}s both`,
                         '&:hover': {
-                          bgcolor: '#f8f9fa',
+                          bgcolor: tokens.colors.bgDefault,
                           borderRadius: 2,
                           cursor: 'pointer'
                         }
@@ -6763,7 +6888,7 @@ const EtudeDetails: React.FC = () => {
                     >
                       <ListItemAvatar>
                         <Avatar sx={{ 
-                          bgcolor: '#667eea',
+                          bgcolor: tokens.colors.primary,
                           boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
                         }}>
                           <PeopleIcon />
@@ -6772,7 +6897,7 @@ const EtudeDetails: React.FC = () => {
                       <ListItemText
                         primary={
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                            <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                               {task.title}
                             </Typography>
                             {task.isPublished && (
@@ -6826,11 +6951,11 @@ const EtudeDetails: React.FC = () => {
                               </span>
                               {task.linkedRecruitment && task.budgetItemIds && task.budgetItemIds.length > 0 && (
                                 <span style={{ 
-                                  backgroundColor: '#667eea',
+                                  backgroundColor: tokens.colors.primary,
                                   color: 'white',
                                   fontSize: '0.7rem',
                                   padding: '2px 8px',
-                                  borderRadius: '12px',
+                                  borderRadius: tokens.radius.md,
                                   display: 'inline-block'
                                 }}>
                                   Lié à {task.budgetItemIds.length} poste(s) de budget
@@ -6839,7 +6964,7 @@ const EtudeDetails: React.FC = () => {
                               {typeof task.studentsToRecruit === 'number' && (
                                 <span 
                                   style={{ 
-                                    color: '#667eea', 
+                                    color: tokens.colors.primary, 
                                     fontWeight: 600,
                                     cursor: 'pointer',
                                     textDecoration: 'underline',
@@ -6899,12 +7024,12 @@ const EtudeDetails: React.FC = () => {
                               py: 0.5,
                               fontSize: '0.75rem',
                               textTransform: 'none',
-                              bgcolor: task.isPublished ? 'transparent' : '#667eea',
-                              color: task.isPublished ? '#667eea' : 'white',
-                              borderColor: task.isPublished ? '#667eea' : 'transparent',
+                              bgcolor: task.isPublished ? 'transparent' : tokens.colors.primary,
+                              color: task.isPublished ? tokens.colors.primary : 'white',
+                              borderColor: task.isPublished ? tokens.colors.primary : 'transparent',
                               '&:hover': {
-                                bgcolor: task.isPublished ? 'rgba(102, 126, 234, 0.04)' : '#5a6fd8',
-                                borderColor: task.isPublished ? '#5a6fd8' : 'transparent'
+                                bgcolor: task.isPublished ? 'rgba(102, 126, 234, 0.04)' : tokens.colors.primaryDark,
+                                borderColor: task.isPublished ? tokens.colors.primaryDark : 'transparent'
                               }
                             }}
                           >
@@ -6928,7 +7053,7 @@ const EtudeDetails: React.FC = () => {
                                 handleOpenApplications(task);
                               }}
                               sx={{
-                                color: '#667eea',
+                                color: tokens.colors.primary,
                                 '&:hover': {
                                   bgcolor: 'rgba(102, 126, 234, 0.04)'
                                 }
@@ -6971,7 +7096,7 @@ const EtudeDetails: React.FC = () => {
                 animation: `${fadeInUp} 0.6s ease-out 0.2s both`
               }}>
                 <CardContent sx={{ p: 3 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700, mb: 3, color: '#1d1d1f' }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, mb: 3, color: tokens.colors.textPrimary }}>
                     Rémunération totale
                   </Typography>
                   <Typography 
@@ -6987,15 +7112,16 @@ const EtudeDetails: React.FC = () => {
               </Card>
             </Grid>
           </Grid>
-        </TabPanel>
+        </RecruitmentTab>
+        )}
 
-        {/* Documents Tab */}
-        <TabPanel value={tabValue} index={3}>
+        {activeTab === 'documents' && (
+        <DocumentsTab>
           {structureFullData?.structureType === 'junior' ? (
             // Workflow spécialisé pour les Junior-Entreprises
             <Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                <Typography variant="h4" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                <Typography variant="h4" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
                   Documents - Workflow Projet
                 </Typography>
                 <Button
@@ -7003,10 +7129,10 @@ const EtudeDetails: React.FC = () => {
                   onClick={() => setDocumentDialogOpen(true)}
                   variant="outlined"
                   sx={{ 
-                    borderColor: '#667eea',
-                    color: '#667eea',
+                    borderColor: tokens.colors.primary,
+                    color: tokens.colors.primary,
                     '&:hover': { 
-                      borderColor: '#5a6fd8',
+                      borderColor: tokens.colors.primaryDark,
                       bgcolor: 'rgba(102, 126, 234, 0.04)'
                     }
                   }}
@@ -7023,7 +7149,7 @@ const EtudeDetails: React.FC = () => {
                       width: 40, 
                       height: 40, 
                       borderRadius: '50%', 
-                      bgcolor: '#667eea', 
+                      bgcolor: tokens.colors.primary, 
                       display: 'flex', 
                       alignItems: 'center', 
                       justifyContent: 'center',
@@ -7033,10 +7159,10 @@ const EtudeDetails: React.FC = () => {
                       1
                     </Box>
                     <Box sx={{ flexGrow: 1 }}>
-                      <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Avant-Vente
                       </Typography>
-                      <Typography variant="body2" sx={{ color: '#86868b' }}>
+                      <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                         Proposition commerciale et convention d'étude
                       </Typography>
                     </Box>
@@ -7050,7 +7176,7 @@ const EtudeDetails: React.FC = () => {
                           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
                             Proposition Commerciale
                           </Typography>
-                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                             Document de présentation (PPTX/PDF externe)
                           </Typography>
                         </Box>
@@ -7070,7 +7196,7 @@ const EtudeDetails: React.FC = () => {
                           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
                             Convention d'Étude
                           </Typography>
-                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                             Génération automatique via template
                           </Typography>
                         </Box>
@@ -7079,7 +7205,7 @@ const EtudeDetails: React.FC = () => {
                           onClick={() => generateDocument('convention_etude', undefined, false, false)}
                           variant="contained"
                           size="small"
-                          sx={{ bgcolor: '#667eea' }}
+                          sx={{ bgcolor: tokens.colors.primary }}
                           disabled={generatingDoc}
                         >
                           {generatingDoc ? 'Génération...' : 'Générer'}
@@ -7108,10 +7234,10 @@ const EtudeDetails: React.FC = () => {
                       2
                     </Box>
                     <Box sx={{ flexGrow: 1 }}>
-                      <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Recrutement & Staffing
                       </Typography>
-                      <Typography variant="body2" sx={{ color: '#86868b' }}>
+                      <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                         Récapitulatifs de mission pour les étudiants staffés
                       </Typography>
                     </Box>
@@ -7144,11 +7270,17 @@ const EtudeDetails: React.FC = () => {
                                   <TableCell>
                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                       <Avatar src={student.userPhotoURL || undefined} sx={{ width: 32, height: 32 }}>
-                                        {student.userDisplayName?.charAt(0) || '?'}
+                                        <RecruitmentUserAvatar
+                                          userId={student.userId}
+                                          displayName={student.userDisplayName}
+                                          email={student.userEmail}
+                                        />
                                       </Avatar>
-                                      <Typography variant="body2">
-                                        {student.userDisplayName || student.userEmail}
-                                      </Typography>
+                                      <RecruitmentUserName
+                                        userId={student.userId}
+                                        displayName={student.userDisplayName}
+                                        email={student.userEmail}
+                                      />
                                     </Box>
                                   </TableCell>
                                   <TableCell>{task.title}</TableCell>
@@ -7175,7 +7307,7 @@ const EtudeDetails: React.FC = () => {
                               <TableRow>
                                 <TableCell colSpan={4} sx={{ textAlign: 'center', py: 3 }}>
                                   <PeopleIcon sx={{ fontSize: 48, color: '#d2d2d7', mb: 1 }} />
-                                  <Typography variant="body2" sx={{ color: '#86868b' }}>
+                                  <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                                     Aucun étudiant recruté pour le moment
                                   </Typography>
                                 </TableCell>
@@ -7207,10 +7339,10 @@ const EtudeDetails: React.FC = () => {
                       3
                     </Box>
                     <Box sx={{ flexGrow: 1 }}>
-                      <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         Suivi & Clôture
                       </Typography>
-                      <Typography variant="body2" sx={{ color: '#86868b' }}>
+                      <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                         PV de recette et rapport pédagogique
                       </Typography>
                     </Box>
@@ -7224,7 +7356,7 @@ const EtudeDetails: React.FC = () => {
                           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
                             PV de Recette Finale
                           </Typography>
-                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                             Déclenche la facturation du solde
                           </Typography>
                         </Box>
@@ -7246,7 +7378,7 @@ const EtudeDetails: React.FC = () => {
                           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
                             Rapport Pédagogique
                           </Typography>
-                          <Typography variant="body2" sx={{ color: '#86868b' }}>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                             Bilan pédagogique de l'étude
                           </Typography>
                         </Box>
@@ -7285,11 +7417,7 @@ const EtudeDetails: React.FC = () => {
                           <TableRow key={doc.id}>
                             <TableCell>{doc.name}</TableCell>
                             <TableCell>
-                              {doc.uploadedAt && typeof doc.uploadedAt === 'object' && doc.uploadedAt.toDate ? 
-                                formatDate(doc.uploadedAt.toDate().toISOString()) :
-                                doc.uploadedAt && typeof doc.uploadedAt === 'string' ? 
-                                  formatDate(doc.uploadedAt) :
-                                  'Date invalide'}
+                              {formatDocumentUploadDate(doc.uploadedAt)}
                             </TableCell>
                             <TableCell>
                               <IconButton size="small" onClick={() => handleDocumentPreview(doc)}>
@@ -7314,7 +7442,7 @@ const EtudeDetails: React.FC = () => {
             // Workflow classique pour les Job Services
             <Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                <Typography variant="h4" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                <Typography variant="h4" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
                   Documents
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 1 }}>
@@ -7358,10 +7486,10 @@ const EtudeDetails: React.FC = () => {
                     onClick={handleOpenDocumentGenerator}
                     variant="outlined"
                     sx={{ 
-                      borderColor: '#667eea',
-                      color: '#667eea',
+                      borderColor: tokens.colors.primary,
+                      color: tokens.colors.primary,
                       '&:hover': { 
-                        borderColor: '#5a6fd8',
+                        borderColor: tokens.colors.primaryDark,
                         bgcolor: 'rgba(102, 126, 234, 0.04)'
                       }
                     }}
@@ -7373,8 +7501,8 @@ const EtudeDetails: React.FC = () => {
                     onClick={() => setDocumentDialogOpen(true)}
                     variant="contained"
                     sx={{ 
-                      bgcolor: '#667eea',
-                      '&:hover': { bgcolor: '#5a6fd8' }
+                      bgcolor: tokens.colors.primary,
+                      '&:hover': { bgcolor: tokens.colors.primaryDark }
                     }}
                   >
                     Upload Document
@@ -7389,11 +7517,11 @@ const EtudeDetails: React.FC = () => {
                 animation: `${fadeInUp} 0.6s ease-out`
               }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
                     Documents de la mission
                   </Typography>
                   {selectedDocuments.length > 0 && (
-                    <Typography variant="body2" sx={{ color: '#667eea', fontWeight: 500 }}>
+                    <Typography variant="body2" sx={{ color: tokens.colors.primary, fontWeight: 500 }}>
                       {selectedDocuments.length} document(s) sélectionné(s)
                     </Typography>
                   )}
@@ -7401,15 +7529,15 @@ const EtudeDetails: React.FC = () => {
                 <TableContainer>
                   <Table>
                     <TableHead>
-                      <TableRow sx={{ bgcolor: '#f8f9fa' }}>
+                      <TableRow sx={{ bgcolor: tokens.colors.bgDefault }}>
                         <TableCell sx={{ fontWeight: 600, width: '50px' }}>
                           <Checkbox
                             checked={selectAllDocuments}
                             indeterminate={selectedDocuments.length > 0 && selectedDocuments.length < documents.length}
                             onChange={(e) => handleSelectAllDocuments(e.target.checked)}
                             sx={{ 
-                              color: '#667eea',
-                              '&.Mui-checked': { color: '#667eea' }
+                              color: tokens.colors.primary,
+                              '&.Mui-checked': { color: tokens.colors.primary }
                             }}
                           />
                         </TableCell>
@@ -7425,7 +7553,7 @@ const EtudeDetails: React.FC = () => {
                           key={doc.id}
                           sx={{ 
                             animation: `${fadeInUp} 0.6s ease-out ${index * 0.1}s both`,
-                            '&:hover': { bgcolor: '#f8f9fa' },
+                            '&:hover': { bgcolor: tokens.colors.bgDefault },
                             bgcolor: doc.isDraft ? 'rgba(255, 193, 7, 0.05)' : 'transparent'
                           }}
                         >
@@ -7434,8 +7562,8 @@ const EtudeDetails: React.FC = () => {
                               checked={selectedDocuments.includes(doc.id)}
                               onChange={(e) => handleDocumentSelectionChange(doc.id, e.target.checked)}
                               sx={{ 
-                                color: '#667eea',
-                                '&.Mui-checked': { color: '#667eea' }
+                                color: tokens.colors.primary,
+                                '&.Mui-checked': { color: tokens.colors.primary }
                               }}
                             />
                           </TableCell>
@@ -7475,18 +7603,21 @@ const EtudeDetails: React.FC = () => {
                               />
                               {doc.uploadedBy && (
                                 <Typography variant="caption" sx={{ color: '#8E8E93', fontSize: '0.7rem' }}>
-                                  Par: {doc.uploadedBy}
+                                  Par:{' '}
+                                  <UserReferenceText
+                                    component="span"
+                                    userId={doc.uploadedBy}
+                                    name={doc.uploadedByName}
+                                    fallback="Utilisateur"
+                                    variant="caption"
+                                    sx={{ color: '#8E8E93', fontSize: '0.7rem' }}
+                                  />
                                 </Typography>
                               )}
                             </Box>
                           </TableCell>
                           <TableCell>
-                            {doc.uploadedAt && typeof doc.uploadedAt === 'object' && doc.uploadedAt.toDate ? 
-                              formatDate(doc.uploadedAt.toDate().toISOString()) :
-                              doc.uploadedAt && typeof doc.uploadedAt === 'string' ? 
-                                formatDate(doc.uploadedAt) :
-                                'Date invalide'
-                            }
+                            {formatDocumentUploadDate(doc.uploadedAt)}
                           </TableCell>
                           <TableCell>
                             <Box sx={{ display: 'flex', gap: 0.5 }}>
@@ -7494,7 +7625,7 @@ const EtudeDetails: React.FC = () => {
                                 <Tooltip title="Aperçu">
                                   <IconButton 
                                     size="small" 
-                                    sx={{ color: '#667eea' }}
+                                    sx={{ color: tokens.colors.primary }}
                                     onClick={() => handleDocumentPreview(doc)}
                                   >
                                     <VisibilityIcon />
@@ -7545,10 +7676,10 @@ const EtudeDetails: React.FC = () => {
                         <TableRow>
                           <TableCell colSpan={5} sx={{ textAlign: 'center', py: 4 }}>
                             <FolderIcon sx={{ fontSize: 64, color: '#d2d2d7', mb: 2 }} />
-                            <Typography variant="h6" sx={{ color: '#86868b', mb: 1 }}>
+                            <Typography variant="h6" sx={{ color: tokens.colors.textSecondary, mb: 1 }}>
                               Aucun document disponible
                             </Typography>
-                            <Typography variant="body2" sx={{ color: '#86868b' }}>
+                            <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                               Commencez par créer une proposition commerciale ou uploader un document
                             </Typography>
                           </TableCell>
@@ -7560,10 +7691,286 @@ const EtudeDetails: React.FC = () => {
               </Paper>
             </Box>
           )}
-        </TabPanel>
+        </DocumentsTab>
+        )}
+
+        {activeTab === 'compliance' && (
+        <ComplianceTab>
+        {/* Avenants */}
+          <Box>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+              <Typography variant="h5" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
+                Avenants
+              </Typography>
+              {editing && (
+                <Button
+                  startIcon={<AddIcon />}
+                  variant="contained"
+                  onClick={async () => {
+                    if (!etude?.id) return;
+                    try {
+                      const existingAvenants = await getAvenants(etude.id);
+                      const newAvenant: Omit<Avenant, 'id'> = {
+                        etudeId: etude.id,
+                        numero: existingAvenants.length + 1,
+                        raison: '',
+                        status: 'brouillon',
+                        modifications: {},
+                        createdAt: new Date(),
+                        createdBy: currentUser?.uid || '',
+                        createdByName: getSafeDisplayName(userData),
+                      };
+                      await addAvenant(etude.id, newAvenant);
+                      // Refresh
+                      const updated = await getAvenants(etude.id);
+                      setEtude({ ...etude, _avenants: updated } as any);
+                    } catch (err) {
+                      console.error('Erreur création avenant:', err);
+                    }
+                  }}
+                  sx={{
+                    bgcolor: tokens.colors.primary,
+                    '&:hover': { bgcolor: tokens.colors.primaryDark },
+                    borderRadius: 2,
+                  }}
+                >
+                  Nouvel avenant
+                </Button>
+              )}
+            </Box>
+
+            {(etude as any)?._avenants?.length > 0 ? (
+              (etude as any)._avenants.map((av: Avenant) => (
+                <Paper key={av.id} sx={{ p: 3, mb: 2, borderRadius: 2, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                      Avenant n°{av.numero}
+                    </Typography>
+                    <Chip
+                      size="small"
+                      label={
+                        av.status === 'brouillon' ? 'Brouillon' :
+                        av.status === 'en_validation' ? 'En validation' :
+                        av.status === 'signe' ? 'Signé' : 'Refusé'
+                      }
+                      color={
+                        av.status === 'signe' ? 'success' :
+                        av.status === 'refuse' ? 'error' :
+                        av.status === 'en_validation' ? 'warning' : 'default'
+                      }
+                    />
+                  </Box>
+                  <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, mb: 1 }}>
+                    Raison : {av.raison || 'Non renseignée'}
+                  </Typography>
+                  {av.modifications.budget && (
+                    <Typography variant="body2">
+                      Budget : {av.modifications.budget.avant}€ → {av.modifications.budget.apres}€
+                    </Typography>
+                  )}
+                  {av.modifications.jehTotal && (
+                    <Typography variant="body2">
+                      JEH : {av.modifications.jehTotal.avant} → {av.modifications.jehTotal.apres}
+                    </Typography>
+                  )}
+                  {av.modifications.duree && (
+                    <Typography variant="body2">
+                      Durée prolongée jusqu'au {new Date(av.modifications.duree.dateFinApres).toLocaleDateString('fr-FR')}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, mt: 1, display: 'block' }}>
+                    Créé le {av.createdAt instanceof Date ? av.createdAt.toLocaleDateString('fr-FR') : new Date(av.createdAt).toLocaleDateString('fr-FR')} par{' '}
+                    <UserReferenceText
+                      component="span"
+                      userId={av.createdBy}
+                      name={av.createdByName}
+                      fallback="Utilisateur"
+                      variant="caption"
+                      sx={{ color: tokens.colors.textSecondary }}
+                    />
+                  </Typography>
+                </Paper>
+              ))
+            ) : (
+              <Paper sx={{ p: 4, textAlign: 'center', borderRadius: 2, bgcolor: tokens.colors.bgDefault }}>
+                <AssignmentIcon sx={{ fontSize: 48, color: '#ccc', mb: 2 }} />
+                <Typography variant="body1" sx={{ color: tokens.colors.textSecondary }}>
+                  Aucun avenant pour cette étude
+                </Typography>
+                <Typography variant="body2" sx={{ color: '#b0b0b0', mt: 1 }}>
+                  Les avenants permettent de modifier les conditions d'une convention d'étude signée
+                </Typography>
+              </Paper>
+            )}
+          </Box>
+
+        {/* Qualité */}
+          <Grid container spacing={3}>
+            {/* Checklist Qualité */}
+            <Grid item xs={12} md={6}>
+              <Paper sx={{ p: 3, borderRadius: 2, boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                  <Typography variant="h6" sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
+                    Checklist qualité
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label={`${qualityPercent}%`}
+                    sx={{
+                      bgcolor: qualityPercent === 100 ? '#4CAF50' : qualityPercent >= 50 ? '#FF9800' : '#f44336',
+                      color: '#fff',
+                      fontWeight: 700,
+                    }}
+                  />
+                </Box>
+                <LinearProgress
+                  variant="determinate"
+                  value={qualityPercent}
+                  sx={{
+                    height: 8,
+                    borderRadius: 4,
+                    mb: 3,
+                    bgcolor: '#e0e0e0',
+                    '& .MuiLinearProgress-bar': {
+                      borderRadius: 4,
+                      bgcolor: qualityPercent === 100 ? '#4CAF50' : qualityPercent >= 50 ? '#FF9800' : '#f44336',
+                    },
+                  }}
+                />
+                {[
+                  { key: 'conventionSignee', label: 'Convention d\'étude signée' },
+                  { key: 'assuranceVerifiee', label: 'Assurance RC Pro vérifiée' },
+                  { key: 'pvRecetteObtenu', label: 'PV de recette obtenu' },
+                  { key: 'satisfactionEnvoyee', label: 'Enquête satisfaction envoyée' },
+                  { key: 'bvEmis', label: 'Bulletins de versement émis' },
+                  { key: 'facturePayee', label: 'Facture payée' },
+                  { key: 'rapportPedagogiqueRedige', label: 'Rapport pédagogique rédigé' },
+                ].map((item) => (
+                  <FormControlLabel
+                    key={item.key}
+                    control={
+                      <Checkbox
+                        checked={qualityChecklist[item.key] || false}
+                        onChange={async (e) => {
+                          if (!etude?.id) return;
+                          const updated = { ...qualityChecklist, [item.key]: e.target.checked };
+                          try {
+                            await updateQualityChecklist(etude.id, updated);
+                            setEtude({ ...etude, qualityChecklist: updated } as any);
+                          } catch (err) {
+                            console.error('Erreur mise à jour checklist:', err);
+                          }
+                        }}
+                        sx={{ '&.Mui-checked': { color: tokens.colors.primary } }}
+                      />
+                    }
+                    label={item.label}
+                    sx={{
+                      display: 'flex',
+                      mb: 1,
+                      p: 1,
+                      borderRadius: 1,
+                      bgcolor: qualityChecklist[item.key] ? 'rgba(102, 126, 234, 0.05)' : 'transparent',
+                      '& .MuiFormControlLabel-label': {
+                        textDecoration: qualityChecklist[item.key] ? 'line-through' : 'none',
+                        color: qualityChecklist[item.key] ? tokens.colors.textSecondary : tokens.colors.textPrimary,
+                      },
+                    }}
+                  />
+                ))}
+              </Paper>
+            </Grid>
+
+            {/* Score satisfaction & Étape actuelle */}
+            <Grid item xs={12} md={6}>
+              <Paper sx={{ p: 3, mb: 3, borderRadius: 2, boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}>
+                <Typography variant="h6" sx={{ fontWeight: 700, color: tokens.colors.textPrimary, mb: 2 }}>
+                  Progression de l'étude
+                </Typography>
+                <Box sx={{ mb: 2 }}>
+                  {ETUDE_ETAPE_ORDER.map((etape, index) => {
+                    const isCurrent = etape === currentEtape;
+                    const isDone = index < currentEtapeIndex;
+                    return (
+                      <Box
+                        key={etape}
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.5,
+                          py: 0.75,
+                          px: 1.5,
+                          borderRadius: 1,
+                          bgcolor: isCurrent ? 'rgba(102, 126, 234, 0.08)' : 'transparent',
+                          borderLeft: `3px solid ${isDone ? '#4CAF50' : isCurrent ? ETUDE_ETAPE_COLORS[etape] : '#e0e0e0'}`,
+                          mb: 0.5,
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            bgcolor: isDone ? '#4CAF50' : isCurrent ? ETUDE_ETAPE_COLORS[etape] : '#e0e0e0',
+                          }}
+                        />
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: isCurrent ? 700 : 400,
+                            color: isDone ? '#4CAF50' : isCurrent ? tokens.colors.textPrimary : tokens.colors.textSecondary,
+                            textDecoration: isDone ? 'line-through' : 'none',
+                          }}
+                        >
+                          {ETUDE_ETAPE_LABELS[etape]}
+                        </Typography>
+                      </Box>
+                    );
+                  })}
+                </Box>
+              </Paper>
+
+              {/* Score satisfaction */}
+              <Paper sx={{ p: 3, borderRadius: 2, boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}>
+                <Typography variant="h6" sx={{ fontWeight: 700, color: tokens.colors.textPrimary, mb: 2 }}>
+                  Satisfaction client
+                </Typography>
+                {etude?.satisfactionScore ? (
+                  <Box sx={{ textAlign: 'center' }}>
+                    <Typography variant="h2" sx={{ fontWeight: 800, color: tokens.colors.primary }}>
+                      {etude.satisfactionScore.toFixed(1)}
+                    </Typography>
+                    <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>/ 5</Typography>
+                    <Box sx={{ display: 'flex', justifyContent: 'center', gap: 0.5, mt: 1 }}>
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <Box
+                          key={star}
+                          sx={{
+                            width: 24,
+                            height: 24,
+                            borderRadius: '50%',
+                            bgcolor: star <= (etude.satisfactionScore || 0) ? '#FFD700' : '#e0e0e0',
+                          }}
+                        />
+                      ))}
+                    </Box>
+                  </Box>
+                ) : (
+                  <Box sx={{ textAlign: 'center', py: 2 }}>
+                    <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
+                      Aucune enquête de satisfaction soumise
+                    </Typography>
+                  </Box>
+                )}
+              </Paper>
+            </Grid>
+          </Grid>
+        </ComplianceTab>
+        )}
+      </EtudeDetailShell>
 
         {/* Dialogs */}
-        
+
         {/* Planning Task Dialog */}
         <Dialog 
           open={planningDialogOpen} 
@@ -7574,14 +7981,14 @@ const EtudeDetails: React.FC = () => {
             sx: { borderRadius: 3 }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+          <DialogTitle sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
             Ajouter une tâche de planning
           </DialogTitle>
           <DialogContent>
             <Grid container spacing={3} sx={{ mt: 1 }}>
               <Grid item xs={12} md={6}>
                 <Box>
-                  <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                     Informations de la tâche
                   </Typography>
                   <Stack spacing={2}>
@@ -7645,7 +8052,7 @@ const EtudeDetails: React.FC = () => {
               
               <Grid item xs={12} md={6}>
                 <Box>
-                  <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                     Dates et priorité
                   </Typography>
                   
@@ -7684,7 +8091,7 @@ const EtudeDetails: React.FC = () => {
           <DialogActions sx={{ p: 3 }}>
             <Button 
               onClick={() => setPlanningDialogOpen(false)}
-              sx={{ color: '#86868b' }}
+              sx={{ color: tokens.colors.textSecondary }}
             >
               Annuler
             </Button>
@@ -7692,8 +8099,8 @@ const EtudeDetails: React.FC = () => {
               onClick={handleAddPlanningTask} 
               variant="contained"
               sx={{ 
-                bgcolor: '#667eea',
-                '&:hover': { bgcolor: '#5a6fd8' }
+                bgcolor: tokens.colors.primary,
+                '&:hover': { bgcolor: tokens.colors.primaryDark }
               }}
             >
               Ajouter
@@ -7717,7 +8124,7 @@ const EtudeDetails: React.FC = () => {
         >
           <DialogTitle sx={{ 
             fontWeight: 700, 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             pb: 1
           }}>
             Nouveau poste de budget
@@ -7766,7 +8173,7 @@ const EtudeDetails: React.FC = () => {
                   }}
                 />
                 <Box>
-                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 500, color: '#1d1d1f' }}>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 500, color: tokens.colors.textPrimary }}>
                     Couleur
                   </Typography>
                   <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
@@ -7784,7 +8191,7 @@ const EtudeDetails: React.FC = () => {
                           transition: 'all 0.2s ease',
                           '&:hover': {
                             transform: 'scale(1.1)',
-                            borderColor: '#1d1d1f'
+                            borderColor: tokens.colors.textPrimary
                           }
                         }}
                       />
@@ -7792,7 +8199,7 @@ const EtudeDetails: React.FC = () => {
                   </Box>
                   {getUsedColors().length > 0 && (
                     <Box sx={{ mt: 2 }}>
-                      <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 1 }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 1 }}>
                         Couleurs utilisées
                       </Typography>
                       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
@@ -7815,14 +8222,14 @@ const EtudeDetails: React.FC = () => {
               </Box>
               <Box sx={{ 
                 p: 2, 
-                bgcolor: '#f8f9fa', 
+                bgcolor: tokens.colors.bgDefault, 
                 borderRadius: 2,
                 border: '1px solid #e5e5e7'
               }}>
-                <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 1 }}>
+                <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 1 }}>
                   Période sélectionnée
                 </Typography>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
+                <Typography variant="body2" sx={{ fontWeight: 500, color: tokens.colors.textPrimary }}>
                   {formatDate(newBudgetItem.startDate)} - {formatDate(newBudgetItem.endDate)}
                 </Typography>
               </Box>
@@ -7831,7 +8238,7 @@ const EtudeDetails: React.FC = () => {
           <DialogActions sx={{ p: 3, pt: 0 }}>
             <Button 
               onClick={() => setBudgetItemDialogOpen(false)}
-              sx={{ color: '#86868b' }}
+              sx={{ color: tokens.colors.textSecondary }}
             >
               Annuler
             </Button>
@@ -7855,7 +8262,7 @@ const EtudeDetails: React.FC = () => {
                 ? '0 12px 40px rgba(0,0,0,0.2)' 
                 : '0 8px 32px rgba(0,0,0,0.12)',
               border: isDraggingPopup 
-                ? '2px solid #667eea' 
+                ? `2px solid ${tokens.colors.brandTeal}` 
                 : '1px solid #e5e5e7',
               p: 2,
               minWidth: 280,
@@ -7894,17 +8301,17 @@ const EtudeDetails: React.FC = () => {
                     width: 16,
                     height: 16,
                     borderRadius: '50%',
-                    bgcolor: newBudgetItem.color || '#667eea',
+                    bgcolor: newBudgetItem.color || tokens.colors.primary,
                     mr: 1
                   }}
                 />
-                <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                   {editingBudgetItem ? editingBudgetItem.title : 'Nouveau poste de budget'}
                 </Typography>
                 <DragIndicatorIcon 
                   sx={{ 
                     fontSize: 16, 
-                    color: '#86868b', 
+                    color: tokens.colors.textSecondary, 
                     ml: 1,
                     opacity: 0.6,
                     '&:hover': {
@@ -7938,7 +8345,7 @@ const EtudeDetails: React.FC = () => {
             </Box>
             
             <Box sx={{ mb: 2 }}>
-              <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+              <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                 Nom du poste
               </Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -7982,7 +8389,7 @@ const EtudeDetails: React.FC = () => {
             </Box>
             
             <Box sx={{ mb: 2 }}>
-              <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+              <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                 Budget (€ HT)
               </Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -8002,7 +8409,7 @@ const EtudeDetails: React.FC = () => {
                     setTempBudgetInput(''); // Vider l'input temporaire
                   }}
                   sx={{ 
-                    color: '#86868b',
+                    color: tokens.colors.textSecondary,
                     p: 0.5,
                     '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                   }}
@@ -8105,7 +8512,7 @@ const EtudeDetails: React.FC = () => {
                     setTempBudgetInput(''); // Vider l'input temporaire
                   }}
                   sx={{ 
-                    color: '#86868b',
+                    color: tokens.colors.textSecondary,
                     p: 0.5,
                     '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                   }}
@@ -8120,7 +8527,7 @@ const EtudeDetails: React.FC = () => {
               <Box sx={{ mb: 2 }}>
                 <Box sx={{ display: 'flex', gap: 1 }}>
                   <Box sx={{ flex: 1 }}>
-                    <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+                    <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                       Nombre de JEH assignées
                     </Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -8140,7 +8547,7 @@ const EtudeDetails: React.FC = () => {
                           }
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8242,7 +8649,7 @@ const EtudeDetails: React.FC = () => {
                           }
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8253,7 +8660,7 @@ const EtudeDetails: React.FC = () => {
                   </Box>
                   
                   <Box sx={{ flex: 1 }}>
-                    <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+                    <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                       Rémunération brute / JEH (€)
                     </Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -8273,7 +8680,7 @@ const EtudeDetails: React.FC = () => {
                           }
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8375,7 +8782,7 @@ const EtudeDetails: React.FC = () => {
                           }
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8390,7 +8797,7 @@ const EtudeDetails: React.FC = () => {
               <Box sx={{ mb: 2 }}>
                 <Box sx={{ display: 'flex', gap: 1 }}>
                   <Box sx={{ flex: 1 }}>
-                    <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+                    <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                       Nombre d'heures assignées
                     </Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -8410,7 +8817,7 @@ const EtudeDetails: React.FC = () => {
                           }
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8505,7 +8912,7 @@ const EtudeDetails: React.FC = () => {
                           updateTemporaryBudgetItem({ hoursCount: parseFloat(newHours.toFixed(1)) });
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8516,7 +8923,7 @@ const EtudeDetails: React.FC = () => {
                   </Box>
                   
                   <Box sx={{ flex: 1 }}>
-                    <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+                    <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                       Rémunération horaire brute (€)
                     </Typography>
                     <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -8529,7 +8936,7 @@ const EtudeDetails: React.FC = () => {
                           updateTemporaryBudgetItem({ hourlyRate: parseFloat(newRate.toFixed(2)) });
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8614,7 +9021,7 @@ const EtudeDetails: React.FC = () => {
                           updateTemporaryBudgetItem({ hourlyRate: parseFloat(newRate.toFixed(2)) });
                         }}
                         sx={{ 
-                          color: '#86868b',
+                          color: tokens.colors.textSecondary,
                           p: 0.5,
                           '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                         }}
@@ -8630,7 +9037,7 @@ const EtudeDetails: React.FC = () => {
             {/* Champs pour modifier les dates */}
             <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
               <Box sx={{ flex: 1 }}>
-                <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+                <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                   Semaine de début
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -8644,7 +9051,7 @@ const EtudeDetails: React.FC = () => {
                       updateTemporaryBudgetItem({ startDate: newStartDate });
                     }}
                     sx={{ 
-                      color: '#86868b',
+                      color: tokens.colors.textSecondary,
                       p: 0.5,
                       '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                     }}
@@ -8688,7 +9095,7 @@ const EtudeDetails: React.FC = () => {
                       updateTemporaryBudgetItem({ startDate: newStartDate });
                     }}
                     sx={{ 
-                      color: '#86868b',
+                      color: tokens.colors.textSecondary,
                       p: 0.5,
                       '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                     }}
@@ -8699,7 +9106,7 @@ const EtudeDetails: React.FC = () => {
               </Box>
               
               <Box sx={{ flex: 1 }}>
-                <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 0.5 }}>
+                <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 0.5 }}>
                   Semaine de fin
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', border: '1px solid #e5e5e7', borderRadius: 1 }}>
@@ -8714,7 +9121,7 @@ const EtudeDetails: React.FC = () => {
                       updateTemporaryBudgetItem({ endDate: newEndDate });
                     }}
                     sx={{ 
-                      color: '#86868b',
+                      color: tokens.colors.textSecondary,
                       p: 0.5,
                       '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                     }}
@@ -8760,7 +9167,7 @@ const EtudeDetails: React.FC = () => {
                       updateTemporaryBudgetItem({ endDate: newEndDate });
                     }}
                     sx={{ 
-                      color: '#86868b',
+                      color: tokens.colors.textSecondary,
                       p: 0.5,
                       '&:hover': { bgcolor: 'rgba(134, 134, 139, 0.1)' }
                     }}
@@ -8772,7 +9179,7 @@ const EtudeDetails: React.FC = () => {
             </Box>
             
             <Box sx={{ mb: 2 }}>
-              <Typography variant="caption" sx={{ color: '#86868b', display: 'block', mb: 1 }}>
+              <Typography variant="caption" sx={{ color: tokens.colors.textSecondary, display: 'block', mb: 1 }}>
                 Couleur
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
@@ -8813,7 +9220,7 @@ const EtudeDetails: React.FC = () => {
                   setEditingBudgetItem(null);
                   setNewBudgetItem({});
                 }}
-                sx={{ color: '#86868b' }}
+                sx={{ color: tokens.colors.textSecondary }}
               >
                 Annuler
               </Button>
@@ -8832,7 +9239,7 @@ const EtudeDetails: React.FC = () => {
             sx: { borderRadius: 3 }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+          <DialogTitle sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
             Ajouter une tâche de recrutement
           </DialogTitle>
           <DialogContent>
@@ -8870,11 +9277,11 @@ const EtudeDetails: React.FC = () => {
               <Grid item xs={12}>
                 <Box sx={{ 
                   p: 2, 
-                  bgcolor: '#f8f9fa', 
+                  bgcolor: tokens.colors.bgDefault, 
                   borderRadius: 2,
                   border: '1px solid #e5e5e7'
                 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                     Recrutement lié aux postes de budget
                   </Typography>
                   
@@ -8890,7 +9297,7 @@ const EtudeDetails: React.FC = () => {
                   
                   {linkedRecruitmentMode && (
                     <Box sx={{ mt: 2 }}>
-                      <Typography variant="body2" sx={{ mb: 1, color: '#86868b' }}>
+                      <Typography variant="body2" sx={{ mb: 1, color: tokens.colors.textSecondary }}>
                         Sélectionner les postes de budget concernés :
                       </Typography>
                       <Box sx={{ maxHeight: 200, overflowY: 'auto', border: '1px solid #e5e5e7', borderRadius: 1, p: 1 }}>
@@ -9042,11 +9449,11 @@ const EtudeDetails: React.FC = () => {
               <Grid item xs={12}>
                 <Box sx={{ 
                   p: 2, 
-                  bgcolor: '#f8f9fa', 
+                  bgcolor: tokens.colors.bgDefault, 
                   borderRadius: 2,
                   border: '1px solid #e5e5e7'
                 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                     Exigences de candidature
                   </Typography>
                   
@@ -9056,9 +9463,9 @@ const EtudeDetails: React.FC = () => {
                         checked={newRecruitmentTask.requiresCV || false}
                         onChange={(e) => setNewRecruitmentTask({ ...newRecruitmentTask, requiresCV: e.target.checked })}
                         sx={{
-                          color: '#0071e3',
+                          color: tokens.colors.brandTeal,
                           '&.Mui-checked': {
-                            color: '#0071e3',
+                            color: tokens.colors.brandTeal,
                           },
                         }}
                       />
@@ -9073,9 +9480,9 @@ const EtudeDetails: React.FC = () => {
                         checked={newRecruitmentTask.requiresMotivation || false}
                         onChange={(e) => setNewRecruitmentTask({ ...newRecruitmentTask, requiresMotivation: e.target.checked })}
                         sx={{
-                          color: '#0071e3',
+                          color: tokens.colors.brandTeal,
                           '&.Mui-checked': {
-                            color: '#0071e3',
+                            color: tokens.colors.brandTeal,
                           },
                         }}
                       />
@@ -9094,7 +9501,7 @@ const EtudeDetails: React.FC = () => {
                 setSelectedBudgetItems([]);
                 setRecruitmentStudentsCount(1);
               }}
-              sx={{ color: '#86868b' }}
+              sx={{ color: tokens.colors.textSecondary }}
             >
               Annuler
             </Button>
@@ -9106,8 +9513,8 @@ const EtudeDetails: React.FC = () => {
                 (!linkedRecruitmentMode && !newRecruitmentTask.title?.trim())
               }
               sx={{ 
-                bgcolor: '#667eea',
-                '&:hover': { bgcolor: '#5a6fd8' }
+                bgcolor: tokens.colors.primary,
+                '&:hover': { bgcolor: tokens.colors.primaryDark }
               }}
             >
               Ajouter
@@ -9128,7 +9535,7 @@ const EtudeDetails: React.FC = () => {
             sx: { borderRadius: 3 }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+          <DialogTitle sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
             Modifier la tâche de recrutement
           </DialogTitle>
           <DialogContent sx={{ p: 3 }}>
@@ -9268,11 +9675,11 @@ const EtudeDetails: React.FC = () => {
               <Grid item xs={12}>
                 <Box sx={{ 
                   p: 2, 
-                  bgcolor: '#f8f9fa', 
+                  bgcolor: tokens.colors.bgDefault, 
                   borderRadius: 2,
                   border: '1px solid #e5e5e7'
                 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                     Exigences de candidature
                   </Typography>
                   
@@ -9284,9 +9691,9 @@ const EtudeDetails: React.FC = () => {
                           prev ? { ...prev, requiresCV: e.target.checked } : null
                         )}
                         sx={{
-                          color: '#0071e3',
+                          color: tokens.colors.brandTeal,
                           '&.Mui-checked': {
-                            color: '#0071e3',
+                            color: tokens.colors.brandTeal,
                           },
                         }}
                       />
@@ -9303,9 +9710,9 @@ const EtudeDetails: React.FC = () => {
                           prev ? { ...prev, requiresMotivation: e.target.checked } : null
                         )}
                         sx={{
-                          color: '#0071e3',
+                          color: tokens.colors.brandTeal,
                           '&.Mui-checked': {
-                            color: '#0071e3',
+                            color: tokens.colors.brandTeal,
                           },
                         }}
                       />
@@ -9320,11 +9727,11 @@ const EtudeDetails: React.FC = () => {
                 <Grid item xs={12}>
                   <Box sx={{ 
                     p: 2, 
-                    bgcolor: '#f8f9fa', 
+                    bgcolor: tokens.colors.bgDefault, 
                     borderRadius: 2,
                     border: '1px solid #e5e5e7'
                   }}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                       Postes de budget liés
                     </Typography>
                     <Stack direction="row" spacing={1} flexWrap="wrap">
@@ -9351,11 +9758,11 @@ const EtudeDetails: React.FC = () => {
                 <Grid item xs={12}>
                   <Box sx={{ 
                     p: 2, 
-                    bgcolor: '#f8f9fa', 
+                    bgcolor: tokens.colors.bgDefault, 
                     borderRadius: 2,
                     border: '1px solid #e5e5e7'
                   }}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                       Recrutement lié aux postes de budget
                     </Typography>
                     
@@ -9421,7 +9828,7 @@ const EtudeDetails: React.FC = () => {
                   setEditRecruitmentDialogOpen(false);
                   setEditingRecruitmentTask(null);
                 }}
-                sx={{ color: '#86868b' }}
+                sx={{ color: tokens.colors.textSecondary }}
               >
                 Annuler
               </Button>
@@ -9430,8 +9837,8 @@ const EtudeDetails: React.FC = () => {
                 variant="contained"
                 disabled={!editingRecruitmentTask?.title?.trim()}
                 sx={{ 
-                  bgcolor: '#667eea',
-                  '&:hover': { bgcolor: '#5a6fd8' }
+                  bgcolor: tokens.colors.primary,
+                  '&:hover': { bgcolor: tokens.colors.primaryDark }
                 }}
               >
                 Modifier
@@ -9450,13 +9857,13 @@ const EtudeDetails: React.FC = () => {
             sx: { borderRadius: 3 }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+          <DialogTitle sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
             Upload de document
           </DialogTitle>
           <DialogContent>
             <Box sx={{ 
               p: 4, 
-              border: '2px dashed #667eea', 
+              border: `2px dashed ${tokens.colors.brandTeal}`, 
               borderRadius: 3, 
               textAlign: 'center',
               bgcolor: 'rgba(102, 126, 234, 0.04)'
@@ -9474,10 +9881,10 @@ const EtudeDetails: React.FC = () => {
                   variant="outlined"
                   sx={{ 
                     mb: 2,
-                    borderColor: '#667eea',
-                    color: '#667eea',
+                    borderColor: tokens.colors.primary,
+                    color: tokens.colors.primary,
                     '&:hover': { 
-                      borderColor: '#5a6fd8',
+                      borderColor: tokens.colors.primaryDark,
                       bgcolor: 'rgba(102, 126, 234, 0.04)'
                     }
                   }}
@@ -9493,7 +9900,7 @@ const EtudeDetails: React.FC = () => {
           <DialogActions sx={{ p: 3 }}>
             <Button 
               onClick={() => setDocumentDialogOpen(false)}
-              sx={{ color: '#86868b' }}
+              sx={{ color: tokens.colors.textSecondary }}
             >
               Fermer
             </Button>
@@ -9510,15 +9917,15 @@ const EtudeDetails: React.FC = () => {
             sx: { borderRadius: 3 }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+          <DialogTitle sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
             Générer un document
           </DialogTitle>
           <DialogContent>
-            <Typography variant="body1" sx={{ mb: 3, color: '#1d1d1f' }}>
+            <Typography variant="body1" sx={{ mb: 3, color: tokens.colors.textPrimary }}>
               Utilisez les balises suivantes dans votre template :
             </Typography>
-            <Box sx={{ mb: 4, p: 3, bgcolor: '#f8f9fa', borderRadius: 2 }}>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
+            <Box sx={{ mb: 4, p: 3, bgcolor: tokens.colors.bgDefault, borderRadius: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2, color: tokens.colors.textPrimary }}>
                 Balises disponibles :
               </Typography>
               <Grid container spacing={2}>
@@ -9564,7 +9971,7 @@ const EtudeDetails: React.FC = () => {
           <DialogActions sx={{ p: 3 }}>
             <Button 
               onClick={() => setPowerpointDialogOpen(false)}
-              sx={{ color: '#86868b' }}
+              sx={{ color: tokens.colors.textSecondary }}
             >
               Annuler
             </Button>
@@ -9572,8 +9979,8 @@ const EtudeDetails: React.FC = () => {
               variant="contained" 
               startIcon={<PowerSettingsNewIcon />}
               sx={{ 
-                bgcolor: '#667eea',
-                '&:hover': { bgcolor: '#5a6fd8' }
+                bgcolor: tokens.colors.primary,
+                '&:hover': { bgcolor: tokens.colors.primaryDark }
               }}
             >
               Générer document
@@ -9623,7 +10030,7 @@ const EtudeDetails: React.FC = () => {
                     alignItems: 'center',
                     justifyContent: 'center',
                     border: theme => `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     cursor: 'pointer',
                     transition: 'all 0.2s ease-in-out',
                     '&:hover': {
@@ -9745,7 +10152,7 @@ const EtudeDetails: React.FC = () => {
                     sx={{
                       p: 2,
                       mb: 1,
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
@@ -9787,7 +10194,7 @@ const EtudeDetails: React.FC = () => {
                   <Paper sx={{ 
                     p: 2, 
                     mt: 2, 
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     bgcolor: theme => alpha(theme.palette.background.default, 0.5)
                   }}>
                     <Stack spacing={2}>
@@ -9901,7 +10308,7 @@ const EtudeDetails: React.FC = () => {
             sx: { borderRadius: 3 }
           }}
         >
-          <DialogTitle sx={{ fontWeight: 700, color: '#1d1d1f' }}>
+          <DialogTitle sx={{ fontWeight: 700, color: tokens.colors.textPrimary }}>
             Ajouter une note
           </DialogTitle>
           <DialogContent>
@@ -9924,7 +10331,7 @@ const EtudeDetails: React.FC = () => {
           <DialogActions sx={{ p: 3 }}>
             <Button 
               onClick={() => setNoteDialogOpen(false)}
-              sx={{ color: '#86868b' }}
+              sx={{ color: tokens.colors.textSecondary }}
             >
               Annuler
             </Button>
@@ -9933,8 +10340,8 @@ const EtudeDetails: React.FC = () => {
               variant="contained"
               disabled={!newNote.trim()}
               sx={{ 
-                bgcolor: '#667eea',
-                '&:hover': { bgcolor: '#5a6fd8' }
+                bgcolor: tokens.colors.primary,
+                '&:hover': { bgcolor: tokens.colors.primaryDark }
               }}
             >
               Ajouter
@@ -10068,7 +10475,7 @@ const EtudeDetails: React.FC = () => {
         >
           <DialogTitle sx={{ 
             fontWeight: 700, 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             borderBottom: '1px solid #f0f0f0',
             pb: 2
           }}>
@@ -10080,13 +10487,13 @@ const EtudeDetails: React.FC = () => {
                 label={`${recruitmentApplications.length} candidature${recruitmentApplications.length > 1 ? 's' : ''}`}
                 size="small"
                 sx={{
-                  bgcolor: '#667eea',
+                  bgcolor: tokens.colors.primary,
                   color: 'white',
                   fontWeight: 600
                 }}
               />
             </Box>
-            <Typography variant="body2" sx={{ color: '#86868b', mt: 1 }}>
+            <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, mt: 1 }}>
               {selectedRecruitmentTask?.title}
             </Typography>
           </DialogTitle>
@@ -10097,7 +10504,7 @@ const EtudeDetails: React.FC = () => {
                   width: 80, 
                   height: 80, 
                   borderRadius: '50%', 
-                  bgcolor: '#f8f9fa', 
+                  bgcolor: tokens.colors.bgDefault, 
                   display: 'flex', 
                   alignItems: 'center', 
                   justifyContent: 'center',
@@ -10106,10 +10513,10 @@ const EtudeDetails: React.FC = () => {
                 }}>
                   <PeopleIcon sx={{ fontSize: 32, color: '#d2d2d7' }} />
                 </Box>
-                <Typography variant="h6" sx={{ color: '#86868b', mb: 1, fontWeight: 600 }}>
+                <Typography variant="h6" sx={{ color: tokens.colors.textSecondary, mb: 1, fontWeight: 600 }}>
                   Aucune candidature
                 </Typography>
-                <Typography variant="body2" sx={{ color: '#86868b' }}>
+                <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                   Aucun étudiant n'a encore postulé pour cette tâche de recrutement.
                 </Typography>
               </Box>
@@ -10134,24 +10541,28 @@ const EtudeDetails: React.FC = () => {
                         sx={{ 
                           width: 48, 
                           height: 48,
-                          bgcolor: '#667eea',
+                          bgcolor: tokens.colors.primary,
                           fontSize: '1.2rem',
                           fontWeight: 600
                         }}
                       >
-                        {application.userDisplayName?.charAt(0)?.toUpperCase()}
+                        <RecruitmentUserAvatar
+                          userId={application.userId}
+                          displayName={application.userDisplayName}
+                          email={application.userEmail}
+                        />
                       </Avatar>
 
                       {/* Contenu principal */}
                       <Box sx={{ flex: 1, minWidth: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1 }}>
-                          <Typography variant="h6" sx={{ 
-                            fontWeight: 600, 
-                            color: '#1d1d1f',
-                            fontSize: '1rem'
-                          }}>
-                            {application.userDisplayName}
-                          </Typography>
+                          <RecruitmentUserName
+                            userId={application.userId}
+                            displayName={application.userDisplayName}
+                            email={application.userEmail}
+                            variant="h6"
+                            sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '1rem' }}
+                          />
                           <Chip
                             label={application.status}
                             size="small"
@@ -10159,7 +10570,7 @@ const EtudeDetails: React.FC = () => {
                               fontWeight: 600,
                               bgcolor: application.status === 'Refusée' ? '#ff4757' : 
                                        application.status === 'Acceptée' ? '#2ed573' : 
-                                       application.status === 'Ajouté manuellement' ? '#667eea' : '#ffa502',
+                                       application.status === 'Ajouté manuellement' ? tokens.colors.primary : '#ffa502',
                               color: 'white',
                               fontSize: '0.7rem',
                               height: 20
@@ -10171,7 +10582,7 @@ const EtudeDetails: React.FC = () => {
                               size="small"
                               sx={{
                                 fontWeight: 600,
-                                bgcolor: '#667eea',
+                                bgcolor: tokens.colors.primary,
                                 color: 'white',
                                 fontSize: '0.6rem',
                                 height: 16
@@ -10181,7 +10592,7 @@ const EtudeDetails: React.FC = () => {
                         </Box>
                         
                         <Typography variant="body2" sx={{ 
-                          color: '#86868b', 
+                          color: tokens.colors.textSecondary, 
                           mb: 1,
                           fontSize: '0.875rem'
                         }}>
@@ -10208,7 +10619,7 @@ const EtudeDetails: React.FC = () => {
                           sx={{
                             fontSize: '0.75rem',
                             textTransform: 'none',
-                            color: '#667eea',
+                            color: tokens.colors.primary,
                             fontWeight: 500,
                             '&:hover': {
                               bgcolor: 'rgba(102, 126, 234, 0.04)'
@@ -10269,7 +10680,7 @@ const EtudeDetails: React.FC = () => {
             <Button
               onClick={() => setApplicationsDialogOpen(false)}
               sx={{ 
-                color: '#86868b',
+                color: tokens.colors.textSecondary,
                 fontWeight: 500
               }}
             >
@@ -10290,7 +10701,7 @@ const EtudeDetails: React.FC = () => {
         >
           <DialogTitle sx={{ 
             fontWeight: 700, 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             borderBottom: '1px solid #f0f0f0',
             pb: 2
           }}>
@@ -10300,18 +10711,30 @@ const EtudeDetails: React.FC = () => {
                 sx={{ 
                   width: 56, 
                   height: 56,
-                  bgcolor: '#667eea',
+                  bgcolor: tokens.colors.primary,
                   fontSize: '1.4rem',
                   fontWeight: 600
                 }}
               >
-                {selectedApplication?.userDisplayName?.charAt(0)?.toUpperCase()}
+                {selectedApplication && (
+                  <RecruitmentUserAvatar
+                    userId={selectedApplication.userId}
+                    displayName={selectedApplication.userDisplayName}
+                    email={selectedApplication.userEmail}
+                  />
+                )}
               </Avatar>
               <Box sx={{ flex: 1 }}>
-                <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f', mb: 0.5 }}>
-                  {selectedApplication?.userDisplayName}
-                </Typography>
-                <Typography variant="body2" sx={{ color: '#86868b', mb: 1 }}>
+                {selectedApplication && (
+                  <RecruitmentUserName
+                    userId={selectedApplication.userId}
+                    displayName={selectedApplication.userDisplayName}
+                    email={selectedApplication.userEmail}
+                    variant="h5"
+                    sx={{ fontWeight: 700, color: tokens.colors.textPrimary, mb: 0.5 }}
+                  />
+                )}
+                <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, mb: 1 }}>
                   {selectedApplication?.userEmail}
                 </Typography>
                 <Chip
@@ -10333,14 +10756,14 @@ const EtudeDetails: React.FC = () => {
               <Box sx={{ maxHeight: 600, overflowY: 'auto' }}>
                 {/* Informations de base */}
                 <Box sx={{ p: 4, borderBottom: '1px solid #f0f0f0' }}>
-                  <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f', mb: 3 }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary, mb: 3 }}>
                     Informations de candidature
                   </Typography>
                   
                   <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
                     <Box>
                       <Typography variant="caption" sx={{ 
-                        color: '#86868b', 
+                        color: tokens.colors.textSecondary, 
                         textTransform: 'uppercase',
                         fontWeight: 600,
                         letterSpacing: '0.5px',
@@ -10357,7 +10780,7 @@ const EtudeDetails: React.FC = () => {
                     {selectedApplication.reviewedBy && (
                       <Box>
                         <Typography variant="caption" sx={{ 
-                          color: '#86868b', 
+                          color: tokens.colors.textSecondary, 
                           textTransform: 'uppercase',
                           fontWeight: 600,
                           letterSpacing: '0.5px',
@@ -10375,7 +10798,7 @@ const EtudeDetails: React.FC = () => {
                     {selectedApplication.reviewedAt && (
                       <Box>
                         <Typography variant="caption" sx={{ 
-                          color: '#86868b', 
+                          color: tokens.colors.textSecondary, 
                           textTransform: 'uppercase',
                           fontWeight: 600,
                           letterSpacing: '0.5px',
@@ -10395,7 +10818,7 @@ const EtudeDetails: React.FC = () => {
                 {/* CV */}
                 {selectedApplication.cvUrl && (
                   <Box sx={{ p: 4, borderBottom: '1px solid #f0f0f0' }}>
-                    <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f', mb: 3 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary, mb: 3 }}>
                       CV
                     </Typography>
                     <Box sx={{ display: 'flex', gap: 2 }}>
@@ -10405,8 +10828,8 @@ const EtudeDetails: React.FC = () => {
                         href={selectedApplication.cvUrl}
                         target="_blank"
                         sx={{
-                          bgcolor: '#667eea',
-                          '&:hover': { bgcolor: '#5a6fd8' },
+                          bgcolor: tokens.colors.primary,
+                          '&:hover': { bgcolor: tokens.colors.primaryDark },
                           px: 3,
                           py: 1.5,
                           borderRadius: 2
@@ -10418,11 +10841,11 @@ const EtudeDetails: React.FC = () => {
                         variant="outlined"
                         onClick={() => handlePreviewCV(selectedApplication.cvUrl!)}
                         sx={{
-                          borderColor: '#667eea',
-                          color: '#667eea',
+                          borderColor: tokens.colors.primary,
+                          color: tokens.colors.primary,
                           '&:hover': {
                             bgcolor: 'rgba(102, 126, 234, 0.04)',
-                            borderColor: '#5a6fd8'
+                            borderColor: tokens.colors.primaryDark
                           },
                           px: 3,
                           py: 1.5,
@@ -10438,7 +10861,7 @@ const EtudeDetails: React.FC = () => {
                 {/* Lettre de motivation */}
                 {selectedApplication.motivationLetter && (
                   <Box sx={{ p: 4 }}>
-                    <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f', mb: 3 }}>
+                    <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary, mb: 3 }}>
                       Lettre de motivation
                     </Typography>
                     <Paper sx={{ 
@@ -10504,7 +10927,7 @@ const EtudeDetails: React.FC = () => {
             <Button
               onClick={() => setApplicationDetailDialogOpen(false)}
               sx={{ 
-                color: '#86868b',
+                color: tokens.colors.textSecondary,
                 fontWeight: 500,
                 px: 3,
                 py: 1.5
@@ -10531,7 +10954,7 @@ const EtudeDetails: React.FC = () => {
         >
           <DialogTitle sx={{ 
             fontWeight: 700, 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             borderBottom: '1px solid #f0f0f0',
             pb: 2
           }}>
@@ -10545,11 +10968,11 @@ const EtudeDetails: React.FC = () => {
                 href={cvPreviewUrl}
                 target="_blank"
                 sx={{
-                  borderColor: '#667eea',
-                  color: '#667eea',
+                  borderColor: tokens.colors.primary,
+                  color: tokens.colors.primary,
                   '&:hover': {
                     bgcolor: 'rgba(102, 126, 234, 0.04)',
-                    borderColor: '#5a6fd8'
+                    borderColor: tokens.colors.primaryDark
                   }
                 }}
               >
@@ -10574,7 +10997,7 @@ const EtudeDetails: React.FC = () => {
             <Button
               onClick={() => setCvPreviewOpen(false)}
               sx={{ 
-                color: '#86868b',
+                color: tokens.colors.textSecondary,
                 fontWeight: 500
               }}
             >
@@ -10583,44 +11006,41 @@ const EtudeDetails: React.FC = () => {
           </DialogActions>
         </Dialog>
 
-        <Snackbar
-          open={snackbar.open}
-          autoHideDuration={6000}
-          onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-          disablePortal={false}
-          sx={{
-            zIndex: '10000 !important',
-            position: 'fixed !important',
-            left: '72px !important',
-            bottom: '56px !important',
-            '& .MuiSnackbar-root': {
-              zIndex: '10000 !important',
-              position: 'fixed !important'
-            }
-          }}
-          style={{
-            zIndex: 10000,
-            position: 'fixed'
-          }}
-        >
-          <Alert 
-            severity={snackbar.severity} 
-            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-            variant="filled"
-            sx={{ 
-              width: '100%',
-              zIndex: '10000 !important',
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
-              position: 'relative'
-            }}
-            style={{
-              zIndex: 10000
-            }}
+        {createPortal(
+          <Snackbar
+            open={snackbar.open}
+            autoHideDuration={snackbar.actionUrl ? 12000 : 6000}
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false, actionLabel: undefined, actionUrl: undefined }))}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+            sx={{ zIndex: 10000 }}
           >
-            {snackbar.message}
-          </Alert>
-        </Snackbar>
+            <Alert 
+              severity={snackbar.severity} 
+              onClose={() => setSnackbar(prev => ({ ...prev, open: false, actionLabel: undefined, actionUrl: undefined }))}
+              variant="filled"
+              action={snackbar.actionUrl && snackbar.actionLabel ? (
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={() => {
+                    navigate(snackbar.actionUrl!);
+                    setSnackbar(prev => ({ ...prev, open: false, actionLabel: undefined, actionUrl: undefined }));
+                  }}
+                  sx={{ fontWeight: 600, textDecoration: 'underline' }}
+                >
+                  {snackbar.actionLabel}
+                </Button>
+              ) : undefined}
+              sx={{ 
+                width: '100%',
+                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+              }}
+            >
+              {snackbar.message}
+            </Alert>
+          </Snackbar>,
+          document.body
+        )}
 
         {/* Dialog pour ajouter manuellement des étudiants */}
         <Dialog
@@ -10634,7 +11054,7 @@ const EtudeDetails: React.FC = () => {
         >
           <DialogTitle sx={{ 
             fontWeight: 700, 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             borderBottom: '1px solid #f0f0f0',
             pb: 2
           }}>
@@ -10653,7 +11073,7 @@ const EtudeDetails: React.FC = () => {
             {availableStudents.length === 0 ? (
               <Box sx={{ textAlign: 'center', py: 4 }}>
                 <PeopleIcon sx={{ fontSize: 48, color: '#d2d2d7', mb: 1 }} />
-                <Typography variant="body2" sx={{ color: '#86868b' }}>
+                <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                   Aucun étudiant disponible à ajouter
                 </Typography>
               </Box>
@@ -10686,9 +11106,9 @@ const EtudeDetails: React.FC = () => {
                     <Checkbox
                       checked={selectedStudents.includes(student.id)}
                       sx={{
-                        color: '#667eea',
+                        color: tokens.colors.primary,
                         '&.Mui-checked': {
-                          color: '#667eea'
+                          color: tokens.colors.primary
                         }
                       }}
                     />
@@ -10698,15 +11118,18 @@ const EtudeDetails: React.FC = () => {
                         width: 40, 
                         height: 40, 
                         mr: 2,
-                        bgcolor: '#667eea'
+                        bgcolor: tokens.colors.primary
                       }}
                     >
-                      {student.displayName?.charAt(0) || student.email?.charAt(0) || 'U'}
+                      <UserAvatarInitials user={{ id: student.id, displayName: student.displayName, email: student.email }} />
                     </Avatar>
                     <Box sx={{ flex: 1 }}>
-                      <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                        {student.displayName || student.email?.split('@')[0] || 'Utilisateur'}
-                      </Typography>
+                      <UserNameText
+                        user={{ id: student.id, displayName: student.displayName, email: student.email }}
+                        fallback={student.email?.split('@')[0] || 'Utilisateur'}
+                        variant="body1"
+                        sx={{ fontWeight: 600 }}
+                      />
                       <Typography variant="body2" color="text.secondary">
                         {student.email}
                       </Typography>
@@ -10722,8 +11145,8 @@ const EtudeDetails: React.FC = () => {
               disabled={selectedStudents.length === 0}
               variant="contained"
               sx={{
-                bgcolor: '#667eea',
-                '&:hover': { bgcolor: '#5a6fd8' },
+                bgcolor: tokens.colors.primary,
+                '&:hover': { bgcolor: tokens.colors.primaryDark },
                 fontWeight: 600
               }}
             >
@@ -10732,7 +11155,7 @@ const EtudeDetails: React.FC = () => {
             <Button
               onClick={() => setAddStudentDialogOpen(false)}
               sx={{ 
-                color: '#86868b',
+                color: tokens.colors.textSecondary,
                 fontWeight: 500
               }}
             >
@@ -10753,7 +11176,7 @@ const EtudeDetails: React.FC = () => {
         >
           <DialogTitle sx={{ 
             fontWeight: 700, 
-            color: '#1d1d1f',
+            color: tokens.colors.textPrimary,
             borderBottom: '1px solid #f0f0f0',
             pb: 2
           }}>
@@ -10779,7 +11202,7 @@ const EtudeDetails: React.FC = () => {
                   width: 80, 
                   height: 80, 
                   borderRadius: '50%', 
-                  bgcolor: '#f8f9fa', 
+                  bgcolor: tokens.colors.bgDefault, 
                   display: 'flex', 
                   alignItems: 'center', 
                   justifyContent: 'center',
@@ -10788,10 +11211,10 @@ const EtudeDetails: React.FC = () => {
                 }}>
                   <PeopleIcon sx={{ fontSize: 32, color: '#d2d2d7' }} />
                 </Box>
-                <Typography variant="h6" sx={{ color: '#86868b', mb: 1, fontWeight: 600 }}>
+                <Typography variant="h6" sx={{ color: tokens.colors.textSecondary, mb: 1, fontWeight: 600 }}>
                   Aucun étudiant recruté
                 </Typography>
-                <Typography variant="body2" sx={{ color: '#86868b' }}>
+                <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                   Aucun étudiant n'a encore été recruté pour cette tâche.
                 </Typography>
               </Box>
@@ -10822,19 +11245,25 @@ const EtudeDetails: React.FC = () => {
                           border: student.userPhotoURL ? '2px solid #e5e5e7' : 'none'
                         }}
                       >
-                        {!student.userPhotoURL && student.userDisplayName?.charAt(0)?.toUpperCase()}
+                        {!student.userPhotoURL && (
+                          <RecruitmentUserAvatar
+                            userId={student.userId}
+                            displayName={student.userDisplayName}
+                            email={student.userEmail}
+                          />
+                        )}
                       </Avatar>
 
                       {/* Contenu principal */}
                       <Box sx={{ flex: 1, minWidth: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1 }}>
-                          <Typography variant="h6" sx={{ 
-                            fontWeight: 600, 
-                            color: '#1d1d1f',
-                            fontSize: '1rem'
-                          }}>
-                            {student.userDisplayName}
-                          </Typography>
+                          <RecruitmentUserName
+                            userId={student.userId}
+                            displayName={student.userDisplayName}
+                            email={student.userEmail}
+                            variant="h6"
+                            sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '1rem' }}
+                          />
                           <Chip
                             label="Recruté"
                             size="small"
@@ -10852,7 +11281,7 @@ const EtudeDetails: React.FC = () => {
                               size="small"
                               sx={{
                                 fontWeight: 600,
-                                bgcolor: '#667eea',
+                                bgcolor: tokens.colors.primary,
                                 color: 'white',
                                 fontSize: '0.6rem',
                                 height: 16
@@ -10862,7 +11291,7 @@ const EtudeDetails: React.FC = () => {
                         </Box>
                         
                         <Typography variant="body2" sx={{ 
-                          color: '#86868b', 
+                          color: tokens.colors.textSecondary, 
                           mb: 1,
                           fontSize: '0.875rem'
                         }}>
@@ -10916,11 +11345,11 @@ const EtudeDetails: React.FC = () => {
                             sx={{
                               fontSize: '0.75rem',
                               textTransform: 'none',
-                              borderColor: '#667eea',
-                              color: '#667eea',
+                              borderColor: tokens.colors.primary,
+                              color: tokens.colors.primary,
                               '&:hover': {
                                 bgcolor: 'rgba(102, 126, 234, 0.04)',
-                                borderColor: '#5a6fd8'
+                                borderColor: tokens.colors.primaryDark
                               }
                             }}
                           >
@@ -10933,7 +11362,7 @@ const EtudeDetails: React.FC = () => {
                           color="error"
                           onClick={async () => {
                             const confirmDelete = window.confirm(
-                              `Êtes-vous sûr de vouloir supprimer ${student.userDisplayName} de cette tâche de recrutement ?`
+                              'Êtes-vous sûr de vouloir supprimer cet étudiant de cette tâche de recrutement ?'
                             );
                             if (confirmDelete) {
                               try {
@@ -11021,7 +11450,7 @@ const EtudeDetails: React.FC = () => {
                                 
                                 setSnackbar({
                                   open: true,
-                                  message: `${student.userDisplayName} a été supprimé de la tâche`,
+                                  message: 'L\'étudiant a été supprimé de la tâche',
                                   severity: 'success'
                                 });
                               } catch (error) {
@@ -11058,7 +11487,7 @@ const EtudeDetails: React.FC = () => {
             <Button
               onClick={() => setRecruitedStudentsDialogOpen(false)}
               sx={{ 
-                color: '#86868b',
+                color: tokens.colors.textSecondary,
                 fontWeight: 500
               }}
             >
@@ -11075,7 +11504,7 @@ const EtudeDetails: React.FC = () => {
           fullWidth
           PaperProps={{
             sx: {
-              borderRadius: '16px',
+              borderRadius: tokens.radius.lg,
               boxShadow: '0 20px 60px rgba(0, 0, 0, 0.1)'
             }
           }}
@@ -11088,7 +11517,7 @@ const EtudeDetails: React.FC = () => {
             pb: 2
           }}>
             <Box>
-              <Typography variant="h5" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+              <Typography variant="h5" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                 Aperçu du document
               </Typography>
               {selectedDocument && (
@@ -11105,108 +11534,64 @@ const EtudeDetails: React.FC = () => {
             </IconButton>
           </DialogTitle>
           
-          <DialogContent sx={{ p: 3 }}>
+          <DialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column', minHeight: 400 }}>
             {selectedDocument ? (
-              <Box>
-                {/* Informations du document */}
-                <Paper sx={{ p: 3, mb: 3, bgcolor: '#f8f9fa' }}>
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} sm={6}>
-                      <Typography variant="subtitle2" sx={{ color: '#8E8E93', mb: 0.5 }}>
-                        Statut
-                      </Typography>
-                      <Chip 
-                        label={selectedDocument.isDraft ? 'Brouillon' : 'Final'} 
-                        size="small"
-                        sx={{ 
-                          fontWeight: 600,
-                          bgcolor: selectedDocument.isDraft ? '#FFC107' : '#4CAF50',
-                          color: selectedDocument.isDraft ? '#000' : 'white',
-                          maxWidth: '80px',
-                          '& .MuiChip-label': {
-                            fontSize: '0.65rem',
-                            px: 1
-                          }
-                        }}
-                      />
-                    </Grid>
-                    <Grid item xs={12} sm={6}>
-                      <Typography variant="subtitle2" sx={{ color: '#8E8E93', mb: 0.5 }}>
-                        Créé par
-                      </Typography>
-                      <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                        {selectedDocument.uploadedBy || 'Utilisateur inconnu'}
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={12} sm={6}>
-                      <Typography variant="subtitle2" sx={{ color: '#8E8E93', mb: 0.5 }}>
-                        Taille
-                      </Typography>
-                      <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                        {(selectedDocument.size / 1024 / 1024).toFixed(2)} MB
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={12} sm={6}>
-                      <Typography variant="subtitle2" sx={{ color: '#8E8E93', mb: 0.5 }}>
-                        Date de création
-                      </Typography>
-                      <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                        {selectedDocument.uploadedAt && typeof selectedDocument.uploadedAt === 'object' && selectedDocument.uploadedAt.toDate ? 
-                          formatDate(selectedDocument.uploadedAt.toDate().toISOString()) :
-                          selectedDocument.uploadedAt && typeof selectedDocument.uploadedAt === 'string' ? 
-                            formatDate(selectedDocument.uploadedAt) :
-                            'Date invalide'
-                        }
-                      </Typography>
-                    </Grid>
-                  </Grid>
-                </Paper>
+              <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                {/* Ligne d’infos compacte */}
+                <Box sx={{ px: 3, py: 2, borderBottom: '1px solid', borderColor: 'divider', display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center' }}>
+                  <Typography variant="body2" color="text.secondary">
+                  <UserReferenceText
+                    userId={selectedDocument.uploadedBy}
+                    name={selectedDocument.uploadedByName}
+                    fallback="—"
+                    variant="body2"
+                    sx={{ color: 'text.secondary' }}
+                  />
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {formatDocumentUploadDate(selectedDocument.uploadedAt)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {selectedDocument.size != null ? `${(selectedDocument.size / 1024 / 1024).toFixed(2)} Mo` : '—'}
+                  </Typography>
+                  {selectedDocument.isDraft && (
+                    <Chip label="Brouillon" size="small" sx={{ bgcolor: '#FFE082', color: '#000' }} />
+                  )}
+                </Box>
 
-                {/* Aperçu du contenu */}
-                <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, color: '#1d1d1f' }}>
-                  Aperçu du contenu
-                </Typography>
-                
+                {/* Aperçu PDF ou lien */}
                 {selectedDocument.url ? (
-                  <Box sx={{ 
-                    border: '1px solid #e0e0e0', 
-                    borderRadius: 2, 
-                    p: 2, 
-                    bgcolor: 'white',
-                    minHeight: '300px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}>
-                    <Typography variant="body1" sx={{ color: '#8E8E93' }}>
-                      Aperçu du document disponible
-                    </Typography>
-                  </Box>
-                ) : (
-                  <Box sx={{ 
-                    border: '1px solid #e0e0e0', 
-                    borderRadius: 2, 
-                    p: 3, 
-                    bgcolor: 'white',
-                    minHeight: '300px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}>
-                    <Box sx={{ textAlign: 'center' }}>
-                      <DescriptionIcon sx={{ fontSize: 64, color: '#d2d2d7', mb: 2 }} />
-                      <Typography variant="h6" sx={{ color: '#86868b', mb: 1 }}>
-                        Aperçu non disponible
-                      </Typography>
-                      <Typography variant="body2" sx={{ color: '#86868b' }}>
-                        Ce document n'a pas encore été uploadé ou l'aperçu n'est pas supporté
-                      </Typography>
+                  selectedDocument.type === 'pdf' ? (
+                    <Box sx={{ flex: 1, minHeight: '72vh', height: '72vh', p: 2 }}>
+                      <iframe
+                        title={selectedDocument.name}
+                        src={selectedDocument.url}
+                        style={{ width: '100%', height: '100%', border: 'none', borderRadius: 8 }}
+                      />
                     </Box>
+                  ) : (
+                    <Box sx={{ flex: 1, minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
+                      <Button
+                        variant="outlined"
+                        href={selectedDocument.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        startIcon={<VisibilityIcon />}
+                      >
+                        Ouvrir le document
+                      </Button>
+                    </Box>
+                  )
+                ) : (
+                  <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Aucun fichier associé
+                    </Typography>
                   </Box>
                 )}
               </Box>
             ) : (
-              <Box sx={{ textAlign: 'center', py: 4 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', py: 6 }}>
                 <CircularProgress />
               </Box>
             )}
@@ -11251,7 +11636,7 @@ const EtudeDetails: React.FC = () => {
             <Button
               onClick={() => setDocumentPreviewOpen(false)}
               sx={{ 
-                color: '#86868b',
+                color: tokens.colors.textSecondary,
                 fontWeight: 500
               }}
             >
@@ -11321,7 +11706,6 @@ const EtudeDetails: React.FC = () => {
             </Typography>
           </Box>
         )}
-      </Box>
     </Box>
   );
 };

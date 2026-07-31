@@ -22,7 +22,11 @@
  * | permissions     | Gestion des permissions | /app/settings/authorizations | Authorizations.tsx |
  * | encrypted-data  | Données cryptées      | (accès restreint)           | -                |
  *
- * Lecture (read)  = droit de voir la page et les données.
+ * Lecture (read)  = droit de voir la page et toutes ses fonctionnalités.
+ *
+ * Noms (prénom / nom) : déchiffrés automatiquement sur tout le site via decryptUserUtils
+ * (decryptUserDataForStructure + cache). Utiliser decryptUsersList après chaque chargement
+ * d'utilisateurs, ou le composant UserNameText / hook useDecryptedUserName à l'affichage.
  * Modification (write) = droit de créer, modifier, supprimer (boutons, formulaires).
  *
  * Dans chaque page, utiliser usePermission(pageId) pour :
@@ -35,6 +39,7 @@ export const PERMISSION_PAGE_IDS = [
   'organization',
   'mission',
   'entreprises',
+  'documents',
   'commercial',
   'audit',
   'tresorerie',

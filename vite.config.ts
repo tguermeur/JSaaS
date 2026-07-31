@@ -1,9 +1,19 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    process.env.ANALYZE === 'true' &&
+      visualizer({
+        open: true,
+        filename: 'dist/stats.html',
+        gzipSize: true,
+      }),
+  ].filter(Boolean),
   define: {
     global: 'globalThis',
   },
@@ -68,14 +78,32 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ['react', 'react-dom'],
-          pdfjs: ['pdfjs-dist'],
-          'react-pdf': ['react-pdf'],
-          mui: ['@mui/material', '@mui/icons-material'],
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          mui: ['@mui/material', '@mui/icons-material', '@emotion/react', '@emotion/styled'],
+          firebase: [
+            'firebase/app',
+            'firebase/auth',
+            'firebase/firestore',
+            'firebase/storage',
+            'firebase/functions',
+          ],
+          fullcalendar: [
+            '@fullcalendar/core',
+            '@fullcalendar/react',
+            '@fullcalendar/daygrid',
+            '@fullcalendar/timegrid',
+            '@fullcalendar/interaction',
+          ],
+          pdf: ['pdfjs-dist', 'react-pdf', '@react-pdf/renderer', 'pdf-lib'],
+          documents: ['docxtemplater', 'mammoth', 'jspdf', 'html2canvas', 'html2pdf.js'],
+          maps: ['@react-google-maps/api'],
+          editor: ['slate', 'slate-react'],
+          tables: ['@tanstack/react-table'],
+          stripe: ['@stripe/stripe-js'],
         },
       },
     },
-    chunkSizeWarningLimit: 1000, // Augmenter la limite d'avertissement
+    chunkSizeWarningLimit: 500,
   },
   optimizeDeps: {
     include: [
@@ -97,5 +125,11 @@ export default defineConfig({
     },
     // Forcer la re-optimisation si nécessaire
     force: false
-  }
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+  },
 }); 

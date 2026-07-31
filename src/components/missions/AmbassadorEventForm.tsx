@@ -464,12 +464,13 @@ export const AmbassadorEventForm: React.FC<AmbassadorEventFormProps> = ({
     e.preventDefault();
 
     const isEditing = !!initialEvent;
-    const creatorName = userData?.companyName || userData?.structureName || 'Organisation inconnue';
+    const creatorName =
+      userData?.companyName || userData?.structureName || '';
     
     // Vérifier les droits : admins/membres OU contacts avec accès ayant canViewEvents
     const isStructureAdmin = ['admin', 'admin_structure', 'membre', 'superadmin'].includes(userData?.status || '');
     const canCreateContact = isContactWithAccess && contactPermissions?.canViewEvents && userData?.status === 'entreprise';
-    const canCreate = !!userData?.companyName || isStructureAdmin || canCreateContact;
+    const canCreate = !!userData?.companyName || !!userData?.structureName || !!userData?.structureId || isStructureAdmin || canCreateContact;
 
     if (!canCreate) {
       alert(`Erreur: Vous n'avez pas les droits pour ${isEditing ? 'modifier' : 'créer'} un événement.`);
@@ -603,9 +604,35 @@ export const AmbassadorEventForm: React.FC<AmbassadorEventFormProps> = ({
           }
         }
         
+        let displayCompanyName = creatorName;
+        if (companyId) {
+          try {
+            const companySnap = await getDoc(doc(db, 'companies', companyId));
+            if (companySnap.exists()) {
+              const name = (companySnap.data()?.name as string | undefined)?.trim();
+              if (name) displayCompanyName = name;
+            }
+          } catch (error) {
+            console.warn('Erreur lors de la récupération du nom entreprise:', error);
+          }
+        } else if (userData?.structureId) {
+          try {
+            const structureSnap = await getDoc(doc(db, 'structures', userData.structureId));
+            if (structureSnap.exists()) {
+              const structureName = ((structureSnap.data()?.nom || structureSnap.data()?.name) as string | undefined)?.trim();
+              if (structureName) displayCompanyName = structureName;
+            }
+          } catch (error) {
+            console.warn('Erreur lors de la récupération du nom structure:', error);
+          }
+        }
+        if (!displayCompanyName.trim()) {
+          displayCompanyName = 'Entreprise';
+        }
+
         const missionData: any = {
           number: `AMB-${Date.now()}`,
-          company: creatorName,
+          company: displayCompanyName,
           status: 'En attente',
           assignees: [],
           date: minDate.toISOString(),

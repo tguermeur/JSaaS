@@ -10,6 +10,11 @@ import {
   Paper
 } from '@mui/material';
 import { styled } from '@mui/material';
+import { tokens } from '../../theme/tokens';
+import { TaggingUserOption } from './TaggingUserOption';
+import UserNameText from '../common/UserNameText';
+import UserAvatarInitials from '../common/UserAvatarInitials';
+import { getCachedUserDisplayData, isEncryptedField } from '../../utils/decryptUserUtils';
 
 interface TaggedUser {
   id: string;
@@ -34,7 +39,7 @@ interface TaggingInputProps {
 const StyledPopper = styled(Popper)(({ theme }) => ({
   '& .MuiAutocomplete-paper': {
     boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)',
-    borderRadius: '12px',
+    borderRadius: tokens.radius.md,
     border: '1px solid #e0e0e0'
   },
   '& .MuiAutocomplete-listbox': {
@@ -45,15 +50,19 @@ const StyledPopper = styled(Popper)(({ theme }) => ({
 const UserOption = styled(Box)(({ theme }) => ({
   display: 'flex',
   alignItems: 'center',
-  padding: '8px 16px',
   cursor: 'pointer',
-  '&:hover': {
-    backgroundColor: '#f5f5f7'
-  },
-  '&.selected': {
-    backgroundColor: '#e3f2fd'
-  }
 }));
+
+function taggingLabelForUser(user: TaggedUser): string {
+  const cached = user.id ? getCachedUserDisplayData(user.id) : null;
+  if (cached?.displayName) return cached.displayName;
+  const firstName = user.firstName && !isEncryptedField(user.firstName) ? user.firstName : '';
+  const lastName = user.lastName && !isEncryptedField(user.lastName) ? user.lastName : '';
+  const fromParts = `${firstName} ${lastName}`.trim();
+  if (fromParts) return fromParts;
+  if (user.displayName && !isEncryptedField(user.displayName)) return user.displayName;
+  return user.email.split('@')[0] || 'Utilisateur';
+}
 
 const TaggingInput: React.FC<TaggingInputProps> = ({
   value,
@@ -144,7 +153,7 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
     // Reconstruire la valeur : avant le @, puis le tag, puis le reste
     const beforeAt = value.substring(0, lastAtIndex);
     const afterMention = value.substring(endOfMention);
-    const tagText = `@${user.firstName || user.displayName} ${user.lastName || ''}`.trim() + ' ';
+    const tagText = `@${taggingLabelForUser(user)} `;
     const newValue = beforeAt + tagText + afterMention;
     onChange(newValue);
 
@@ -253,15 +262,16 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
 
   // Fonction pour styliser le texte avec les tags @nom en gras
   const renderStyledValue = useCallback((text: string) => {
+    const safeText = String(text ?? '');
     const mentionRegex = /@[A-Za-zÀ-ÿ'\- ]+/g;
-    const parts = [];
+    const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
     let key = 0;
-    while ((match = mentionRegex.exec(text)) !== null) {
+    while ((match = mentionRegex.exec(safeText)) !== null) {
       if (match.index > lastIndex) {
         parts.push(
-          <span key={key++}>{text.substring(lastIndex, match.index)}</span>
+          <span key={key++}>{safeText.substring(lastIndex, match.index)}</span>
         );
       }
       parts.push(
@@ -269,7 +279,7 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
           key={key++}
           style={{
             fontWeight: 'bold',
-            color: '#007AFF',
+            color: tokens.colors.info,
             background: '#e3f2fd',
             borderRadius: 4,
             padding: '0 2px',
@@ -281,12 +291,15 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
       );
       lastIndex = match.index + match[0].length;
     }
-    if (lastIndex < text.length) {
+    if (lastIndex < safeText.length) {
       parts.push(
-        <span key={key++}>{text.substring(lastIndex)}</span>
+        <span key={key++}>{safeText.substring(lastIndex)}</span>
       );
     }
-    return parts;
+    if (parts.length === 0) {
+      return null;
+    }
+    return <>{parts}</>;
   }, []);
 
   // Mettre à jour la référence de la valeur quand elle change
@@ -303,27 +316,26 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
           top: 0,
           left: 0,
           right: 0,
-          bottom: 0,
           pointerEvents: 'none',
           color: 'transparent',
           whiteSpace: 'pre-wrap',
           fontFamily: 'inherit',
           fontSize: '1rem',
+          lineHeight: 1.5,
           zIndex: 1,
           p: '14.5px 14px',
-          minHeight: multiline ? `${rows * 24}px` : 'auto',
         }}
         aria-hidden
       >
         {renderStyledValue(value)}
       </Box>
-      {/* Champ de saisie réel par-dessus */}
+      {/* rows fixes (pas minRows/maxRows) pour éviter la boucle TextareaAutosize */}
       <TextField
         ref={textFieldRef}
         fullWidth
         multiline={multiline}
-        rows={rows}
-        value={value}
+        rows={multiline ? rows : undefined}
+        value={String(value ?? '')}
         onChange={handleInputChange}
         onClick={handleClick}
         onSelect={handleSelect}
@@ -332,8 +344,8 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
         variant="outlined"
         sx={{
           '& .MuiOutlinedInput-root': {
-            borderRadius: '12px',
-            backgroundColor: '#f5f5f7',
+            borderRadius: tokens.radius.md,
+            backgroundColor: tokens.colors.bgSubtle,
             '& fieldset': { border: 'none' }
           },
           position: 'relative',
@@ -360,48 +372,19 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
             zIndex: 1000,
             mt: 1,
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)',
-            borderRadius: '12px',
+            borderRadius: tokens.radius.md,
             border: '1px solid #e0e0e0',
             maxHeight: 200,
             overflow: 'auto'
           }}
         >
           {suggestions.map((user, index) => (
-            <UserOption
+            <TaggingUserOption
               key={user.id}
+              user={user}
+              selected={index === 0}
               onClick={() => handleUserSelect(user)}
-              className={index === 0 ? 'selected' : ''}
-            >
-              <Avatar
-                src={user.photoURL}
-                sx={{ width: 32, height: 32, mr: 2, fontSize: '0.875rem' }}
-              >
-                {(user.firstName || user.displayName).charAt(0)}
-              </Avatar>
-              <Box sx={{ flex: 1 }}>
-                <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                  {user.firstName && user.lastName 
-                    ? `${user.firstName} ${user.lastName}`
-                    : user.displayName
-                  }
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {user.email}
-                </Typography>
-              </Box>
-              {user.role && (
-                <Chip
-                  label={user.role}
-                  size="small"
-                  sx={{
-                    fontSize: '0.75rem',
-                    height: 20,
-                    backgroundColor: user.role === 'admin' ? '#ff9800' : 
-                                   user.role === 'superadmin' ? '#f44336' : '#e0e0e0'
-                  }}
-                />
-              )}
-            </UserOption>
+            />
           ))}
         </Paper>
       )}
@@ -414,12 +397,16 @@ const TaggingInput: React.FC<TaggingInputProps> = ({
               key={user.id}
               avatar={
                 <Avatar src={user.photoURL} sx={{ width: 20, height: 20, fontSize: '0.75rem' }}>
-                  {(user.firstName || user.displayName).charAt(0)}
+                  <UserAvatarInitials user={user} fontSize="0.7rem" />
                 </Avatar>
               }
-              label={user.firstName && user.lastName 
-                ? `${user.firstName} ${user.lastName}`
-                : user.displayName
+              label={
+                <UserNameText
+                  user={user}
+                  fallback={user.email}
+                  component="span"
+                  sx={{ fontSize: '0.8125rem' }}
+                />
               }
               size="small"
               onDelete={() => {

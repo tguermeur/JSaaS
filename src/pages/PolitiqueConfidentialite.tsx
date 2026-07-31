@@ -1,131 +1,22 @@
 import React from 'react';
-import { Box, Container, Typography, Paper, Divider, AppBar, Toolbar, Button } from '@mui/material';
-import { Link } from 'react-router-dom';
+import { Box, Container, Typography, Paper } from '@mui/material';
 import Footer from '../components/Footer';
+import PublicNav from '../components/layout/PublicNav';
+import { tokens } from '../theme/tokens';
 
 const PolitiqueConfidentialite: React.FC = () => {
-  return (
-    <Box sx={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', bgcolor: '#fff' }}>
-      {/* Navigation Bar */}
-      <AppBar 
-        position="fixed" 
-        elevation={0} 
-        sx={{ 
-          bgcolor: 'rgba(255, 255, 255, 0.8)',
-          backdropFilter: 'blur(20px)',
-          borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
-          transition: 'all 0.3s ease-in-out',
-          '&:hover': {
-            bgcolor: 'rgba(255, 255, 255, 0.95)',
-          }
-        }}
-      >
-        <Toolbar sx={{ minHeight: '56px !important', py: 1.2, pl: 4 }}>
-          <Box
-            component="img"
-            src="/images/logo.png"
-            alt="JS Connect Logo"
-            sx={{
-              height: 40,
-              mr: 4,
-              transition: 'transform 0.3s ease',
-              '&:hover': {
-                transform: 'scale(1.05)'
-              }
-            }}
-          />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, ml: 8 }}>
-            <Button
-              component={Link}
-              to="/"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Accueil
-            </Button>
-            <Button
-              component={Link}
-              to="/features"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Fonctionnalités
-            </Button>
-          </Box>
-          <Box sx={{ flexGrow: 1 }} />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Button
-              component={Link}
-              to="/login"
-              variant="outlined"
-              sx={{
-                color: '#000',
-                borderColor: '#000',
-                fontWeight: 400,
-                fontSize: '0.85rem',
-                textTransform: 'none',
-                borderRadius: '20px',
-                px: 3,
-                '&:hover': {
-                  borderColor: '#000',
-                  bgcolor: '#000',
-                  color: '#fff'
-                }
-              }}
-            >
-              Connexion
-            </Button>
-            <Button
-              component={Link}
-              to="/register"
-              variant="contained"
-              sx={{
-                bgcolor: '#000',
-                color: '#fff',
-                fontWeight: 400,
-                fontSize: '0.85rem',
-                textTransform: 'none',
-                borderRadius: '20px',
-                px: 3,
-                '&:hover': {
-                  bgcolor: '#000',
-                  opacity: 0.9
-                }
-              }}
-            >
-              Inscription
-            </Button>
-          </Box>
-        </Toolbar>
-      </AppBar>
+  const sectionTitleSx = { color: tokens.colors.ink, fontWeight: 600, mb: 2 };
+  const bodySx = { color: tokens.colors.ink, mb: 1 };
 
-      <Container maxWidth="lg" sx={{ py: 8, flex: 1, mt: 8 }}>
+  return (
+    <Box sx={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', bgcolor: tokens.colors.marketingWhite }}>
+      <PublicNav selectedProfile="junior" showPricing />
+
+      <Container maxWidth="lg" sx={{ py: 8, flex: 1 }}>
         <Typography
           variant="h3"
           sx={{
-            color: '#1d1d1f',
+            color: tokens.colors.ink,
             fontWeight: 600,
             mb: 6,
             textAlign: 'center'
@@ -138,68 +29,31 @@ const PolitiqueConfidentialite: React.FC = () => {
           elevation={0}
           sx={{
             p: 4,
-            borderRadius: '1.2rem',
-            border: '1px solid #e5e5e7',
-            bgcolor: '#ffffff'
+            borderRadius: tokens.radius.xl,
+            border: `1px solid ${tokens.colors.borderSoft}`,
+            bgcolor: tokens.colors.marketingWhite
           }}
         >
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               1. Introduction
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 2
-              }}
-            >
+            <Typography variant="body1" sx={{ ...bodySx, mb: 2 }}>
               La présente politique de confidentialité a pour objectif d'informer les utilisateurs du site JS Connect sur la manière dont leurs données personnelles sont collectées, utilisées, stockées et protégées, conformément au Règlement Général sur la Protection des Données (RGPD) – Règlement (UE) 2016/679.
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f'
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink }}>
               En naviguant sur le site ou en utilisant nos services, vous acceptez les conditions de la présente politique.
             </Typography>
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               2. Identité du responsable du traitement
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               Le responsable du traitement des données est :
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               JS Connect
               <br />
               Forme juridique : Entreprise individuelle
@@ -213,32 +67,13 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               3. Données collectées
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 2
-              }}
-            >
+            <Typography variant="body1" sx={{ ...bodySx, mb: 2 }}>
               Dans le cadre de ses activités, JS Connect peut être amené à collecter et traiter les données personnelles suivantes :
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               Données d'identification :
               <br />
               • Nom, prénom
@@ -275,32 +110,13 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               4. Finalités de la collecte
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 2
-              }}
-            >
+            <Typography variant="body1" sx={{ ...bodySx, mb: 2 }}>
               Les données sont collectées pour les finalités suivantes :
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               • Gestion des inscriptions et des profils utilisateurs
               <br />
               • Mise en relation avec des missions étudiantes proposées par des Junior-Entreprises ou Juniors
@@ -317,23 +133,10 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               5. Base légale du traitement
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               Les traitements réalisés sont fondés sur :
               <br />
               <br />
@@ -348,23 +151,10 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               6. Destinataires des données
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               Les données personnelles sont strictement destinées à :
               <br />
               <br />
@@ -380,23 +170,10 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               7. Durée de conservation
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               Les données personnelles sont conservées :
               <br />
               <br />
@@ -411,23 +188,10 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               8. Droits des utilisateurs
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               Conformément au RGPD, vous disposez des droits suivants :
               <br />
               <br />
@@ -453,23 +217,10 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               9. Sécurité des données
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               JS Connect met en œuvre toutes les mesures techniques et organisationnelles nécessaires pour garantir la sécurité et la confidentialité de vos données, notamment contre la perte, l'altération, l'accès non autorisé ou la divulgation.
               <br />
               <br />
@@ -478,45 +229,19 @@ const PolitiqueConfidentialite: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               10. Cookies
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               Le site peut utiliser des cookies à des fins de fonctionnement, d'analyse de navigation ou de mesure d'audience. Lors de votre première visite, vous êtes informé de leur présence et avez la possibilité de les refuser ou les paramétrer.
             </Typography>
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h5"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h5" sx={sectionTitleSx}>
               11. Mise à jour de la politique
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={bodySx}>
               JS Connect se réserve le droit de modifier la présente politique de confidentialité à tout moment. Toute modification substantielle sera signalée aux utilisateurs par email ou notification sur la plateforme.
               <br />
               <br />
@@ -530,4 +255,4 @@ const PolitiqueConfidentialite: React.FC = () => {
   );
 };
 
-export default PolitiqueConfidentialite; 
+export default PolitiqueConfidentialite;

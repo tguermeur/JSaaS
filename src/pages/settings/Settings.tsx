@@ -2,47 +2,39 @@ import React, { useState, useEffect } from 'react';
 import { 
   Box, 
   Typography, 
-  Switch, 
-  FormControlLabel, 
   Alert,
-  Container,
   Grid,
-  Card,
-  CardContent,
   Avatar,
   Button,
   alpha,
   useTheme,
-  keyframes,
   Fade
 } from '@mui/material';
 import {
   Notifications as NotificationsIcon,
-  CheckCircle as CheckCircleIcon,
   BugReport as BugReportIcon,
   Assignment as AssignmentIcon,
+  Campaign as CampaignIcon,
   Person as PersonIcon,
   Warning as WarningIcon,
   Info as InfoIcon,
   Save as SaveIcon,
   Restore as RestoreIcon,
-  Payment as PaymentIcon
+  Payment as PaymentIcon,
+  School as SchoolIcon,
+  Email as EmailIcon,
+  Gesture as GestureIcon,
+  BusinessCenter as BusinessCenterIcon,
+  Receipt as ReceiptIcon,
+  AlternateEmail as AlternateEmailIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotifications } from '../../contexts/NotificationContext';
 import { useNavigate } from 'react-router-dom';
+import { tokens } from '../../theme/tokens';
+import { settingsPageStyles, SettingsPanel, DsToggle } from '../../components/ds';
 
-// Animation subtile
-const fadeInUp = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
+// Animation subtile (legacy — conservée pour compatibilité imports)
 
 const Settings: React.FC = () => {
   const theme = useTheme();
@@ -81,6 +73,13 @@ const Settings: React.FC = () => {
     }));
   };
 
+  const handleChannelChange = (key: 'email' | 'push' | 'sound' | 'desktop', value: boolean) => {
+    setLocalPreferences(prev => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
   const handleSavePreferences = async () => {
     setIsSaving(true);
     try {
@@ -113,14 +112,14 @@ const Settings: React.FC = () => {
       label: 'Annonces administratives',
       description: 'Messages importants de l\'équipe, maintenance, nouvelles fonctionnalités',
       icon: <NotificationsIcon />,
-      color: '#007AFF'
+      color: tokens.colors.info
     },
     {
       key: 'report_update',
       label: 'Mises à jour de rapports',
       description: 'Changements de statut de vos signalements de bugs et suggestions',
       icon: <BugReportIcon />,
-      color: '#FF9500'
+      color: tokens.colors.warning
     },
     {
       key: 'report_response',
@@ -132,257 +131,247 @@ const Settings: React.FC = () => {
     {
       key: 'mission_update',
       label: 'Mises à jour de missions',
-      description: 'Nouvelles missions assignées, changements de statut, échéances',
+      description: 'Candidatures, assignations, changements de statut',
       icon: <AssignmentIcon />,
-      color: '#34C759'
+      color: tokens.colors.success
+    },
+    {
+      key: 'mission_note',
+      label: 'Mentions dans les notes',
+      description: 'Quand quelqu\'un vous mentionne (@) dans une note de mission',
+      icon: <AlternateEmailIcon />,
+      color: '#7C3AED'
+    },
+    {
+      key: 'expense_status',
+      label: 'Notes de frais',
+      description: 'Validation ou refus de vos notes de frais',
+      icon: <ReceiptIcon />,
+      color: '#F59E0B'
+    },
+    {
+      key: 'etude_update',
+      label: 'Études',
+      description: 'Assignations et mises à jour d\'études',
+      icon: <SchoolIcon />,
+      color: '#0EA5E9'
+    },
+    {
+      key: 'ambassador_update',
+      label: 'Ambassadeurs',
+      description: 'Demandes commerciales, candidatures, documents sur les événements ambassadeur',
+      icon: <CampaignIcon />,
+      color: tokens.colors.brandTeal
+    },
+    {
+      key: 'commercial_update',
+      label: 'Commercial',
+      description: 'Prospects assignés et relances à traiter',
+      icon: <BusinessCenterIcon />,
+      color: '#6366F1'
+    },
+    {
+      key: 'billing',
+      label: 'Facturation',
+      description: 'Essai, paiements, cotisations',
+      icon: <PaymentIcon />,
+      color: tokens.colors.error
+    },
+    {
+      key: 'signature',
+      label: 'Signatures',
+      description: 'Documents à signer et signatures complétées',
+      icon: <GestureIcon />,
+      color: '#14B8A6'
     },
     {
       key: 'user_update',
       label: 'Mises à jour de profil',
       description: 'Changements de rôle, statut, ou informations de profil utilisateur',
       icon: <PersonIcon />,
-      color: '#5856D6'
+      color: tokens.colors.brandTeal
     },
     {
       key: 'system',
       label: 'Notifications système',
       description: 'Alertes système, sécurité, maintenance automatique, erreurs techniques',
       icon: <WarningIcon />,
-      color: '#FF3B30'
+      color: tokens.colors.error
     }
   ];
 
   return (
-    <Container maxWidth="lg">
-      <Box sx={{ py: 4 }}>
-        {/* Header avec boutons d'action */}
-        <Box sx={{ mb: 4, animation: `${fadeInUp} 0.6s ease-out` }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
-            <Box>
-              <Typography 
-                variant="h4" 
-                sx={{ 
-                  fontWeight: 600,
-                  color: '#1d1d1f',
-                  mb: 1
-                }}
-              >
-                Paramètres de notifications
-              </Typography>
-              <Typography 
-                variant="body1" 
-                sx={{ 
-                  color: 'text.secondary',
-                  fontSize: '1rem'
-                }}
-              >
-                Personnalisez vos préférences de notifications pour contrôler ce que vous recevez
-              </Typography>
-            </Box>
-            
-            {/* Boutons d'action */}
-            <Box sx={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-              {isAdmin && (
-                <Button
-                  variant="outlined"
-                  startIcon={<PaymentIcon />}
-                  onClick={() => navigate('/settings/billing')}
-                  sx={{
-                    borderRadius: '8px',
-                    textTransform: 'none',
-                    fontWeight: 500,
-                    borderColor: '#34C759',
-                    color: '#34C759',
-                    '&:hover': {
-                      borderColor: '#28A745',
-                      backgroundColor: 'rgba(52, 199, 89, 0.08)'
-                    }
-                  }}
-                >
-                  Plan d'abonnement
-                </Button>
-              )}
-              <Button
-                variant="outlined"
-                startIcon={<RestoreIcon />}
-                onClick={handleResetPreferences}
-                disabled={!hasChanges}
-                sx={{
-                  borderRadius: '8px',
-                  textTransform: 'none',
-                  fontWeight: 500
-                }}
-              >
-                Remettre à zéro
-              </Button>
-              <Button
-                variant="contained"
-                startIcon={<SaveIcon />}
-                onClick={handleSavePreferences}
-                disabled={!hasChanges || isSaving}
-                sx={{
-                  borderRadius: '8px',
-                  textTransform: 'none',
-                  fontWeight: 500,
-                  px: 3
-                }}
-              >
-                {isSaving ? 'Sauvegarde...' : 'Enregistrer'}
-              </Button>
-            </Box>
-          </Box>
-          
-          {/* Indicateur de changements */}
-          {hasChanges && (
-            <Alert 
-              severity="info" 
-              sx={{ 
-                backgroundColor: 'rgba(0, 122, 255, 0.08)',
-                border: '1px solid rgba(0, 122, 255, 0.2)',
-                borderRadius: '8px',
-                '& .MuiAlert-icon': {
-                  color: '#007AFF'
-                },
-                '& .MuiAlert-message': {
-                  color: '#1d1d1f'
-                }
-              }}
-            >
-              <Typography variant="body2" sx={{ fontSize: '0.9rem' }}>
-                Vous avez des modifications non sauvegardées. Cliquez sur "Enregistrer" pour les appliquer.
-              </Typography>
-            </Alert>
-          )}
+    <Box>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3, alignItems: 'flex-start' }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Notifications</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Personnalisez vos préférences de notifications pour contrôler ce que vous recevez
+          </Typography>
         </Box>
 
-        {/* Grille des notifications */}
-        <Grid container spacing={3} sx={{ mb: 4 }}>
+        <Box sx={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+          {isAdmin && (
+            <Button
+              variant="outlined"
+              startIcon={<PaymentIcon />}
+              onClick={() => navigate('/settings/billing')}
+              sx={{
+                borderRadius: tokens.radius.sm,
+                textTransform: 'none',
+                fontWeight: 500,
+                borderColor: tokens.colors.brandTeal,
+                color: tokens.colors.brandTeal,
+                '&:hover': {
+                  borderColor: tokens.colors.brandTeal700,
+                  backgroundColor: tokens.colors.primaryAlpha10,
+                },
+              }}
+            >
+              Plan d&apos;abonnement
+            </Button>
+          )}
+          <Button
+            variant="outlined"
+            startIcon={<RestoreIcon />}
+            onClick={handleResetPreferences}
+            disabled={!hasChanges}
+            sx={{ borderRadius: tokens.radius.sm, textTransform: 'none', fontWeight: 500 }}
+          >
+            Remettre à zéro
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<SaveIcon />}
+            onClick={handleSavePreferences}
+            disabled={!hasChanges || isSaving}
+            sx={{
+              borderRadius: tokens.radius.sm,
+              textTransform: 'none',
+              fontWeight: 500,
+              px: 3,
+              bgcolor: tokens.colors.brandTeal,
+              '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+            }}
+          >
+            {isSaving ? 'Sauvegarde...' : 'Enregistrer'}
+          </Button>
+        </Box>
+      </Box>
+
+      {hasChanges && (
+        <Alert
+          severity="info"
+          sx={{
+            mb: 3,
+            backgroundColor: tokens.colors.primaryAlpha10,
+            border: `1px solid ${tokens.colors.primaryAlpha20}`,
+            borderRadius: tokens.radius.sm,
+            '& .MuiAlert-icon': { color: tokens.colors.brandNavy },
+            '& .MuiAlert-message': { color: tokens.colors.textPrimary },
+          }}
+        >
+          <Typography variant="body2" sx={{ fontSize: '0.9rem' }}>
+            Vous avez des modifications non sauvegardées. Cliquez sur &quot;Enregistrer&quot; pour les appliquer.
+          </Typography>
+        </Alert>
+      )}
+
+      <SettingsPanel title="Canaux" desc="Choisissez comment vous recevoir les alertes">
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <EmailIcon sx={{ color: tokens.colors.brandTeal }} />
+              <Box>
+                <Typography sx={{ fontWeight: 600, fontSize: '0.95rem' }}>Emails</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.85rem' }}>
+                  Recevoir les emails transactionnels (candidatures, facturation, invitations…)
+                </Typography>
+              </Box>
+            </Box>
+            <DsToggle
+              checked={!!localPreferences.email}
+              onChange={(checked) => handleChannelChange('email', checked)}
+              accent={tokens.colors.brandTeal}
+            />
+          </Box>
+        </Box>
+      </SettingsPanel>
+
+      <Box sx={{ height: 24 }} />
+
+      <SettingsPanel title="Types de notifications" desc="Activez ou désactivez chaque catégorie">
+        <Grid container spacing={2}>
           {notificationTypes.map((type, index) => (
             <Grid item xs={12} md={6} key={type.key}>
               <Fade in timeout={300 + index * 100}>
-                <Card 
-                  elevation={0}
+                <Box
                   sx={{
-                    borderRadius: '12px',
-                    boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
+                    p: 2.5,
+                    borderRadius: tokens.radius.md,
+                    border: `1px solid ${tokens.colors.divider}`,
+                    bgcolor: tokens.colors.bgPaper,
                     height: '100%',
-                    transition: 'all 0.2s ease-in-out',
-                    cursor: 'pointer',
+                    transition: tokens.transitions.fast,
                     '&:hover': {
-                      boxShadow: '0 8px 30px rgba(0, 0, 0, 0.12)',
-                      transform: 'translateY(-2px)'
-                    }
+                      borderColor: tokens.colors.gray300,
+                      boxShadow: tokens.shadows.sm,
+                    },
                   }}
-                  onClick={() => handlePreferenceChange(type.key, !localPreferences.types[type.key as keyof typeof localPreferences.types])}
                 >
-                  <CardContent sx={{ p: '24px !important' }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                        <Avatar 
-                          sx={{ 
-                            bgcolor: alpha(type.color, 0.1),
-                            color: type.color,
-                            width: 48,
-                            height: 48
-                          }}
-                        >
-                          {React.cloneElement(type.icon as React.ReactElement, {
-                            sx: { fontSize: 24 }
-                          })}
-                        </Avatar>
-                        <Box>
-                          <Typography 
-                            variant="h6" 
-                            sx={{ 
-                              fontWeight: 600,
-                              color: '#1d1d1f',
-                              fontSize: '1.1rem',
-                              mb: 0.5
-                            }}
-                          >
-                            {type.label}
-                          </Typography>
-                        </Box>
-                      </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2, mb: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                      <Avatar
+                        sx={{
+                          bgcolor: alpha(type.color, 0.1),
+                          color: type.color,
+                          width: 44,
+                          height: 44,
+                        }}
+                      >
+                        {React.cloneElement(type.icon as React.ReactElement, { sx: { fontSize: 22 } })}
+                      </Avatar>
+                      <Typography sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '1rem' }}>
+                        {type.label}
+                      </Typography>
                     </Box>
-
-                    <Typography 
-                      variant="body2" 
-                      sx={{ 
-                        color: 'text.secondary',
-                        fontSize: '0.9rem',
-                        lineHeight: 1.5,
-                        mb: 3
+                    <DsToggle
+                      checked={localPreferences.types[type.key as keyof typeof localPreferences.types]}
+                      onChange={(checked) => {
+                        handlePreferenceChange(type.key, checked);
                       }}
-                    >
-                      {type.description}
-                    </Typography>
-
-                    {/* Switch */}
-                    <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={localPreferences.types[type.key as keyof typeof localPreferences.types]}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              handlePreferenceChange(type.key, e.target.checked);
-                            }}
-                            sx={{
-                              '& .MuiSwitch-switchBase': {
-                                color: '#D1D1D6',
-                                '&.Mui-checked': {
-                                  color: type.color,
-                                  '& + .MuiSwitch-track': {
-                                    backgroundColor: type.color,
-                                  },
-                                },
-                              },
-                              '& .MuiSwitch-track': {
-                                backgroundColor: '#D1D1D6',
-                                height: 8,
-                                borderRadius: 4,
-                              },
-                              '& .MuiSwitch-thumb': {
-                                width: 20,
-                                height: 20,
-                              },
-                            }}
-                          />
-                        }
-                        label=""
-                      />
-                    </Box>
-                  </CardContent>
-                </Card>
+                      accent={type.color}
+                    />
+                  </Box>
+                  <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: '0.9rem', lineHeight: 1.5 }}>
+                    {type.description}
+                  </Typography>
+                </Box>
               </Fade>
             </Grid>
           ))}
         </Grid>
+      </SettingsPanel>
 
-        {/* Note informative */}
-        <Fade in timeout={800}>
-          <Alert 
-            severity="info" 
-            sx={{ 
-              backgroundColor: 'rgba(0, 122, 255, 0.08)',
-              border: '1px solid rgba(0, 122, 255, 0.2)',
-              borderRadius: '12px',
-              '& .MuiAlert-icon': {
-                color: '#007AFF'
-              },
-              '& .MuiAlert-message': {
-                color: '#1d1d1f'
-              }
-            }}
-          >
-            <Typography variant="body2" sx={{ fontSize: '0.9rem' }}>
-              Les annonces critiques et notifications urgentes peuvent toujours être envoyées pour des raisons de sécurité, même si vous les avez désactivées.
-            </Typography>
-          </Alert>
-        </Fade>
-      </Box>
-    </Container>
+      <Fade in timeout={800}>
+        <Alert
+          severity="info"
+          sx={{
+            mt: 3,
+            backgroundColor: tokens.colors.primaryAlpha10,
+            border: `1px solid ${tokens.colors.primaryAlpha20}`,
+            borderRadius: tokens.radius.md,
+            '& .MuiAlert-icon': { color: tokens.colors.brandNavy },
+            '& .MuiAlert-message': { color: tokens.colors.textPrimary },
+          }}
+        >
+          <Typography variant="body2" sx={{ fontSize: '0.9rem' }}>
+            Les annonces critiques et notifications urgentes peuvent toujours être envoyées pour des raisons de sécurité, même si vous les avez désactivées.
+          </Typography>
+        </Alert>
+      </Fade>
+    </Box>
   );
 };
 

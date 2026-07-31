@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box, CircularProgress } from '@mui/material';
 import { useAuth } from '../../contexts/AuthContext';
+import { getSafeAppHomePath } from '../../utils/safeAppHome';
 
 type UserRole = 'etudiant' | 'entreprise' | 'admin_structure' | 'admin' | 'membre' | 'superadmin';
 
@@ -17,14 +18,33 @@ interface RequireRoleProps {
 const RequireRole: React.FC<RequireRoleProps> = ({ 
   children, 
   allowedRoles,
-  redirectTo = '/app/dashboard',
+  redirectTo,
   requireContactAccess = false,
   requireCanViewEvents = false,
   requireCanManageAmbassadors = false
 }) => {
-  const { userData, loading, isContactWithAccess, contactPermissions } = useAuth();
+  const { userData, loading, currentUser, isContactWithAccess, contactPermissions } = useAuth();
+  const [profileWaitExpired, setProfileWaitExpired] = useState(false);
 
-  if (loading) {
+  const fallbackRedirect =
+    redirectTo ??
+    getSafeAppHomePath({
+      status: userData?.status,
+      isContactWithAccess,
+      canViewEvents: !!contactPermissions?.canViewEvents,
+      canManageAmbassadors: !!contactPermissions?.canManageAmbassadors,
+    });
+
+  useEffect(() => {
+    if (!currentUser || userData) {
+      setProfileWaitExpired(false);
+      return;
+    }
+    const timer = setTimeout(() => setProfileWaitExpired(true), 8000);
+    return () => clearTimeout(timer);
+  }, [currentUser, userData]);
+
+  if (loading || (currentUser && !userData && !profileWaitExpired)) {
     return (
       <Box sx={{ 
         display: 'flex', 
@@ -37,8 +57,12 @@ const RequireRole: React.FC<RequireRoleProps> = ({
     );
   }
 
-  if (!userData) {
+  if (!currentUser) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (!userData) {
+    return <Navigate to={fallbackRedirect} replace />;
   }
 
   const userStatus = userData.status as UserRole;
@@ -52,17 +76,17 @@ const RequireRole: React.FC<RequireRoleProps> = ({
   if (userStatus === 'entreprise' && isContactWithAccess) {
     // Si requireContactAccess est true, vérifier que c'est bien un contact avec accès
     if (requireContactAccess && !isContactWithAccess) {
-      return <Navigate to={redirectTo} replace />;
+      return <Navigate to={fallbackRedirect} replace />;
     }
     
     // Si requireCanViewEvents est true, vérifier la permission
     if (requireCanViewEvents && (!contactPermissions || !contactPermissions.canViewEvents)) {
-      return <Navigate to={redirectTo} replace />;
+      return <Navigate to={fallbackRedirect} replace />;
     }
     
     // Si requireCanManageAmbassadors est true, vérifier la permission
     if (requireCanManageAmbassadors && (!contactPermissions || !contactPermissions.canManageAmbassadors)) {
-      return <Navigate to={redirectTo} replace />;
+      return <Navigate to={fallbackRedirect} replace />;
     }
     
     // Si le rôle 'entreprise' est dans allowedRoles, permettre l'accès
@@ -73,26 +97,23 @@ const RequireRole: React.FC<RequireRoleProps> = ({
 
   // Vérifier les permissions spécifiques pour les contacts avec accès (pour les autres statuts aussi)
   if (requireContactAccess && !isContactWithAccess) {
-    return <Navigate to={redirectTo} replace />;
+    return <Navigate to={fallbackRedirect} replace />;
   }
 
   if (requireCanViewEvents && (!contactPermissions || !contactPermissions.canViewEvents)) {
-    return <Navigate to={redirectTo} replace />;
+    return <Navigate to={fallbackRedirect} replace />;
   }
 
   if (requireCanManageAmbassadors && (!contactPermissions || !contactPermissions.canManageAmbassadors)) {
-    return <Navigate to={redirectTo} replace />;
+    return <Navigate to={fallbackRedirect} replace />;
   }
 
   // Vérifier si le rôle de l'utilisateur est autorisé
   if (!allowedRoles.includes(userStatus)) {
-    return <Navigate to={redirectTo} replace />;
+    return <Navigate to={fallbackRedirect} replace />;
   }
 
   return <>{children}</>;
 };
 
 export default RequireRole;
-
-
-

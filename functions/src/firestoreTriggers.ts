@@ -10,7 +10,8 @@ const triggerConfig = {
   memory: '256MiB' as const,
   timeoutSeconds: 60,
   region: 'us-central1' as const,
-  maxInstances: 10,
+  cpu: 0.25,
+  maxInstances: 3,
   secrets: ['ENCRYPTION_KEY'],
 };
 

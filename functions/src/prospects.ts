@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
+import { setRestrictedCorsHeaders } from './corsUtils';
 
 // Initialiser Firebase Admin si ce n'est pas déjà fait
 if (!admin.apps.length) {
@@ -14,10 +15,10 @@ export const api = functions.https.onRequest(async (req, res) => {
     path: req.path
   });
 
-  // Autoriser CORS
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  if (!setRestrictedCorsHeaders(res, req.headers.origin)) {
+    res.status(403).send('Origin not allowed');
+    return;
+  }
 
   // Gérer la requête OPTIONS
   if (req.method === 'OPTIONS') {

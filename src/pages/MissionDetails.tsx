@@ -12,9 +12,8 @@ import {
   Grid,
   Divider,
   Alert,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
+  Tabs,
+  Tab,
   TextField,
   IconButton,
   Autocomplete,
@@ -80,35 +79,68 @@ import {
   MoreVert as MoreVertIcon,
   ExpandMore as ExpandMoreIcon,
   Close as CloseIcon,
+  Dashboard as DashboardIcon,
+  Timeline as TimelineIcon,
   Upload as UploadIcon,
+  Gesture as GestureIcon,
   Category as CategoryIcon,
   DragIndicator as DragIndicatorIcon,
   CloudUpload as CloudUploadIcon,
 } from '@mui/icons-material';
 import { doc, collection, query, where, getDocs, addDoc, updateDoc, orderBy, deleteDoc, getDoc, setDoc, writeBatch, limit, deleteField } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { decryptUsersList, decryptUserDisplayData, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
-import { db } from '../firebase/config';
+import { decryptUsersList, decryptUserDisplayData, getDecryptedUserDisplayName, decryptUsersListProgressive, isEncryptedField, getSafeDisplayName } from '../utils/decryptUserUtils';
+import { prepareDecryptedDocumentContext } from '../utils/documentDecryptUtils';
+import { createFilterOptions } from '@mui/material';
+import { getDownloadURL, ref, uploadBytes, deleteObject } from 'firebase/storage';
+import { db, app, storage } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
-import { createFilterOptions } from '@mui/material';
-import { PDFDocument } from 'pdf-lib';
-import { getDownloadURL, ref, uploadBytes, deleteObject } from 'firebase/storage';
-import { storage } from '../firebase/config';
-import { Document, Page, pdfjs } from 'react-pdf';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { fr } from 'date-fns/locale';
 import { useSnackbar } from 'notistack';
-import { rgb } from 'pdf-lib';
 import { SelectChangeEvent } from '@mui/material/Select';
-import { DocumentType, TemplateVariable } from '../types/templates';
+import { DocumentType, TemplateVariable, DOCUMENT_TYPES } from '../types/templates';
 import { Contact } from '../firebase/contacts';
 import TaggingInput from '../components/ui/TaggingInput';
+import UserNameText from '../components/common/UserNameText';
+import UserReferenceText from '../components/common/UserReferenceText';
+import UserAvatarInitials from '../components/common/UserAvatarInitials';
 import { NotificationService } from '../services/notificationService';
 import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
+import { tokens } from '../theme/tokens';
+import { dsPageCanvasSx } from '../components/ds';
+import {
+  useMissionDetailTabs,
+  type MissionDetailTabId,
+} from '../hooks/useMissionDetailTabs';
+import {
+  MissionDetailShell,
+  MissionDetailSidebarPanel,
+  ActivityTab,
+} from './missionDetails/index';
+import SendForSignatureDialog from '../components/signatures/SendForSignatureDialog';
+import {
+  MissionDetailHeaderV2,
+  MissionSaveBar,
+  MissionOverviewTabV2,
+  MissionCandidatesTabV2,
+  MissionDocumentsTabV2,
+  MissionNotesTabV2,
+  mdV2RootSx,
+} from './missionDetails/v2';
+import { AvenantStudentSelectDialog } from './missionDetails/v2/AvenantStudentSelectDialog';
+import { LetterMissionStudentSelectDialog } from './missionDetails/v2/LetterMissionStudentSelectDialog';
+import { GenerateFromTemplateDialog } from './missionDetails/v2/GenerateFromTemplateDialog';
+import AddCandidatesDialog, {
+  type CandidateApplicationStatus,
+  type CandidatePick,
+} from './missionDetails/v2/AddCandidatesDialog';
+import { toDateFromFirestore, formatShortDate } from '../utils/dateUtils';
+import { getTemplateTagMeta, isDocumentPlaceholderValue } from '../utils/variableTags';
 
 // --- STRICT MODE DROPPABLE FIX ---
 // Nécessaire pour React 18 + react-beautiful-dnd
@@ -127,13 +159,16 @@ const StrictModeDroppable = ({ children, ...props }: any) => {
   return <Droppable {...props}>{children}</Droppable>;
 };
 
-// Configuration pour react-pdf
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.mjs',
-  import.meta.url,
-).toString();
-
 // Interface pour DocumentTag
+interface AssignedTemplateData {
+  id: string;
+  name?: string;
+  pdfUrl: string;
+  variables?: TemplateVariable[];
+  generationType: 'template' | 'editor';
+  assignmentId?: string;
+}
+
 interface DocumentTag {
   id: string;
   name: string;
@@ -223,18 +258,110 @@ interface Application {
   userEmail: string;
   userPhotoURL?: string;
   userDisplayName?: string;
+  userPhone?: string;
+  userStudentId?: string;
   cvUrl?: string;
   cvUpdatedAt?: Date;
   motivationLetter?: string;
   submittedAt: Date;
   isDossierValidated?: boolean;
-  workingHours?: Array<{
-    date: string;
-    startTime: string;
-    endTime: string;
-    breaks: Array<{ start: string; end: string; }>;
-  }>;
+  workingHours?: WorkingHourEntry[];
   mission?: Mission;
+  /** Valeurs saisies pour les balises PDF propres à l'avenant (reason, amendment_*, etc.) */
+  documentTagOverrides?: Record<string, string>;
+}
+
+type WorkingHourEntry = {
+  id: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  breaks: Array<{ start: string; end: string }>;
+};
+
+function parseWorkingHoursFromFirestoreDocs(
+  docs: Array<{ id: string; data: () => Record<string, unknown> }>
+): WorkingHourEntry[] {
+  const entries: WorkingHourEntry[] = [];
+
+  for (const docSnap of docs) {
+    const data = docSnap.data();
+    if (Array.isArray(data.hours)) {
+      data.hours.forEach((hour: unknown, index: number) => {
+        if (!hour || typeof hour !== 'object') return;
+        const h = hour as Record<string, unknown>;
+        if (!h.date || !h.startTime || !h.endTime) return;
+        entries.push({
+          id: `${docSnap.id}_${index}`,
+          date: String(h.date),
+          startTime: String(h.startTime),
+          endTime: String(h.endTime),
+          breaks: Array.isArray(h.breaks)
+            ? (h.breaks as Array<{ start: string; end: string }>)
+            : [],
+        });
+      });
+    } else if (data.date && data.startTime && data.endTime) {
+      entries.push({
+        id: docSnap.id,
+        date: String(data.date),
+        startTime: String(data.startTime),
+        endTime: String(data.endTime),
+        breaks: Array.isArray(data.breaks)
+          ? (data.breaks as Array<{ start: string; end: string }>)
+          : [],
+      });
+    }
+  }
+
+  return entries.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+}
+
+async function fetchWorkingHoursForApplications(applicationIds: string[]): Promise<Map<string, WorkingHourEntry[]>> {
+  const result = new Map<string, WorkingHourEntry[]>();
+  if (applicationIds.length === 0) return result;
+
+  const workingHoursRef = collection(db, 'workingHours');
+  const docsByApp = new Map<string, Array<{ id: string; data: () => Record<string, unknown> }>>();
+
+  for (let i = 0; i < applicationIds.length; i += 30) {
+    const chunk = applicationIds.slice(i, i + 30);
+    const snapshot = await getDocs(query(workingHoursRef, where('applicationId', 'in', chunk)));
+    snapshot.docs.forEach((docSnap) => {
+      const applicationId = docSnap.data().applicationId as string;
+      if (!applicationId) return;
+      const list = docsByApp.get(applicationId) || [];
+      list.push(docSnap);
+      docsByApp.set(applicationId, list);
+    });
+  }
+
+  docsByApp.forEach((docs, applicationId) => {
+    result.set(applicationId, parseWorkingHoursFromFirestoreDocs(docs));
+  });
+
+  return result;
+}
+
+function buildWorkingHoursDocumentData(
+  docs: Array<{ id: string; data: () => Record<string, unknown> }>
+): { hours: Array<{ date: string; startTime: string; endTime: string; breaks: WorkingHourBreak[] }>; createdAt?: unknown; updatedAt?: unknown } | null {
+  const entries = parseWorkingHoursFromFirestoreDocs(docs);
+  if (entries.length === 0) return null;
+
+  const metaDoc = docs.find((docSnap) => Array.isArray(docSnap.data().hours)) || docs[0];
+  const meta = metaDoc.data();
+
+  return {
+    hours: entries.map(({ date, startTime, endTime, breaks }) => ({
+      date,
+      startTime,
+      endTime,
+      breaks,
+    })),
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+  };
 }
 
 interface ExpenseNote {
@@ -301,14 +428,6 @@ interface ExtendedUser {
     viewers: string[];
     editors: string[];
   };
-}
-
-interface NewCandidate {
-  email: string;
-  displayName: string;
-  photoURL: string;
-  status: string;
-  id: string;
 }
 
 interface StructureMember {
@@ -421,6 +540,13 @@ interface GeneratedDocument {
   invoiceSentDate?: Date;  // Date d'envoi de la facture
   invoiceDueDate?: Date;  // Date d'échéance de la facture
   invoiceAmount?: number;  // Montant de la facture (TTC + notes de frais)
+
+  // Signature électronique (SES)
+  isSigned?: boolean;
+  locked?: boolean;
+  signatureRequestId?: string;
+  signatureStatus?: 'pending' | 'completed' | 'cancelled' | string;
+  sealedStoragePath?: string;
 }
 
 interface EditableFieldProps {
@@ -944,9 +1070,12 @@ const MissionDetails: React.FC = () => {
   const [totalHT, setTotalHT] = useState<number>(0);
   const [totalTTC, setTotalTTC] = useState<number>(0);
   const [expenses, setExpenses] = useState<MissionExpense[]>([]);
-  const [generatingDoc, setGeneratingDoc] = useState(false);
+  const [generatingDocType, setGeneratingDocType] = useState<DocumentType | null>(null);
+  const assignedTemplateCacheRef = useRef(new Map<string, AssignedTemplateData>());
   const [downloadProgress, setDownloadProgress] = useState<{ progress: number; message: string } | null>(null);
-  const [isPriceSaved, setIsPriceSaved] = useState<boolean>(false);
+  const [isPriceSaved, setIsPriceSaved] = useState<boolean>(true);
+  /** Snapshot des dépenses après dernier enregistrement (pour Annuler). */
+  const [savedExpenses, setSavedExpenses] = useState<MissionExpense[]>([]);
   const [isPublished, setIsPublished] = useState<boolean>(false);
   const [isEditingAnnouncement, setIsEditingAnnouncement] = useState(false);
   const [applications, setApplications] = useState<Application[]>([]);
@@ -954,20 +1083,21 @@ const MissionDetails: React.FC = () => {
   const [expandedApplication, setExpandedApplication] = useState<string | null>(null);
   const [openAddCandidateDialog, setOpenAddCandidateDialog] = useState(false);
   const [pcButtonText, setPcButtonText] = useState('Créer une proposition commerciale');
-  const [selectedUsers, setSelectedUsers] = useState<UserRole[]>([]);
-  const [newCandidate, setNewCandidate] = useState<NewCandidate>({
-    email: '',
-    displayName: '',
-    photoURL: '',
-    status: 'En attente',
-    id: ''
-  });
   const [availableUsers, setAvailableUsers] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const { enqueueSnackbar } = useSnackbar();
   const [userHistory, setUserHistory] = useState<HistoryEntry[]>([]);
   const [missionUsers, setMissionUsers] = useState<MissionUser[]>([]);
   const [isPermissionsDialogOpen, setIsPermissionsDialogOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<MissionDetailTabId>('overview');
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement | null>(null);
+
+  const tabCounts = useMissionDetailTabs({
+    applications,
+    documents: generatedDocuments,
+    notes,
+  });
   const [selectedRole, setSelectedRole] = useState<'viewer' | 'editor'>('viewer');
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   // Ajout des nouveaux états après les états existants
@@ -1007,12 +1137,14 @@ const MissionDetails: React.FC = () => {
     rename: boolean;
     info: boolean;
     signedVersion: boolean;
+    sendSignature: boolean;
     selectedDocument: GeneratedDocument | null;
     newFileName: string;
   }>({
     rename: false,
     info: false,
     signedVersion: false,
+    sendSignature: false,
     selectedDocument: null,
     newFileName: ''
   });
@@ -1042,6 +1174,7 @@ const MissionDetails: React.FC = () => {
   // Ajoutez cet état au début du composant
   const [unsavedChanges, setUnsavedChanges] = useState<{ [key: string]: boolean }>({});
   const [savingWorkingHours, setSavingWorkingHours] = useState<{ [key: string]: boolean }>({});
+  const [loadingWorkingHoursDialog, setLoadingWorkingHoursDialog] = useState(false);
   const [applicationsLoaded, setApplicationsLoaded] = useState(false);
   
   // États pour les templates de proposition commerciale
@@ -1127,6 +1260,7 @@ const MissionDetails: React.FC = () => {
   // État pour la popup de données manquantes
   const [missingDataDialog, setMissingDataDialog] = useState<{
     open: boolean;
+    detecting?: boolean;
     missingData: Array<{
       tag: string;
       label: string;
@@ -1147,6 +1281,35 @@ const MissionDetails: React.FC = () => {
   const [tempData, setTempData] = useState<{
     [key: string]: string;
   }>({});
+
+  const [avenantDialog, setAvenantDialog] = useState<{
+    open: boolean;
+    step: 'setup' | 'review';
+    selectedApplicationId: string | null;
+    templateTags: Array<{ tag: string; label: string; category: string; value: string; isMissing: boolean }>;
+    checkingMissing: boolean;
+    templateName: string | null;
+    templateId: string | null;
+    templateOptions: Array<{ id: string; name: string }>;
+    templateLoading: boolean;
+    templateSaving: boolean;
+    templateMissing: boolean;
+  }>({
+    open: false,
+    step: 'setup',
+    selectedApplicationId: null,
+    templateTags: [],
+    checkingMissing: false,
+    templateName: null,
+    templateId: null,
+    templateOptions: [],
+    templateLoading: false,
+    templateSaving: false,
+    templateMissing: false,
+  });
+
+  const [lmDialogOpen, setLmDialogOpen] = useState(false);
+  const [manualGeneratorOpen, setManualGeneratorOpen] = useState(false);
 
   // États pour le système de tagging
   const [taggedUsers, setTaggedUsers] = useState<Array<{
@@ -1383,22 +1546,17 @@ const MissionDetails: React.FC = () => {
         setLoading(true);
         setError(null);
 
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        if (!userDoc.exists()) {
-          throw new Error("Utilisateur non trouvé");
-        }
-
-        const userData = userDoc.data();
-        if (!userData) {
+        // Utiliser userData Auth (évite getDoc users redondant) + mission en parallèle
+        const authUser = userData;
+        if (!authUser) {
           throw new Error("Données utilisateur non trouvées");
         }
 
-        const userStatus = userData.status || 'user';
-        const userStructureId = userData.structureId;
+        const userStatus = authUser.status || 'user';
+        const userStructureId = authUser.structureId;
         const isEntreprise = userStatus === 'entreprise';
 
         // Les entreprises ne peuvent pas accéder à la page MissionDetails
-        // Elles doivent être redirigées vers le Dashboard
         if (isEntreprise) {
           setError("Les entreprises ne peuvent pas accéder à cette page. Vous pouvez voir le statut de vos missions depuis le tableau de bord.");
           setLoading(false);
@@ -1408,8 +1566,7 @@ const MissionDetails: React.FC = () => {
           return;
         }
 
-        // Pour les entreprises, on peut accéder à leurs missions même sans structureId
-        if (!userStructureId && !isEntreprise && userStatus !== 'superadmin') {
+        if (!userStructureId && userStatus !== 'superadmin') {
           throw new Error("Aucune structure associée à l'utilisateur");
         }
 
@@ -1417,7 +1574,6 @@ const MissionDetails: React.FC = () => {
           throw new Error("ID de mission manquant");
         }
 
-        // Chercher directement la mission par son ID
         const missionDoc = await getDoc(doc(db, 'missions', missionId));
         
         if (!missionDoc.exists()) {
@@ -1426,14 +1582,8 @@ const MissionDetails: React.FC = () => {
 
         const missionData = missionDoc.data();
         
-        // Vérifier que l'utilisateur a accès à cette mission
         if (userStatus === 'superadmin') {
           // Superadmin a accès à tout
-        } else if (isEntreprise) {
-          // Pour les entreprises, vérifier par companyId
-          if (missionData.companyId !== currentUser.uid) {
-            throw new Error("Mission non trouvée ou accès non autorisé");
-          }
         } else if (missionData.structureId !== userStructureId) {
           throw new Error("Mission non trouvée ou accès non autorisé");
         }
@@ -1441,6 +1591,7 @@ const MissionDetails: React.FC = () => {
         const typedMissionData = missionData as {
           structureId?: string;
           contactId?: string;
+          chargeId?: string;
           etape?: MissionEtape;
           priceHT?: number;
           hours?: number;
@@ -1448,9 +1599,7 @@ const MissionDetails: React.FC = () => {
           [key: string]: any;
         };
         
-        // S'assurer que la structure est définie (sauf pour les entreprises)
-        if (!typedMissionData.structureId && !isEntreprise && userStructureId) {
-          // Si la mission n'a pas de structure, utiliser celle de l'utilisateur
+        if (!typedMissionData.structureId && userStructureId) {
           await updateDoc(doc(db, 'missions', missionDoc.id), {
             structureId: userStructureId,
             updatedAt: new Date()
@@ -1458,22 +1607,28 @@ const MissionDetails: React.FC = () => {
           typedMissionData.structureId = userStructureId;
         }
 
-        // Charger les informations du contact si un contactId est présent
+        // Contact + charge en parallèle
+        const [contactSnap, chargeSnap] = await Promise.all([
+          typedMissionData.contactId
+            ? getDoc(doc(db, 'contacts', typedMissionData.contactId))
+            : Promise.resolve(null),
+          typedMissionData.chargeId
+            ? getDoc(doc(db, 'users', typedMissionData.chargeId))
+            : Promise.resolve(null),
+        ]);
+
         let contact = null;
-        if (typedMissionData.contactId) {
-          const contactDoc = await getDoc(doc(db, 'contacts', typedMissionData.contactId));
-          if (contactDoc.exists()) {
-            const contactData = contactDoc.data();
-            contact = {
-              id: contactDoc.id,
-              firstName: contactData.firstName,
-              lastName: contactData.lastName,
-              email: contactData.email,
-              phone: contactData.phone,
-              position: contactData.position,
-              createdAt: contactData.createdAt?.toDate() || new Date()
-            };
-          }
+        if (contactSnap?.exists()) {
+          const contactData = contactSnap.data();
+          contact = {
+            id: contactSnap.id,
+            firstName: contactData.firstName,
+            lastName: contactData.lastName,
+            email: contactData.email,
+            phone: contactData.phone,
+            position: contactData.position,
+            createdAt: contactData.createdAt?.toDate() || new Date()
+          };
         }
 
         const mission = {
@@ -1482,25 +1637,35 @@ const MissionDetails: React.FC = () => {
           contact,
           etape: typedMissionData.etape || 'Négociation',
           structureId: typedMissionData.structureId || userStructureId,
-          missionTypeId: typedMissionData.missionTypeId || null
+          missionTypeId: typedMissionData.missionTypeId || null,
+          updatedAt: toDateFromFirestore(typedMissionData.updatedAt),
         } as Mission;
 
-        // Si la mission n'a pas de mandat mais a un chargeId, récupérer le mandat du chargé de mission
-        if (!mission.mandat && mission.chargeId) {
+        if (mission.chargeId && chargeSnap?.exists()) {
           try {
-            const chargeDoc = await getDoc(doc(db, 'users', mission.chargeId));
-            if (chargeDoc.exists()) {
-              const chargeData = chargeDoc.data();
-              if (chargeData.mandat) {
-                mission.mandat = chargeData.mandat;
-                // Mettre à jour la mission dans Firestore
-                await updateDoc(doc(db, 'missions', mission.id), {
-                  mandat: chargeData.mandat
-                });
-              }
+            const chargeData = chargeSnap.data();
+            const decryptedChargeName = await getDecryptedUserDisplayName(mission.chargeId, {
+              displayName: isEncryptedField(mission.chargeName) ? undefined : mission.chargeName || chargeData.displayName,
+              firstName: chargeData.firstName,
+              lastName: chargeData.lastName,
+            });
+            if (decryptedChargeName && decryptedChargeName !== 'Inconnu') {
+              mission.chargeName = decryptedChargeName;
+            }
+            if (!mission.mandat && chargeData.mandat) {
+              mission.mandat = chargeData.mandat;
+              await updateDoc(doc(db, 'missions', mission.id), {
+                mandat: chargeData.mandat,
+                ...(decryptedChargeName && decryptedChargeName !== 'Inconnu'
+                  ? { chargeName: decryptedChargeName }
+                  : {}),
+              });
+            } else if (decryptedChargeName && decryptedChargeName !== 'Inconnu' && isEncryptedField(typedMissionData.chargeName)) {
+              // Soft cleanup : remplacer ENC: dénormalisé par le nom clair
+              await updateDoc(doc(db, 'missions', mission.id), { chargeName: decryptedChargeName });
             }
           } catch (error) {
-            console.error('Erreur lors de la récupération du mandat du chargé de mission:', error);
+            console.error('Erreur lors de la récupération du chargé de mission:', error);
           }
         }
 
@@ -1530,39 +1695,41 @@ const MissionDetails: React.FC = () => {
           setEndDateTime('');
         }
 
-        if (typedMissionData.priceHT) {
-          setPriceHT(typedMissionData.priceHT);
-          setIsPriceSaved(true);
+        setPriceHT(typedMissionData.priceHT ?? 0);
 
-          // Charger les dépenses depuis la mission (nomdepense1, tvadepense1, totaldepense1, etc.)
-          const loadedExpenses: MissionExpense[] = [];
-          let index = 1;
-          while (true) {
-            const nameKey = `nomdepense${index}`;
-            const tvaKey = `tvadepense${index}`;
-            const totalKey = `totaldepense${index}`;
-            
-            if (typedMissionData[nameKey] && typedMissionData[totalKey]) {
-              loadedExpenses.push({
-                id: `expense-${mission.id}-${index}`,
-                name: typedMissionData[nameKey] || '',
-                tva: typedMissionData[tvaKey] || 20,
-                priceHT: typedMissionData[totalKey] || 0,
-                isSaved: true,
-                savedIndex: index
-              });
-              index++;
-            } else {
-              break;
-            }
+        // Charger les dépenses depuis la mission (nomdepense1, tvadepense1, totaldepense1, etc.)
+        const loadedExpenses: MissionExpense[] = [];
+        let index = 1;
+        while (true) {
+          const nameKey = `nomdepense${index}`;
+          const tvaKey = `tvadepense${index}`;
+          const totalKey = `totaldepense${index}`;
+
+          if (typedMissionData[nameKey] && typedMissionData[totalKey]) {
+            loadedExpenses.push({
+              id: `expense-${mission.id}-${index}`,
+              name: typedMissionData[nameKey] || '',
+              tva: typedMissionData[tvaKey] || 20,
+              priceHT: typedMissionData[totalKey] || 0,
+              isSaved: true,
+              savedIndex: index,
+            });
+            index++;
+          } else {
+            break;
           }
-          setExpenses(loadedExpenses);
-
-          // Calculer les totaux initiaux avec les dépenses
-          const { totalHT, totalTTC } = calculatePrices(typedMissionData.priceHT, typedMissionData.hours, loadedExpenses);
-          setTotalHT(totalHT);
-          setTotalTTC(totalTTC);
         }
+        setExpenses(loadedExpenses);
+        setSavedExpenses(loadedExpenses.map((e) => ({ ...e })));
+
+        const { totalHT, totalTTC } = calculatePrices(
+          typedMissionData.priceHT ?? 0,
+          typedMissionData.hours,
+          loadedExpenses
+        );
+        setTotalHT(totalHT);
+        setTotalTTC(totalTTC);
+        setIsPriceSaved(true);
 
       } catch (err) {
         console.error('Erreur détaillée:', err);
@@ -1577,7 +1744,7 @@ const MissionDetails: React.FC = () => {
     };
 
     fetchMissionDetails();
-  }, [currentUser, missionId]);
+  }, [currentUser, missionId, userData, navigate]);
 
   // Mettre à jour le texte du bouton PC quand la mission est chargée
   useEffect(() => {
@@ -1650,7 +1817,7 @@ const MissionDetails: React.FC = () => {
         const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
         const needsDecrypt = companiesList.some(c => isEncrypted(c.name) || isEncrypted(c.nSiret) || isEncrypted((c as any).siret));
         if (needsDecrypt) {
-          const decryptCompanyDataForStructure = httpsCallable(getFunctions(), 'decryptCompanyDataForStructure');
+          const decryptCompanyDataForStructure = httpsCallable(getFunctions(app, 'us-central1'), 'decryptCompanyDataForStructure');
           companiesList = await Promise.all(companiesList.map(async (company) => {
             const data = snapshot.docs.find(d => d.id === company.id)?.data() as FirestoreCompanyData | undefined;
             if (!data || !(isEncrypted(data.name) || isEncrypted(data.nSiret) || isEncrypted(data.siret))) return company;
@@ -1678,6 +1845,24 @@ const MissionDetails: React.FC = () => {
     fetchCompanies();
   }, [currentUser]);
 
+  // Si companyId est correct mais company="Organisation inconnue" (ex. conversion ambassadeur), resynchroniser le nom
+  useEffect(() => {
+    if (!mission?.id || !mission.companyId || companies.length === 0) return;
+    const selected = companies.find((c) => c.id === mission.companyId);
+    if (!selected?.name) return;
+    const stored = (mission.company || '').trim();
+    if (stored && stored !== 'Organisation inconnue') return;
+
+    setMission((prev) => (prev ? { ...prev, company: selected.name } : prev));
+    setEditedMission((prev) => (prev ? { ...prev, company: selected.name } : prev));
+    void updateDoc(doc(db, 'missions', mission.id), {
+      company: selected.name,
+      updatedAt: new Date(),
+    }).catch((err) => {
+      console.warn('Resync nom entreprise ignoré:', err);
+    });
+  }, [mission?.id, mission?.companyId, mission?.company, companies]);
+
   useEffect(() => {
     const fetchDescriptions = async () => {
       if (!mission?.structureId) return;
@@ -1699,12 +1884,6 @@ const MissionDetails: React.FC = () => {
 
     fetchDescriptions();
   }, [mission?.structureId]);
-
-  useEffect(() => {
-    if (mission) {
-      setEditedMission({ ...mission });
-    }
-  }, [mission]);
 
   useEffect(() => {
     const fetchStructureMembers = async () => {
@@ -1732,33 +1911,10 @@ const MissionDetails: React.FC = () => {
         const needsDecrypt = membersList.some((m: any) =>
           isEncrypted(m.displayName) || isEncrypted(m.firstName) || isEncrypted(m.lastName)
         );
-        if (needsDecrypt) {
-          const decryptUserDataForStructure = httpsCallable(getFunctions(), 'decryptUserDataForStructure');
-          membersList = await Promise.all(membersList.map(async (member: any) => {
-            if (!isEncrypted(member.displayName) && !isEncrypted(member.firstName) && !isEncrypted(member.lastName)) return member;
-            try {
-              const result = await decryptUserDataForStructure({ userId: member.id });
-              const dec = (result.data as any)?.decryptedData;
-              if (!dec) return member;
-              const displayName = (dec.displayName && !isEncrypted(dec.displayName) ? dec.displayName : null)
-                || ((dec.firstName || dec.lastName) ? `${dec.firstName || ''} ${dec.lastName || ''}`.trim() : null);
-              return {
-                ...member,
-                displayName: displayName || member.displayName,
-                firstName: (dec.firstName && !isEncrypted(dec.firstName) ? dec.firstName : member.firstName) ?? member.firstName,
-                lastName: (dec.lastName && !isEncrypted(dec.lastName) ? dec.lastName : member.lastName) ?? member.lastName
-              };
-            } catch (e) {
-              console.warn('Décryptage membre ignoré:', member.id, e);
-              return member;
-            }
-          }));
-        }
-
         setStructureMembers(membersList);
 
-        // Préparer les utilisateurs pour le tagging
-        const taggingUsers = membersList.map((m: any) => ({
+        // Préparer les utilisateurs pour le tagging (mise à jour initiale)
+        const taggingUsersInitial = membersList.map((m: any) => ({
           id: m.id,
           displayName: m.displayName || '',
           email: m.email || '',
@@ -1767,7 +1923,24 @@ const MissionDetails: React.FC = () => {
           lastName: m.lastName || '',
           role: m.status || 'membre'
         }));
-        setAvailableUsersForTagging(taggingUsers);
+        setAvailableUsersForTagging(taggingUsersInitial);
+
+        if (needsDecrypt) {
+          await decryptUsersListProgressive(membersList, (decrypted) => {
+            setStructureMembers(decrypted);
+            setAvailableUsersForTagging(
+              decrypted.map((m: any) => ({
+                id: m.id,
+                displayName: m.displayName || '',
+                email: m.email || '',
+                photoURL: m.photoURL || '',
+                firstName: m.firstName || '',
+                lastName: m.lastName || '',
+                role: m.status || 'membre'
+              }))
+            );
+          });
+        }
       } catch (error) {
         console.error("Erreur lors du chargement des membres:", error);
       }
@@ -1778,14 +1951,29 @@ const MissionDetails: React.FC = () => {
 
   // Mettre à jour chargeName avec la valeur décryptée lorsque structureMembers sont chargés
   useEffect(() => {
-    if (!mission?.chargeId || structureMembers.length === 0) return;
-    const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
-    if (isEncrypted(mission.chargeName)) {
-      const member = structureMembers.find(m => m.id === mission.chargeId);
-      if (member?.displayName) {
-        setMission(prev => prev ? { ...prev, chargeName: member.displayName } : null);
+    if (!mission?.chargeId) return;
+
+    const syncChargeName = async () => {
+      const member = structureMembers.find((m) => m.id === mission.chargeId);
+      if (member?.displayName && !isEncryptedField(member.displayName)) {
+        if (mission.chargeName !== member.displayName) {
+          setMission((prev) => (prev ? { ...prev, chargeName: member.displayName } : null));
+          setEditedMission((prev) => (prev ? { ...prev, chargeName: member.displayName } : null));
+        }
+        return;
       }
-    }
+      if (isEncryptedField(mission.chargeName)) {
+        const decrypted = await getDecryptedUserDisplayName(mission.chargeId, {
+          displayName: mission.chargeName,
+        });
+        if (decrypted && decrypted !== 'Inconnu' && decrypted !== mission.chargeName) {
+          setMission((prev) => (prev ? { ...prev, chargeName: decrypted } : null));
+          setEditedMission((prev) => (prev ? { ...prev, chargeName: decrypted } : null));
+        }
+      }
+    };
+
+    void syncChargeName();
   }, [mission?.chargeId, mission?.chargeName, structureMembers]);
 
   useEffect(() => {
@@ -1800,33 +1988,16 @@ const MissionDetails: React.FC = () => {
         
         // Récupérer tous les IDs des applications
         const applicationIds = snapshot.docs.map(doc => doc.id);
-        
-        // Récupérer les heures de travail pour toutes les applications
-        const workingHoursRef = collection(db, 'workingHours');
-        let workingHoursMap = new Map();
-        
-        if (applicationIds.length > 0) {
-          const workingHoursQuery = query(
-            workingHoursRef, 
-            where('applicationId', 'in', applicationIds)
-          );
-          const workingHoursSnapshot = await getDocs(workingHoursQuery);
-          
-          // Créer un map des horaires par applicationId
-          workingHoursMap = new Map(
-            workingHoursSnapshot.docs.map(doc => [
-              doc.data().applicationId,
-              doc.data().hours || []
-            ])
-          );
-        }
+        const workingHoursMap = await fetchWorkingHoursForApplications(applicationIds);
 
         // Construire la liste des applications avec leurs horaires
         const applicationsList = await Promise.all(snapshot.docs.map(async (docSnapshot) => {
           const applicationData = docSnapshot.data();
           const userData = await getDoc(doc(db, 'users', applicationData.userId));
-          const userDocData = userData.data();
+          const userDocData = userData.data() as Record<string, unknown> | undefined;
           const userDisplayName = await getDecryptedUserDisplayName(applicationData.userId, userDocData || null);
+          const rawPhone = typeof userDocData?.phone === 'string' ? userDocData.phone : '';
+          const rawStudentId = typeof userDocData?.studentId === 'string' ? userDocData.studentId : '';
           
           // Fonction helper pour convertir les dates Firestore
           const convertFirestoreDate = (dateValue: any): Date => {
@@ -1848,14 +2019,17 @@ const MissionDetails: React.FC = () => {
             createdAt: convertFirestoreDate(applicationData.createdAt),
             updatedAt: convertFirestoreDate(applicationData.updatedAt),
             userEmail: applicationData.userEmail,
-            userPhotoURL: userDocData?.photoURL || null,
+            userPhotoURL: (userDocData?.photoURL as string | undefined) || null,
             userDisplayName: userDisplayName === 'Inconnu' ? '' : userDisplayName,
+            userPhone: rawPhone,
+            userStudentId: rawStudentId,
             cvUrl: applicationData.cvUrl,
             cvUpdatedAt: applicationData.cvUpdatedAt ? convertFirestoreDate(applicationData.cvUpdatedAt) : null,
             motivationLetter: applicationData.motivationLetter,
             submittedAt: convertFirestoreDate(applicationData.submittedAt),
             isDossierValidated: userDocData?.dossierValidated || false,
-            workingHours: workingHoursMap.get(docSnapshot.id) || []
+            workingHours: workingHoursMap.get(docSnapshot.id) || [],
+            documentTagOverrides: (applicationData.documentTagOverrides as Record<string, string> | undefined) ?? {},
           } as Application;
         }));
 
@@ -1870,6 +2044,39 @@ const MissionDetails: React.FC = () => {
 
     fetchApplications();
   }, [mission?.id, applicationsLoaded]);
+
+  useEffect(() => {
+    const applicationId = workingHoursDialog.application?.id;
+    if (!workingHoursDialog.open || !applicationId) return;
+
+    let cancelled = false;
+    const reloadWorkingHours = async () => {
+      setLoadingWorkingHoursDialog(true);
+      try {
+        const hoursMap = await fetchWorkingHoursForApplications([applicationId]);
+        const hours = hoursMap.get(applicationId) || [];
+        if (cancelled) return;
+
+        setApplications((prev) =>
+          prev.map((app) => (app.id === applicationId ? { ...app, workingHours: hours } : app))
+        );
+        setWorkingHoursDialog((prev) =>
+          prev.application?.id === applicationId
+            ? { ...prev, application: { ...prev.application, workingHours: hours } }
+            : prev
+        );
+      } catch (error) {
+        console.error('Erreur lors du chargement des horaires:', error);
+      } finally {
+        if (!cancelled) setLoadingWorkingHoursDialog(false);
+      }
+    };
+
+    void reloadWorkingHours();
+    return () => {
+      cancelled = true;
+    };
+  }, [workingHoursDialog.open, workingHoursDialog.application?.id]);
 
   useEffect(() => {
     const fetchNotes = async () => {
@@ -2292,8 +2499,15 @@ const MissionDetails: React.FC = () => {
     return { totalHT, totalTTC, tva };
   };
 
-  const getAssignedTemplate = async (documentType: string) => {
+  const getAssignedTemplate = async (documentType: DocumentType, forceRefresh = false): Promise<AssignedTemplateData | null> => {
     if (!mission?.structureId) return null;
+
+    const cacheKey = `${mission.structureId}_${documentType}`;
+    if (forceRefresh) {
+      assignedTemplateCacheRef.current.delete(cacheKey);
+    }
+    const cached = assignedTemplateCacheRef.current.get(cacheKey);
+    if (cached) return cached;
 
     try {
       const assignmentsQuery = query(
@@ -2303,21 +2517,48 @@ const MissionDetails: React.FC = () => {
       );
 
       const assignmentsSnapshot = await getDocs(assignmentsQuery);
-      if (assignmentsSnapshot.empty) return null;
+      if (!assignmentsSnapshot.empty) {
+        const assignmentDoc = assignmentsSnapshot.docs[0];
+        const assignmentData = assignmentDoc.data();
 
-      const assignmentDoc = assignmentsSnapshot.docs[0];
-      const assignmentData = assignmentDoc.data();
-      
-      const templateDoc = await getDoc(doc(db, 'templates', assignmentData.templateId));
-      if (!templateDoc.exists()) return null;
+        const templateDoc = await getDoc(doc(db, 'templates', assignmentData.templateId));
+        if (!templateDoc.exists()) return null;
 
-      const templateData = templateDoc.data();
-      return {
-        ...templateData,
-        id: templateDoc.id,
-        assignmentId: assignmentDoc.id,
-        generationType: assignmentData.generationType || 'template'
-      };
+        const templateData = templateDoc.data();
+        const result: AssignedTemplateData = {
+          id: templateDoc.id,
+          name: (templateData.name as string) || DOCUMENT_TYPES[documentType],
+          pdfUrl: templateData.pdfUrl as string,
+          variables: (templateData.variables || []) as TemplateVariable[],
+          assignmentId: assignmentDoc.id,
+          generationType: (assignmentData.generationType || 'template') as 'template' | 'editor'
+        };
+        assignedTemplateCacheRef.current.set(cacheKey, result);
+        return result;
+      }
+
+      // Repli : template universel (même logique que la page Assignation des templates)
+      const universalQuery = query(
+        collection(db, 'templates'),
+        where('isUniversal', '==', true),
+        where('universalDocumentType', '==', documentType)
+      );
+      const universalSnapshot = await getDocs(universalQuery);
+      if (!universalSnapshot.empty) {
+        const templateDoc = universalSnapshot.docs[0];
+        const templateData = templateDoc.data();
+        const result: AssignedTemplateData = {
+          id: templateDoc.id,
+          name: (templateData.name as string) || DOCUMENT_TYPES[documentType],
+          pdfUrl: templateData.pdfUrl as string,
+          variables: (templateData.variables || []) as TemplateVariable[],
+          generationType: 'template'
+        };
+        assignedTemplateCacheRef.current.set(cacheKey, result);
+        return result;
+      }
+
+      return null;
     } catch (error) {
       console.error('❌ Erreur lors de la récupération du template:', error);
       return null;
@@ -2383,6 +2624,170 @@ const MissionDetails: React.FC = () => {
     }
   };
 
+  type DocumentGenerationCache = {
+    userData?: Record<string, unknown> | null;
+    chargeData?: Record<string, unknown> | null;
+    contactData?: Record<string, unknown> | null;
+    companyData?: Record<string, unknown> | null;
+    structureData?: Record<string, unknown> | null;
+    missionTypeData?: Record<string, unknown> | null;
+    presidentFullName?: string | null;
+    workingHoursData?: ReturnType<typeof buildWorkingHoursDocumentData> | null;
+  };
+
+  const loadDocumentGenerationCache = async (
+    application: Application | undefined,
+    tagList: string[]
+  ): Promise<DocumentGenerationCache> => {
+    if (!mission) return {};
+
+    const needsUserData = application?.userId && tagList.some((t) =>
+      t.startsWith('user_') || ['graduationYear', 'gender', 'birthPlace', 'birthDate', 'address', 'nationality', 'socialSecurityNumber', 'phone', 'program'].includes(t)
+    );
+    const needsChargeData = tagList.some((t) => ['charge_email', 'charge_phone'].includes(t));
+    const needsMissionTypeData = !!mission.missionTypeId && tagList.some((t) =>
+      ['missionType', 'studentProfile', 'courseApplication', 'missionLearning'].includes(t)
+    );
+    const needsStructureData = !!mission.structureId && tagList.some((t) =>
+      t.startsWith('structure_') && t !== 'structure_president_nom_complet'
+    );
+    const needsPresident = !!mission.structureId && tagList.includes('structure_president_nom_complet');
+    const needsWorkingHours = !!application && tagList.some((t) =>
+      t.startsWith('workinghours_') ||
+      t === 'heures_detaillees' ||
+      t === 'heuresDetaillees' ||
+      t === 'heures_finalement_travaillees' ||
+      t === 'workingHoursTotal' ||
+      t === 'amendment_new_hours' ||
+      t === 'amendment_actual_hours' ||
+      t === 'actualHours'
+    );
+    const needsCompany = tagList.some((t) =>
+      t.startsWith('entreprise_') || t === 'siren' || t === 'nSiret' || t === 'companyName' || t === 'mission_entreprise'
+    );
+
+    const [
+      userData,
+      chargeData,
+      missionTypeData,
+      structureData,
+      presidentFullName,
+      workingHoursData,
+      companyDataFull,
+    ] = await Promise.all([
+      needsUserData
+        ? getDoc(doc(db, 'users', application!.userId)).then((d) => (d.exists() ? d.data() : null))
+        : Promise.resolve(null),
+      needsChargeData
+        ? getDoc(doc(db, 'users', mission.chargeId)).then((d) => (d.exists() ? d.data() : null))
+        : Promise.resolve(null),
+      needsMissionTypeData
+        ? getDoc(doc(db, 'missionTypes', mission.missionTypeId!)).then((d) => (d.exists() ? d.data() : null))
+        : Promise.resolve(null),
+      needsStructureData
+        ? getDoc(doc(db, 'structures', mission.structureId!)).then((d) => (d.exists() ? { ...d.data(), id: d.id } : null))
+        : Promise.resolve(null),
+      needsPresident
+        ? (async () => {
+            try {
+              const usersRef = collection(db, 'users');
+              const q = query(usersRef, where('structureId', '==', mission.structureId));
+              const usersSnapshot = await getDocs(q);
+
+              let members = usersSnapshot.docs.map((docSnap) => ({
+                id: docSnap.id,
+                ...docSnap.data(),
+                mandat: docSnap.data().mandat || null,
+                bureauRole: docSnap.data().bureauRole || null,
+                poles: docSnap.data().poles || [],
+                firstName: docSnap.data().firstName || '',
+                lastName: docSnap.data().lastName || '',
+                displayName: docSnap.data().displayName || '',
+              }));
+              members = await decryptUsersList(members as Parameters<typeof decryptUsersList>[0]);
+
+              const presidents = members.filter((member) => {
+                const hasPresidentRole = member.bureauRole === 'president' ||
+                  member.poles?.some((p: { poleId?: string }) => p.poleId === 'pre');
+                return hasPresidentRole && member.mandat;
+              });
+
+              if (presidents.length > 0) {
+                const sortedPresidents = presidents.sort((a, b) => {
+                  if (!a.mandat || !b.mandat) return 0;
+                  const aYear = parseInt(a.mandat.split('-')[0], 10);
+                  const bYear = parseInt(b.mandat.split('-')[0], 10);
+                  return bYear - aYear;
+                });
+
+                const mostRecentPresident = sortedPresidents[0];
+                if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
+                  return `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
+                }
+                if (mostRecentPresident.displayName) {
+                  return mostRecentPresident.displayName;
+                }
+              }
+              return null;
+            } catch (error) {
+              console.error('Erreur lors de la récupération du président:', error);
+              return null;
+            }
+          })()
+        : Promise.resolve(null),
+      needsWorkingHours
+        ? getDocs(query(
+            collection(db, 'workingHours'),
+            where('applicationId', '==', application!.id)
+          )).then((snapshot) => buildWorkingHoursDocumentData(snapshot.docs))
+        : Promise.resolve(null),
+      needsCompany && mission.companyId
+        ? getDoc(doc(db, 'companies', mission.companyId)).then((d) =>
+            d.exists() ? { id: d.id, ...d.data() } : null
+          )
+        : Promise.resolve(null),
+    ]);
+
+    const decryptedCtx = await prepareDecryptedDocumentContext({
+      userId: application?.userId,
+      userData,
+      chargeId: mission.chargeId,
+      chargeData,
+      contactId: mission.contactId,
+      contactData: mission.contact ? { ...mission.contact } : null,
+      companyId: mission.companyId,
+      companyData: companyDataFull,
+      structureId: mission.structureId,
+      structureData,
+    });
+
+    return {
+      userData: decryptedCtx.userData ?? userData,
+      chargeData: decryptedCtx.chargeData ?? chargeData,
+      contactData: decryptedCtx.contactData ?? (mission.contact ? { ...mission.contact } : null),
+      companyData: decryptedCtx.companyData ?? companyDataFull,
+      structureData: decryptedCtx.structureData ?? structureData,
+      missionTypeData,
+      presidentFullName,
+      workingHoursData,
+    };
+  };
+
+  const extractTemplateTagNames = (templateVariables: TemplateVariable[]): string[] => {
+    const allTagNames = new Set<string>();
+    for (const variable of templateVariables) {
+      let valueToCheck = '';
+      if (variable.type === 'raw') {
+        valueToCheck = variable.rawText || '';
+      } else if (variable.variableId) {
+        valueToCheck = getTagFromVariableId(variable.variableId);
+      }
+      const tags = valueToCheck.match(/<[^>]+>/g) || [];
+      tags.forEach((tag) => allTagNames.add(tag.replace(/[<>]/g, '')));
+    }
+    return [...allTagNames];
+  };
+
   // Fonction pour détecter les données manquantes
   const detectMissingData = async (documentType: DocumentType, application?: Application, expenseNote?: ExpenseNote) => {
     if (!mission) return [];
@@ -2400,130 +2805,27 @@ const MissionDetails: React.FC = () => {
         category: string;
       }> = [];
 
-      // Récupérer toutes les données nécessaires en parallèle pour optimiser les performances
-      const dataPromises: Promise<any>[] = [];
-      
-      // User data (si application)
-      let userDataPromise: Promise<any> = Promise.resolve(null);
-      if (application?.userId) {
-        userDataPromise = getDoc(doc(db, 'users', application.userId)).then(doc => {
-          return doc.exists() ? doc.data() : null;
-        });
-        dataPromises.push(userDataPromise);
-      }
-      
-      // Charge data
-      const chargeDataPromise = getDoc(doc(db, 'users', mission.chargeId)).then(doc => {
-        return doc.exists() ? doc.data() : null;
-      });
-      dataPromises.push(chargeDataPromise);
-      
-      // Mission type data
-      let missionTypeDataPromise: Promise<any> = Promise.resolve(null);
-      if (mission.missionTypeId) {
-        missionTypeDataPromise = getDoc(doc(db, 'missionTypes', mission.missionTypeId)).then(doc => {
-          return doc.exists() ? doc.data() : null;
-        });
-        dataPromises.push(missionTypeDataPromise);
-      }
-      
-      // Structure data
-      let structureDataPromise: Promise<any> = Promise.resolve(null);
-      if (mission.structureId) {
-        structureDataPromise = getDoc(doc(db, 'structures', mission.structureId)).then(doc => {
-          if (doc.exists()) {
-            return { ...doc.data(), id: doc.id };
-          }
-          return null;
-        });
-        dataPromises.push(structureDataPromise);
-      }
-      
-      // President data (si structureId)
-      let presidentFullNamePromise: Promise<string | null> = Promise.resolve(null);
-      if (mission.structureId) {
-        presidentFullNamePromise = (async () => {
-          try {
-            const usersRef = collection(db, 'users');
-            const q = query(usersRef, where('structureId', '==', mission.structureId));
-            const usersSnapshot = await getDocs(q);
-            
-            let members = usersSnapshot.docs.map(docSnap => ({
-              id: docSnap.id,
-              ...docSnap.data(),
-              mandat: docSnap.data().mandat || null,
-              bureauRole: docSnap.data().bureauRole || null,
-              poles: docSnap.data().poles || [],
-              firstName: docSnap.data().firstName || '',
-              lastName: docSnap.data().lastName || '',
-              displayName: docSnap.data().displayName || ''
-            }));
-            members = await decryptUsersList(members as any);
+      const tagList = extractTemplateTagNames(templateVariables);
+      const cache = await loadDocumentGenerationCache(application, tagList);
 
-            const presidents = members.filter((member: any) => {
-              const hasPresidentRole = member.bureauRole === 'president' || 
-                member.poles?.some((p: any) => p.poleId === 'pre');
-              return hasPresidentRole && member.mandat;
-            });
-
-            if (presidents.length > 0) {
-              const sortedPresidents = presidents.sort((a, b) => {
-                if (!a.mandat || !b.mandat) return 0;
-                const aYear = parseInt(a.mandat.split('-')[0]);
-                const bYear = parseInt(b.mandat.split('-')[0]);
-                return bYear - aYear;
-              });
-
-              const mostRecentPresident = sortedPresidents[0];
-              if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
-                return `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
-              } else if (mostRecentPresident.displayName) {
-                return mostRecentPresident.displayName;
-              }
-            }
-            return null;
-          } catch (error) {
-            console.error('Erreur lors de la récupération du président:', error);
-            return null;
-          }
-        })();
-        dataPromises.push(presidentFullNamePromise);
-      }
-      
-      // Working hours (si application)
-      let workingHoursDataPromise: Promise<any> = Promise.resolve(null);
-      if (application) {
-        const workingHoursRef = collection(db, 'workingHours');
-        const workingHoursQuery = query(
-          workingHoursRef,
-          where('applicationId', '==', application.id),
-          limit(1)
-        );
-        workingHoursDataPromise = getDocs(workingHoursQuery).then(snapshot => {
-          return !snapshot.empty ? snapshot.docs[0].data() : null;
-        });
-        dataPromises.push(workingHoursDataPromise);
-      }
-      
-      // Attendre toutes les requêtes en parallèle
-      const [
-        userData,
-        chargeData,
-        missionTypeData,
-        structureData,
-        presidentFullName,
-        workingHoursData
-      ] = await Promise.all([
-        userDataPromise,
-        chargeDataPromise,
-        missionTypeDataPromise,
-        structureDataPromise,
-        presidentFullNamePromise,
-        workingHoursDataPromise
-      ]);
-
-      // Récupérer la bonne entreprise
-      const company = companies.find(c => c.id === mission.companyId);
+      const userDataForCheck = cache.userData;
+      const chargeDataForCheck = cache.chargeData;
+      const structureDataForCheck = cache.structureData;
+      const contactForCheck = cache.contactData ?? mission.contact;
+      const company = (cache.companyData ?? companies.find((c) => c.id === mission.companyId)) as Record<string, unknown> & {
+        name?: string;
+        nSiret?: string;
+        address?: string;
+        city?: string;
+        country?: string;
+        phone?: string;
+        email?: string;
+        website?: string;
+        description?: string;
+      };
+      const missionTypeData = cache.missionTypeData;
+      const workingHoursData = cache.workingHoursData;
+      const presidentFullName = cache.presidentFullName;
 
       // Vérifier chaque variable du template
       for (const variable of templateVariables) {
@@ -2593,7 +2895,11 @@ const MissionDetails: React.FC = () => {
             'depense1_nom', 'depense1_tva', 'depense1_prix',
             'depense2_nom', 'depense2_tva', 'depense2_prix',
             'depense3_nom', 'depense3_tva', 'depense3_prix',
-            'depense4_nom', 'depense4_tva', 'depense4_prix'
+            'depense4_nom', 'depense4_tva', 'depense4_prix',
+            'amendment_actual_hours', 'amendment_new_hours', 'actualHours',
+            'heures_finalement_travaillees',
+            'amendment_planned_hours', 'plannedHours',
+            'amendment_reason', 'reason', 'workingHoursTotal'
           ];
           
           if (!knownTags.includes(tagName)) {
@@ -2698,7 +3004,11 @@ const MissionDetails: React.FC = () => {
             isMissing = true;
             category = 'Heures de travail';
             label = 'Pauses';
-          } else if (tagName === 'workinghours_total' && !application?.workingHours) {
+          } else if (tagName === 'workinghours_total' && !application?.workingHours?.length) {
+            isMissing = true;
+            category = 'Heures de travail';
+            label = 'Total des heures';
+          } else if (tagName === 'workingHoursTotal' && !application?.workingHours?.length) {
             isMissing = true;
             category = 'Heures de travail';
             label = 'Total des heures';
@@ -2715,136 +3025,176 @@ const MissionDetails: React.FC = () => {
             category = 'Heures de travail';
             label = 'Heures détaillées (ou dates de mission pour le repli)';
           }
+          // Balises avenant
+          else if (
+            ['amendment_new_hours', 'amendment_actual_hours', 'actualHours'].includes(tagName) &&
+            !application?.documentTagOverrides?.amendment_new_hours &&
+            !application?.documentTagOverrides?.amendment_actual_hours &&
+            !application?.documentTagOverrides?.actualHours &&
+            !application?.workingHours?.length
+          ) {
+            isMissing = true;
+            category = 'Avenant';
+            label = 'Total des heures finalement travaillées';
+          } else if (
+            tagName === 'heures_finalement_travaillees' &&
+            !application?.documentTagOverrides?.heures_finalement_travaillees &&
+            !workingHoursData?.hours?.length &&
+            !application?.workingHours?.length &&
+            (!mission.startDate || !mission.endDate)
+          ) {
+            isMissing = true;
+            category = 'Avenant';
+            label = 'Dates et horaires des heures travaillées';
+          } else if (
+            ['amendment_planned_hours', 'plannedHours'].includes(tagName) &&
+            !mission.hoursPerStudent &&
+            !mission.hours &&
+            !application?.documentTagOverrides?.amendment_planned_hours &&
+            !application?.documentTagOverrides?.plannedHours
+          ) {
+            isMissing = true;
+            category = 'Avenant';
+            label = 'Heures prévues';
+          } else if (
+            ['amendment_reason', 'reason'].includes(tagName) &&
+            !application?.documentTagOverrides?.amendment_reason &&
+            !application?.documentTagOverrides?.reason
+          ) {
+            isMissing = true;
+            category = 'Avenant';
+            label = 'Motif de l\'avenant';
+          }
           // Balises de contact
-          else if (tagName === 'contact_nom' && !mission.contact?.lastName) {
+          else if (tagName === 'contact_nom' && !contactForCheck?.lastName) {
             isMissing = true;
             category = 'Contact';
             label = 'Nom du contact';
-          } else if (tagName === 'contact_prenom' && !mission.contact?.firstName) {
+          } else if (tagName === 'contact_prenom' && !contactForCheck?.firstName) {
             isMissing = true;
             category = 'Contact';
             label = 'Prénom du contact';
-          } else if (tagName === 'contact_email' && !mission.contact?.email) {
+          } else if (tagName === 'contact_email' && !contactForCheck?.email) {
             isMissing = true;
             category = 'Contact';
             label = 'Email du contact';
-          } else if (tagName === 'contact_telephone' && !mission.contact?.phone) {
+          } else if (tagName === 'contact_telephone' && !contactForCheck?.phone) {
             isMissing = true;
             category = 'Contact';
             label = 'Téléphone du contact';
-          } else if (tagName === 'contact_poste' && !mission.contact?.position) {
+          } else if (tagName === 'contact_poste' && !contactForCheck?.position) {
             isMissing = true;
             category = 'Contact';
             label = 'Poste du contact';
-          } else if (tagName === 'contact_linkedin' && !mission.contact?.linkedin) {
+          } else if (tagName === 'contact_linkedin' && !contactForCheck?.linkedin) {
             isMissing = true;
             category = 'Contact';
             label = 'LinkedIn du contact';
-          } else if (tagName === 'contact_nom_complet' && !mission.contact?.firstName && !mission.contact?.lastName) {
+          } else if (tagName === 'contact_nom_complet' && !contactForCheck?.firstName && !contactForCheck?.lastName) {
             isMissing = true;
             category = 'Contact';
             label = 'Nom complet du contact';
           }
           // Balises utilisateur
-          else if (tagName === 'user_nom' && !userData?.lastName && !application?.userDisplayName?.split(' ').slice(-1)[0]) {
+          else if (tagName === 'user_nom' && !userDataForCheck?.lastName && !application?.userDisplayName?.split(' ').slice(-1)[0]) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Nom de l\'utilisateur';
-          } else if (tagName === 'user_prenom' && !userData?.firstName && !application?.userDisplayName?.split(' ')[0]) {
+          } else if (tagName === 'user_prenom' && !userDataForCheck?.firstName && !application?.userDisplayName?.split(' ')[0]) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Prénom de l\'utilisateur';
-          } else if (tagName === 'user_email' && !userData?.email && !application?.userEmail) {
+          } else if (tagName === 'user_email' && !userDataForCheck?.email && !application?.userEmail) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Email de l\'utilisateur';
-          } else if (tagName === 'user_ecole' && !userData?.ecole && !application?.userEmail?.split('@')[1]?.split('.')[0]) {
+          } else if (tagName === 'user_ecole' && !userDataForCheck?.ecole && !application?.userEmail?.split('@')[1]?.split('.')[0]) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'École de l\'utilisateur';
-          } else if (tagName === 'user_nom_complet' && !userData?.displayName && !application?.userDisplayName) {
+          } else if (tagName === 'user_nom_complet' && !userDataForCheck?.displayName && !application?.userDisplayName) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Nom complet de l\'utilisateur';
-          } else if (tagName === 'user_telephone' && !userData?.phone) {
+          } else if (tagName === 'user_telephone' && !userDataForCheck?.phone) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Téléphone de l\'utilisateur';
-          } else if (tagName === 'user_formation' && !userData?.formation) {
+          } else if (tagName === 'user_formation' && !userDataForCheck?.formation) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Formation de l\'utilisateur';
-          } else if (tagName === 'user_specialite' && !userData?.speciality) {
+          } else if (tagName === 'user_specialite' && !userDataForCheck?.speciality) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Spécialité de l\'utilisateur';
-          } else if (tagName === 'user_niveau_etude' && !userData?.studyLevel) {
+          } else if (tagName === 'user_niveau_etude' && !userDataForCheck?.studyLevel) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Niveau d\'études de l\'utilisateur';
-          } else if (tagName === 'graduationYear' && !userData?.graduationYear) {
+          } else if (tagName === 'graduationYear' && !userDataForCheck?.graduationYear) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Année de diplômation';
-          } else if (tagName === 'gender' && !userData?.gender) {
+          } else if (tagName === 'gender' && !userDataForCheck?.gender) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Genre';
-          } else if (tagName === 'birthPlace' && !userData?.birthPlace) {
+          } else if (tagName === 'birthPlace' && !userDataForCheck?.birthPlace) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Lieu de naissance';
-          } else if (tagName === 'birthDate' && !userData?.birthDate) {
+          } else if (tagName === 'birthDate' && !userDataForCheck?.birthDate) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Date de naissance';
-          } else if (tagName === 'address' && !userData?.address) {
+          } else if (tagName === 'address' && !userDataForCheck?.address) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Adresse';
-          } else if (tagName === 'nationality' && !userData?.nationality) {
+          } else if (tagName === 'nationality' && !userDataForCheck?.nationality) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Nationalité';
-          } else if (tagName === 'socialSecurityNumber' && !userData?.socialSecurityNumber) {
+          } else if (tagName === 'socialSecurityNumber' && !userDataForCheck?.socialSecurityNumber) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Numéro de sécurité sociale';
-          } else if (tagName === 'phone' && !userData?.phone) {
+          } else if (tagName === 'phone' && !userDataForCheck?.phone) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Téléphone';
           }
           // Balises de la structure
-          else if (tagName === 'structure_nom' && !structureData?.nom) {
+          else if (tagName === 'structure_nom' && !structureDataForCheck?.nom) {
             isMissing = true;
             category = 'Structure';
             label = 'Nom de la structure';
-          } else if (tagName === 'structure_ecole' && !structureData?.ecole) {
+          } else if (tagName === 'structure_ecole' && !structureDataForCheck?.ecole) {
             isMissing = true;
             category = 'Structure';
             label = 'École de la structure';
-          } else if (tagName === 'structure_address' && !structureData?.address) {
+          } else if (tagName === 'structure_address' && !structureDataForCheck?.address) {
             isMissing = true;
             category = 'Structure';
             label = 'Adresse de la structure';
-          } else if (tagName === 'structure_phone' && !structureData?.phone) {
+          } else if (tagName === 'structure_phone' && !structureDataForCheck?.phone) {
             isMissing = true;
             category = 'Structure';
             label = 'Téléphone de la structure';
-          } else if (tagName === 'structure_email' && !structureData?.email) {
+          } else if (tagName === 'structure_email' && !structureDataForCheck?.email) {
             isMissing = true;
             category = 'Structure';
             label = 'Email de la structure';
-          } else if (tagName === 'structure_siret' && !structureData?.siret) {
+          } else if (tagName === 'structure_siret' && !structureDataForCheck?.siret) {
             isMissing = true;
             category = 'Structure';
             label = 'SIRET de la structure';
-          } else if (tagName === 'structure_tvaNumber' && !structureData?.tvaNumber) {
+          } else if (tagName === 'structure_tvaNumber' && !structureDataForCheck?.tvaNumber) {
             isMissing = true;
             category = 'Structure';
             label = 'Numéro de TVA de la structure';
-          } else if (tagName === 'structure_apeCode' && !structureData?.apeCode) {
+          } else if (tagName === 'structure_apeCode' && !structureDataForCheck?.apeCode) {
             isMissing = true;
             category = 'Structure';
             label = 'Code APE de la structure';
@@ -2911,11 +3261,11 @@ const MissionDetails: React.FC = () => {
           // Les dépenses sont optionnelles, donc on ne vérifie pas si elles sont vides
           // Elles seront simplement remplacées par une chaîne vide dans replaceTags si absentes
           // Balises spéciales
-          else if (tagName === 'siren' && !companies.find(c => c.id === mission.companyId)?.nSiret) {
+          else if (tagName === 'siren' && !(company as any)?.nSiret) {
             isMissing = true;
             category = 'Entreprise';
             label = 'SIRET';
-          } else if (tagName === 'companyName' && !companies.find(c => c.id === mission.companyId)?.name) {
+          } else if (tagName === 'companyName' && !company?.name) {
             isMissing = true;
             category = 'Entreprise';
             label = 'Nom de l\'entreprise';
@@ -2927,11 +3277,11 @@ const MissionDetails: React.FC = () => {
             isMissing = true;
             category = 'Mission';
             label = 'Date de début de la mission';
-          } else if (tagName === 'charge_email' && !chargeData?.email) {
+          } else if (tagName === 'charge_email' && !chargeDataForCheck?.email) {
             isMissing = true;
             category = 'Chargé de mission';
             label = 'Email du chargé de mission';
-          } else if (tagName === 'charge_phone' && !chargeData?.phone) {
+          } else if (tagName === 'charge_phone' && !chargeDataForCheck?.phone) {
             isMissing = true;
             category = 'Chargé de mission';
             label = 'Téléphone du chargé de mission';
@@ -2939,7 +3289,7 @@ const MissionDetails: React.FC = () => {
             isMissing = true;
             category = 'Mission';
             label = 'Date de fin';
-          } else if (tagName === 'program' && !userData?.program) {
+          } else if (tagName === 'program' && !userDataForCheck?.program) {
             isMissing = true;
             category = 'Utilisateur';
             label = 'Programme';
@@ -2970,6 +3320,63 @@ const MissionDetails: React.FC = () => {
     }
   };
 
+  type TemplateTagReviewItem = {
+    tag: string;
+    label: string;
+    category: string;
+    value: string;
+    isMissing: boolean;
+  };
+
+  const fetchTemplateTagsReview = async (
+    documentType: DocumentType,
+    application?: Application,
+    expenseNote?: ExpenseNote
+  ): Promise<TemplateTagReviewItem[]> => {
+    if (!mission) return [];
+
+    const templateData = await getAssignedTemplate(documentType, documentType === 'avenant');
+    if (!templateData) return [];
+
+    const tagList = extractTemplateTagNames((templateData.variables || []) as TemplateVariable[]);
+    if (tagList.length === 0) return [];
+
+    const cache = await loadDocumentGenerationCache(application, tagList);
+    const tagOverrideSeed = application?.documentTagOverrides ?? {};
+    const resolvedBlock = await replaceTags(
+      tagList.map((t) => `<${t}>`).join('\n'),
+      application,
+      cache.structureData,
+      tagOverrideSeed,
+      cache,
+      documentType
+    );
+    const resolvedLines = resolvedBlock.split('\n');
+
+    const items: TemplateTagReviewItem[] = tagList.map((tagName, index) => {
+      const rawValue = resolvedLines[index] ?? '';
+      const unreplaced = /^<[^>]+>$/.test(rawValue.trim());
+      const value = unreplaced || isDocumentPlaceholderValue(rawValue) ? '' : rawValue.trim();
+      const meta = getTemplateTagMeta(tagName);
+
+      return {
+        tag: tagName,
+        label: meta.label,
+        category: meta.category,
+        value,
+        isMissing: !value,
+      };
+    });
+
+    items.sort((a, b) => {
+      if (a.isMissing !== b.isMissing) return a.isMissing ? -1 : 1;
+      if (a.category !== b.category) return a.category.localeCompare(b.category, 'fr');
+      return a.label.localeCompare(b.label, 'fr');
+    });
+
+    return items;
+  };
+
   const replaceTags = async (
     text: string, 
     application?: Application, 
@@ -2978,15 +3385,18 @@ const MissionDetails: React.FC = () => {
     cachedData?: {
       userData?: any;
       chargeData?: any;
+      contactData?: any;
+      companyData?: any;
+      structureData?: any;
       missionTypeData?: any;
       presidentFullName?: string | null;
       workingHoursData?: { hours?: Array<{ date?: string; startTime?: string; endTime?: string; breaks?: Array<{ start?: string; end?: string }> }> } | null;
-    }
+    },
+    documentType?: DocumentType
   ) => {
     if (!text || !mission) return text;
 
     try {
-      // Utiliser les données en cache si disponibles, sinon les récupérer
       let userData = cachedData?.userData;
       if (!userData && application?.userId) {
         const userDoc = await getDoc(doc(db, 'users', application.userId));
@@ -2995,17 +3405,52 @@ const MissionDetails: React.FC = () => {
         }
       }
 
-      // Utiliser les données en cache si disponibles, sinon les récupérer
       let chargeData = cachedData?.chargeData;
-      if (!chargeData) {
+      if (!chargeData && mission.chargeId) {
         const chargeDoc = await getDoc(doc(db, 'users', mission.chargeId));
         chargeData = chargeDoc.exists() ? chargeDoc.data() : null;
       }
 
-      // Récupérer la bonne entreprise
-      const company = companies.find(c => c.id === mission.companyId);
+      let companyData = cachedData?.companyData;
+      if (!companyData && mission.companyId) {
+        const companyDoc = await getDoc(doc(db, 'companies', mission.companyId));
+        if (companyDoc.exists()) {
+          companyData = { id: companyDoc.id, ...companyDoc.data() };
+        }
+      } else if (!companyData && mission.companyId) {
+        const fromList = companies.find(c => c.id === mission.companyId);
+        if (fromList) companyData = fromList;
+      }
 
-      // Utiliser les données en cache si disponibles, sinon les récupérer
+      let contactData = cachedData?.contactData ?? mission.contact;
+      let structureDataResolved = cachedData?.structureData ?? structureData;
+      if (!structureDataResolved && mission.structureId) {
+        const structureDoc = await getDoc(doc(db, 'structures', mission.structureId));
+        if (structureDoc.exists()) {
+          structureDataResolved = { id: structureDoc.id, ...structureDoc.data() };
+        }
+      }
+
+      const decrypted = await prepareDecryptedDocumentContext({
+        userId: application?.userId,
+        userData,
+        chargeId: mission.chargeId,
+        chargeData,
+        contactId: mission.contactId,
+        contactData: contactData ? { ...contactData } : null,
+        companyId: mission.companyId,
+        companyData,
+        structureId: mission.structureId,
+        structureData: structureDataResolved,
+      });
+      userData = decrypted.userData ?? userData;
+      chargeData = decrypted.chargeData ?? chargeData;
+      contactData = decrypted.contactData ?? contactData;
+      companyData = decrypted.companyData ?? companyData;
+      structureDataResolved = decrypted.structureData ?? structureDataResolved;
+
+      const company = companyData;
+
       let missionTypeData = cachedData?.missionTypeData;
       if (!missionTypeData && mission.missionTypeId) {
         const missionTypeDoc = await getDoc(doc(db, 'missionTypes', mission.missionTypeId));
@@ -3013,23 +3458,26 @@ const MissionDetails: React.FC = () => {
       }
 
       // Utiliser les données en cache si disponibles
-      let presidentFullName = cachedData?.presidentFullName || '[Président non disponible]';
-      if (!cachedData?.presidentFullName && mission.structureId) {
+      let presidentFullName = '[Président non disponible]';
+      if (cachedData && 'presidentFullName' in cachedData) {
+        presidentFullName = cachedData.presidentFullName || '[Président non disponible]';
+      } else if (mission.structureId) {
         try {
           const usersRef = collection(db, 'users');
           const q = query(usersRef, where('structureId', '==', mission.structureId));
           const usersSnapshot = await getDocs(q);
           
-          const members = usersSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-            mandat: doc.data().mandat || null,
-            bureauRole: doc.data().bureauRole || null,
-            poles: doc.data().poles || [],
-            firstName: doc.data().firstName || '',
-            lastName: doc.data().lastName || '',
-            displayName: doc.data().displayName || ''
+          let members = usersSnapshot.docs.map(docSnap => ({
+            id: docSnap.id,
+            ...docSnap.data(),
+            mandat: docSnap.data().mandat || null,
+            bureauRole: docSnap.data().bureauRole || null,
+            poles: docSnap.data().poles || [],
+            firstName: docSnap.data().firstName || '',
+            lastName: docSnap.data().lastName || '',
+            displayName: docSnap.data().displayName || ''
           }));
+          members = await decryptUsersList(members as any);
 
           // Filtrer les présidents (via bureauRole ou pôle 'pre')
           const presidents = members.filter(member => {
@@ -3059,8 +3507,6 @@ const MissionDetails: React.FC = () => {
         } catch (error) {
           console.error('Erreur lors de la récupération du président:', error);
         }
-      } else if (cachedData?.presidentFullName) {
-        presidentFullName = cachedData.presidentFullName;
       }
 
       // Fonction pour nettoyer le texte des retours à la ligne
@@ -3068,6 +3514,114 @@ const MissionDetails: React.FC = () => {
         if (!text) return '';
         return text.replace(/[\n\r]+/g, ' ').trim();
       };
+
+      const docOverrides = application?.documentTagOverrides ?? {};
+      const resolveDocTag = (...keys: string[]): string => {
+        for (const k of keys) {
+          const v = docOverrides[k];
+          if (v != null && String(v).trim() !== '') return String(v).trim();
+        }
+        return '';
+      };
+
+      const workingHoursSlots =
+        cachedData?.workingHoursData?.hours?.length
+          ? cachedData.workingHoursData.hours
+          : application?.workingHours ?? [];
+      const workingHoursTotal = workingHoursSlots.length
+        ? workingHoursSlots
+            .reduce((total, wh) => {
+              return (
+                total +
+                calculateWorkingHours(
+                  wh.startTime || '',
+                  wh.endTime || '',
+                  (wh.breaks || []) as Array<{ start: string; end: string }>
+                )
+              );
+            }, 0)
+            .toFixed(2)
+        : '[Total non disponible]';
+
+      const formatDetailedWorkingHours = (
+        hours: Array<{ date?: string; startTime?: string; endTime?: string; breaks?: Array<{ start?: string; end?: string; startTime?: string; endTime?: string }> }>,
+        options?: { allowMissionFallback?: boolean }
+      ): string => {
+        const allowMissionFallback = options?.allowMissionFallback !== false;
+        const missionDebut = mission.startDate
+          ? `${new Date(mission.startDate).toLocaleDateString('fr-FR')} à ${new Date(mission.startDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+          : '';
+        const missionFin = mission.endDate
+          ? `${new Date(mission.endDate).toLocaleDateString('fr-FR')} à ${new Date(mission.endDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+          : '';
+        if (!hours.length) {
+          if (allowMissionFallback) {
+            return missionDebut && missionFin ? ` De ${missionDebut} à ${missionFin}` : '[Heures détaillées non disponibles]';
+          }
+          return '';
+        }
+        const formatTime = (t: string) => (t ? t.replace(/:\d{2}$/, 'h') : '');
+        const formatDateHour = (dateStr: string, timeStr: string) => {
+          const d = dateStr ? new Date(dateStr).toLocaleDateString('fr-FR') : '';
+          const t = formatTime(timeStr);
+          return t ? `${d} à ${t}` : d;
+        };
+        if (hours.length === 1) {
+          const day = hours[0];
+          const debut = formatDateHour(day.date || '', day.startTime || '');
+          const fin = formatDateHour(day.date || '', day.endTime || '');
+          return debut && fin ? `${debut} - ${fin}` : debut || fin || '[Heures détaillées non disponibles]';
+        }
+        const parts = hours.map((day) => {
+          const dateStr = day.date ? new Date(day.date).toLocaleDateString('fr-FR') : '';
+          const startH = formatTime(day.startTime || '');
+          const endH = formatTime(day.endTime || '');
+          let s = `${dateStr} de ${startH} à ${endH}`;
+          if (day.breaks?.length) {
+            const breaksStr = day.breaks
+              .map((b) => `${b.start ?? b.startTime ?? ''}-${b.end ?? b.endTime ?? ''}`)
+              .filter(Boolean)
+              .join(', ');
+            if (breaksStr) s += ` (pauses: ${breaksStr})`;
+          }
+          return s;
+        });
+        return parts.join(', ');
+      };
+
+      const isAvenantDocument = documentType === 'avenant';
+      const plannedDetailedHours = formatDetailedWorkingHours([], { allowMissionFallback: true });
+      const actualDetailedHours = formatDetailedWorkingHours(workingHoursSlots, { allowMissionFallback: false });
+      const detailedWorkingHours = isAvenantDocument
+        ? plannedDetailedHours
+        : formatDetailedWorkingHours(workingHoursSlots, { allowMissionFallback: true });
+      const heuresFinalementTravaillees =
+        resolveDocTag('heures_finalement_travaillees') ||
+        (isAvenantDocument ? actualDetailedHours : formatDetailedWorkingHours(workingHoursSlots, { allowMissionFallback: true }));
+      const plannedHoursTotal =
+        mission.hoursPerStudent?.toString() ||
+        mission.hours?.toString() ||
+        '';
+      const amendmentNewHours =
+        resolveDocTag('amendment_new_hours', 'amendment_actual_hours', 'actualHours') ||
+        (workingHoursTotal !== '[Total non disponible]' ? workingHoursTotal : '');
+      const resolvedWorkingHoursTotal = isAvenantDocument
+        ? plannedHoursTotal || workingHoursTotal
+        : workingHoursTotal;
+      const formatHoursWithUnit = (value: string): string => {
+        const trimmed = (value || '').trim();
+        if (!trimmed || /\[|non disponible/i.test(trimmed)) return trimmed;
+        if (/\bh\s*$/i.test(trimmed)) return trimmed;
+        return `${trimmed} h`;
+      };
+      const amendmentNewHoursDisplay = formatHoursWithUnit(amendmentNewHours);
+      const workingHoursTotalDisplay = formatHoursWithUnit(resolvedWorkingHoursTotal);
+      const amendmentPlannedHours =
+        resolveDocTag('amendment_planned_hours', 'plannedHours') ||
+        mission.hoursPerStudent?.toString() ||
+        mission.hours?.toString() ||
+        '';
+      const amendmentReason = resolveDocTag('amendment_reason', 'reason');
 
       const replacements: { [key: string]: string } = {
         // Balises de mission
@@ -3106,54 +3660,21 @@ const MissionDetails: React.FC = () => {
         '<workinghours_date_fin>': application?.workingHours?.[0]?.date || '[Date de fin non disponible]',
         '<workinghours_heure_fin>': application?.workingHours?.[0]?.endTime || '[Heure de fin non disponible]',
         '<workinghours_pauses>': application?.workingHours?.[0]?.breaks?.map(b => `${b.start}-${b.end}`).join(', ') || '[Pauses non disponibles]',
-        '<workinghours_total>': application?.workingHours ? calculateWorkingHours(
-          application.workingHours[0]?.startTime || '',
-          application.workingHours[0]?.endTime || '',
-          application.workingHours[0]?.breaks || []
-        ).toFixed(2) : '[Total non disponible]',
+        '<workinghours_total>': workingHoursTotalDisplay,
+        '<workingHoursTotal>': workingHoursTotalDisplay,
         '<workinghours_creation>': application?.createdAt ? new Date(application.createdAt).toLocaleDateString() : '[Date de création non disponible]',
         '<workinghours_maj>': application?.updatedAt ? new Date(application.updatedAt).toLocaleDateString() : '[Date de mise à jour non disponible]',
-        '<heures_detaillees>': (() => {
-          const wh = cachedData?.workingHoursData;
-          const missionDebut = mission.startDate ? `${new Date(mission.startDate).toLocaleDateString('fr-FR')} à ${new Date(mission.startDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : '';
-          const missionFin = mission.endDate ? `${new Date(mission.endDate).toLocaleDateString('fr-FR')} à ${new Date(mission.endDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : '';
-          if (!wh?.hours?.length) return missionDebut && missionFin ? ` De ${missionDebut} à ${missionFin}` : '[Heures détaillées non disponibles]';
-          const formatTime = (t: string) => (t ? t.replace(/:\d{2}$/, 'h') : '');
-          const formatDateHour = (dateStr: string, timeStr: string) => {
-            const d = dateStr ? new Date(dateStr).toLocaleDateString('fr-FR') : '';
-            const t = formatTime(timeStr);
-            return t ? `${d} à ${t}` : d;
-          };
-          // Si un seul créneau : afficher "Date et heure de début - Date et heure de fin"
-          if (wh.hours.length === 1) {
-            const day = wh.hours[0];
-            const debut = formatDateHour(day.date, day.startTime);
-            const fin = formatDateHour(day.date, day.endTime);
-            return debut && fin ? `${debut} - ${fin}` : debut || fin || '[Heures détaillées non disponibles]';
-          }
-          // Plusieurs créneaux : liste détaillée "28/01/2026 de 16h à 18h, ..."
-          const parts = wh.hours.map((day: any) => {
-            const dateStr = day.date ? new Date(day.date).toLocaleDateString('fr-FR') : '';
-            const startH = formatTime(day.startTime);
-            const endH = formatTime(day.endTime);
-            let s = `${dateStr} de ${startH} à ${endH}`;
-            if (day.breaks?.length) {
-              const breaksStr = day.breaks.map((b: any) => `${b.start ?? b.startTime ?? ''}-${b.end ?? b.endTime ?? ''}`).filter(Boolean).join(', ');
-              if (breaksStr) s += ` (pauses: ${breaksStr})`;
-            }
-            return s;
-          });
-          return parts.join(', ');
-        })(),
+        '<heures_detaillees>': detailedWorkingHours,
+        '<heuresDetaillees>': detailedWorkingHours,
 
         // Balises de contact
-        '<contact_nom>': mission.contact?.lastName || '[Nom du contact non disponible]',
-        '<contact_prenom>': mission.contact?.firstName || '[Prénom du contact non disponible]',
-        '<contact_email>': mission.contact?.email || '[Email du contact non disponible]',
-        '<contact_telephone>': mission.contact?.phone || '[Téléphone du contact non disponible]',
-        '<contact_poste>': mission.contact?.position || '[Poste du contact non disponible]',
-        '<contact_linkedin>': mission.contact?.linkedin || '[LinkedIn du contact non disponible]',
-        '<contact_nom_complet>': `${mission.contact?.firstName || ''} ${mission.contact?.lastName || ''}`.trim() || '[Nom complet du contact non disponible]',
+        '<contact_nom>': contactData?.lastName || '[Nom du contact non disponible]',
+        '<contact_prenom>': contactData?.firstName || '[Prénom du contact non disponible]',
+        '<contact_email>': contactData?.email || '[Email du contact non disponible]',
+        '<contact_telephone>': contactData?.phone || '[Téléphone du contact non disponible]',
+        '<contact_poste>': contactData?.position || '[Poste du contact non disponible]',
+        '<contact_linkedin>': contactData?.linkedin || '[LinkedIn du contact non disponible]',
+        '<contact_nom_complet>': `${contactData?.firstName || ''} ${contactData?.lastName || ''}`.trim() || '[Nom complet du contact non disponible]',
 
         // Balises utilisateur
         '<user_nom>': userData?.lastName || application?.userDisplayName?.split(' ').slice(-1)[0] || '[Nom non disponible]',
@@ -3161,8 +3682,8 @@ const MissionDetails: React.FC = () => {
         '<user_email>': userData?.email || application?.userEmail || '[Email non disponible]',
         '<user_ecole>': userData?.ecole || application?.userEmail?.split('@')[1]?.split('.')[0] || '[École non disponible]',
         '<user_nom_complet>': userData?.displayName || application?.userDisplayName || '[Nom complet non disponible]',
-        '<user_telephone>': userData?.phone || '[Téléphone non disponible]',
-        '<user_numero_etudiant>': userData?.studentId || application?.studentId || '[Numéro étudiant non disponible]',
+        '<user_telephone>': userData?.phone || application?.userPhone || '[Téléphone non disponible]',
+        '<user_numero_etudiant>': userData?.studentId || application?.userStudentId || '[Numéro étudiant non disponible]',
         '<user_formation>': userData?.formation || '[Formation non disponible]',
         '<user_specialite>': userData?.speciality || '[Spécialité non disponible]',
         '<user_niveau_etude>': userData?.studyLevel || '[Niveau d\'études non disponible]',
@@ -3175,8 +3696,8 @@ const MissionDetails: React.FC = () => {
         '<socialSecurityNumber>': userData?.socialSecurityNumber || '[Numéro de sécurité sociale non disponible]',
         '<phone>': userData?.phone || '[Téléphone non disponible]',
         // AJOUT DES BALISES MANQUANTES
-        '<siren>': companies.find(c => c.id === mission.companyId)?.nSiret ? companies.find(c => c.id === mission.companyId)?.nSiret.substring(0, 9) : '[SIREN non disponible]',
-        '<companyName>': companies.find(c => c.id === mission.companyId)?.name || '[Nom entreprise non disponible]',
+        '<siren>': (company as any)?.nSiret ? String((company as any).nSiret).substring(0, 9) : '[SIREN non disponible]',
+        '<companyName>': company?.name || '[Nom entreprise non disponible]',
         '<missionDescription>': mission.description || '[Description non disponible]',
         '<missionStartDate>': mission.startDate ? new Date(mission.startDate).toLocaleDateString() : '[Date de début non disponible]',
         '<mission_date_debut>': mission.startDate ? new Date(mission.startDate).toLocaleDateString('fr-FR') : '[Date de début non disponible]',
@@ -3186,14 +3707,14 @@ const MissionDetails: React.FC = () => {
         '<charge_email>': chargeData?.email || '',
         '<charge_phone>': chargeData?.phone || '',
         // Balises de la structure
-        '<structure_nom>': structureData?.nom || '[Nom de la structure non disponible]',
-        '<structure_ecole>': structureData?.ecole || '[École de la structure non disponible]',
-        '<structure_address>': structureData?.address || '[Adresse de la structure non disponible]',
-        '<structure_phone>': structureData?.phone || '[Téléphone de la structure non disponible]',
-        '<structure_email>': structureData?.email || '[Email de la structure non disponible]',
-        '<structure_siret>': structureData?.siret || '[SIRET de la structure non disponible]',
-        '<structure_tvaNumber>': structureData?.tvaNumber || '[Numéro de TVA de la structure non disponible]',
-        '<structure_apeCode>': structureData?.apeCode || '[Code APE de la structure non disponible]',
+        '<structure_nom>': structureDataResolved?.nom || '[Nom de la structure non disponible]',
+        '<structure_ecole>': structureDataResolved?.ecole || '[École de la structure non disponible]',
+        '<structure_address>': structureDataResolved?.address || '[Adresse de la structure non disponible]',
+        '<structure_phone>': structureDataResolved?.phone || '[Téléphone de la structure non disponible]',
+        '<structure_email>': structureDataResolved?.email || '[Email de la structure non disponible]',
+        '<structure_siret>': structureDataResolved?.siret || '[SIRET de la structure non disponible]',
+        '<structure_tvaNumber>': structureDataResolved?.tvaNumber || '[Numéro de TVA de la structure non disponible]',
+        '<structure_apeCode>': structureDataResolved?.apeCode || '[Code APE de la structure non disponible]',
         '<structure_president_nom_complet>': presidentFullName,
 
         // Balises pour l'entreprise
@@ -3213,6 +3734,17 @@ const MissionDetails: React.FC = () => {
         '<endDate>': mission.endDate ? new Date(mission.endDate).toLocaleDateString('fr-FR') : '[Date de fin non disponible]',
         '<program>': userData?.program || '[Programme non disponible]',
         '<mission_gratificationhorraire>': typeof mission.priceHT === 'number' ? mission.priceHT.toString() : '[Gratification horaire non disponible]',
+
+        // Balises avenant
+        '<amendment_new_hours>': amendmentNewHoursDisplay,
+        '<amendmentNewHours>': amendmentNewHoursDisplay,
+        '<amendment_actual_hours>': amendmentNewHoursDisplay,
+        '<actualHours>': amendmentNewHoursDisplay,
+        '<heures_finalement_travaillees>': heuresFinalementTravaillees,
+        '<amendment_planned_hours>': amendmentPlannedHours,
+        '<plannedHours>': amendmentPlannedHours,
+        '<amendment_reason>': amendmentReason,
+        '<reason>': amendmentReason,
         
         // Balises pour les dépenses (jusqu'à 4 dépenses)
         '<depense1_nom>': (mission as any).nomdepense1 || '',
@@ -3236,14 +3768,26 @@ const MissionDetails: React.FC = () => {
       console.log('[replaceTags] Texte initial:', text);
       console.log('[replaceTags] Description de la mission:', mission.description);
 
+      const hourCounterTagNames = new Set([
+        'amendment_new_hours',
+        'amendment_actual_hours',
+        'actualHours',
+        'amendmentNewHours',
+        'workinghours_total',
+        'workingHoursTotal',
+      ]);
+
       Object.entries(replacements).forEach(([tag, value]) => {
         const regex = new RegExp(escapeRegExp(tag), 'g');
         const before = result;
-        
-        // Utiliser les données temporaires si disponibles
-        const tempValue = tempDataOverride?.[tag.replace(/[<>]/g, '')];
-        const finalValue = tempValue || value;
-        
+        const tagName = tag.replace(/[<>]/g, '');
+        const hasTempOverride =
+          tempDataOverride != null && Object.prototype.hasOwnProperty.call(tempDataOverride, tagName);
+        let finalValue = hasTempOverride ? tempDataOverride![tagName] : value;
+        if (hourCounterTagNames.has(tagName)) {
+          finalValue = formatHoursWithUnit(finalValue);
+        }
+
         result = result.replace(regex, finalValue);
         
         // Logs réduits pour améliorer les performances
@@ -3313,6 +3857,15 @@ const MissionDetails: React.FC = () => {
       
       // Nettoyer les lignes vides multiples consécutives
       result = result.replace(/\n\s*\n\s*\n+/g, '\n\n');
+
+      // Appliquer les overrides saisis dans la modale (balises absentes du mapping ci-dessus)
+      if (tempDataOverride) {
+        for (const [tagName, tempVal] of Object.entries(tempDataOverride)) {
+          if (tempVal === undefined || tempVal === null) continue;
+          const tag = `<${tagName}>`;
+          result = result.replace(new RegExp(escapeRegExp(tag), 'g'), tempVal);
+        }
+      }
 
       // Vérifier s'il reste des balises non remplacées
       const remainingTags = result.match(/<[^>]+>/g);
@@ -3395,6 +3948,11 @@ const MissionDetails: React.FC = () => {
       'generationDate': '<generationDate>',
       'generationDatePlusOneYear': '<mission_date_generation_plus_1_an>',
       'heuresDetaillees': '<heures_detaillees>',
+      'actualHours': '<amendment_actual_hours>',
+      'amendmentNewHours': '<amendment_new_hours>',
+      'heuresFinalementTravaillees': '<heures_finalement_travaillees>',
+      'plannedHours': '<amendment_planned_hours>',
+      'reason': '<amendment_reason>',
     };
 
     // Logs réduits pour améliorer les performances
@@ -3402,20 +3960,49 @@ const MissionDetails: React.FC = () => {
     return tagMappings[variableId] || `<${variableId}>`;
   };
 
-  const generateDocument = async (documentType: DocumentType, application?: Application, expenseNote?: ExpenseNote, ignoreMissingData: boolean = false, forceDownload: boolean = false) => {
+  const generateDocument = async (
+    documentType: DocumentType,
+    application?: Application,
+    expenseNote?: ExpenseNote,
+    ignoreMissingData: boolean = false,
+    forceDownload: boolean = false,
+    tempDataOverride?: Record<string, string>
+  ) => {
+    const activeTempData = tempDataOverride ?? tempData;
     if (mission?.isArchived) {
       enqueueSnackbar('Impossible de générer des documents pour une mission archivée', { variant: 'error' });
       return;
     }
+
+    if (documentType === 'avenant' && !application) {
+      enqueueSnackbar('Sélectionnez un étudiant pour générer l\'avenant', { variant: 'warning' });
+      return;
+    }
+
+    if (documentType === 'lettre_mission' && !application) {
+      enqueueSnackbar('Sélectionnez un étudiant pour générer la lettre de mission', { variant: 'warning' });
+      return;
+    }
     
     // Protection contre les appels multiples
-    if (generatingDoc) {
+    if (generatingDocType) {
       console.log('⚠️ Génération déjà en cours, ignoré');
       return;
     }
     
     try {
-      setGeneratingDoc(true);
+      setGeneratingDocType(documentType);
+
+      if (!ignoreMissingData) {
+        setMissingDataDialog({
+          open: true,
+          detecting: true,
+          missingData: [],
+          documentType,
+          application,
+          expenseNote
+        });
+      }
       
       console.log('🚀 Début de la génération du document:', documentType);
       
@@ -3440,27 +4027,30 @@ const MissionDetails: React.FC = () => {
         setDownloadProgress({ progress: 40, message: 'Vérification des données...' });
       }
       console.log('🔍 Vérification des données manquantes...');
-      const missingData = await detectMissingData(documentType, application, expenseNote);
-      
-      if (missingData.length > 0 && !ignoreMissingData) {
-        console.log('⚠️ Données manquantes détectées:', missingData);
-        // Afficher la popup avec les données manquantes
-        setMissingDataDialog({
-          open: true,
-          missingData,
-          documentType,
-          application,
-          expenseNote
-        });
-        setGeneratingDoc(false);
-        if (forceDownload) {
-          setDownloadProgress(null);
+      if (!ignoreMissingData) {
+        const missingData = await detectMissingData(documentType, application, expenseNote);
+
+        if (missingData.length > 0) {
+          console.log('⚠️ Données manquantes détectées:', missingData);
+          setMissingDataDialog({
+            open: true,
+            detecting: false,
+            missingData,
+            documentType,
+            application,
+            expenseNote
+          });
+          setGeneratingDocType(null);
+          if (forceDownload) {
+            setDownloadProgress(null);
+          }
+          return;
         }
-        return;
-      } else if (missingData.length > 0 && ignoreMissingData) {
-        console.log('⚠️ Données manquantes détectées mais ignorées pour la génération');
-      } else {
         console.log('✅ Aucune donnée manquante, génération en cours...');
+        setMissingDataDialog((prev) => ({ ...prev, open: false, detecting: false }));
+      } else {
+        console.log('✅ Vérification des données ignorée (saisie modale ou forçage)');
+        setMissingDataDialog((prev) => ({ ...prev, open: false, detecting: false }));
       }
       
       // 1. Récupérer l'assignation du template
@@ -3468,17 +4058,10 @@ const MissionDetails: React.FC = () => {
         setDownloadProgress({ progress: 50, message: 'Récupération du template...' });
       }
       console.log('📄 Récupération de l\'assignation du template...');
-      const assignmentsRef = collection(db, 'templateAssignments');
-      const assignmentQuery = query(
-        assignmentsRef,
-        where('documentType', '==', documentType),
-        where('structureId', '==', mission.structureId)
-      );
-      
-      const assignmentSnapshot = await getDocs(assignmentQuery);
-      console.log('📄 Assignations trouvées:', assignmentSnapshot.size);
-      
-      if (assignmentSnapshot.empty) {
+      const assignedTemplate = await getAssignedTemplate(documentType, documentType === 'avenant');
+      console.log('📄 Template assigné:', assignedTemplate ? assignedTemplate.id : 'aucun');
+
+      if (!assignedTemplate) {
         throw new Error(`Aucun template assigné pour le type de document "${documentType}" et la structure "${mission.structureId}". Veuillez vérifier les assignations dans les paramètres.`);
       }
 
@@ -3490,9 +4073,15 @@ const MissionDetails: React.FC = () => {
         where('documentType', '==', documentType)
       );
       const existingDocsSnapshot = await getDocs(existingDocsQuery);
-      console.log('🗑️ Anciens documents trouvés:', existingDocsSnapshot.size);
+      const docsToDelete =
+        (documentType === 'avenant' || documentType === 'lettre_mission') && application
+          ? existingDocsSnapshot.docs.filter(
+              (docSnap) => docSnap.data().applicationId === application.id
+            )
+          : existingDocsSnapshot.docs;
+      console.log('🗑️ Anciens documents trouvés:', docsToDelete.length);
       
-      for (const doc of existingDocsSnapshot.docs) {
+      for (const doc of docsToDelete) {
         const docData = doc.data();
         // Supprimer de Storage
         if (docData.fileUrl && storage) {
@@ -3509,9 +4098,8 @@ const MissionDetails: React.FC = () => {
         console.log('🗑️ Document supprimé de Firestore:', doc.id);
       }
 
-      const assignmentData = assignmentSnapshot.docs[0].data();
-      const templateId = assignmentData.templateId;
-      const generationType = assignmentData.generationType || 'template';
+      const templateId = assignedTemplate.id;
+      const generationType = assignedTemplate.generationType || 'template';
       console.log('📄 Template ID:', templateId);
       console.log('📄 Type de génération:', generationType);
       
@@ -3521,25 +4109,17 @@ const MissionDetails: React.FC = () => {
         // Rediriger vers l'éditeur (QuoteBuilder)
         const url = `/app/mission/${mission.id}/quote?template=${templateId}`;
         navigate(url);
-        setGeneratingDoc(false);
+        setGeneratingDocType(null);
         return;
       }
       
-      // 2. Récupérer le template avec cet ID
+      // 2. Utiliser le template récupéré
       if (forceDownload) {
         setDownloadProgress({ progress: 60, message: 'Chargement du template...' });
       }
       console.log('📄 Récupération du template...');
-      const templateRef = doc(db, 'templates', templateId);
-      const templateSnap = await getDoc(templateRef);
-      
-      if (!templateSnap.exists()) {
-        throw new Error('Le template assigné n\'existe plus. Veuillez en assigner un nouveau.');
-      }
-
-      const templateData = templateSnap.data();
-      const templatePdfUrl = templateData.pdfUrl;
-      const templateVariables = (templateData.variables || []) as TemplateVariable[];
+      const templatePdfUrl = assignedTemplate.pdfUrl;
+      const templateVariables = (assignedTemplate.variables || []) as TemplateVariable[];
       console.log('📄 Template récupéré, variables:', templateVariables.length);
 
       // 3. Charger et modifier le PDF
@@ -3571,6 +4151,7 @@ const MissionDetails: React.FC = () => {
       console.log('📄 PDF chargé, taille:', pdfBytes.byteLength);
 
       console.log('📄 Chargement du PDF dans PDFDocument...');
+      const { PDFDocument } = await import('pdf-lib');
       const pdfDoc = await PDFDocument.load(pdfBytes);
       console.log('📄 PDFDocument chargé, pages:', pdfDoc.getPageCount());
       
@@ -3625,12 +4206,11 @@ const MissionDetails: React.FC = () => {
         const workingHoursRef = collection(db, 'workingHours');
         const workingHoursQuery = query(
           workingHoursRef,
-          where('applicationId', '==', application.id),
-          limit(1)
+          where('applicationId', '==', application.id)
         );
-        workingHoursDataPromise = getDocs(workingHoursQuery).then(snapshot => {
-          return !snapshot.empty ? snapshot.docs[0].data() : null;
-        });
+        workingHoursDataPromise = getDocs(workingHoursQuery).then((snapshot) =>
+          buildWorkingHoursDocumentData(snapshot.docs)
+        );
         dataPromises.push(workingHoursDataPromise);
       }
       
@@ -3702,29 +4282,28 @@ const MissionDetails: React.FC = () => {
         presidentFullNamePromise
       ]);
 
-      // Décrypter les données du chargé de mission (phone, email) si elles sont chiffrées
-      let chargeDataToUse = chargeData;
-      const isEncryptedValue = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
-      if (mission.chargeId && chargeData && (isEncryptedValue(chargeData.phone) || isEncryptedValue(chargeData.email))) {
-        try {
-          const functions = getFunctions();
-          const decryptUserData = httpsCallable(functions, 'decryptUserData');
-          const deviceId = currentUser?.uid ? `${currentUser.uid}_${btoa(navigator.userAgent + navigator.platform).substring(0, 16)}` : undefined;
-          const result = await decryptUserData({ userId: mission.chargeId, deviceId, twoFactorCode: undefined });
-          if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
-            const dec = (result.data as any).decryptedData;
-            chargeDataToUse = {
-              ...chargeData,
-              phone: (dec.phone && !isEncryptedValue(dec.phone) ? dec.phone : chargeData.phone) ?? chargeData.phone,
-              email: (dec.email && !isEncryptedValue(dec.email) ? dec.email : chargeData.email) ?? chargeData.email
-            };
-          }
-        } catch (decryptErr) {
-          console.warn('Décryptage du chargé de mission ignoré (données chiffrées non décryptées):', decryptErr);
+      let companyDataFull: Record<string, unknown> | null = null;
+      if (mission.companyId) {
+        const companyDoc = await getDoc(doc(db, 'companies', mission.companyId));
+        if (companyDoc.exists()) {
+          companyDataFull = { id: companyDoc.id, ...companyDoc.data() };
         }
       }
-      
-      console.log('✅ Toutes les données récupérées en parallèle');
+
+      const decryptedCtx = await prepareDecryptedDocumentContext({
+        userId: application?.userId,
+        userData,
+        chargeId: mission.chargeId,
+        chargeData,
+        contactId: mission.contactId,
+        contactData: mission.contact ? { ...mission.contact } : null,
+        companyId: mission.companyId,
+        companyData: companyDataFull,
+        structureId: mission.structureId,
+        structureData,
+      });
+
+      console.log('✅ Toutes les données récupérées et déchiffrées en parallèle');
 
       // 5. Traiter chaque variable du template
       if (forceDownload) {
@@ -3783,13 +4362,16 @@ const MissionDetails: React.FC = () => {
 
           // Logs réduits pour améliorer les performances
           // console.log(`🔧 Valeur avant remplacement: ${valueToReplace}`);
-          const value = await replaceTags(valueToReplace, application, structureData, tempData, {
-            userData,
-            chargeData: chargeDataToUse,
+          const value = await replaceTags(valueToReplace, application, decryptedCtx.structureData ?? structureData, activeTempData, {
+            userData: decryptedCtx.userData,
+            chargeData: decryptedCtx.chargeData,
+            contactData: decryptedCtx.contactData,
+            companyData: decryptedCtx.companyData,
+            structureData: decryptedCtx.structureData ?? structureData,
             missionTypeData,
             presidentFullName,
             workingHoursData
-          });
+          }, documentType);
           // console.log(`🔧 Valeur après remplacement: ${value}`);
 
           if (value && value.trim()) {
@@ -3993,6 +4575,9 @@ const MissionDetails: React.FC = () => {
       } else if (documentType === 'lettre_mission' && application) {
         const nomFamille = application.userDisplayName?.split(' ').pop()?.toUpperCase() || 'ETUDIANT';
         fileName = `LM_${nomFamille}_${mission.numeroMission}.pdf`;
+      } else if (documentType === 'avenant' && application) {
+        const nomFamille = application.userDisplayName?.split(' ').pop()?.toUpperCase() || 'ETUDIANT';
+        fileName = `AV_${nomFamille}_${mission.numeroMission}.pdf`;
       } else if (documentType === 'note_de_frais' && expenseNote) {
         fileName = `NF_${expenseNote.id}_${mission.numeroMission}.pdf`;
       } else {
@@ -4195,6 +4780,7 @@ const MissionDetails: React.FC = () => {
     } catch (error: unknown) {
       console.error('❌ Erreur lors de la génération du document:', error);
       console.error('❌ Stack trace:', error instanceof Error ? error.stack : 'Pas de stack trace');
+      setMissingDataDialog((prev) => (prev.detecting ? { ...prev, open: false, detecting: false } : prev));
       setDownloadProgress(null);
       const isPermissionDenied = error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'permission-denied';
       const message = isPermissionDenied
@@ -4204,7 +4790,7 @@ const MissionDetails: React.FC = () => {
       throw error;
     } finally {
       console.log('🏁 Fin de la génération du document');
-      setGeneratingDoc(false);
+      setGeneratingDocType(null);
       if (!forceDownload) {
         setDownloadProgress(null);
       }
@@ -4301,6 +4887,7 @@ const MissionDetails: React.FC = () => {
       setTotalTTC(newTotalTTC);
 
       setIsPriceSaved(true);
+      setSavedExpenses(expenses.map((e) => ({ ...e })));
       const message = hasPriceChanged 
         ? "Prix horaire HT et dépenses enregistrés avec succès"
         : "Dépenses enregistrées avec succès";
@@ -4782,9 +5369,12 @@ const MissionDetails: React.FC = () => {
           <Box sx={{ flex: 1 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <Box>
-                <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
-                  {application.userDisplayName || application.userEmail.split('@')[0]}
-                </Typography>
+                <UserReferenceText
+                  userId={application.userId}
+                  name={application.userDisplayName}
+                  fallback={application.userEmail.split('@')[0]}
+                  sx={{ fontWeight: 500, fontSize: 16 }}
+                />
                 <Typography variant="body2" color="text.secondary">
                   {application.userEmail}
                 </Typography>
@@ -4954,7 +5544,7 @@ const MissionDetails: React.FC = () => {
     );
   };
 
-  const handleAddCandidate = async () => {
+  const handleAddCandidates = async (users: CandidatePick[], status: CandidateApplicationStatus) => {
     if (mission?.isArchived) {
       enqueueSnackbar('Impossible d\'ajouter un candidat à une mission archivée', { variant: 'error' });
       return;
@@ -4962,13 +5552,12 @@ const MissionDetails: React.FC = () => {
     if (!mission?.id) return;
 
     try {
-      // Ajouter chaque utilisateur sélectionné
-      for (const user of selectedUsers) {
+      for (const user of users) {
         const applicationData: Application = {
           id: '',
           userId: user.id,
           missionId: mission.id,
-          status: newCandidate.status as 'En attente' | 'Acceptée' | 'Refusée',
+          status,
           createdAt: new Date(),
           updatedAt: new Date(),
           userEmail: user.email,
@@ -4985,20 +5574,11 @@ const MissionDetails: React.FC = () => {
         setApplications(prev => [...prev, applicationData]);
       }
 
-      setOpenAddCandidateDialog(false);
-      setSelectedUsers([]);
-      setNewCandidate({
-        email: '',
-        displayName: '',
-        photoURL: '',
-        status: 'En attente',
-        id: ''
-      });
-
-      enqueueSnackbar(`${selectedUsers.length} candidat(s) ajouté(s) avec succès`, { variant: 'success' });
+      enqueueSnackbar(`${users.length} candidat(s) ajouté(s) avec succès`, { variant: 'success' });
     } catch (error) {
       console.error("Erreur lors de l'ajout des candidats:", error);
       enqueueSnackbar("Erreur lors de l'ajout des candidats", { variant: 'error' });
+      throw error;
     }
   };
 
@@ -5032,6 +5612,7 @@ const MissionDetails: React.FC = () => {
         } as ExtendedUser;
       });
       setAvailableUsers(usersList);
+      void decryptUsersListProgressive(usersList, setAvailableUsers);
     } catch (error) {
       console.error("Erreur lors du chargement des utilisateurs:", error);
     } finally {
@@ -5039,12 +5620,12 @@ const MissionDetails: React.FC = () => {
     }
   };
 
-  // Charger les utilisateurs au chargement de la page et quand la mission change
+  // Charger les utilisateurs pour le dialog permissions (pas au chargement de page)
   useEffect(() => {
-    if (mission?.structureId) {
-      fetchAvailableUsers();
+    if (isPermissionsDialogOpen && mission?.structureId) {
+      void fetchAvailableUsers();
     }
-  }, [mission?.structureId]);
+  }, [isPermissionsDialogOpen, mission?.structureId]);
 
   const handleUpdateMission = async (missionId: string, updatedData: Partial<Mission>) => {
     if (!updatedData) return;
@@ -5177,7 +5758,7 @@ const MissionDetails: React.FC = () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         createdBy: currentUser.uid,
-        createdByName: currentUser.displayName || currentUser.email || 'Utilisateur',
+        createdByName: getSafeDisplayName(userData) || currentUser.email || 'Utilisateur',
         createdByPhotoURL: currentUser.photoURL ?? null,
         missionId: mission.id,
         missionNumber: mission.numeroMission
@@ -5203,7 +5784,7 @@ const MissionDetails: React.FC = () => {
             user.id,
             'mission_note',
             'Nouvelle note sur la mission',
-            `${currentUser.displayName || currentUser.email} vous a mentionné dans une note sur la mission ${mission.numeroMission}`,
+            `${getSafeDisplayName(userData) || currentUser.email} vous a mentionné dans une note sur la mission ${mission.numeroMission}`,
             'medium',
             {
               missionId: mission.id,
@@ -5715,7 +6296,7 @@ const MissionDetails: React.FC = () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         createdBy: currentUser?.uid || '',
-        createdByName: userData?.displayName || '',
+        createdByName: getSafeDisplayName(userData),
         status: 'draft',
         isValid: true,
         tags: [
@@ -5975,7 +6556,7 @@ const MissionDetails: React.FC = () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         createdBy: currentUser?.uid || '',
-        createdByName: userData?.displayName || '',
+        createdByName: getSafeDisplayName(userData),
         status: 'final',
         isValid: true,
         tags: [],
@@ -6080,6 +6661,40 @@ const MissionDetails: React.FC = () => {
     }));
   };
 
+  const persistApplicationWorkingHours = useCallback(
+    async (application: Application, hours: WorkingHourEntry[]) => {
+      if (!mission?.id) return;
+
+      const workingHoursRef = collection(db, 'workingHours');
+      const existing = await getDocs(
+        query(workingHoursRef, where('applicationId', '==', application.id))
+      );
+
+      const batch = writeBatch(db);
+      existing.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+
+      if (hours.length > 0) {
+        const newDocRef = doc(workingHoursRef);
+        batch.set(newDocRef, {
+          applicationId: application.id,
+          userId: application.userId,
+          missionId: mission.id,
+          hours: hours.map(({ date, startTime, endTime, breaks }) => ({
+            date,
+            startTime,
+            endTime,
+            breaks: breaks || [],
+          })),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+
+      await batch.commit();
+    },
+    [mission?.id]
+  );
+
   const handleCloseWorkingHours = () => {
     setWorkingHoursDialog({
       open: false,
@@ -6099,70 +6714,82 @@ const MissionDetails: React.FC = () => {
     }
     if (!newWorkingHour.date || !newWorkingHour.startTime || !newWorkingHour.endTime) return;
 
+    const application =
+      applications.find((app) => app.id === applicationId) || workingHoursDialog.application;
+    if (!application) return;
+
     try {
-      const workingHourData = {
+      setSavingWorkingHours((prev) => ({ ...prev, [applicationId]: true }));
+
+      const newEntry: WorkingHourEntry = {
+        id: `temp_${Date.now()}`,
         date: newWorkingHour.date,
         startTime: newWorkingHour.startTime,
         endTime: newWorkingHour.endTime,
-        applicationId: applicationId,
-        createdAt: new Date(),
-        updatedAt: new Date()
+        breaks: [],
       };
+      const updatedHours = [...(application.workingHours || []), newEntry];
 
-      const docRef = await addDoc(collection(db, 'workingHours'), workingHourData);
-      
-      // Mettre à jour l'application avec les nouveaux horaires
-      const updatedApplication = {
-        ...workingHoursDialog.application,
-        workingHours: [
-          ...(workingHoursDialog.application.workingHours || []),
-          { id: docRef.id, ...workingHourData }
-        ]
-      };
+      await persistApplicationWorkingHours(application, updatedHours);
 
-      // Mettre à jour l'état local
-      setApplications(prev => prev.map(app => 
-        app.id === updatedApplication.id ? updatedApplication : app
-      ));
+      const hoursMap = await fetchWorkingHoursForApplications([applicationId]);
+      const persistedHours = hoursMap.get(applicationId) || updatedHours;
 
-      // Réinitialiser le formulaire
-      setNewWorkingHour({
-        date: '',
-        startTime: '',
-        endTime: ''
-      });
+      setApplications((prev) =>
+        prev.map((app) => (app.id === applicationId ? { ...app, workingHours: persistedHours } : app))
+      );
+      setWorkingHoursDialog((prev) =>
+        prev.application?.id === applicationId
+          ? { ...prev, application: { ...prev.application, workingHours: persistedHours } }
+          : prev
+      );
 
+      setNewWorkingHour({ date: '', startTime: '', endTime: '' });
+      setUnsavedChanges((prev) => ({ ...prev, [applicationId]: false }));
       enqueueSnackbar('Horaires ajoutés avec succès', { variant: 'success' });
     } catch (error) {
       console.error('Erreur lors de l\'ajout des horaires:', error);
       enqueueSnackbar('Erreur lors de l\'ajout des horaires', { variant: 'error' });
+    } finally {
+      setSavingWorkingHours((prev) => ({ ...prev, [applicationId]: false }));
     }
   };
 
-  const handleDeleteWorkingHour = (workingHourId: string) => {
-    // Mise à jour uniquement de l'état local
-    setApplications(prev => prev.map(app => {
-      if (app.workingHours?.some(wh => wh.id === workingHourId)) {
-        return {
-          ...app,
-          workingHours: app.workingHours.filter(wh => wh.id !== workingHourId)
-        };
-      }
-      return app;
-    }));
+  const handleDeleteWorkingHour = async (workingHourId: string) => {
+    const application =
+      applications.find((app) => app.workingHours?.some((wh) => wh.id === workingHourId)) ||
+      workingHoursDialog.application;
+    if (!application) return;
 
-    // Marquer les changements comme non sauvegardés
-    const application = applications.find(app => 
-      app.workingHours?.some(wh => wh.id === workingHourId)
-    );
-    if (application) {
-      setUnsavedChanges(prev => ({
-        ...prev,
-        [application.id]: true
-      }));
+    if (mission?.isArchived) {
+      enqueueSnackbar('Impossible de modifier les heures de travail pour une mission archivée', { variant: 'error' });
+      return;
     }
 
-    enqueueSnackbar('Horaire supprimé. N\'oubliez pas d\'enregistrer vos modifications.', { variant: 'info' });
+    try {
+      setSavingWorkingHours((prev) => ({ ...prev, [application.id]: true }));
+
+      const updatedHours = (application.workingHours || []).filter((wh) => wh.id !== workingHourId);
+      await persistApplicationWorkingHours(application, updatedHours);
+
+      setApplications((prev) =>
+        prev.map((app) =>
+          app.id === application.id ? { ...app, workingHours: updatedHours } : app
+        )
+      );
+      setWorkingHoursDialog((prev) =>
+        prev.application?.id === application.id
+          ? { ...prev, application: { ...prev.application, workingHours: updatedHours } }
+          : prev
+      );
+      setUnsavedChanges((prev) => ({ ...prev, [application.id]: false }));
+      enqueueSnackbar('Horaire supprimé', { variant: 'success' });
+    } catch (error) {
+      console.error('Erreur lors de la suppression des horaires:', error);
+      enqueueSnackbar('Erreur lors de la suppression des horaires', { variant: 'error' });
+    } finally {
+      setSavingWorkingHours((prev) => ({ ...prev, [application.id]: false }));
+    }
   };
 
   const handleUpdateWorkingHour = async (id: string, field: string, value: string) => {
@@ -6296,48 +6923,8 @@ const MissionDetails: React.FC = () => {
       if (!application.workingHours || !mission) return;
 
       setSavingWorkingHours(prev => ({ ...prev, [application.id]: true }));
+      await persistApplicationWorkingHours(application, application.workingHours);
 
-      // Récupérer le document existant des heures de travail
-      const workingHoursRef = collection(db, 'workingHours');
-      const workingHoursQuery = query(
-        workingHoursRef, 
-        where('applicationId', '==', application.id),
-        limit(1)
-      );
-      const existingWorkingHours = await getDocs(workingHoursQuery);
-
-      if (existingWorkingHours.empty) {
-        // Créer un nouveau document si aucun n'existe
-        const workingHoursData = {
-          applicationId: application.id,
-          userId: application.userId,
-          missionId: mission.id,
-          hours: application.workingHours.map(wh => ({
-            date: wh.date,
-            startTime: wh.startTime,
-            endTime: wh.endTime,
-            breaks: wh.breaks || []
-          })),
-          createdAt: new Date(),
-          updatedAt: new Date()
-        };
-
-        await addDoc(workingHoursRef, workingHoursData);
-      } else {
-        // Mettre à jour le document existant
-        const docRef = doc(db, 'workingHours', existingWorkingHours.docs[0].id);
-        await updateDoc(docRef, {
-          hours: application.workingHours.map(wh => ({
-            date: wh.date,
-            startTime: wh.startTime,
-            endTime: wh.endTime,
-            breaks: wh.breaks || []
-          })),
-          updatedAt: new Date()
-        });
-      }
-
-      // Réinitialiser l'état des changements non sauvegardés
       setUnsavedChanges(prev => ({
         ...prev,
         [application.id]: false
@@ -6371,22 +6958,7 @@ const MissionDetails: React.FC = () => {
           : note
       ));
 
-      // Envoyer une notification à l'étudiant
-      const expense = expenseNotes.find(note => note.id === expenseId);
-      if (expense) {
-        const notificationData = {
-          userId: expense.userId,
-          type: 'expense_status',
-          title: `Note de frais ${newStatus.toLowerCase()}`,
-          message: `Votre note de frais de ${expense.amount}€ a été ${newStatus.toLowerCase()}`,
-          read: false,
-          createdAt: new Date(),
-          missionId: mission?.id,
-          expenseId: expenseId
-        };
-
-        await addDoc(collection(db, 'notifications'), notificationData);
-      }
+      // Notification in-app + email gérées par Cloud Function onExpenseNoteWrite
 
       enqueueSnackbar(`Note de frais ${newStatus.toLowerCase()}`, { variant: 'success' });
     } catch (error) {
@@ -6693,6 +7265,93 @@ const MissionDetails: React.FC = () => {
     }
   };
 
+  const generateNextMissionNumber = async (structureId: string): Promise<string> => {
+    const now = new Date();
+    const yearStr = now.getFullYear().toString().slice(-2);
+    const monthStr = (now.getMonth() + 1).toString().padStart(2, '0');
+    const prefix = `${yearStr}${monthStr}`;
+
+    try {
+      const missionsSnapshot = await getDocs(
+        query(collection(db, 'missions'), where('structureId', '==', structureId))
+      );
+      const sequences = missionsSnapshot.docs
+        .map((d) => d.data().numeroMission as string)
+        .filter((n) => n && n.length === 6 && n.startsWith(prefix))
+        .map((n) => parseInt(n.slice(-2), 10))
+        .filter((n) => !Number.isNaN(n) && n > 0)
+        .sort((a, b) => b - a);
+      const next = sequences.length > 0 ? sequences[0] + 1 : 1;
+      return `${prefix}${next.toString().padStart(2, '0')}`;
+    } catch {
+      return `${prefix}01`;
+    }
+  };
+
+  const handleDuplicateMission = async () => {
+    if (!mission || !currentUser) return;
+    if (!mission.structureId) {
+      enqueueSnackbar('Impossible de dupliquer : structure manquante', { variant: 'error' });
+      return;
+    }
+
+    try {
+      enqueueSnackbar('Duplication en cours…', { variant: 'info' });
+      const numeroMission = await generateNextMissionNumber(mission.structureId);
+
+      const duplicated: Record<string, unknown> = {
+        numeroMission,
+        structureId: mission.structureId,
+        companyId: mission.companyId || '',
+        company: mission.company || '',
+        location: mission.location || '',
+        startDate: mission.startDate || '',
+        endDate: mission.endDate || '',
+        description: mission.description || '',
+        missionTypeId: mission.missionTypeId || null,
+        studentCount: mission.studentCount || 0,
+        hoursPerStudent: mission.hoursPerStudent || '',
+        chargeId: mission.chargeId || currentUser.uid,
+        chargeName: mission.chargeName || '',
+        title: mission.title ? `${mission.title} (copie)` : `Copie de ${mission.numeroMission}`,
+        salary: mission.salary || '10',
+        hours: mission.hours || 0,
+        requiresCV: mission.requiresCV ?? false,
+        requiresMotivation: mission.requiresMotivation ?? false,
+        isPublished: false,
+        isPublic: false,
+        priceHT: mission.priceHT || 0,
+        totalHT: mission.totalHT || 0,
+        totalTTC: mission.totalTTC || 0,
+        tva: mission.tva ?? 20,
+        ecole: mission.ecole || null,
+        contactId: mission.contactId || null,
+        contact: mission.contact || null,
+        mandat: mission.mandat || null,
+        status: 'En attente',
+        etape: 'Négociation' as MissionEtape,
+        isArchived: false,
+        createdAt: new Date(),
+        createdBy: currentUser.uid,
+        updatedAt: new Date(),
+      };
+
+      // Retirer les null Firestore-inutiles pour rester cohérent
+      Object.keys(duplicated).forEach((key) => {
+        if (duplicated[key] === null || duplicated[key] === undefined) {
+          delete duplicated[key];
+        }
+      });
+
+      const docRef = await addDoc(collection(db, 'missions'), duplicated);
+      enqueueSnackbar(`Mission ${numeroMission} créée`, { variant: 'success' });
+      navigate(`/app/mission/${docRef.id}`);
+    } catch (error) {
+      console.error('Erreur lors de la duplication de la mission:', error);
+      enqueueSnackbar('Erreur lors de la duplication de la mission', { variant: 'error' });
+    }
+  };
+
   // Ajouter cet effet pour charger le hourlyRate de la structure
   useEffect(() => {
     const fetchStructureHourlyRate = async () => {
@@ -6739,7 +7398,7 @@ const MissionDetails: React.FC = () => {
       const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
       const needsDecrypt = contactsData.some((c: any) => isEncrypted(c.email) || isEncrypted(c.phone));
       if (needsDecrypt) {
-        const decryptContactDataForStructure = httpsCallable(getFunctions(), 'decryptContactDataForStructure');
+        const decryptContactDataForStructure = httpsCallable(getFunctions(app, 'us-central1'), 'decryptContactDataForStructure');
         contactsData = await Promise.all(contactsData.map(async (contact: any) => {
           if (!isEncrypted(contact.email) && !isEncrypted(contact.phone)) return contact;
           try {
@@ -6956,13 +7615,411 @@ const MissionDetails: React.FC = () => {
     }
   };
 
+  const fetchAvenantTemplateOptions = async (structureId: string) => {
+    const [structureSnap, universalSnap] = await Promise.all([
+      getDocs(query(collection(db, 'templates'), where('structureId', '==', structureId))),
+      getDocs(
+        query(
+          collection(db, 'templates'),
+          where('isUniversal', '==', true),
+          where('universalDocumentType', '==', 'avenant')
+        )
+      ),
+    ]);
+
+    const byId = new Map<string, { id: string; name: string }>();
+    structureSnap.docs.forEach((d) => {
+      byId.set(d.id, { id: d.id, name: (d.data().name as string) || 'Sans nom' });
+    });
+    universalSnap.docs.forEach((d) => {
+      if (!byId.has(d.id)) {
+        byId.set(d.id, { id: d.id, name: (d.data().name as string) || 'Sans nom' });
+      }
+    });
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  };
+
+  const saveAvenantTemplateAssignment = async (structureId: string, templateId: string) => {
+    const existingQuery = query(
+      collection(db, 'templateAssignments'),
+      where('structureId', '==', structureId),
+      where('documentType', '==', 'avenant')
+    );
+    const existingSnap = await getDocs(existingQuery);
+    await Promise.all(
+      existingSnap.docs
+        .filter((d) => d.id !== `${structureId}_avenant`)
+        .map((d) => deleteDoc(d.ref))
+    );
+
+    const templateDoc = await getDoc(doc(db, 'templates', templateId));
+    const templateData = templateDoc.data() || {};
+
+    await setDoc(doc(db, 'templateAssignments', `${structureId}_avenant`), {
+      structureId,
+      documentType: 'avenant',
+      templateId,
+      isUniversal: !!templateData.isUniversal,
+      universalDocumentType: templateData.universalDocumentType || null,
+      generationType: 'template',
+      updatedAt: new Date(),
+    });
+
+    assignedTemplateCacheRef.current.delete(`${structureId}_avenant`);
+  };
+
   // Fonctions pour gérer la popup de données manquantes
+  const handleDocumentGenerateRequest = async (documentType: DocumentType) => {
+    if (documentType === 'lettre_mission') {
+      if (applications.length === 0) {
+        enqueueSnackbar('Aucun candidat sur cette mission — impossible de générer une LM', {
+          variant: 'warning',
+        });
+        return;
+      }
+      setLmDialogOpen(true);
+      return;
+    }
+
+    if (documentType === 'avenant') {
+      if (!mission?.structureId) return;
+      setAvenantDialog({
+        open: true,
+        step: 'setup',
+        selectedApplicationId: null,
+        templateTags: [],
+        checkingMissing: false,
+        templateName: null,
+        templateId: null,
+        templateOptions: [],
+        templateLoading: true,
+        templateSaving: false,
+        templateMissing: false,
+      });
+      setTempData({});
+      try {
+        const [template, optionsRaw] = await Promise.all([
+          getAssignedTemplate('avenant'),
+          fetchAvenantTemplateOptions(mission.structureId),
+        ]);
+        let options = optionsRaw;
+        if (template?.id && !options.some((o) => o.id === template.id)) {
+          options = [{ id: template.id, name: template.name || 'Template assigné' }, ...options];
+        }
+        const resolvedId = template?.id || options[0]?.id || null;
+        setAvenantDialog((prev) => ({
+          ...prev,
+          open: true,
+          templateName: template?.name || options.find((o) => o.id === resolvedId)?.name || null,
+          templateId: resolvedId,
+          templateOptions: options,
+          templateLoading: false,
+          templateSaving: false,
+          templateMissing: options.length === 0,
+        }));
+      } catch {
+        setAvenantDialog((prev) => ({
+          ...prev,
+          open: true,
+          templateLoading: false,
+          templateSaving: false,
+          templateMissing: true,
+        }));
+      }
+      return;
+    }
+    void generateDocument(documentType);
+  };
+
+  const handleCloseLmDialog = () => {
+    if (generatingDocType === 'lettre_mission') return;
+    setLmDialogOpen(false);
+  };
+
+  const handleLmGenerate = async (applicationId: string) => {
+    const application = applications.find((app) => app.id === applicationId);
+    if (!application || generatingDocType === 'lettre_mission') return;
+    try {
+      await generateDocument('lettre_mission', application);
+    } catch (error) {
+      console.error('Erreur génération lettre de mission:', error);
+    } finally {
+      setLmDialogOpen(false);
+    }
+  };
+
+  const handleCloseAvenantDialog = () => {
+    if (generatingDocType === 'avenant') return;
+    setAvenantDialog({
+      open: false,
+      step: 'setup',
+      selectedApplicationId: null,
+      templateTags: [],
+      checkingMissing: false,
+      templateName: null,
+      templateId: null,
+      templateOptions: [],
+      templateLoading: false,
+      templateSaving: false,
+      templateMissing: false,
+    });
+    setTempData({});
+  };
+
+  const handleAvenantTemplateChange = async (templateId: string) => {
+    if (!mission?.structureId) return;
+    const option = avenantDialog.templateOptions.find((o) => o.id === templateId);
+    setAvenantDialog((prev) => ({
+      ...prev,
+      templateId,
+      templateName: option?.name || prev.templateName,
+      templateSaving: true,
+    }));
+    try {
+      await saveAvenantTemplateAssignment(mission.structureId, templateId);
+      enqueueSnackbar('Template avenant mis à jour', { variant: 'success' });
+      if (avenantDialog.step === 'review' && avenantDialog.selectedApplicationId) {
+        const application = applications.find((app) => app.id === avenantDialog.selectedApplicationId);
+        if (application) {
+          setAvenantDialog((prev) => ({ ...prev, checkingMissing: true }));
+          const tags = await fetchTemplateTagsReview('avenant', application);
+          setAvenantDialog((prev) => ({
+            ...prev,
+            checkingMissing: false,
+            templateTags: tags,
+          }));
+        }
+      }
+    } catch (error) {
+      console.error('Erreur assignation template avenant:', error);
+      enqueueSnackbar('Impossible de changer le template', { variant: 'error' });
+    } finally {
+      setAvenantDialog((prev) => ({ ...prev, templateSaving: false }));
+    }
+  };
+
+  const handleAvenantContinue = async (applicationId: string) => {
+    const application = applications.find((app) => app.id === applicationId);
+    if (!application) return;
+
+    setAvenantDialog((prev) => ({
+      ...prev,
+      step: 'review',
+      selectedApplicationId: applicationId,
+      checkingMissing: true,
+      templateTags: [],
+    }));
+    setTempData({});
+
+    try {
+      const tags = await fetchTemplateTagsReview('avenant', application);
+      setAvenantDialog((prev) => ({
+        ...prev,
+        checkingMissing: false,
+        templateTags: tags,
+      }));
+    } catch (error) {
+      console.error('Erreur vérification balises avenant:', error);
+      setAvenantDialog((prev) => ({ ...prev, checkingMissing: false, step: 'setup' }));
+      enqueueSnackbar('Impossible de vérifier les balises du template', { variant: 'error' });
+    }
+  };
+
+  const handleAvenantBack = () => {
+    setAvenantDialog((prev) => ({
+      ...prev,
+      step: 'setup',
+      selectedApplicationId: null,
+      templateTags: [],
+      checkingMissing: false,
+    }));
+    setTempData({});
+  };
+
+  const handleAvenantRefreshMissing = async () => {
+    if (!avenantDialog.selectedApplicationId) return;
+    const application = applications.find((app) => app.id === avenantDialog.selectedApplicationId);
+    if (!application) return;
+
+    setAvenantDialog((prev) => ({ ...prev, checkingMissing: true }));
+    try {
+      const tags = await fetchTemplateTagsReview('avenant', application);
+      setAvenantDialog((prev) => ({
+        ...prev,
+        checkingMissing: false,
+        templateTags: tags,
+      }));
+    } catch (error) {
+      console.error('Erreur actualisation balises avenant:', error);
+      setAvenantDialog((prev) => ({ ...prev, checkingMissing: false }));
+      enqueueSnackbar('Impossible d\'actualiser les balises', { variant: 'error' });
+    }
+  };
+
+  const patchAvenantTemplateTag = (tag: string, value: string) => {
+    const trimmed = value.trim();
+    const relatedTags =
+      tag === 'amendment_new_hours' ||
+      tag === 'amendment_actual_hours' ||
+      tag === 'actualHours'
+        ? new Set(['amendment_new_hours', 'amendment_actual_hours', 'actualHours'])
+        : new Set([tag]);
+    setAvenantDialog((prev) => ({
+      ...prev,
+      templateTags: prev.templateTags.map((item) =>
+        relatedTags.has(item.tag) ? { ...item, value: trimmed, isMissing: !trimmed } : item
+      ),
+    }));
+    setTempData((prev) => {
+      const next = { ...prev };
+      relatedTags.forEach((t) => delete next[t]);
+      return next;
+    });
+  };
+
+  const persistDocumentTagValue = async (
+    tag: string,
+    value: string,
+    applicationForUser?: Application
+  ): Promise<'application_override' | 'entity' | 'temp_only'> => {
+    if (!mission) return 'temp_only';
+
+    if (tag.startsWith('mission_')) {
+      const field = tag.replace('mission_', '') as keyof Mission;
+      await handleUpdateMission(mission.id, { [field]: value });
+      return 'entity';
+    }
+    if (tag.startsWith('contact_')) {
+      if (mission.contactId) {
+        await updateDoc(doc(db, 'contacts', mission.contactId), {
+          [tag.replace('contact_', '')]: value,
+        });
+      }
+      return 'entity';
+    }
+    if (tag.startsWith('user_')) {
+      if (applicationForUser?.userId) {
+        const userDocRef = doc(db, 'users', applicationForUser.userId);
+        const userDoc = await getDoc(userDocRef);
+        if (userDoc.exists()) {
+          await updateDoc(userDocRef, { [tag.replace('user_', '')]: value });
+        } else {
+          await setDoc(userDocRef, { [tag.replace('user_', '')]: value }, { merge: true });
+        }
+      }
+      return 'entity';
+    }
+    if (tag.startsWith('structure_')) {
+      if (tag === 'structure_president_nom_complet') {
+        return 'temp_only';
+      }
+      if (mission.structureId) {
+        await updateDoc(doc(db, 'structures', mission.structureId), {
+          [tag.replace('structure_', '')]: value,
+        });
+      }
+      return 'entity';
+    }
+    if (tag.startsWith('entreprise_')) {
+      if (mission.companyId) {
+        await updateDoc(doc(db, 'companies', mission.companyId), {
+          [tag.replace('entreprise_', '')]: value,
+        });
+      }
+      return 'entity';
+    }
+    if (tag.startsWith('charge_')) {
+      const chargeDocRef = doc(db, 'users', mission.chargeId);
+      const chargeDoc = await getDoc(chargeDocRef);
+      if (chargeDoc.exists()) {
+        await updateDoc(chargeDocRef, { [tag.replace('charge_', '')]: value });
+      } else {
+        await setDoc(chargeDocRef, { [tag.replace('charge_', '')]: value }, { merge: true });
+      }
+      return 'entity';
+    }
+    if (applicationForUser?.id) {
+      await updateDoc(doc(db, 'applications', applicationForUser.id), {
+        [`documentTagOverrides.${tag}`]: value,
+        updatedAt: new Date(),
+      });
+      setApplications((prev) =>
+        prev.map((app) =>
+          app.id === applicationForUser.id
+            ? {
+                ...app,
+                documentTagOverrides: { ...(app.documentTagOverrides ?? {}), [tag]: value },
+              }
+            : app
+        )
+      );
+      return 'application_override';
+    }
+    return 'temp_only';
+  };
+
+  const handleAvenantSaveField = async (tag: string, value: string) => {
+    const application = avenantDialog.selectedApplicationId
+      ? applications.find((app) => app.id === avenantDialog.selectedApplicationId)
+      : undefined;
+    if (!application) return;
+
+    try {
+      const result = await persistDocumentTagValue(tag, value, application);
+      patchAvenantTemplateTag(tag, value);
+      enqueueSnackbar(
+        result === 'temp_only' ? 'Valeur conservée pour cette génération' : 'Valeur enregistrée',
+        { variant: result === 'temp_only' ? 'info' : 'success' }
+      );
+    } catch (error) {
+      console.error('Erreur enregistrement balise avenant:', error);
+      enqueueSnackbar('Erreur lors de l\'enregistrement', { variant: 'error' });
+    }
+  };
+
+  const handleAvenantGenerate = async () => {
+    const application = applications.find((app) => app.id === avenantDialog.selectedApplicationId);
+    if (!application || generatingDocType === 'avenant') return;
+
+    const effectiveTempData = avenantDialog.templateTags.reduce<Record<string, string>>((acc, item) => {
+      acc[item.tag] = tempData[item.tag] !== undefined ? tempData[item.tag] : (item.value || '');
+      return acc;
+    }, {});
+    const mergedTempData = {
+      ...(application.documentTagOverrides ?? {}),
+      ...effectiveTempData,
+      ...tempData,
+    };
+
+    try {
+      await generateDocument('avenant', application, undefined, true, false, mergedTempData);
+      setAvenantDialog({
+        open: false,
+        step: 'setup',
+        selectedApplicationId: null,
+        templateTags: [],
+        checkingMissing: false,
+        templateName: null,
+        templateId: null,
+        templateOptions: [],
+        templateLoading: false,
+        templateSaving: false,
+        templateMissing: false,
+      });
+      setTempData({});
+    } catch (error) {
+      console.error('Erreur génération avenant:', error);
+    }
+  };
+
   const handleCloseMissingDataDialog = () => {
     setMissingDataDialog({
       open: false,
+      detecting: false,
       missingData: [],
       documentType: 'proposition_commerciale'
     });
+    setGeneratingDocType(null);
   };
 
   const handleGenerateAnyway = async () => {
@@ -7028,93 +8085,33 @@ const MissionDetails: React.FC = () => {
     }));
   };
 
-  const handleSaveMissingData = async (tag: string, value: string) => {
+  const handleSaveMissingData = async (
+    tag: string,
+    value: string,
+    applicationOverride?: Application
+  ) => {
     if (!mission) return;
 
+    const applicationForUser =
+      applicationOverride ??
+      missingDataDialog.application ??
+      (avenantDialog.selectedApplicationId
+        ? applications.find((app) => app.id === avenantDialog.selectedApplicationId)
+        : undefined);
+
     try {
-      // Déterminer où sauvegarder la donnée selon la balise
-      if (tag.startsWith('mission_')) {
-        const field = tag.replace('mission_', '') as keyof Mission;
-        await handleUpdateMission(mission.id, { [field]: value });
-      } else if (tag.startsWith('contact_')) {
-        // Sauvegarder dans les contacts
-        if (mission.contactId) {
-          await updateDoc(doc(db, 'contacts', mission.contactId), {
-            [tag.replace('contact_', '')]: value
-          });
-        }
-      } else if (tag.startsWith('user_')) {
-        // Sauvegarder dans les données utilisateur
-        if (missingDataDialog.application?.userId) {
-          const userDocRef = doc(db, 'users', missingDataDialog.application.userId);
-          const userDoc = await getDoc(userDocRef);
-          
-          if (userDoc.exists()) {
-            await updateDoc(userDocRef, {
-              [tag.replace('user_', '')]: value
-            });
-          } else {
-            // Si le document utilisateur n'existe pas, le créer avec les données de base
-            await setDoc(userDocRef, {
-              [tag.replace('user_', '')]: value
-            }, { merge: true });
-          }
-        }
-      } else if (tag.startsWith('structure_')) {
-        // Pour structure_president_nom_complet, on ne peut pas sauvegarder dans la structure
-        // car c'est une donnée calculée. On utilise seulement tempData pour cette balise.
-        if (tag === 'structure_president_nom_complet') {
-          // Ne rien sauvegarder, juste utiliser tempData
-          setTempData(prev => ({
-            ...prev,
-            [tag]: value
-          }));
-        } else {
-          // Sauvegarder dans les données de structure pour les autres balises
-          if (mission.structureId) {
-            await updateDoc(doc(db, 'structures', mission.structureId), {
-              [tag.replace('structure_', '')]: value
-            });
-          }
-        }
-      } else if (tag.startsWith('entreprise_')) {
-        // Sauvegarder dans les données d'entreprise
-        if (mission.companyId) {
-          await updateDoc(doc(db, 'companies', mission.companyId), {
-            [tag.replace('entreprise_', '')]: value
-          });
-        }
-      } else if (tag.startsWith('charge_')) {
-        // Sauvegarder dans les données du chargé de mission
-        const chargeDocRef = doc(db, 'users', mission.chargeId);
-        const chargeDoc = await getDoc(chargeDocRef);
-        
-        if (chargeDoc.exists()) {
-          await updateDoc(chargeDocRef, {
-            [tag.replace('charge_', '')]: value
-          });
-        } else {
-          // Si le document utilisateur n'existe pas, le créer avec les données de base
-          await setDoc(chargeDocRef, {
-            [tag.replace('charge_', '')]: value
-          }, { merge: true });
-        }
-      }
+      await persistDocumentTagValue(tag, value, applicationForUser);
 
-      // Mettre à jour la liste des données manquantes
-      setMissingDataDialog(prev => ({
-        ...prev,
-        missingData: prev.missingData.filter(item => item.tag !== tag)
-      }));
-
-      // Supprimer de tempData
-      setTempData(prev => {
+      setTempData((prev) => {
         const newTempData = { ...prev };
         delete newTempData[tag];
         return newTempData;
       });
 
-      // Rafraîchir les données
+      setMissingDataDialog((prev) => ({
+        ...prev,
+        missingData: prev.missingData.filter((item) => item.tag !== tag),
+      }));
       await handleRefreshData();
 
       enqueueSnackbar('Donnée sauvegardée avec succès', { variant: 'success' });
@@ -7232,7 +8229,16 @@ const MissionDetails: React.FC = () => {
     }
   );
 
-  if (loading || permissionLoading) {
+  const isEtudiantViewer = userData?.status === 'etudiant';
+  const studentCanViewMission =
+    isEtudiantViewer &&
+    !!mission &&
+    !!userData?.structureId &&
+    mission.structureId === userData.structureId;
+  // Staff: usePermission('mission'). Étudiants: lecture si même structure (rules Firestore).
+  const canViewMission = isEtudiantViewer ? studentCanViewMission : canRead;
+
+  if (loading || (!isEtudiantViewer && permissionLoading)) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
         <CircularProgress />
@@ -7246,7 +8252,7 @@ const MissionDetails: React.FC = () => {
         <Alert severity="error">{error}</Alert>
         <Button
           startIcon={<ChevronLeftIcon />}
-          onClick={() => navigate('/mission')}
+          onClick={() => navigate(isEtudiantViewer ? '/app/available-missions' : '/mission')}
           sx={{ mt: 2 }}
         >
           Retour aux missions
@@ -7255,7 +8261,7 @@ const MissionDetails: React.FC = () => {
     );
   }
 
-  if (!canRead) {
+  if (!canViewMission) {
     return (
       <AccessDenied
         pageName="Détail de la mission"
@@ -7264,3102 +8270,683 @@ const MissionDetails: React.FC = () => {
     );
   }
 
+
+  const updatedAtLabel = mission?.updatedAt ? formatShortDate(mission.updatedAt) : undefined;
+  const missionTypeLabel = mission?.missionTypeId
+    ? missionTypes.find((t) => t.id === mission.missionTypeId)?.title
+    : undefined;
+  const createdByName = mission?.createdBy
+    ? structureMembers.find((m) => m.id === mission.createdBy)?.displayName
+    : undefined;
+
+  const activityEntries = userHistory.map((entry) => ({
+    id: entry.id,
+    date: entry.date,
+    action: entry.action,
+    details: entry.details,
+    userId: entry.userId,
+    actorName: structureMembers.find((m) => m.id === entry.userId)?.displayName || 'Utilisateur',
+  }));
+
+  const formatCurrency = (value: number) =>
+    new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: 'EUR',
+      maximumFractionDigits: 2,
+    }).format(value);
+
+  const acceptedCount = applications.filter((a) => a.status === 'Acceptée').length;
+  const workingHoursApplication = workingHoursDialog.application
+    ? applications.find((a) => a.id === workingHoursDialog.application!.id) ?? workingHoursDialog.application
+    : null;
+  const contactLabel = mission?.contact
+    ? `${mission.contact.firstName || ''} ${mission.contact.lastName || ''}`.trim()
+    : '';
+  const contactOptions = contacts.map((c) => ({
+    value: c.id,
+    label: `${c.firstName || ''} ${c.lastName || ''}`.trim() || c.email || 'Contact',
+  }));
+
+  const handleOverviewFieldSave = (field: string, value: string | number | boolean) => {
+    if (!mission?.id) return;
+    if (mission.isArchived) {
+      enqueueSnackbar('Impossible de modifier une mission archivée', { variant: 'error' });
+      return;
+    }
+    if (field === 'companyId') {
+      const company = companies.find((c) => c.id === value);
+      setMission((prev) =>
+        prev
+          ? {
+              ...prev,
+              companyId: value as string,
+              company: company?.name || '',
+              // Reset contact if company changes
+              ...(prev.companyId !== value
+                ? { contactId: undefined, contact: undefined }
+                : {}),
+            }
+          : null
+      );
+      return;
+    }
+    if (field === 'contactId') {
+      const contact = contacts.find((c) => c.id === value);
+      if (!contact) return;
+      setMission((prev) =>
+        prev
+          ? {
+              ...prev,
+              contactId: value as string,
+              contact: {
+                firstName: contact.firstName,
+                lastName: contact.lastName,
+                email: contact.email,
+                phone: contact.phone,
+                position: contact.position,
+              } as Mission['contact'],
+            }
+          : null
+      );
+      return;
+    }
+    if (field === 'chargeId') {
+      const member = structureMembers.find((c) => c.id === value);
+      const chargeName =
+        member?.displayName && !isEncryptedField(member.displayName) ? member.displayName : '';
+      setMission((prev) =>
+        prev
+          ? {
+              ...prev,
+              chargeId: value as string,
+              ...(chargeName ? { chargeName } : {}),
+            }
+          : null
+      );
+      return;
+    }
+    if (field === 'hours') {
+      const hours = typeof value === 'number' ? value : parseInt(String(value), 10) || 0;
+      handleFieldChange('hours', hours);
+      const { totalHT: th, totalTTC: tt } = calculatePrices(priceHT, hours, expenses);
+      setTotalHT(th);
+      setTotalTTC(tt);
+      setIsPriceSaved(false);
+      return;
+    }
+    if (field === 'numeroMission') {
+      handleFieldChange('numeroMission', String(value));
+      return;
+    }
+    handleFieldChange(field as keyof Mission, value);
+  };
+
+  const handleOverviewDateSave = (which: 'start' | 'end', date: string, time: string) => {
+    if (!mission?.id) return;
+    if (mission.isArchived) {
+      enqueueSnackbar('Impossible de modifier une mission archivée', { variant: 'error' });
+      return;
+    }
+    if (which === 'start') {
+      setStartDateDate(date);
+      setStartDateTime(time);
+    } else {
+      setEndDateDate(date);
+      setEndDateTime(time);
+    }
+  };
+
+  const handleOverviewToggle = (field: string, value: boolean) => {
+    if (!mission?.id) return;
+    if (field === 'isPublished') {
+      if (value !== isPublished) void handlePublishMission();
+      return;
+    }
+    if (field === 'isArchived') {
+      void handleUpdateMission(mission.id, { isArchived: value });
+      return;
+    }
+    // CV / motivation / public : draft local, enregistrés via MissionSaveBar
+    handleFieldChange(field as keyof Mission, value);
+  };
+
+  const applyDatesFromMission = (m: Mission) => {
+    if (m.startDate) {
+      const startDateObj = new Date(m.startDate);
+      setStartDateDate(startDateObj.toISOString().split('T')[0]);
+      setStartDateTime(startDateObj.toTimeString().slice(0, 5));
+    } else {
+      setStartDateDate('');
+      setStartDateTime('');
+    }
+    if (m.endDate) {
+      const endDateObj = new Date(m.endDate);
+      setEndDateDate(endDateObj.toISOString().split('T')[0]);
+      setEndDateTime(endDateObj.toTimeString().slice(0, 5));
+    } else {
+      setEndDateDate('');
+      setEndDateTime('');
+    }
+  };
+
+  const getDateParts = (iso?: string | null) => {
+    if (!iso) return { date: '', time: '' };
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return { date: '', time: '' };
+    return {
+      date: d.toISOString().split('T')[0],
+      time: d.toTimeString().slice(0, 5),
+    };
+  };
+
+  const collectDirtyFields = (): string[] => {
+    if (!mission || !editedMission) return [];
+    const fields: string[] = [];
+    const scalarKeys: Array<{ key: keyof Mission; label: string }> = [
+      { key: 'numeroMission', label: 'numeroMission' },
+      { key: 'missionTypeId', label: 'missionTypeId' },
+      { key: 'companyId', label: 'companyId' },
+      { key: 'contactId', label: 'contactId' },
+      { key: 'chargeId', label: 'chargeId' },
+      { key: 'location', label: 'location' },
+      { key: 'description', label: 'description' },
+      { key: 'studentCount', label: 'studentCount' },
+      { key: 'hoursPerStudent', label: 'hoursPerStudent' },
+      { key: 'hours', label: 'hours' },
+      { key: 'salary', label: 'salary' },
+      { key: 'requiresCV', label: 'requiresCV' },
+      { key: 'requiresMotivation', label: 'requiresMotivation' },
+    ];
+    for (const { key, label } of scalarKeys) {
+      if (JSON.stringify(mission[key] ?? null) !== JSON.stringify(editedMission[key] ?? null)) {
+        fields.push(label);
+      }
+    }
+    if (JSON.stringify(mission.contact ?? null) !== JSON.stringify(editedMission.contact ?? null)) {
+      if (!fields.includes('contactId')) fields.push('contactId');
+    }
+    const savedStart = getDateParts(editedMission.startDate);
+    if (startDateDate !== savedStart.date || startDateTime !== savedStart.time) {
+      fields.push('startDate');
+    }
+    const savedEnd = getDateParts(editedMission.endDate);
+    if (endDateDate !== savedEnd.date || endDateTime !== savedEnd.time) {
+      fields.push('endDate');
+    }
+    if (!isPriceSaved) {
+      if ((mission.priceHT || 0) !== priceHT || (editedMission.priceHT || 0) !== priceHT) {
+        fields.push('priceHT');
+      }
+      if (JSON.stringify(expenses) !== JSON.stringify(savedExpenses)) {
+        fields.push('expenses');
+      }
+      if (!fields.includes('priceHT') && !fields.includes('expenses')) {
+        fields.push('priceHT');
+      }
+    }
+    return fields;
+  };
+
+  const handleSavePendingChanges = async () => {
+    if (!mission || !editedMission) return;
+    if (mission.isArchived) {
+      enqueueSnackbar('Impossible de modifier une mission archivée', { variant: 'error' });
+      return;
+    }
+
+    const dirty = collectDirtyFields();
+    if (dirty.length === 0) return;
+
+    try {
+      setIsSaving(true);
+      setError(null);
+      const missionRef = doc(db, 'missions', mission.id);
+      const updateData: Record<string, unknown> = {};
+
+      const syncKeys: (keyof Mission)[] = [
+        'numeroMission',
+        'missionTypeId',
+        'companyId',
+        'company',
+        'contactId',
+        'contact',
+        'chargeId',
+        'chargeName',
+        'location',
+        'description',
+        'studentCount',
+        'hoursPerStudent',
+        'hours',
+        'salary',
+        'requiresCV',
+        'requiresMotivation',
+      ];
+      for (const key of syncKeys) {
+        if (JSON.stringify(mission[key] ?? null) !== JSON.stringify(editedMission[key] ?? null)) {
+          updateData[key] = mission[key] ?? null;
+        }
+      }
+
+      const savedStart = getDateParts(editedMission.startDate);
+      if (startDateDate !== savedStart.date || startDateTime !== savedStart.time) {
+        updateData.startDate = startDateDate
+          ? new Date(`${startDateDate}T${startDateTime || '00:00'}`).toISOString()
+          : null;
+      }
+      const savedEnd = getDateParts(editedMission.endDate);
+      if (endDateDate !== savedEnd.date || endDateTime !== savedEnd.time) {
+        updateData.endDate = endDateDate
+          ? new Date(`${endDateDate}T${endDateTime || '00:00'}`).toISOString()
+          : null;
+      }
+
+      if (updateData.chargeId && updateData.chargeId !== editedMission.chargeId) {
+        try {
+          const chargeDoc = await getDoc(doc(db, 'users', updateData.chargeId as string));
+          if (chargeDoc.exists()) {
+            updateData.mandat = chargeDoc.data().mandat || null;
+          }
+        } catch (err) {
+          console.error('Erreur lors de la récupération du mandat du chargé de mission:', err);
+        }
+      }
+
+      const pricingDirty = !isPriceSaved || dirty.includes('hours') || dirty.includes('priceHT') || dirty.includes('expenses');
+      if (pricingDirty) {
+        const hours = (typeof updateData.hours === 'number' ? updateData.hours : mission.hours) || 0;
+        const { totalHT: newTotalHT, totalTTC: newTotalTTC, tva: newTva } = calculatePrices(
+          priceHT,
+          hours,
+          expenses
+        );
+        updateData.priceHT = priceHT;
+        updateData.totalHT = newTotalHT;
+        updateData.totalTTC = newTotalTTC;
+        updateData.tva = newTva;
+
+        const missionDoc = await getDoc(missionRef);
+        if (missionDoc.exists()) {
+          const missionData = missionDoc.data();
+          let index = 1;
+          while (true) {
+            const nameKey = `nomdepense${index}`;
+            const tvaKey = `tvadepense${index}`;
+            const totalKey = `totaldepense${index}`;
+            if (missionData[nameKey] || missionData[tvaKey] || missionData[totalKey]) {
+              updateData[nameKey] = deleteField();
+              updateData[tvaKey] = deleteField();
+              updateData[totalKey] = deleteField();
+              index++;
+            } else {
+              break;
+            }
+          }
+        }
+        expenses.forEach((expense, index) => {
+          const num = index + 1;
+          updateData[`nomdepense${num}`] = expense.name;
+          updateData[`tvadepense${num}`] = expense.tva;
+          updateData[`totaldepense${num}`] = expense.priceHT;
+        });
+      }
+
+      if (Object.keys(updateData).length === 0) {
+        setIsPriceSaved(true);
+        return;
+      }
+
+      updateData.updatedAt = new Date();
+      await updateDoc(missionRef, updateData);
+
+      // L'état local `mission` contient déjà les champs formulaire ;
+      // on synchronise dates / tarifs / mandat puis on fige le snapshot.
+      const nextMission: Mission = {
+        ...mission,
+        ...(typeof updateData.startDate !== 'undefined'
+          ? { startDate: (updateData.startDate as string | null) || undefined }
+          : {}),
+        ...(typeof updateData.endDate !== 'undefined'
+          ? { endDate: (updateData.endDate as string | null) || undefined }
+          : {}),
+        ...(typeof updateData.mandat !== 'undefined'
+          ? { mandat: (updateData.mandat as string | null) || undefined }
+          : {}),
+        ...(pricingDirty
+          ? {
+              priceHT,
+              totalHT: updateData.totalHT as number,
+              totalTTC: updateData.totalTTC as number,
+              tva: updateData.tva as number,
+            }
+          : {}),
+      };
+      setMission(nextMission);
+      setEditedMission({ ...nextMission });
+      if (pricingDirty) {
+        setTotalHT(updateData.totalHT as number);
+        setTotalTTC(updateData.totalTTC as number);
+        setIsPriceSaved(true);
+        const persistedExpenses = expenses.map((e, idx) => ({
+          ...e,
+          isSaved: true,
+          savedIndex: idx + 1,
+        }));
+        setExpenses(persistedExpenses);
+        setSavedExpenses(persistedExpenses.map((e) => ({ ...e })));
+      }
+      enqueueSnackbar('Modifications enregistrées', { variant: 'success' });
+    } catch (err) {
+      console.error('Erreur lors de l’enregistrement des modifications:', err);
+      enqueueSnackbar('Erreur lors de l’enregistrement', { variant: 'error' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDiscardPendingChanges = () => {
+    if (!editedMission) return;
+    setMission({ ...editedMission });
+    setPriceHT(editedMission.priceHT || 0);
+    const restoredExpenses = savedExpenses.map((e) => ({ ...e }));
+    setExpenses(restoredExpenses);
+    applyDatesFromMission(editedMission);
+    const { totalHT: th, totalTTC: tt } = calculatePrices(
+      editedMission.priceHT || 0,
+      editedMission.hours,
+      restoredExpenses
+    );
+    setTotalHT(th);
+    setTotalTTC(tt);
+    setIsPriceSaved(true);
+  };
+
+  const handleAddExpenseRow = () => {
+    if (expenses.length >= 4) return;
+    const newExpense: MissionExpense = {
+      id: `expense-new-${Date.now()}`,
+      name: '',
+      tva: 20,
+      priceHT: 0,
+    };
+    setExpenses([...expenses, newExpense]);
+    setIsPriceSaved(false);
+  };
+
+  const handleLocalExpenseDelete = (index: number) => {
+    const updated = expenses.filter((_, i) => i !== index);
+    setExpenses(updated);
+    setIsPriceSaved(false);
+    if (mission) {
+      const { totalHT: th, totalTTC: tt } = calculatePrices(priceHT, mission.hours, updated);
+      setTotalHT(th);
+      setTotalTTC(tt);
+    }
+  };
+
+  const chargeDisplayName = (() => {
+    if (!mission?.chargeId) return '';
+    const member = structureMembers.find((m) => m.id === mission.chargeId);
+    if (member?.displayName && !isEncryptedField(member.displayName)) return member.displayName;
+    if (mission.chargeName && !isEncryptedField(mission.chargeName)) return mission.chargeName;
+    return '';
+  })();
+
+  const chargeSelectOptions = structureMembers.map((m) => ({
+    value: m.id,
+    label: isEncryptedField(m.displayName) ? 'Membre' : m.displayName,
+  }));
+
+  const dirtyFields = collectDirtyFields();
+  const dirtyCount = dirtyFields.length;
+
+  const renderMissionDetailBody = (): React.ReactNode => {
+    if (!mission) return null;
+
+    switch (activeTab) {
+      case 'overview':
+        return (
+          <MissionOverviewTabV2
+            canWrite={canWrite}
+            isArchived={mission.isArchived}
+            totalHT={totalHT}
+            totalTTC={totalTTC}
+            tvaPercent={20}
+            studentCount={mission.studentCount || 0}
+            hoursPerStudent={mission.hoursPerStudent || 0}
+            applicationsCount={applications.length}
+            acceptedCount={acceptedCount}
+            hours={mission.hours || 0}
+            priceHT={priceHT}
+            formatCurrency={formatCurrency}
+            title={mission.numeroMission || ''}
+            missionTypeId={mission.missionTypeId}
+            missionTypeLabel={missionTypeLabel}
+            missionTypeOptions={missionTypes.map((t) => ({ value: t.id, label: t.title }))}
+            companyId={mission.companyId}
+            companyName={mission.company}
+            companyOptions={companies.map((c) => ({ value: c.id, label: c.name }))}
+            contactId={mission.contactId}
+            contactLabel={contactLabel}
+            contactOptions={contactOptions}
+            chargeId={mission.chargeId}
+            chargeName={
+              chargeDisplayName ||
+              (mission.chargeName && !isEncryptedField(mission.chargeName) ? mission.chargeName : '')
+            }
+            chargeOptions={chargeSelectOptions}
+            location={mission.location || ''}
+            startDate={startDateDate}
+            startTime={startDateTime}
+            endDate={endDateDate}
+            endTime={endDateTime}
+            description={mission.description || ''}
+            salary={mission.salary || ''}
+            isPublished={isPublished}
+            requiresCV={mission.requiresCV}
+            requiresMotivation={mission.requiresMotivation}
+            expenses={expenses}
+            onFieldSave={handleOverviewFieldSave}
+            onDateSave={handleOverviewDateSave}
+            onDescriptionSave={(v) => {
+              handleFieldChange('description', v);
+            }}
+            onPriceHTChange={(v) => {
+              setPriceHT(v);
+              setIsPriceSaved(false);
+              const { totalHT: th, totalTTC: tt } = calculatePrices(v, mission.hours, expenses);
+              setTotalHT(th);
+              setTotalTTC(tt);
+            }}
+            onPriceHTBlur={() => {
+              /* draft only — save via MissionSaveBar */
+            }}
+            onSalarySave={(v) => handleOverviewFieldSave('salary', v)}
+            onTvaSave={() => {}}
+            onAddExpense={handleAddExpenseRow}
+            onExpenseChange={(index, patch) => {
+              const updated = [...expenses];
+              updated[index] = { ...updated[index], ...patch };
+              setExpenses(updated);
+              setIsPriceSaved(false);
+              const { totalHT: th, totalTTC: tt } = calculatePrices(priceHT, mission.hours, updated);
+              setTotalHT(th);
+              setTotalTTC(tt);
+            }}
+            onExpenseSave={() => {
+              /* draft only — save via MissionSaveBar */
+            }}
+            onExpenseDelete={handleLocalExpenseDelete}
+            onToggle={handleOverviewToggle}
+          />
+        );
+      case 'candidates':
+        return (
+          <MissionCandidatesTabV2
+            applications={applications}
+            canWrite={canWrite}
+            loading={loadingApplications}
+            onAddCandidate={() => setOpenAddCandidateDialog(true)}
+            onAccept={(id) => void handleUpdateApplicationStatus(id, 'Acceptée')}
+            onReject={(id) => void handleUpdateApplicationStatus(id, 'Refusée')}
+            onWorkingHours={(app) => setWorkingHoursDialog({ open: true, application: app })}
+            onDownloadCv={(url) => window.open(url, '_blank')}
+          />
+        );
+      case 'documents':
+        return (
+          <MissionDocumentsTabV2
+            documents={generatedDocuments}
+            canWrite={canWrite}
+            generatingDocType={generatingDocType}
+            onGenerate={(type) => void handleDocumentGenerateRequest(type)}
+            onGenerateFromTemplate={() => setManualGeneratorOpen(true)}
+            onUpload={(files, category) => {
+              Array.from(files).forEach((file) => handleOpenUploadDialog(category, file));
+            }}
+            onOpenDocument={(doc) => {
+              if (currentUser) {
+                trackUserActivity(currentUser.uid, 'document', {
+                  id: doc.id,
+                  title: doc.fileName || 'Document',
+                  subtitle: `Mission ${mission.numeroMission}`,
+                  url: doc.fileUrl,
+                });
+              }
+              window.open(doc.fileUrl, '_blank');
+            }}
+            onDocumentMenu={(e, doc) => handleDocumentMenuOpen(e, doc)}
+          />
+        );
+      case 'notes':
+        return (
+          <MissionNotesTabV2
+            notes={notes}
+            loading={loadingNotes}
+            canWrite={canWrite}
+            newNote={newNote}
+            onNewNoteChange={setNewNote}
+            onAddNote={() => void handleAddNote()}
+            composerSlot={
+              <TaggingInput
+                value={newNote}
+                onChange={setNewNote}
+                placeholder="Ajouter une note… utilisez @ pour mentionner un membre"
+                multiline
+                rows={3}
+                availableUsers={availableUsersForTagging}
+                onTaggedUsersChange={handleTaggedUsersChange}
+              />
+            }
+            editingNoteId={editingNoteId}
+            editedContent={editedNoteContent}
+            onEditContentChange={setEditedNoteContent}
+            onEditNote={handleEditNote}
+            onSaveNote={(id) => void handleSaveNote(id)}
+            onCancelEdit={() => { setEditingNoteId(null); setEditedNoteContent(''); }}
+            onDeleteNote={(id) => void handleDeleteNote(id)}
+            currentUserInitials={
+              (currentUser?.displayName || currentUser?.email || 'MO').slice(0, 2).toUpperCase()
+            }
+          />
+        );
+      case 'activity':
+        return <ActivityTab entries={activityEntries} />;
+      default:
+        return null;
+    }
+  };
+
   return (
-    <Box sx={{ 
-      p: { xs: 2, md: 4 },
-      maxWidth: '1400px',
-      margin: '0 auto',
-      fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-    }}>
+    <Box sx={{ ...dsPageCanvasSx, ...mdV2RootSx }}>
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 2, mx: { xs: 2, md: 4 }, mt: 2 }} onClose={() => setError(null)}>
           {error}
         </Alert>
       )}
       {successMessage && (
-        <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccessMessage(null)}>
+        <Alert severity="success" sx={{ mb: 2, mx: { xs: 2, md: 4 } }} onClose={() => setSuccessMessage(null)}>
           {successMessage}
         </Alert>
       )}
 
-      <Grid container spacing={3}>
-        {/* Colonne principale (75%) */}
-        <Grid item xs={12} md={9}>
-          <Paper sx={{ 
-            p: 3, 
-            mb: 3,
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-            bgcolor: '#fff'
-          }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Button
-                startIcon={<ChevronLeftIcon />}
-                onClick={() => navigate('/app/mission')}
-                sx={{
-                  color: 'text.secondary',
-                  '&:hover': {
-                    backgroundColor: 'rgba(0, 0, 0, 0.04)',
-                  },
-                }}
-              >
-                Retour aux missions
-              </Button>
-              {mission && canWrite && (
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                  {!isEditing ? (
-                    <>
-                      <Tooltip title="Modifier">
-                        <IconButton
-                          onClick={handleEdit}
-                          sx={{
-                            color: 'text.secondary',
-                            '&:hover': {
-                              color: '#007AFF',
-                              backgroundColor: 'rgba(0, 122, 255, 0.04)'
-                            }
-                          }}
-                        >
-                          <EditIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Supprimer">
-                        <IconButton
-                          onClick={() => setDeleteDialogOpen(true)}
-                          sx={{
-                            color: 'text.secondary',
-                            '&:hover': {
-                              color: '#FF3B30',
-                              backgroundColor: 'rgba(255, 59, 48, 0.04)'
-                            }
-                          }}
-                        >
-                          <DeleteIcon />
-                        </IconButton>
-                      </Tooltip>
-                    </>
-                  ) : (
-                    <Tooltip title="Enregistrer">
-                      <IconButton
-                        onClick={handleSave}
-                        sx={{
-                          color: '#007AFF',
-                          '&:hover': {
-                            backgroundColor: 'rgba(0, 122, 255, 0.04)'
-                          }
-                        }}
-                      >
-                        <SaveIcon />
-                      </IconButton>
-                    </Tooltip>
-                  )}
-                </Box>
-              )}
-            </Box>
+      {mission && (
+        <MissionDetailHeaderV2
+          numeroMission={mission.numeroMission}
+          title={mission.numeroMission || ''}
+          etape={mission.etape}
+          isPublished={isPublished}
+          isArchived={mission.isArchived}
+          activeTab={activeTab}
+          tabCounts={tabCounts}
+          canWrite={canWrite}
+          onBack={() => navigate('/app/mission')}
+          onTabChange={setActiveTab}
+          onTitleSave={(t) => {
+            handleFieldChange('numeroMission', t);
+          }}
+          onEtapeChange={(e) => void handleEtapeChange(e as MissionEtape)}
+          onShare={() => setIsPermissionsDialogOpen(true)}
+          onGoDocuments={() => setActiveTab('documents')}
+          onNewDocument={() => setActiveTab('documents')}
+          overflowOpen={overflowOpen}
+          overflowAnchor={overflowAnchor}
+          onOverflowToggle={(el) => {
+            setOverflowAnchor(el);
+            setOverflowOpen(!!el);
+          }}
+          onDelete={() => setDeleteDialogOpen(true)}
+          onArchive={() => {
+            void handleUpdateMission(mission.id, { isArchived: !mission.isArchived });
+          }}
+          onDuplicate={() => {
+            void handleDuplicateMission();
+          }}
+        />
+      )}
 
-            {/* Titre Mission au-dessus de la barre de progression */}
-            <Box sx={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'space-between',
-              mb: 3 
-            }}>
-              {mission && (
-                <>
-                  <Typography variant="h4" sx={{ 
-                    fontWeight: 600,
-                    color: '#1d1d1f'
-                  }}>
-                    Mission #{mission?.numeroMission}
-                  </Typography>
-                  {mission?.isArchived && (
-                    <Chip
-                      label="Archivée"
-                      size="small"
-                      sx={{
-                        backgroundColor: 'rgba(0, 122, 255, 0.1)',
-                        color: '#007AFF',
-                        fontWeight: 500,
-                        borderRadius: '6px'
-                      }}
-                    />
-                  )}
-                </>
-              )}
-            </Box>
-            {mission && <MissionEtape etape={mission.etape} onEtapeChange={handleEtapeChange} isEditing={isEditing} isArchived={mission.isArchived} />}
-            <Grid container spacing={4}>
-
-
-              <Grid item xs={12} md={6}>
-                <Box sx={{ 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: 0,
-                  '& > *': {
-                    mb: '0px'
-                  }
-                }}>
-                  {isEditing ? (
-                    <>
-                      <EditableField
-                        ref={(el) => fieldsRef.current.numeroMission = el}
-                        icon={<AssignmentIcon sx={{ fontSize: 24 }} />}
-                        label="Numéro de mission"
-                        field="numeroMission"
-                        initialValue={editedMission?.numeroMission ?? ''}
-                        mission={mission}
-                        onUpdate={handleUpdateMission}
-                        onFieldChange={handleFieldChange}
-                        isGlobalEditing={isEditing}
-                      />
-                      <EditableSelectField
-                        ref={(el) => fieldsRef.current.companyId = el}
-                        icon={<BusinessIcon sx={{ fontSize: 24 }} />}
-                        label="Entreprise"
-                        field="companyId"
-                        initialValue={editedMission?.companyId || ''}
-                        options={companies.map(company => ({ value: company.id, label: company.name }))}
-                        mission={mission}
-                        onUpdate={handleUpdateMission}
-                        onFieldChange={handleFieldChange}
-                        isGlobalEditing={isEditing}
-                      />
-                      <EditableSelectField
-                        ref={(el) => fieldsRef.current.contactId = el}
-                        icon={<PersonIcon sx={{ fontSize: 24 }} />}
-                        label="Contact"
-                        field="contactId"
-                        initialValue={editedMission?.contactId || ''}
-                        options={[{ value: '', label: 'Aucun contact' }, ...contacts.map(contact => ({ value: contact.id, label: `${contact.firstName} ${contact.lastName} - ${contact.email}` }))]}
-                        mission={mission}
-                        onUpdate={handleUpdateMission}
-                        onFieldChange={handleFieldChange}
-                        isGlobalEditing={isEditing}
-                      />
-                      <EditableField
-                        ref={(el) => fieldsRef.current.location = el}
-                        icon={<LocationOnIcon sx={{ fontSize: 24 }} />}
-                        label="Localisation"
-                        field="location"
-                        initialValue={editedMission?.location || ''}
-                        mission={mission}
-                        onUpdate={handleUpdateMission}
-                        onFieldChange={handleFieldChange}
-                        isGlobalEditing={isEditing}
-                      />
-                      <Box sx={{ 
-                        display: 'flex', 
-                        flexDirection: 'column',
-                        gap: 2,
-                        mb: 2.5
-                      }}>
-                        {/* Date et heure de début */}
-                        <Box sx={{ 
-                          display: 'flex', 
-                          flexDirection: 'column',
-                          gap: 1
-                        }}>
-                          <Typography sx={{ 
-                            fontSize: '0.875rem', 
-                            color: '#86868b',
-                            mb: 0.5,
-                            letterSpacing: '-0.01em',
-                            fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-                          }}>
-                            Date et heure de début
-                          </Typography>
-                          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                            <Box sx={{ 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'center',
-                              width: 40,
-                              height: 40,
-                              borderRadius: '10px',
-                              backgroundColor: '#f5f5f7',
-                              color: '#1d1d1f'
-                            }}>
-                              <CalendarIcon sx={{ fontSize: 24 }} />
-                            </Box>
-                            <TextField
-                              fullWidth
-                              type="date"
-                              value={startDateDate}
-                              onChange={(e) => setStartDateDate(e.target.value)}
-                              disabled={!isEditing}
-                              variant="outlined"
-                              size="small"
-                              sx={{ 
-                                '& .MuiOutlinedInput-root': {
-                                  borderRadius: '12px',
-                                  backgroundColor: isEditing ? '#f5f5f7' : 'transparent',
-                                  '& fieldset': { border: 'none' },
-                                  '&:hover fieldset': { borderColor: 'transparent' },
-                                  '&.Mui-focused fieldset': {
-                                    borderColor: '#007AFF',
-                                    borderWidth: '1px'
-                                  }
-                                }
-                              }}
-                            />
-                            <TextField
-                              fullWidth
-                              type="time"
-                              value={startDateTime}
-                              onChange={(e) => setStartDateTime(e.target.value)}
-                              disabled={!isEditing}
-                              variant="outlined"
-                              size="small"
-                              sx={{ 
-                                '& .MuiOutlinedInput-root': {
-                                  borderRadius: '12px',
-                                  backgroundColor: isEditing ? '#f5f5f7' : 'transparent',
-                                  '& fieldset': { border: 'none' },
-                                  '&:hover fieldset': { borderColor: 'transparent' },
-                                  '&.Mui-focused fieldset': {
-                                    borderColor: '#007AFF',
-                                    borderWidth: '1px'
-                                  }
-                                }
-                              }}
-                            />
-                          </Box>
-                        </Box>
-                        
-                        {/* Date et heure de fin */}
-                        <Box sx={{ 
-                          display: 'flex', 
-                          flexDirection: 'column',
-                          gap: 1
-                        }}>
-                          <Typography sx={{ 
-                            fontSize: '0.875rem', 
-                            color: '#86868b',
-                            mb: 0.5,
-                            letterSpacing: '-0.01em',
-                            fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-                          }}>
-                            Date et heure de fin
-                          </Typography>
-                          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                            <Box sx={{ 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'center',
-                              width: 40,
-                              height: 40,
-                              borderRadius: '10px',
-                              backgroundColor: '#f5f5f7',
-                              color: '#1d1d1f'
-                            }}>
-                              <CalendarIcon sx={{ fontSize: 24 }} />
-                            </Box>
-                            <TextField
-                              fullWidth
-                              type="date"
-                              value={endDateDate}
-                              onChange={(e) => setEndDateDate(e.target.value)}
-                              disabled={!isEditing}
-                              variant="outlined"
-                              size="small"
-                              sx={{ 
-                                '& .MuiOutlinedInput-root': {
-                                  borderRadius: '12px',
-                                  backgroundColor: isEditing ? '#f5f5f7' : 'transparent',
-                                  '& fieldset': { border: 'none' },
-                                  '&:hover fieldset': { borderColor: 'transparent' },
-                                  '&.Mui-focused fieldset': {
-                                    borderColor: '#007AFF',
-                                    borderWidth: '1px'
-                                  }
-                                }
-                              }}
-                            />
-                            <TextField
-                              fullWidth
-                              type="time"
-                              value={endDateTime}
-                              onChange={(e) => setEndDateTime(e.target.value)}
-                              disabled={!isEditing}
-                              variant="outlined"
-                              size="small"
-                              sx={{ 
-                                '& .MuiOutlinedInput-root': {
-                                  borderRadius: '12px',
-                                  backgroundColor: isEditing ? '#f5f5f7' : 'transparent',
-                                  '& fieldset': { border: 'none' },
-                                  '&:hover fieldset': { borderColor: 'transparent' },
-                                  '&.Mui-focused fieldset': {
-                                    borderColor: '#007AFF',
-                                    borderWidth: '1px'
-                                  }
-                                }
-                              }}
-                            />
-                          </Box>
-                        </Box>
-                      </Box>
-                    </>
-                  ) : (
-                    <>
-                      <InfoItemEditable
-                        icon={<AssignmentIcon sx={{ fontSize: 24 }} />}
-                        label="Numéro de mission"
-                        field="numeroMission"
-                        value={mission?.numeroMission || '-'}
-                      />
-                      <Box 
-                        onClick={() => mission?.companyId && handleCompanyClick(mission.companyId)}
-                        sx={{ 
-                          cursor: mission?.companyId ? 'pointer' : 'default',
-                          '&:hover': {
-                            '& .company-name': {
-                              color: '#007AFF',
-                              textDecoration: 'underline'
-                            }
-                          }
-                        }}
-                      >
-                        <InfoItemEditable
-                          icon={<BusinessIcon sx={{ fontSize: 24 }} />}
-                          label="Entreprise"
-                          field="company"
-                          value={
-                            mission?.companyId 
-                              ? (companies.find(c => c.id === mission.companyId)?.name || mission?.company || '-')
-                              : (mission?.company || '-')
-                          }
-                        />
-                      </Box>
-                      <InfoItemEditable
-                        icon={<PersonIcon sx={{ fontSize: 24 }} />}
-                        label="Contact"
-                        field="contact"
-                        value={mission?.contact ? `${mission.contact.firstName} ${mission.contact.lastName}` : '-'}
-                      />
-                      <InfoItemEditable
-                        icon={<LocationOnIcon sx={{ fontSize: 24 }} />}
-                        label="Localisation"
-                        field="location"
-                        value={mission?.location || '-'}
-                      />
-                      <Box sx={{ 
-                        display: 'flex', 
-                        flexDirection: 'column',
-                        gap: 2,
-                        mb: 2.5
-                      }}>
-                        {/* Date et heure de début */}
-                        <Box sx={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          gap: 2,
-                        }}>
-                          <Box sx={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'center',
-                            width: 40,
-                            height: 40,
-                            borderRadius: '10px',
-                            backgroundColor: '#f5f5f7',
-                            color: '#1d1d1f'
-                          }}>
-                            <CalendarIcon sx={{ fontSize: 24 }} />
-                          </Box>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography sx={{ 
-                              fontSize: '0.875rem', 
-                              color: '#86868b',
-                              mb: 0.5,
-                              letterSpacing: '-0.01em',
-                              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-                            }}>
-                              Date et heure de début
-                            </Typography>
-                            <Typography sx={{ 
-                              fontSize: '1rem', 
-                              fontWeight: '500',
-                              color: '#1d1d1f',
-                              letterSpacing: '-0.01em',
-                              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-                            }}>
-                              {mission?.startDate ? 
-                                `${new Date(mission.startDate).toLocaleDateString('fr-FR')} à ${new Date(mission.startDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` 
-                                : '-'}
-                            </Typography>
-                          </Box>
-                        </Box>
-                        
-                        {/* Date et heure de fin */}
-                        <Box sx={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          gap: 2,
-                        }}>
-                          <Box sx={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'center',
-                            width: 40,
-                            height: 40,
-                            borderRadius: '10px',
-                            backgroundColor: '#f5f5f7',
-                            color: '#1d1d1f'
-                          }}>
-                            <CalendarIcon sx={{ fontSize: 24 }} />
-                          </Box>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography sx={{ 
-                              fontSize: '0.875rem', 
-                              color: '#86868b',
-                              mb: 0.5,
-                              letterSpacing: '-0.01em',
-                              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-                            }}>
-                              Date et heure de fin
-                            </Typography>
-                            <Typography sx={{ 
-                              fontSize: '1rem', 
-                              fontWeight: '500',
-                              color: '#1d1d1f',
-                              letterSpacing: '-0.01em',
-                              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-                            }}>
-                              {mission?.endDate ? 
-                                `${new Date(mission.endDate).toLocaleDateString('fr-FR')} à ${new Date(mission.endDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` 
-                                : '-'}
-                            </Typography>
-                          </Box>
-                        </Box>
-                      </Box>
-                    </>
-                  )}
-                </Box>
-              </Grid>
-
-              <Grid item xs={12} md={6}>
-                <Box sx={{ 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  gap: 0,
-                  '& > *': {
-                    mb: '0px'
-                  }
-                }}>
-                  {isEditing ? (
-                    <>
-                      <Box sx={{ 
-                        display: 'flex', 
-                        alignItems: 'flex-start', 
-                        gap: 2,
-                        
-                        mb: 2.5
-                      }}>
-                        <Box sx={{
-                          width: 40,
-                          height: 40,
-                          borderRadius: '10px',
-                          backgroundColor: '#f5f5f7',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          color: '#1d1d1f'
-                        }}>
-                          <PersonIcon sx={{ fontSize: 24 }} />
-                        </Box>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography sx={{ 
-                            fontSize: '0.875rem', 
-                            color: '#86868b',
-                            mb: 0.5,
-                            letterSpacing: '-0.01em',
-                            fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-                          }}>
-                            Chargé de mission
-                          </Typography>
-                          <TextField
-                            select
-                            value={mission?.chargeId || ''}
-                            onChange={(e) => handleFieldChange('chargeId', e.target.value)}
-                            disabled={!isEditing}
-                            fullWidth
-                            size="small"
-                            variant="outlined"
-                            placeholder="Sélectionner un chargé de mission"
-                            sx={{
-                              minHeight: '56px',
-                              '& .MuiOutlinedInput-root': {
-                                minHeight: '56px',
-                                borderRadius: '12px',
-                                backgroundColor: '#f5f5f7',
-                                '& fieldset': { 
-                                  border: 'none' 
-                                },
-                                '&:hover fieldset': {
-                                  borderColor: 'transparent'
-                                },
-                                '&.Mui-focused fieldset': {
-                                  borderColor: '#007AFF',
-                                  borderWidth: '1px'
-                                }
-                              }
-                            }}
-                            SelectProps={{
-                              renderValue: (selected) => {
-                                const member = structureMembers.find(m => m.id === selected);
-                                if (!member) return '';
-                                return (
-                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <Avatar 
-                                      src={member.photoURL || ''} 
-                                      sx={{ width: 24, height: 24, mr: 1 }}
-                                      onError={(e) => {
-                                        const target = e.currentTarget as HTMLImageElement;
-                                        target.src = '';
-                                      }}
-                                    >
-                                      {member.displayName?.charAt(0)}
-                                    </Avatar>
-                                    <span>{member.displayName}</span>
-                                  </Box>
-                                );
-                              }
-                            }}
-                          >
-                            {structureMembers.map((member) => (
-                              <MenuItem 
-                                key={member.id} 
-                                value={member.id}
-                                sx={{
-                                  fontSize: '1rem',
-                                  fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-                                  color: '#1d1d1f',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 1
-                                }}
-                              >
-                                <Avatar
-                                  src={member.photoURL || undefined}
-                                  sx={{ width: 24, height: 24, mr: 1 }}
-                                  onError={(e) => {
-                                    const target = e.currentTarget as HTMLImageElement;
-                                    target.src = '';
-                                    target.style.display = 'none';
-                                  }}
-                                >
-                                  {member.displayName?.charAt(0)}
-                                </Avatar>
-                                {member.displayName}
-                              </MenuItem>
-                            ))}
-                          </TextField>
-                        </Box>
-                      </Box>
-                      <EditableField
-                        ref={(el) => fieldsRef.current.studentCount = el}
-                        icon={<GroupIcon sx={{ fontSize: 24 }} />}
-                        label="Nombre d'étudiants requis"
-                        field="studentCount"
-                        initialValue={editedMission?.studentCount?.toString() || ''}
-                        type="number"
-                        mission={mission}
-                        onUpdate={handleUpdateMission}
-                        onFieldChange={handleFieldChange}
-                        isGlobalEditing={isEditing}
-                      />
-                      <EditableField
-                        ref={(el) => fieldsRef.current.hours = el}
-                        icon={<AccessTimeIcon sx={{ fontSize: 24 }} />}
-                        label="Nombre d'heures total"
-                        field="hours"
-                        initialValue={editedMission?.hours?.toString() || ''}
-                        type="number"
-                        mission={mission}
-                        onUpdate={handleUpdateMission}
-                        onFieldChange={handleFieldChange}
-                        isGlobalEditing={isEditing}
-                      />
-                      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, mb: 2.5 }}>
-                        <Box sx={{ flex: 1, display: 'flex', gap: 1 }}>
-                          <Box sx={{ flex: 1 }}>
-                            <EditableField
-                              ref={(el) => fieldsRef.current.missionTypeId = el}
-                              icon={<CategoryIcon sx={{ fontSize: 24 }} />}
-                              label="Type de mission"
-                              field="missionTypeId"
-                              initialValue={editedMission?.missionTypeId || ''}
-                              type="select"
-                              options={missionTypes.map(type => ({ value: type.id, label: type.title }))}
-                              mission={mission}
-                              onUpdate={handleUpdateMission}
-                              onFieldChange={handleFieldChange}
-                              isGlobalEditing={isEditing}
-                            />
-                          </Box>
-                          <Button
-                            onClick={() => setOpenNewMissionTypeDialog(true)}
-                            sx={{
-                              minWidth: 0,
-                              width: 48,
-                              height: 40,
-                              ml: 1,
-                              p: 0,
-                              border: 'none',
-                              backgroundColor: '#f5f5f7',
-                              borderRadius: '12px',
-                              boxShadow: 'none',
-                              color: '#86868b',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              transition: 'background 0.2s',
-                              '&:hover': {
-                                backgroundColor: '#ececec',
-                                color: '#1d1d1f',
-                                boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
-                              }
-                            }}
-                          >
-                            <AddIcon fontSize="medium" />
-                          </Button>
-                        </Box>
-                      </Box>
-                      <EditableField
-                        ref={(el) => fieldsRef.current.description = el}
-                        icon={<DescriptionIcon sx={{ fontSize: 24 }} />}
-                        label="Description de la mission"
-                        field="description"
-                        initialValue={editedMission?.description || ''}
-                        mission={mission}
-                        onUpdate={handleUpdateMission}
-                        onFieldChange={handleFieldChange}
-                        isGlobalEditing={isEditing}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <InfoItemEditable
-                        icon={<PersonIcon sx={{ fontSize: 24 }} />}
-                        label="Chargé de mission"
-                        field="chargeName"
-                        value={structureMembers.find(m => m.id === mission?.chargeId)?.displayName || mission?.chargeName || 'Non assigné'}
-                      />
-                      <InfoItemEditable
-                        icon={<GroupIcon sx={{ fontSize: 24 }} />}
-                        label="Nombre d'étudiants requis"
-                        field="studentCount"
-                        value={`${mission?.studentCount || 0}`}
-                      />
-                      <InfoItemEditable
-                        icon={<AccessTimeIcon sx={{ fontSize: 24 }} />}
-                        label="Nombre d'heures total"
-                        field="hours"
-                        value={mission?.hours?.toString() || '-'}
-                      />
-                      <InfoItemEditable
-                        icon={<CategoryIcon sx={{ fontSize: 24 }} />}
-                        label="Type de mission"
-                        field="missionType"
-                        value={(() => {
-                          const foundType = missionTypes.find(t => t.id === mission?.missionTypeId);
-                          return foundType?.title || '-';
-                        })()}
-                      />
-                      <InfoItemEditable
-                        icon={<DescriptionIcon sx={{ fontSize: 24 }} />}
-                        label="Description de la mission"
-                        field="description"
-                        value={mission?.description || '-'}
-                      />
-                    </>
-                  )}
-                </Box>
-              </Grid>
-            </Grid>
-          </Paper>
-
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {[
-              {
-                title: "Négociation commerciale",
-                icon: <HandshakeIcon />,
-                content: (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    <Box sx={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                      <Box sx={{ flex: 1 }}>
-                        <Typography sx={{ mb: 1, color: '#86868b' }}>
-                          Prix horaire HT
-                        </Typography>
-                        <TextField
-                          value={priceHT}
-                          onChange={(e) => {
-                            const value = parseFloat(e.target.value) || 0;
-                            setPriceHT(value);
-                            setIsPriceSaved(false);
-                            if (mission) {
-                              const { totalHT, totalTTC } = calculatePrices(value, mission.hours, expenses);
-                              setTotalHT(totalHT);
-                              setTotalTTC(totalTTC);
-                            }
-                          }}
-                          type="number"
-                          inputProps={{
-                            step: "0.5",
-                            min: "0"
-                          }}
-                          InputProps={{
-                            startAdornment: <Typography sx={{ mr: 1 }}>€</Typography>,
-                          }}
-                          variant="outlined"
-                          size="small"
-                          sx={{
-                            width: '200px',
-                            '& .MuiOutlinedInput-root': {
-                              borderRadius: '12px',
-                              backgroundColor: '#f5f5f7',
-                              '& fieldset': { 
-                                border: 'none' 
-                              },
-                              '&:hover fieldset': {
-                                borderColor: 'transparent'
-                              },
-                              '&.Mui-focused fieldset': {
-                                borderColor: '#007AFF',
-                                borderWidth: '1px'
-                              }
-                            }
-                          }}
-                        />
-                      </Box>
-                      <Box sx={{ flex: 1 }}>
-                        <Typography sx={{ mb: 1, color: '#86868b' }}>
-                          Nombre d'heures
-                        </Typography>
-                        <Typography sx={{ 
-                          fontSize: '1.1rem',
-                          fontWeight: '500',
-                          color: '#1d1d1f'
-                        }}>
-                          {mission?.hours || 0}
-                        </Typography>
-                      </Box>
-                    </Box>
-
-                    <Divider />
-
-                    {/* Totaux en colonne - Réorganisé */}
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: '300px' }}>
-                      {/* Total HT */}
-                      <Box>
-                        <Typography sx={{ mb: 1, color: '#86868b', fontSize: '0.875rem' }}>
-                          Total HT
-                        </Typography>
-                        <Typography sx={{ 
-                          fontSize: '1.1rem',
-                          fontWeight: '500',
-                          color: '#1d1d1f'
-                        }}>
-                          {(totalHT || 0).toFixed(2)} €
-                        </Typography>
-                      </Box>
-
-                      {/* Section Dépenses */}
-                      <Box>
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-                          <Typography sx={{ color: '#86868b', fontSize: '0.875rem', fontWeight: 500 }}>
-                            Dépenses
-                          </Typography>
-                          <IconButton
-                            size="small"
-                            onClick={() => {
-                              // Vérifier que toutes les dépenses précédentes sont remplies
-                              const canAdd = expenses.length === 0 || 
-                                expenses.every((exp, idx) => {
-                                  // La dernière dépense peut être vide, mais toutes les autres doivent être remplies
-                                  if (idx === expenses.length - 1) return true;
-                                  return exp.isSaved || (exp.name && exp.priceHT > 0);
-                                });
-                              
-                              if (!canAdd) {
-                                enqueueSnackbar('Veuillez d\'abord remplir et enregistrer toutes les dépenses précédentes', { variant: 'warning' });
-                                return;
-                              }
-
-                              const newExpense: MissionExpense = {
-                                id: `expense-new-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                                name: '',
-                                tva: 20,
-                                priceHT: 0
-                              };
-                              const updatedExpenses = [...expenses, newExpense];
-                              setExpenses(updatedExpenses);
-                              setIsPriceSaved(false);
-                              // Recalculer les totaux
-                              if (mission) {
-                                const { totalHT, totalTTC } = calculatePrices(priceHT, mission.hours, updatedExpenses);
-                                setTotalHT(totalHT);
-                                setTotalTTC(totalTTC);
-                              }
-                            }}
-                            disabled={expenses.length > 0 && expenses.some((exp, idx) => {
-                              // Si ce n'est pas la dernière dépense, elle doit être remplie
-                              if (idx < expenses.length - 1) {
-                                return !exp.isSaved && (!exp.name || exp.priceHT <= 0);
-                              }
-                              return false;
-                            })}
-                            sx={{ 
-                              color: '#007AFF',
-                              '&:hover': { backgroundColor: 'rgba(0, 122, 255, 0.1)' },
-                              '&.Mui-disabled': { color: '#c7c7cc' }
-                            }}
-                          >
-                            <AddIcon fontSize="small" />
-                          </IconButton>
-                        </Box>
-
-                        <DragDropContext onDragEnd={handleDragEnd}>
-                          <StrictModeDroppable droppableId="expenses">
-                            {(provided) => (
-                              <Box 
-                                ref={provided.innerRef}
-                                {...provided.droppableProps}
-                                sx={{ 
-                                  display: 'flex', 
-                                  flexDirection: 'column', 
-                                  gap: 1.5,
-                                  minHeight: expenses.length === 0 ? '40px' : 'auto'
-                                }}
-                              >
-                                {expenses.length > 0 ? (
-                                  expenses.map((expense, index) => (
-                                    <Draggable key={expense.id} draggableId={expense.id} index={index}>
-                                      {(provided, snapshot) => (
-                                        <Box
-                                          ref={provided.innerRef}
-                                          {...provided.draggableProps}
-                                          sx={{
-                                            display: 'flex',
-                                            gap: 1,
-                                            alignItems: expense.isSaved ? 'center' : 'flex-start',
-                                            p: 1.5,
-                                            backgroundColor: snapshot.isDragging ? '#e5e5e7' : '#f5f5f7',
-                                            borderRadius: '8px',
-                                            border: expense.isSaved ? 'none' : '1px solid #e5e5e7',
-                                            boxShadow: snapshot.isDragging ? '0 4px 8px rgba(0,0,0,0.1)' : 'none',
-                                            transition: 'all 0.2s ease'
-                                          }}
-                                        >
-                                          {/* Numéro et handle de drag */}
-                                          <Box 
-                                            {...provided.dragHandleProps}
-                                            sx={{ 
-                                              display: 'flex', 
-                                              flexDirection: 'column',
-                                              alignItems: 'center',
-                                              justifyContent: 'center',
-                                              minWidth: '40px',
-                                              cursor: 'grab',
-                                              '&:active': { cursor: 'grabbing' }
-                                            }}
-                                          >
-                                            <Typography sx={{ 
-                                              fontSize: '0.875rem',
-                                              fontWeight: '600',
-                                              color: '#007AFF',
-                                              mb: 0.5
-                                            }}>
-                                              {index + 1}
-                                            </Typography>
-                                            <DragIndicatorIcon 
-                                              sx={{ 
-                                                color: '#86868b',
-                                                fontSize: '1.2rem'
-                                              }} 
-                                            />
-                                          </Box>
-
-                                          {expense.isSaved ? (
-                                            // Dépense enregistrée - Mode lecture (comme le prix HT)
-                                            <>
-                                              <Box sx={{ flex: 1 }}>
-                                                <Typography sx={{ 
-                                                  fontSize: '0.875rem',
-                                                  color: '#86868b',
-                                                  mb: 0.5
-                                                }}>
-                                                  {expense.name}
-                                                </Typography>
-                                                <Box sx={{ display: 'flex', gap: 2 }}>
-                                                  <Typography sx={{ 
-                                                    fontSize: '0.875rem',
-                                                    color: '#86868b'
-                                                  }}>
-                                                    TVA: {expense.tva}%
-                                                  </Typography>
-                                                  <Typography sx={{ 
-                                                    fontSize: '0.875rem',
-                                                    fontWeight: '500',
-                                                    color: '#1d1d1f'
-                                                  }}>
-                                                    {(expense.priceHT || 0).toFixed(2)} € HT
-                                                  </Typography>
-                                                </Box>
-                                              </Box>
-                                              <IconButton
-                                                size="small"
-                                                onClick={() => handleDeleteExpense(index)}
-                                                disabled={isSaving}
-                                                sx={{ 
-                                                  color: '#FF3B30',
-                                                  '&:hover': { backgroundColor: 'rgba(255, 59, 48, 0.1)' }
-                                                }}
-                                              >
-                                                <DeleteIcon fontSize="small" />
-                                              </IconButton>
-                                            </>
-                                          ) : (
-                                            // Dépense non enregistrée - Mode édition
-                                            <>
-                                              <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
-                                                <TextField
-                                                  placeholder="Nom de la dépense"
-                                                  value={expense.name}
-                                                  onChange={(e) => {
-                                                    const updatedExpenses = [...expenses];
-                                                    updatedExpenses[index].name = e.target.value;
-                                                    setExpenses(updatedExpenses);
-                                                    // Recalculer les totaux
-                                                    if (mission) {
-                                                      const { totalHT, totalTTC } = calculatePrices(priceHT, mission.hours, updatedExpenses);
-                                                      setTotalHT(totalHT);
-                                                      setTotalTTC(totalTTC);
-                                                    }
-                                                  }}
-                                                  variant="outlined"
-                                                  size="small"
-                                                  disabled={index > 0 && !expenses[index - 1]?.isSaved && (!expenses[index - 1]?.name || expenses[index - 1]?.priceHT <= 0)}
-                                                  sx={{
-                                                    '& .MuiOutlinedInput-root': {
-                                                      borderRadius: '8px',
-                                                      backgroundColor: 'white',
-                                                      fontSize: '0.875rem',
-                                                      '& fieldset': {
-                                                        borderColor: '#e5e5e7'
-                                                      },
-                                                      '&:hover fieldset': {
-                                                        borderColor: '#007AFF'
-                                                      },
-                                                      '&.Mui-focused fieldset': {
-                                                        borderColor: '#007AFF',
-                                                        borderWidth: '1px'
-                                                      }
-                                                    }
-                                                  }}
-                                                />
-                                                <Box sx={{ display: 'flex', gap: 1 }}>
-                                                  <TextField
-                                                    placeholder="TVA"
-                                                    value={expense.tva || ''}
-                                                    onChange={(e) => {
-                                                      const updatedExpenses = [...expenses];
-                                                      updatedExpenses[index].tva = parseFloat(e.target.value) || 0;
-                                                      setExpenses(updatedExpenses);
-                                                      // Recalculer les totaux
-                                                      if (mission) {
-                                                        const { totalHT, totalTTC } = calculatePrices(priceHT, mission.hours, updatedExpenses);
-                                                        setTotalHT(totalHT);
-                                                        setTotalTTC(totalTTC);
-                                                      }
-                                                    }}
-                                                    type="number"
-                                                    inputProps={{ min: 0, step: 0.1 }}
-                                                    InputProps={{
-                                                      endAdornment: <Typography sx={{ ml: 1, fontSize: '0.875rem', color: '#86868b' }}>%</Typography>,
-                                                    }}
-                                                    variant="outlined"
-                                                    size="small"
-                                                    disabled={index > 0 && !expenses[index - 1]?.isSaved && (!expenses[index - 1]?.name || expenses[index - 1]?.priceHT <= 0)}
-                                                    sx={{ 
-                                                      flex: 1,
-                                                      '& .MuiOutlinedInput-root': {
-                                                        borderRadius: '8px',
-                                                        backgroundColor: 'white',
-                                                        fontSize: '0.875rem',
-                                                        '& fieldset': {
-                                                          borderColor: '#e5e5e7'
-                                                        },
-                                                        '&:hover fieldset': {
-                                                          borderColor: '#007AFF'
-                                                        },
-                                                        '&.Mui-focused fieldset': {
-                                                          borderColor: '#007AFF',
-                                                          borderWidth: '1px'
-                                                        }
-                                                      }
-                                                    }}
-                                                  />
-                                                  <TextField
-                                                    placeholder="Prix HT"
-                                                    value={expense.priceHT || ''}
-                                                    onChange={(e) => {
-                                                      const updatedExpenses = [...expenses];
-                                                      updatedExpenses[index].priceHT = parseFloat(e.target.value) || 0;
-                                                      setExpenses(updatedExpenses);
-                                                      // Recalculer les totaux
-                                                      if (mission) {
-                                                        const { totalHT, totalTTC } = calculatePrices(priceHT, mission.hours, updatedExpenses);
-                                                        setTotalHT(totalHT);
-                                                        setTotalTTC(totalTTC);
-                                                      }
-                                                    }}
-                                                    type="number"
-                                                    inputProps={{ min: 0, step: 0.01 }}
-                                                    InputProps={{
-                                                      startAdornment: <Typography sx={{ mr: 1, fontSize: '0.875rem', color: '#86868b' }}>€</Typography>,
-                                                    }}
-                                                    variant="outlined"
-                                                    size="small"
-                                                    disabled={index > 0 && !expenses[index - 1]?.isSaved && (!expenses[index - 1]?.name || expenses[index - 1]?.priceHT <= 0)}
-                                                    sx={{ 
-                                                      flex: 1,
-                                                      '& .MuiOutlinedInput-root': {
-                                                        borderRadius: '8px',
-                                                        backgroundColor: 'white',
-                                                        fontSize: '0.875rem',
-                                                        '& fieldset': {
-                                                          borderColor: '#e5e5e7'
-                                                        },
-                                                        '&:hover fieldset': {
-                                                          borderColor: '#007AFF'
-                                                        },
-                                                        '&.Mui-focused fieldset': {
-                                                          borderColor: '#007AFF',
-                                                          borderWidth: '1px'
-                                                        }
-                                                      }
-                                                    }}
-                                                  />
-                                                </Box>
-                                              </Box>
-                                              {canWrite && (
-                                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
-                                                  <IconButton
-                                                    size="small"
-                                                    onClick={() => handleSaveExpense(index)}
-                                                    disabled={isSaving || !expense.name || expense.priceHT <= 0}
-                                                    sx={{ 
-                                                      color: '#34C759',
-                                                      '&:hover': { backgroundColor: 'rgba(52, 199, 89, 0.1)' },
-                                                      '&.Mui-disabled': { color: '#c7c7cc' }
-                                                    }}
-                                                  >
-                                                    <SaveIcon fontSize="small" />
-                                                  </IconButton>
-                                                  <IconButton
-                                                    size="small"
-                                                    onClick={() => {
-                                                      const updatedExpenses = expenses.filter((_, i) => i !== index);
-                                                      setExpenses(updatedExpenses);
-                                                      // Recalculer les totaux
-                                                      if (mission) {
-                                                        const { totalHT, totalTTC } = calculatePrices(priceHT, mission.hours, updatedExpenses);
-                                                        setTotalHT(totalHT);
-                                                        setTotalTTC(totalTTC);
-                                                      }
-                                                    }}
-                                                    sx={{ 
-                                                      color: '#FF3B30',
-                                                      '&:hover': { backgroundColor: 'rgba(255, 59, 48, 0.1)' }
-                                                    }}
-                                                  >
-                                                    <DeleteIcon fontSize="small" />
-                                                  </IconButton>
-                                                </Box>
-                                              )}
-                                            </>
-                                          )}
-                                        </Box>
-                                      )}
-                                    </Draggable>
-                                  ))
-                                ) : (
-                                  <Typography sx={{ 
-                                    color: '#86868b', 
-                                    fontSize: '0.875rem',
-                                    fontStyle: 'italic',
-                                    py: 1
-                                  }}>
-                                    Aucune dépense
-                                  </Typography>
-                                )}
-                                {provided.placeholder}
-                              </Box>
-                            )}
-                          </StrictModeDroppable>
-                        </DragDropContext>
-                      </Box>
-
-                      {/* TVA */}
-                      <Box>
-                        <Typography sx={{ mb: 1, color: '#86868b', fontSize: '0.875rem' }}>
-                          TVA
-                        </Typography>
-                        <Typography sx={{ 
-                          fontSize: '1.1rem',
-                          fontWeight: '500',
-                          color: '#1d1d1f'
-                        }}>
-                          {(Math.round(((totalTTC || 0) - (totalHT || 0)) * 100) / 100).toFixed(2)} €
-                        </Typography>
-                      </Box>
-
-                      {/* Total TTC */}
-                      <Box>
-                        <Typography sx={{ mb: 1, color: '#86868b', fontSize: '0.875rem' }}>
-                          Total TTC
-                        </Typography>
-                        <Typography sx={{ 
-                          fontSize: '1.4rem',
-                          fontWeight: '600',
-                          color: '#007AFF'
-                        }}>
-                          {(totalTTC || 0).toFixed(2)} €
-                        </Typography>
-                      </Box>
-                    </Box>
-
-                    <Divider />
-                    
-                    <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-                      {canWrite && !isPriceSaved && (
-                        <Button
-                          variant="contained"
-                          onClick={handleSavePrice}
-                          disabled={isSaving}
-                          sx={{
-                            borderRadius: '10px',
-                            textTransform: 'none',
-                            fontWeight: '500',
-                            boxShadow: 'none',
-                            '&:hover': {
-                              boxShadow: 'none'
-                            }
-                          }}
-                        >
-                          {isSaving ? (
-                            <CircularProgress size={20} />
-                          ) : (
-                            'Enregistrer le prix'
-                          )}
-                        </Button>
-                      )}
-                      {canWrite && (
-                        <Button
-                          variant="contained"
-                          color="primary"
-                          startIcon={<DescriptionIcon />}
-                          onClick={async () => {
-                            if (!mission?.id) {
-                              enqueueSnackbar('Mission non trouvée', { variant: 'error' });
-                              return;
-                            }
-
-                            console.log('🔍 Début de la recherche de template');
-                            console.log('Mission ID:', mission.id);
-                            console.log('Structure ID:', mission.structureId);
-
-                            try {
-                              // Récupérer la template assignée pour les propositions commerciales
-                              const assignedTemplate = await getAssignedTemplate('proposition_commerciale');
-                              console.log('📋 Template assignée trouvée:', assignedTemplate);
-                              
-                              if (assignedTemplate) {
-                                console.log('🎯 Template trouvée avec ID:', assignedTemplate.id);
-                                console.log('🎯 Type de génération:', assignedTemplate.generationType);
-                                
-                                if (assignedTemplate.generationType === 'template') {
-                                  // Télécharger le PDF template
-                                  await downloadTemplatePDF('proposition_commerciale');
-                                } else {
-                                  // Rediriger vers QuoteBuilder avec l'ID de la template
-                                  const url = `/app/mission/${mission.id}/quote?template=${assignedTemplate.id}`;
-                                  console.log('🚀 Redirection vers:', url);
-                                  navigate(url);
-                                }
-                              } else {
-                                console.log('⚠️ Aucune template assignée, redirection sans template');
-                                navigate(`/app/mission/${mission.id}/quote`);
-                              }
-                            } catch (error) {
-                              console.error('❌ Erreur lors de la récupération de la template:', error);
-                              // En cas d'erreur, rediriger sans template
-                              navigate(`/app/mission/${mission.id}/quote`);
-                            }
-                          }}
-                          sx={{
-                            borderRadius: '10px',
-                            textTransform: 'none',
-                            fontWeight: '500'
-                          }}
-                        >
-                          {pcButtonText}
-                        </Button>
-                      )}
-                      {downloadProgress && (
-                        <Box sx={{ width: '100%', mt: 2 }}>
-                          <LinearProgress 
-                            variant="determinate" 
-                            value={downloadProgress.progress} 
-                            sx={{ 
-                              height: 8, 
-                              borderRadius: 4,
-                              backgroundColor: 'rgba(0, 0, 0, 0.1)',
-                              '& .MuiLinearProgress-bar': {
-                                borderRadius: 4
-                              }
-                            }} 
-                          />
-                          <Typography 
-                            variant="caption" 
-                            sx={{ 
-                              display: 'block', 
-                              mt: 1, 
-                              textAlign: 'center',
-                              color: 'text.secondary'
-                            }}
-                          >
-                            {downloadProgress.message}
-                          </Typography>
-                        </Box>
-                      )}
-                    </Box>
-                  </Box>
-                )
-              },
-              {
-                title: "Recrutement des étudiants",
-                icon: <PeopleIcon />,
-                content: (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    <CompactEditableSection
-                      title="Informations de l'annonce"
-                      fields={[
-                        {
-                          label: "Titre de la mission",
-                          value: editedMission?.title || '',
-                          onChange: (value) => handleAutocompleteChange('title', value),
-                        },
-                        {
-                          label: "Rémunération",
-                          value: editedMission?.salary || '',
-                          onChange: (value) => handleAutocompleteChange('salary', value),
-                          type: 'number'
-                        },
-                        {
-                          label: "Nombre d'heures total",
-                          value: editedMission?.hours?.toString() || '',
-                          onChange: (value) => {
-                            const numValue = parseInt(value) || 0;
-                            handleFieldChange('hours', numValue);
-                            if (mission?.id) {
-                              handleUpdateMission(mission.id, { hours: numValue });
-                            }
-                          },
-                          type: 'number'
-                        },
-                        {
-                          label: "Type de mission",
-                          value: editedMission?.missionTypeId || '',
-                          onChange: (value) => handleAutocompleteChange('missionTypeId', value),
-                          type: 'select',
-                          options: missionTypes.map(type => ({
-                            value: type.id,
-                            label: type.title
-                          }))
-                        },
-                        {
-                          label: "Description de la mission",
-                          value: editedMission?.description || '',
-                          onChange: (value) => handleAutocompleteChange('description', value),
-                          multiline: true,
-                          rows: 8
-                        }
-                      ]}
-                      isEditing={isEditingAnnouncement}
-                      onEdit={() => setIsEditingAnnouncement(true)}
-                      onSave={() => {
-                        setIsEditingAnnouncement(false);
-                        if (mission && editedMission) {
-                          handleUpdateMission(mission.id, editedMission);
-                        }
-                      }}
-                      onCancel={() => {
-                        setIsEditingAnnouncement(false);
-                        setEditedMission(mission);
-                      }}
-                    />
-
-                    <Box sx={{ 
-                      display: 'flex', 
-                      justifyContent: 'flex-end',
-                      mb: 2
-                    }}>
-                      <Button
-                        variant="contained"
-                        color={isPublished ? "error" : "primary"}
-                        onClick={handlePublishMission}
-                        disabled={isSaving}
-                        startIcon={isSaving ? <CircularProgress size={20} /> : isPublished ? <PublicOffIcon /> : <PublicIcon />}
-                        sx={{
-                          borderRadius: '10px',
-                          textTransform: 'none',
-                          fontWeight: '500',
-                          boxShadow: 'none',
-                          '&:hover': {
-                            boxShadow: 'none'
-                          }
-                        }}
-                      >
-                        {isSaving ? 'Publication en cours...' : isPublished ? 'Retirer l\'annonce' : 'Publier l\'annonce'}
-                      </Button>
-                    </Box>
-
-                    <Box sx={{ 
-                      display: 'flex', 
-                      gap: 2, 
-                      alignItems: 'center',
-                      backgroundColor: '#f5f5f7',
-                      p: 2,
-                      borderRadius: '12px'
-                    }}>
-                      <Checkbox
-                        checked={editedMission?.requiresCV || false}
-                        onChange={(e) => handleBooleanChange('requiresCV', e.target.checked)}
-                        size="small"
-                      />
-                      <Typography sx={{ fontSize: '0.875rem' }}>CV récent requis</Typography>
-                      <Checkbox
-                        checked={editedMission?.requiresMotivation || false}
-                        onChange={(e) => handleBooleanChange('requiresMotivation', e.target.checked)}
-                        size="small"
-                      />
-                      <Typography sx={{ fontSize: '0.875rem' }}>Lettre de motivation requise</Typography>
-                    </Box>
-
-                    <Divider />
-                    
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                      <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
-                        Candidatures reçues
-                      </Typography>
-                      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                        <Typography variant="body2" color="text.secondary">
-                          {applications.length} candidature{applications.length > 1 ? 's' : ''}
-                        </Typography>
-                        {canWrite && (
-                          <Button
-                            variant="outlined"
-                            startIcon={<PersonAddIcon />}
-                            onClick={() => setOpenAddCandidateDialog(true)}
-                            sx={{
-                              borderRadius: '10px',
-                              textTransform: 'none',
-                              fontWeight: '500',
-                              borderColor: '#007AFF',
-                              color: '#007AFF',
-                              '&:hover': {
-                                borderColor: '#0A84FF',
-                                backgroundColor: 'rgba(0, 122, 255, 0.04)'
-                              }
-                            }}
-                          >
-                            Ajouter des candidats
-                          </Button>
-                        )}
-                      </Box>
-                    </Box>
-
-                    {loadingApplications ? (
-                      <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-                        <CircularProgress />
-                      </Box>
-                    ) : applications.length === 0 ? (
-                      <Typography color="text.secondary" sx={{ textAlign: 'center', py: 4 }}>
-                        Aucune candidature reçue pour le moment
-                      </Typography>
-                    ) : (
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        {applications.map((application) => (
-                          <ApplicationCard key={application.id} application={application} canWrite={canWrite} />
-                        ))}
-                      </Box>
-                    )}
-                  </Box>
-                )
-              },
-              // AJOUT DE L'ONGLET CONTRATS DE TRAVAIL
-              {
-                title: "Contrats de travail",
-                icon: <AssignmentIcon />, 
-                content: (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f', mb: 2 }}>
-                      Étudiants acceptés - {mission?.hours || 0} heures au total
-                      {(() => {
-                        const totalAssignedHours = applications
-                          .filter(app => app.status === 'Acceptée')
-                          .reduce((total, app) => total + (
-                            app.workingHours?.reduce((wh_total, wh) => 
-                              wh_total + calculateWorkingHours(wh.startTime, wh.endTime, wh.breaks)
-                            , 0) || 0
-                          ), 0);
-                        const isOverHours = totalAssignedHours > (mission?.hours || 0);
-                        return (
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
-                            <Typography 
-                              component="span" 
-                              variant="body2" 
-                              sx={{ 
-                                color: isOverHours ? '#FF3B30' : 'text.secondary',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 0.5
-                              }}
-                            >
-                              {isOverHours && (
-                                <WarningIcon sx={{ fontSize: 16, color: '#FF3B30' }} />
-                              )}
-                              Heures assignées : {totalAssignedHours.toFixed(2)}h
-                            </Typography>
-                            {isOverHours && (
-                              <Typography 
-                                component="span" 
-                                variant="body2" 
-                                sx={{ 
-                                  color: '#FF3B30',
-                                  fontStyle: 'italic'
-                                }}
-                              >
-                                (Attention : il y a plus d'heures assignées que d'heures prévues)
-                              </Typography>
-                            )}
-                          </Box>
-                        );
-                      })()}
-                    </Typography>
-                    <Paper sx={{ 
-                      borderRadius: '12px',
-                      bgcolor: '#f5f5f7',
-                      p: 2,
-                      border: 'none',
-                      boxShadow: 'none'
-                    }}>
-                      <TableContainer component={Paper} sx={{ 
-                        borderRadius: '16px',
-                        bgcolor: '#fff',
-                        boxShadow: 'none',
-                        border: '1px solid',
-                        borderColor: 'divider',
-                        overflowX: 'auto',
-                        overflowY: 'hidden'
-                      }}>
-                        <Table sx={{ minWidth: 650 }}>
-                          <TableHead>
-                            <TableRow>
-                              <TableCell sx={{ fontWeight: 500, color: '#86868b', borderBottom: '1px solid', borderColor: 'divider', backgroundColor: '#f5f5f7', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 }, whiteSpace: 'nowrap' }}>Étudiant</TableCell>
-                              <TableCell sx={{ fontWeight: 500, color: '#86868b', borderBottom: '1px solid', borderColor: 'divider', backgroundColor: '#f5f5f7', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 }, whiteSpace: 'nowrap' }}>Email</TableCell>
-                              <TableCell sx={{ fontWeight: 500, color: '#86868b', borderBottom: '1px solid', borderColor: 'divider', backgroundColor: '#f5f5f7', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 }, whiteSpace: 'nowrap' }}>Date d'acceptation</TableCell>
-                              <TableCell sx={{ fontWeight: 500, color: '#86868b', borderBottom: '1px solid', borderColor: 'divider', backgroundColor: '#f5f5f7', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 }, whiteSpace: 'nowrap' }}>État du dossier</TableCell>
-                              <TableCell sx={{ fontWeight: 500, color: '#86868b', borderBottom: '1px solid', borderColor: 'divider', backgroundColor: '#f5f5f7', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 }, whiteSpace: 'nowrap', position: 'sticky', right: 0, zIndex: 2 }}>Actions</TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {applications
-                              .filter(app => app.status === 'Acceptée')
-                              .map((application, index) => (
-                                <React.Fragment key={application.id || `app-accepted-${index}`}>
-                                  <TableRow sx={{'&:hover': {backgroundColor: 'rgba(0, 0, 0, 0.02)'}}}>
-                                    <TableCell sx={{ borderBottom: '1px solid', borderColor: 'divider', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 } }}>
-                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 2 } }}>
-                                        <Avatar
-                                          src={application.userPhotoURL || undefined}
-                                          sx={{ width: { xs: 24, sm: 32 }, height: { xs: 24, sm: 32 } }}
-                                          onError={(e) => {
-                                            const target = e.currentTarget as HTMLImageElement;
-                                            target.src = '';
-                                            target.style.display = 'none';
-                                          }}
-                                        >
-                                          {application.userEmail.charAt(0).toUpperCase()}
-                                        </Avatar>
-                                        <Box>
-                                          <Typography variant="body2" sx={{ fontWeight: 500, color: '#1d1d1f', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-                                            {application.userDisplayName || application.userEmail.split('@')[0]}
-                                          </Typography>
-                                        </Box>
-                                      </Box>
-                                    </TableCell>
-                                    <TableCell sx={{ borderBottom: '1px solid', borderColor: 'divider', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 }, color: '#1d1d1f', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-                                      {application.userEmail}
-                                    </TableCell>
-                                    <TableCell sx={{ borderBottom: '1px solid', borderColor: 'divider', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 }, color: '#1d1d1f', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-                                      {application.updatedAt.toLocaleDateString()}
-                                    </TableCell>
-                                    <TableCell sx={{ borderBottom: '1px solid', borderColor: 'divider', py: { xs: 1, sm: 2 }, px: { xs: 1, sm: 2 } }}>
-                                      <Chip
-                                        icon={application.isDossierValidated ? <CheckCircleIcon fontSize="small" /> : <WarningIcon fontSize="small" />}
-                                        label={application.isDossierValidated ? "Dossier validé" : "Dossier non validé"}
-                                        size="small"
-                                        color={application.isDossierValidated ? "success" : "warning"}
-                                        sx={{ borderRadius: '8px', '& .MuiChip-label': { px: { xs: 0.5, sm: 1 }, fontSize: { xs: '0.7rem', sm: '0.75rem' } } }}
-                                      />
-                                    </TableCell>
-                                    <TableCell sx={{ 
-                                      borderBottom: '1px solid', 
-                                      borderColor: 'divider', 
-                                      py: { xs: 1, sm: 2 }, 
-                                      px: { xs: 1, sm: 2 },
-                                      position: 'sticky',
-                                      right: 0,
-                                      backgroundColor: '#fff',
-                                      zIndex: 1,
-                                      boxShadow: '-2px 0 4px rgba(0,0,0,0.1)',
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(0, 0, 0, 0.02)'
-                                      }
-                                    }}>
-                                      <Box sx={{ display: 'flex', gap: { xs: 0.5, sm: 1 } }}>
-                                        {canWrite && (
-                                        <Tooltip title="Générer LM" arrow>
-                                          <span style={{ display: 'inline-flex' }}>
-                                            <Button
-                                              size="small"
-                                              variant="contained"
-                                              color="primary"
-                                              onClick={() => generateDocument('lettre_mission', application)}
-                                              disabled={!application.isDossierValidated || generatingDoc}
-                                              sx={{ 
-                                              borderRadius: '8px', 
-                                              textTransform: 'none', 
-                                              fontWeight: '500', 
-                                              boxShadow: 'none', 
-                                              '&:hover': { boxShadow: 'none' },
-                                              minWidth: '40px',
-                                              width: '40px',
-                                              height: '40px',
-                                              padding: 0,
-                                              display: 'flex',
-                                              alignItems: 'center',
-                                              justifyContent: 'center'
-                                            }}
-                                          >
-                                            {generatingDoc ? <CircularProgress size={20} color="inherit" /> : <DescriptionIcon />}
-                                            </Button>
-                                          </span>
-                                        </Tooltip>
-                                        )}
-                                      </Box>
-                                    </TableCell>
-                                  </TableRow>
-                                  {/* Sous-ligne pour les horaires */}
-                                  <TableRow key={`${application.id}-hours`}>
-                                    <TableCell colSpan={5} sx={{ py: 2, backgroundColor: '#f5f5f7', borderBottom: '1px solid', borderColor: 'divider' }}>
-                                      <Box sx={{ px: 2 }}>
-                                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                            <IconButton
-                                              size="small"
-                                              onClick={() => {
-                                                const currentExpanded = expandedApplication;
-                                                setExpandedApplication(currentExpanded === application.id ? null : application.id);
-                                              }}
-                                              sx={{ transform: expandedApplication === application.id ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
-                                            >
-                                              <ExpandMoreIcon />
-                                            </IconButton>
-                                            <Typography variant="subtitle2" sx={{ color: '#1d1d1f', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 1 }}>
-                                              <AccessTimeIcon sx={{ fontSize: 18 }} />
-                                              Horaires de travail
-                                            </Typography>
-                                          </Box>
-                                          {canWrite && (
-                                            <Button
-                                              size="small"
-                                              startIcon={<AddIcon />}
-                                              onClick={() => handleOpenWorkingHours(application)}
-                                              sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: '500', color: '#007AFF', '&:hover': { backgroundColor: 'rgba(0, 122, 255, 0.04)' } }}
-                                            >
-                                              Ajouter une plage horaire
-                                            </Button>
-                                          )}
-                                        </Box>
-                                        <Collapse in={expandedApplication === application.id}>
-                                          <Table size="small">
-                                            <TableHead>
-                                              <TableRow>
-                                                <TableCell sx={{ fontWeight: 500, color: '#86868b', border: 'none', pl: 0, pr: 3, width: '110px' }}>Date</TableCell>
-                                                <TableCell sx={{ fontWeight: 500, color: '#86868b', border: 'none', px: 3, width: '80px' }}>Début</TableCell>
-                                                <TableCell sx={{ fontWeight: 500, color: '#86868b', border: 'none', px: 3, width: '80px' }}>Fin</TableCell>
-                                                <TableCell sx={{ fontWeight: 500, color: '#86868b', border: 'none', px: 3, width: '300px' }}>Pauses</TableCell>
-                                                <TableCell sx={{ fontWeight: 500, color: '#86868b', border: 'none', px: 3, width: '80px' }}>Total</TableCell>
-                                                <TableCell sx={{ border: 'none', width: '48px', pr: 3 }} />
-                                              </TableRow>
-                                            </TableHead>
-                                            <TableBody>
-                                              {application.workingHours?.map((wh) => {
-                                                const totalHours = calculateWorkingHours(wh.startTime, wh.endTime, wh.breaks);
-                                                return (
-                                                  <TableRow key={wh.id}>
-                                                    <TableCell sx={{ border: 'none', pl: 0, pr: 3 }}>
-                                                      <TextField
-                                                        type="date"
-                                                        value={wh.date}
-                                                        onChange={(e) => handleUpdateWorkingHour(wh.id, 'date', e.target.value)}
-                                                        variant="standard"
-                                                        size="small"
-                                                        sx={{ width: '110px' }}
-                                                      />
-                                                    </TableCell>
-                                                    <TableCell sx={{ border: 'none', px: 3 }}>
-                                                      <TextField
-                                                        type="time"
-                                                        value={wh.startTime}
-                                                        onChange={(e) => handleUpdateWorkingHour(wh.id, 'startTime', e.target.value)}
-                                                        variant="standard"
-                                                        size="small"
-                                                        sx={{ width: '80px' }}
-                                                      />
-                                                    </TableCell>
-                                                    <TableCell sx={{ border: 'none', px: 3 }}>
-                                                      <TextField
-                                                        type="time"
-                                                        value={wh.endTime}
-                                                        onChange={(e) => handleUpdateWorkingHour(wh.id, 'endTime', e.target.value)}
-                                                        variant="standard"
-                                                        size="small"
-                                                        sx={{ width: '80px' }}
-                                                      />
-                                                    </TableCell>
-                                                    <TableCell sx={{ border: 'none', px: 3 }}>
-                                                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                                                        {wh.breaks?.map((breakTime, index) => (
-                                                          <Box key={`${wh.id}-break-${index}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, backgroundColor: 'rgba(0, 0, 0, 0.02)', p: 1, borderRadius: '8px', width: 'fit-content' }}>
-                                                            <TextField
-                                                              type="time"
-                                                              value={breakTime.start}
-                                                              onChange={(e) => handleUpdateBreak(wh.id, index, 'start', e.target.value)}
-                                                              variant="standard"
-                                                              size="small"
-                                                              sx={{ width: '75px' }}
-                                                            />
-                                                            <Typography variant="body2" color="text.secondary" sx={{ mx: 0.5 }}>-</Typography>
-                                                            <TextField
-                                                              type="time"
-                                                              value={breakTime.end}
-                                                              onChange={(e) => handleUpdateBreak(wh.id, index, 'end', e.target.value)}
-                                                              variant="standard"
-                                                              size="small"
-                                                              sx={{ width: '75px' }}
-                                                            />
-                                                            <IconButton
-                                                              size="small"
-                                                              onClick={() => handleDeleteBreak(wh.id, index)}
-                                                              sx={{ color: '#FF3B30', p: 0.5, '&:hover': { backgroundColor: 'rgba(255, 59, 48, 0.08)' } }}
-                                                            >
-                                                              <DeleteIcon fontSize="small" />
-                                                            </IconButton>
-                                                          </Box>
-                                                        ))}
-                                                        <Button
-                                                          size="small"
-                                                          startIcon={<AddIcon />}
-                                                          onClick={() => handleAddBreak(wh.id)}
-                                                          sx={{ alignSelf: 'flex-start', color: '#007AFF', '&:hover': { backgroundColor: 'rgba(0, 122, 255, 0.04)' }, mt: 0.5 }}
-                                                        >
-                                                          Ajouter une pause
-                                                        </Button>
-                                                      </Box>
-                                                    </TableCell>
-                                                    <TableCell sx={{ border: 'none' }}>
-                                                      <Typography variant="body2">
-                                                        {totalHours.toFixed(2)}h
-                                                      </Typography>
-                                                    </TableCell>
-                                                    <TableCell sx={{ border: 'none', pr: 3 }}>
-                                                      <IconButton
-                                                        size="small"
-                                                        onClick={() => handleDeleteWorkingHour(wh.id)}
-                                                        sx={{ color: '#FF3B30' }}
-                                                      >
-                                                        <DeleteIcon fontSize="small" />
-                                                      </IconButton>
-                                                    </TableCell>
-                                                  </TableRow>
-                                                );
-                                              })}
-                                            </TableBody>
-                                            <TableFooter>
-                                              <TableRow>
-                                                <TableCell colSpan={6} sx={{ border: 'none', textAlign: 'right', pr: 3 }}>
-                                                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 2 }}>
-                                                    <Typography variant="subtitle2" color="text.secondary">
-                                                      Total des heures travaillées : {application.workingHours?.reduce((total, wh) => 
-                                                        total + calculateWorkingHours(wh.startTime, wh.endTime, wh.breaks)
-                                                      , 0).toFixed(2)}h
-                                                    </Typography>
-                                                    {canWrite && (
-                                                      <Button
-                                                        variant="contained"
-                                                        startIcon={savingWorkingHours[application.id] ? <CircularProgress size={20} sx={{ color: 'white' }} /> : <SaveIcon />}
-                                                        onClick={() => handleSaveWorkingHours(application)}
-                                                        disabled={!unsavedChanges[application.id] || savingWorkingHours[application.id]}
-                                                        sx={{ borderRadius: '8px', textTransform: 'none', fontWeight: '500', boxShadow: 'none', height: '36px', minWidth: unsavedChanges[application.id] ? '200px' : '140px', backgroundColor: unsavedChanges[application.id] ? '#007AFF' : '#f5f5f7', color: unsavedChanges[application.id] ? '#fff' : '#86868b', transition: 'all 0.2s ease-in-out', position: 'relative', '&:hover': { boxShadow: 'none', backgroundColor: unsavedChanges[application.id] ? '#0A84FF' : '#f0f0f0' }, '&:disabled': { backgroundColor: '#f5f5f7', color: '#86868b' } }}
-                                                      >
-                                                        {savingWorkingHours[application.id] ? (
-                                                          "Enregistrement..."
-                                                        ) : (
-                                                          unsavedChanges[application.id] ? "Enregistrer les modifications" : "Horaires à jour"
-                                                        )}
-                                                      </Button>
-                                                    )}
-                                                  </Box>
-                                                </TableCell>
-                                              </TableRow>
-                                            </TableFooter>
-                                          </Table>
-                                        </Collapse>
-                                      </Box>
-                                    </TableCell>
-                                  </TableRow>
-                                </React.Fragment>
-                              ))}
-                            {applications.filter(app => app.status === 'Acceptée').length === 0 && (
-                              <TableRow>
-                                <TableCell colSpan={5} align="center" sx={{ py: 4, color: '#86868b' }}>
-                                  Aucun étudiant accepté pour le moment
-                                </TableCell>
-                              </TableRow>
-                            )}
-                          </TableBody>
-                        </Table>
-                      </TableContainer>
-                    </Paper>
-
-                    {/* Section Documents - Contrats */}
-                    <Box sx={{ mt: 3 }}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                        <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
-                          Documents
-                        </Typography>
-                        {canWrite && (
-                          <>
-                            <input
-                              accept="*/*"
-                              style={{ display: 'none' }}
-                              id="upload-document-contrats"
-                              type="file"
-                              onChange={(e) => handleUploadDocument(e, 'contrats')}
-                            />
-                            <label htmlFor="upload-document-contrats">
-                              <IconButton
-                                component="span"
-                                sx={{
-                                  width: 36,
-                                  height: 36,
-                                  backgroundColor: '#007AFF',
-                                  color: 'white',
-                                  '&:hover': {
-                                    backgroundColor: '#0A84FF',
-                                  },
-                                  boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
-                                }}
-                              >
-                                <AddIcon />
-                              </IconButton>
-                            </label>
-                          </>
-                        )}
-                      </Box>
-                      <Box sx={{ 
-                        maxHeight: '400px',
-                        overflowY: 'auto'
-                      }}>
-                        {generatedDocuments.filter(doc => 
-                          doc.category === 'contrats' || 
-                          doc.documentType === 'lettre_mission' || 
-                          doc.documentType === 'convention_etudiant' || 
-                          doc.documentType === 'convention_entreprise'
-                        ).length === 0 ? (
-                          <Typography 
-                            variant="body2" 
-                            color="text.secondary"
-                            sx={{ 
-                              textAlign: 'center',
-                              py: 2
-                            }}
-                          >
-                            Aucun document pour le moment
-                          </Typography>
-                        ) : (
-                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                            {generatedDocuments
-                              .filter(doc => 
-                                doc.category === 'contrats' || 
-                                doc.documentType === 'lettre_mission' || 
-                                doc.documentType === 'convention_etudiant' || 
-                                doc.documentType === 'convention_entreprise'
-                              )
-                              .map((doc) => (
-                                <Box
-                                  key={doc.id}
-                                  onClick={() => window.open(doc.fileUrl, '_blank')}
-                                  sx={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 2,
-                                    p: 1.5,
-                                    borderRadius: '10px',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.2s ease-in-out',
-                                    '&:hover': {
-                                      backgroundColor: '#f5f5f7',
-                                      transform: 'translateY(-1px)'
-                                    },
-                                    position: 'relative'
-                                  }}
-                                >
-                                  <Box sx={{
-                                    width: 36,
-                                    height: 36,
-                                    borderRadius: '8px',
-                                    backgroundColor: '#f5f5f7',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    color: '#1d1d1f',
-                                    flexShrink: 0
-                                  }}>
-                                    <PdfIcon sx={{ fontSize: 20 }} />
-                                  </Box>
-                                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                                    <Typography sx={{ 
-                                      fontSize: '0.875rem',
-                                      fontWeight: '500',
-                                      color: '#1d1d1f',
-                                      whiteSpace: 'nowrap',
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis'
-                                    }}>
-                                      {doc.fileName}
-                                    </Typography>
-                                    <Typography sx={{ 
-                                      fontSize: '0.75rem',
-                                      color: '#86868b'
-                                    }}>
-                                      {doc.createdAt.toLocaleDateString()}
-                                    </Typography>
-                                  </Box>
-                                  {canWrite && (
-                                    <IconButton
-                                      size="small"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleDocumentMenuOpen(e, doc);
-                                      }}
-                                      sx={{
-                                        color: '#86868b',
-                                        '&:hover': { color: '#1d1d1f' }
-                                      }}
-                                    >
-                                      <MoreVertIcon fontSize="small" />
-                                    </IconButton>
-                                  )}
-                                </Box>
-                              ))}
-                          </Box>
-                        )}
-                      </Box>
-                    </Box>
-                  </Box>
-                )
-              },
-              {
-                title: "Facturation",
-                icon: <ReceiptIcon />,
-                content: (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    <Typography variant="h6" gutterBottom>
-                      Notes de frais
-                    </Typography>
-
-                    {canWrite && (
-                      <Box sx={{ mb: 2 }}>
-                        <Button
-                          variant="contained"
-                          startIcon={<AddIcon />}
-                          onClick={() => setOpenAddExpenseDialog(true)}
-                          sx={{
-                            borderRadius: '10px',
-                            textTransform: 'none',
-                            fontWeight: '500'
-                          }}
-                        >
-                          Ajouter une note de frais
-                        </Button>
-                      </Box>
-                    )}
-
-                    <TableContainer component={Paper} sx={{ 
-                      borderRadius: '12px',
-                      boxShadow: 'none',
-                      border: '1px solid',
-                      borderColor: 'divider'
-                    }}>
-                      <Table>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 500 }}>Étudiant</TableCell>
-                            <TableCell sx={{ fontWeight: 500 }}>Description</TableCell>
-                            <TableCell sx={{ fontWeight: 500 }}>Date</TableCell>
-                            <TableCell sx={{ fontWeight: 500 }}>Montant</TableCell>
-                            <TableCell sx={{ fontWeight: 500 }}>Justificatif</TableCell>
-                            <TableCell sx={{ fontWeight: 500 }}>Statut</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {expenseNotes.map((note) => {
-                            // Trouver l'application correspondante pour obtenir les infos de l'étudiant
-                            const application = applications.find(app => app.userId === note.userId);
-                            
-                            return (
-                              <TableRow key={note.id}>
-                                <TableCell>
-                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <Avatar
-                                      src={application?.userPhotoURL || undefined}
-                                      sx={{ width: 32, height: 32 }}
-                                      onError={(e) => {
-                                        const target = e.currentTarget as HTMLImageElement;
-                                        target.src = '';
-                                        target.style.display = 'none';
-                                      }}
-                                    >
-                                      {application?.userDisplayName?.charAt(0) || 'U'}
-                                    </Avatar>
-                                    <Box>
-                                      <Typography variant="body2">
-                                        {application?.userDisplayName || 'Utilisateur inconnu'}
-                                      </Typography>
-                                      <Typography variant="caption" color="text.secondary">
-                                        {application?.userEmail}
-                                      </Typography>
-                                    </Box>
-                                  </Box>
-                                </TableCell>
-                                <TableCell>{note.description}</TableCell>
-                                <TableCell>{note.date.toLocaleDateString()}</TableCell>
-                                <TableCell>{note.amount.toFixed(2)} €</TableCell>
-                                <TableCell>
-                                  {note.attachmentUrl ? (
-                                    <Button
-                                      size="small"
-                                      startIcon={<DescriptionIcon />}
-                                      onClick={() => handlePreview(note.attachmentUrl)}
-                                      sx={{
-                                        color: '#2E3B7C',
-                                        '&:hover': {
-                                          backgroundColor: 'rgba(46, 59, 124, 0.04)',
-                                        },
-                                      }}
-                                    >
-                                      Voir
-                                    </Button>
-                                  ) : (
-                                    <Typography variant="body2" color="text.secondary">
-                                      Aucun
-                                    </Typography>
-                                  )}
-                                </TableCell>
-                                <TableCell>
-                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <Chip
-                                      label={note.status}
-                                      size="small"
-                                      color={
-                                        note.status === 'Validée' ? 'success' :
-                                        note.status === 'Refusée' ? 'error' : 'default'
-                                      }
-                                    />
-                                    {canWrite && (
-                                      <IconButton
-                                        size="small"
-                                        onClick={(e) => handleExpenseMenuOpen(e, note)}
-                                        sx={{ color: '#86868b' }}
-                                      >
-                                        <MoreVertIcon fontSize="small" />
-                                      </IconButton>
-                                    )}
-                                  </Box>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                          {expenseNotes.length === 0 && (
-                            <TableRow>
-                              <TableCell colSpan={6} align="center" sx={{ py: 3 }}>
-                                <Typography color="text.secondary">
-                                  Aucune note de frais pour cette mission
-                                </Typography>
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-
-                    <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
-                        Total des notes de frais : {expenseNotes.reduce((sum, note) => 
-                          note.status === 'Validée' ? sum + note.amount : sum, 0
-                        ).toFixed(2)} €
-                      </Typography>
-                    </Box>
-
-                    {/* Section Documents - Facturation */}
-                    <Box sx={{ mt: 3 }}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                        <Typography variant="h6" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
-                          Documents
-                        </Typography>
-                        {canWrite && (
-                        <>
-                          <input
-                            accept="*/*"
-                            style={{ display: 'none' }}
-                            id="upload-document-facturation"
-                            type="file"
-                            onChange={(e) => handleUploadDocument(e, 'facturation')}
-                          />
-                          <label htmlFor="upload-document-facturation">
-                            <IconButton
-                              component="span"
-                              sx={{
-                                width: 36,
-                                height: 36,
-                                backgroundColor: '#007AFF',
-                                color: 'white',
-                                '&:hover': {
-                                  backgroundColor: '#0A84FF',
-                                },
-                                boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
-                              }}
-                            >
-                              <AddIcon />
-                            </IconButton>
-                          </label>
-                        </>
-                        )}
-                      </Box>
-
-                      {/* Zone de drag & drop pour les factures - N'afficher que s'il n'y a pas de facture */}
-                      {generatedDocuments.filter(doc => 
-                        (doc.category === 'facturation' || doc.documentType === 'facture') && doc.isInvoice
-                      ).length === 0 && (
-                        <Box
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.currentTarget.style.borderColor = '#007AFF';
-                            e.currentTarget.style.backgroundColor = 'rgba(0, 122, 255, 0.05)';
-                          }}
-                          onDragLeave={(e) => {
-                            e.currentTarget.style.borderColor = '#e5e5ea';
-                            e.currentTarget.style.backgroundColor = 'transparent';
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            e.currentTarget.style.borderColor = '#e5e5ea';
-                            e.currentTarget.style.backgroundColor = 'transparent';
-                            
-                            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                              const droppedFile = e.dataTransfer.files[0];
-                              handleOpenUploadDialog('facturation', droppedFile);
-                            }
-                          }}
-                          sx={{
-                            border: '2px dashed #e5e5ea',
-                            borderRadius: '12px',
-                            p: 3,
-                            textAlign: 'center',
-                            backgroundColor: 'transparent',
-                            transition: 'all 0.2s',
-                            cursor: 'pointer',
-                            mb: 2,
-                            '&:hover': {
-                              borderColor: '#007AFF',
-                              backgroundColor: 'rgba(0, 122, 255, 0.02)'
-                            }
-                          }}
-                          onClick={() => document.getElementById('upload-document-facturation')?.click()}
-                        >
-                          <CloudUploadIcon sx={{ fontSize: 40, color: '#86868b', mb: 1 }} />
-                          <Typography variant="body1" sx={{ fontWeight: 500, mb: 0.5 }}>
-                            Glissez-déposez une facture ici
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            ou cliquez pour sélectionner un fichier
-                          </Typography>
-                        </Box>
-                      )}
-
-                      <Box sx={{ 
-                        maxHeight: '400px',
-                        overflowY: 'auto'
-                      }}>
-                        {generatedDocuments.filter(doc => 
-                          doc.category === 'facturation' || 
-                          doc.documentType === 'facture' || 
-                          doc.documentType === 'note_de_frais'
-                        ).length === 0 ? (
-                          <Typography 
-                            variant="body2" 
-                            color="text.secondary"
-                            sx={{ 
-                              textAlign: 'center',
-                              py: 2
-                            }}
-                          >
-                            Aucun document pour le moment
-                          </Typography>
-                        ) : (
-                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                            {generatedDocuments
-                              .filter(doc => 
-                                doc.category === 'facturation' || 
-                                doc.documentType === 'facture' || 
-                                doc.documentType === 'note_de_frais'
-                              )
-                              .map((doc) => (
-                                <Box
-                                  key={doc.id}
-                                  onClick={() => window.open(doc.fileUrl, '_blank')}
-                                  sx={{
-                                    display: 'flex',
-                                    alignItems: 'flex-start',
-                                    gap: 2,
-                                    p: 1.5,
-                                    borderRadius: '10px',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.2s ease-in-out',
-                                    backgroundColor: doc.isInvoice ? 'rgba(52, 199, 89, 0.03)' : 'transparent',
-                                    border: doc.isInvoice ? '1px solid rgba(52, 199, 89, 0.2)' : 'none',
-                                    '&:hover': {
-                                      backgroundColor: doc.isInvoice ? 'rgba(52, 199, 89, 0.08)' : '#f5f5f7',
-                                      transform: 'translateY(-1px)'
-                                    },
-                                    position: 'relative'
-                                  }}
-                                >
-                                  <Box sx={{
-                                    width: 36,
-                                    height: 36,
-                                    borderRadius: '8px',
-                                    backgroundColor: doc.isInvoice ? '#34C759' : '#f5f5f7',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    color: doc.isInvoice ? 'white' : '#1d1d1f',
-                                    flexShrink: 0
-                                  }}>
-                                    <ReceiptIcon sx={{ fontSize: 20 }} />
-                                  </Box>
-                                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                                      <Typography sx={{ 
-                                        fontSize: '0.875rem',
-                                        fontWeight: '500',
-                                        color: '#1d1d1f',
-                                        whiteSpace: 'nowrap',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis'
-                                      }}>
-                                        {doc.fileName}
-                                      </Typography>
-                                      {doc.isInvoice && (
-                                        <Chip
-                                          label="Facture"
-                                          size="small"
-                                          sx={{
-                                            height: 18,
-                                            fontSize: '0.65rem',
-                                            backgroundColor: '#34C759',
-                                            color: 'white',
-                                            fontWeight: 600
-                                          }}
-                                        />
-                                      )}
-                                    </Box>
-                                    
-                                    {/* Informations de la facture */}
-                                    {doc.isInvoice ? (
-                                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.3 }}>
-                                        <Typography sx={{ fontSize: '0.7rem', color: '#86868b' }}>
-                                          Ajouté par {doc.createdByName || 'Utilisateur'} le {doc.createdAt.toLocaleDateString('fr-FR')}
-                                        </Typography>
-                                        {doc.invoiceSentDate && (
-                                          <Typography sx={{ fontSize: '0.7rem', color: '#86868b' }}>
-                                            Envoyée le {new Date(doc.invoiceSentDate).toLocaleDateString('fr-FR')}
-                                          </Typography>
-                                        )}
-                                        {doc.invoiceDueDate && (
-                                          <Typography sx={{ 
-                                            fontSize: '0.7rem', 
-                                            color: new Date(doc.invoiceDueDate) < new Date() ? '#FF3B30' : '#007AFF',
-                                            fontWeight: new Date(doc.invoiceDueDate) < new Date() ? 600 : 500
-                                          }}>
-                                            Échéance : {new Date(doc.invoiceDueDate).toLocaleDateString('fr-FR')}
-                                            {new Date(doc.invoiceDueDate) < new Date() && ' • En retard'}
-                                          </Typography>
-                                        )}
-                                      </Box>
-                                    ) : (
-                                      <Typography sx={{ fontSize: '0.75rem', color: '#86868b' }}>
-                                        {doc.createdAt.toLocaleDateString('fr-FR')}
-                                      </Typography>
-                                    )}
-                                  </Box>
-                                  {canWrite && (
-                                    <IconButton
-                                      size="small"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleDocumentMenuOpen(e, doc);
-                                      }}
-                                      sx={{
-                                        color: '#86868b',
-                                        '&:hover': { color: '#1d1d1f' }
-                                      }}
-                                    >
-                                      <MoreVertIcon fontSize="small" />
-                                    </IconButton>
-                                  )}
-                                </Box>
-                              ))}
-                          </Box>
-                        )}
-                      </Box>
-                    </Box>
-                  </Box>
-                )
-              },
-            ].map((section, index) => (
-              <Accordion
-                key={index}
-                sx={{
-                  borderRadius: '16px !important',
-                  overflow: 'hidden',
-                  border: 'none',
-                  '&:before': { display: 'none' },
-                  boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-                  '&.Mui-expanded': {
-                    margin: '8px 0',
-                  },
-                  '& .MuiAccordionSummary-root': {
-                    borderRadius: '16px',
-                    '&.Mui-expanded': {
-                      borderBottomLeftRadius: 0,
-                      borderBottomRightRadius: 0,
-                    }
-                  }
-                }}
-              >
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon sx={{ color: '#86868b' }} />}
-                  sx={{
-                    backgroundColor: 'white',
-                    '&:hover': {
-                      backgroundColor: '#f5f5f7'
-                    }
-                  }}
-                >
-                  <Box sx={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: 2 
-                  }}>
-                    <Box sx={{
-                      color: '#1d1d1f',
-                      display: 'flex',
-                      alignItems: 'center'
-                    }}>
-                      {section.icon}
-                    </Box>
-                    <Typography sx={{ 
-                      fontSize: '1.1rem',
-                      fontWeight: '500',
-                      letterSpacing: '-0.01em',
-                      color: '#1d1d1f'
-                    }}>
-                      {section.title}
-                    </Typography>
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails sx={{ 
-                  p: 3,
-                  bgcolor: '#fff'
-                }}>
-                  {typeof section.content === 'string' ? (
-                    <Typography sx={{
-                      fontSize: '1rem',
-                      lineHeight: 1.5,
-                      color: '#424245',
-                      letterSpacing: '-0.01em'
-                    }}>
-                      {section.content}
-                    </Typography>
-                  ) : (
-                    section.content
-                  )}
-                </AccordionDetails>
-              </Accordion>
-            ))}
-          </Box>
-        </Grid>
-
-        {/* Colonne des notes (25%) */}
-        <Grid item xs={12} md={3}>
-          {/* Statistiques */}
-          <Paper sx={{ 
-            p: 3, 
-            mb: 3,
-            bgcolor: '#fff',
-            borderRadius: '20px',
-            boxShadow: '0 2px 12px rgba(0, 0, 0, 0.04)',
-          }}>
-            <Typography 
-              variant="subtitle1" 
-              sx={{ 
-                fontSize: '0.875rem',
-                fontWeight: 500,
-                color: '#86868b',
-                mb: 2,
-                letterSpacing: '-0.01em'
-              }}
-            >
-              Statistiques de la mission
-            </Typography>
-            <Grid container spacing={2.5}>
-              <Grid item xs={6}>
-                <Box sx={{
-                  p: 2,
-                  bgcolor: 'rgba(0, 122, 255, 0.08)',
-                  borderRadius: '16px',
-                  height: '100%',
-                  transition: 'all 0.2s ease-in-out',
-                  '&:hover': {
-                    bgcolor: 'rgba(0, 122, 255, 0.12)',
-                    transform: 'translateY(-1px)'
-                  }
-                }}>
-                  <Typography 
-                    variant="caption" 
-                    sx={{ 
-                      color: '#007AFF',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.02em'
-                    }}
-                  >
-                    Étudiants
-                  </Typography>
-                  <Typography 
-                    variant="h4" 
-                    sx={{ 
-                      fontSize: '1.75rem',
-                      fontWeight: 600,
-                      color: '#007AFF',
-                      mt: 0.5,
-                      letterSpacing: '-0.02em',
-                      lineHeight: 1
-                    }}
-                  >
-                    {mission?.studentCount || 0}
-                  </Typography>
-                </Box>
-              </Grid>
-              <Grid item xs={6}>
-                <Box sx={{
-                  p: 2,
-                  bgcolor: 'rgba(88, 86, 214, 0.08)',
-                  borderRadius: '16px',
-                  height: '100%',
-                  transition: 'all 0.2s ease-in-out',
-                  '&:hover': {
-                    bgcolor: 'rgba(88, 86, 214, 0.12)',
-                    transform: 'translateY(-1px)'
-                  }
-                }}>
-                  <Typography 
-                    variant="caption" 
-                    sx={{ 
-                      color: '#5856D6',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.02em'
-                    }}
-                  >
-                    Heures
-                  </Typography>
-                  <Typography 
-                    variant="h4" 
-                    sx={{ 
-                      fontSize: '1.75rem',
-                      fontWeight: 600,
-                      color: '#5856D6',
-                      mt: 0.5,
-                      letterSpacing: '-0.02em',
-                      lineHeight: 1
-                    }}
-                  >
-                    {mission?.hours || 0}
-                  </Typography>
-                </Box>
-              </Grid>
-              <Grid item xs={12}>
-                <Box sx={{
-                  p: 2.5,
-                  bgcolor: 'rgba(52, 199, 89, 0.08)',
-                  borderRadius: '16px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  transition: 'all 0.2s ease-in-out',
-                  '&:hover': {
-                    bgcolor: 'rgba(52, 199, 89, 0.12)',
-                    transform: 'translateY(-1px)'
-                  }
-                }}>
-                  <Typography 
-                    variant="caption" 
-                    sx={{ 
-                      color: '#34C759',
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.02em',
-                      mb: 2
-                    }}
-                  >
-                    Chiffre d'affaires
-                  </Typography>
-                  <Box sx={{ 
-                    display: 'flex', 
-                    flexDirection: 'column',
-                    gap: 2
-                  }}>
-                    <Box>
-                      <Typography 
-                        variant="h3" 
-                        sx={{ 
-                          fontSize: '2.5rem',
-                          fontWeight: 600,
-                          color: '#34C759',
-                          letterSpacing: '-0.02em',
-                          lineHeight: 1,
-                          mb: 1
-                        }}
-                      >
-                        {new Intl.NumberFormat('fr-FR', {
-                          style: 'currency',
-                          currency: 'EUR',
-                          maximumFractionDigits: 2
-                        }).format(mission?.totalHT || 0)}
-                      </Typography>
-                      <Typography 
-                        variant="subtitle2" 
-                        sx={{ 
-                          color: '#34C759',
-                          opacity: 0.8
-                        }}
-                      >
-                        Montant HT
-                      </Typography>
-                    </Box>
-
-                    <Divider sx={{ borderColor: 'rgba(52, 199, 89, 0.2)' }} />
-
-                    <Box sx={{ 
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 1
-                    }}>
-                      <Box sx={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
-                      }}>
-                        <Typography 
-                          variant="body2" 
-                          sx={{ 
-                            color: '#34C759',
-                            opacity: 0.8
-                          }}
-                        >
-                          TVA (20%)
-                        </Typography>
-                        <Typography 
-                          variant="body2" 
-                          sx={{ 
-                            color: '#34C759',
-                            fontWeight: 500
-                          }}
-                        >
-                          {new Intl.NumberFormat('fr-FR', {
-                            style: 'currency',
-                            currency: 'EUR',
-                            maximumFractionDigits: 2
-                          }).format(Math.round(((mission?.totalHT || 0) * 0.2) * 100) / 100)}
-                        </Typography>
-                      </Box>
-
-                      {expenseNotes.filter(note => note.status === 'Validée').length > 0 && (
-                        <Box sx={{ 
-                          display: 'flex', 
-                          justifyContent: 'space-between',
-                          alignItems: 'center'
-                        }}>
-                          <Typography 
-                            variant="body2" 
-                            sx={{ 
-                              color: '#34C759',
-                              opacity: 0.8
-                            }}
-                          >
-                            Notes de frais validées
-                          </Typography>
-                          <Typography 
-                            variant="body2" 
-                            sx={{ 
-                              color: '#34C759',
-                              fontWeight: 500
-                            }}
-                          >
-                            {new Intl.NumberFormat('fr-FR', {
-                              style: 'currency',
-                              currency: 'EUR',
-                              maximumFractionDigits: 2
-                            }).format(expenseNotes.reduce((sum, note) => 
-                              note.status === 'Validée' ? sum + note.amount : sum, 0
-                            ))}
-                          </Typography>
-                        </Box>
-                      )}
-
-                      <Box sx={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        pt: 1,
-                        borderTop: '1px dashed rgba(52, 199, 89, 0.2)'
-                      }}>
-                        <Typography 
-                          variant="subtitle1" 
-                          sx={{ 
-                            color: '#34C759',
-                            fontWeight: 500
-                          }}
-                        >
-                          Total TTC
-                        </Typography>
-                        <Typography 
-                          variant="h6" 
-                          sx={{ 
-                            color: '#34C759',
-                            fontWeight: 600
-                          }}
-                        >
-                          {new Intl.NumberFormat('fr-FR', {
-                            style: 'currency',
-                            currency: 'EUR',
-                            maximumFractionDigits: 2
-                          }).format((mission?.totalHT || 0) * 1.2 + expenseNotes.reduce((sum, note) => 
-                            note.status === 'Validée' ? sum + note.amount : sum, 0
-                          ))}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  </Box>
-                </Box>
-              </Grid>
-            </Grid>
-          </Paper>
-
-
-
-          {/* Documents */}
-          <Paper sx={{ 
-            p: 3,
-            mb: 3,
-            bgcolor: '#fff',
-            borderRadius: '20px',
-            boxShadow: '0 2px 12px rgba(0, 0, 0, 0.04)',
-          }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Typography variant="h6" sx={{ 
-                fontWeight: 500, 
-                color: '#1d1d1f',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1
-              }}>
-                <DescriptionIcon sx={{ fontSize: 20 }} />
-                Documents
-              </Typography>
-              <input
-                accept="*/*"
-                style={{ display: 'none' }}
-                id="upload-document-autres"
-                type="file"
-                onChange={(e) => handleUploadDocument(e, 'autres')}
-              />
-              <label htmlFor="upload-document-autres">
-                <IconButton
-                  component="span"
-                  sx={{
-                    width: 36,
-                    height: 36,
-                    backgroundColor: '#007AFF',
-                    color: 'white',
-                    '&:hover': {
-                      backgroundColor: '#0A84FF',
-                    },
-                    boxShadow: '0 2px 8px rgba(0, 122, 255, 0.3)',
-                  }}
-                >
-                  <AddIcon />
-                </IconButton>
-              </label>
-            </Box>
-
-            <Box sx={{ 
-              maxHeight: 'calc(100vh - 400px)',
-              overflowY: 'auto'
-            }}>
-              {generatedDocuments.length === 0 ? (
-                <Typography 
-                  variant="body2" 
-                  color="text.secondary"
-                  sx={{ 
-                    textAlign: 'center',
-                    py: 2
-                  }}
-                >
-                  Aucun document pour le moment
-                </Typography>
-              ) : (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                  {generatedDocuments
-                    .map((doc) => (
-                    <Box
-                      key={doc.id}
-                      onClick={() => {
-                        if (currentUser) {
-                          trackUserActivity(currentUser.uid, 'document', {
-                            id: doc.id,
-                            title: doc.fileName || 'Document',
-                            subtitle: `Mission ${mission?.numeroMission || ''}`,
-                            url: doc.fileUrl
-                          });
-                        }
-                        window.open(doc.fileUrl, '_blank');
-                      }}
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 2,
-                        p: 1.5,
-                        borderRadius: '10px',
-                        cursor: 'pointer',
-                        transition: 'all 0.2s ease-in-out',
-                        '&:hover': {
-                          backgroundColor: '#f5f5f7',
-                          transform: 'translateY(-1px)'
-                        },
-                        position: 'relative'
-                      }}
-                    >
-                      <Box sx={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: '8px',
-                        backgroundColor: '#f5f5f7',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#1d1d1f',
-                        flexShrink: 0
-                      }}>
-                        <PdfIcon sx={{ fontSize: 20 }} />
-                      </Box>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Box sx={{ 
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 1
-                        }}>
-                          <Typography sx={{ 
-                            fontSize: '0.875rem',
-                            fontWeight: '500',
-                            color: '#1d1d1f',
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis'
-                          }}>
-                            {doc.fileName}
-                          </Typography>
-                          {doc.tags && Array.isArray(doc.tags) && doc.tags.some((tag: DocumentTag | string) => {
-                            if (typeof tag === 'string') {
-                              return tag === 'signed';
-                            }
-                            return tag.name === 'signed';
-                          }) && (
-                            <Chip
-                              size="small"
-                              label="Signé"
-                              color="success"
-                              sx={{ height: 20 }}
-                            />
-                          )}
-                        </Box>
-                        <Typography sx={{ 
-                          fontSize: '0.75rem',
-                          color: '#86868b'
-                        }}>
-                          {doc.createdAt.toLocaleDateString()}
-                          {doc.applicationUserName && ` • ${doc.applicationUserName}`}
-                        </Typography>
-                      </Box>
-                      {canWrite && (
-                        <IconButton
-                          size="small"
-                          onClick={(e) => handleDocumentMenuOpen(e, doc)}
-                          sx={{
-                            color: '#86868b',
-                            '&:hover': { color: '#1d1d1f' }
-                          }}
-                        >
-                          <MoreVertIcon fontSize="small" />
-                        </IconButton>
-                      )}
-                    </Box>
-                  ))}
-                </Box>
-              )}
-            </Box>
-          </Paper>
-
-          {/* Notes de mission */}
-          <Paper sx={{ 
-            p: 3, 
-            position: 'sticky',
-            top: 24,
-            bgcolor: '#fff',
-            borderRadius: '20px',
-            boxShadow: '0 2px 12px rgba(0, 0, 0, 0.04)',
-          }}>
-            <Box sx={{ mb: 3 }}>
-              <Typography variant="h6" sx={{ 
-                fontWeight: 500, 
-                color: '#1d1d1f',
-                mb: 2,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1
-              }}>
-                <NoteAddIcon sx={{ fontSize: 20 }} />
-                Notes de mission
-              </Typography>
-
-              {/* Zone de saisie de nouvelle note (réservée à la modification) */}
-              {canWrite && (
-                <>
-                  <TaggingInput
-                    value={newNote}
-                    onChange={setNewNote}
-                    placeholder="Ajouter une note... (utilisez @ pour tagger quelqu'un)"
-                    multiline={true}
-                    rows={3}
-                    availableUsers={availableUsersForTagging}
-                    onTaggedUsersChange={handleTaggedUsersChange}
-                  />
-                  <Button
-                    fullWidth
-                    variant="contained"
-                    onClick={handleAddNote}
-                    disabled={!newNote.trim()}
-                    sx={{
-                      mt: 2, // padding au-dessus
-                      borderRadius: '10px',
-                      textTransform: 'none',
-                      fontWeight: '500',
-                      mb: 3
-                    }}
-                  >
-                    Ajouter une note
-                  </Button>
-                </>
-              )}
-
-              {/* Liste des notes */}
-              <Box sx={{ 
-                maxHeight: 'calc(100vh - 400px)',
-                overflowY: 'auto'
-              }}>
-                {loadingNotes ? (
-                  <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-                    <CircularProgress size={24} />
-                  </Box>
-                ) : notes.length === 0 ? (
-                  <Typography 
-                    color="text.secondary" 
-                    sx={{ 
-                      textAlign: 'center',
-                      py: 4,
-                      fontSize: '0.875rem'
-                    }}
-                  >
-                    Aucune note pour le moment
-                  </Typography>
-                ) : (
-                  notes.map((note) => (
-                    <Box
-                      key={note.id}
-                      sx={{
-                        p: 2,
-                        mb: 2,
-                        bgcolor: '#f5f5f7',
-                        borderRadius: '12px',
-                        '&:last-child': { mb: 0 }
-                      }}
-                    >
-                      {editingNoteId === note.id ? (
-                        <>
-                          <TextField
-                            fullWidth
-                            multiline
-                            rows={3}
-                            value={editedNoteContent}
-                            onChange={(e) => setEditedNoteContent(e.target.value)}
-                            variant="outlined"
-                            sx={{
-                              mb: 2,
-                              '& .MuiOutlinedInput-root': {
-                                borderRadius: '12px',
-                                backgroundColor: 'white',
-                                '& fieldset': { border: 'none' }
-                              }
-                            }}
-                          />
-                          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
-                            <Button
-                              size="small"
-                              onClick={handleCancelEdit}
-                              sx={{
-                                borderRadius: '8px',
-                                textTransform: 'none',
-                                color: '#FF3B30'
-                              }}
-                            >
-                              Annuler
-                            </Button>
-                            <Button
-                              size="small"
-                              variant="contained"
-                              onClick={() => handleSaveNote(note.id)}
-                              sx={{
-                                borderRadius: '8px',
-                                textTransform: 'none',
-                                bgcolor: '#007AFF',
-                                '&:hover': {
-                                  bgcolor: '#0A84FF'
-                                }
-                              }}
-                            >
-                              Enregistrer
-                            </Button>
-                          </Box>
-                        </>
-                      ) : (
-                        <>
-                          <Typography 
-                            variant="body2" 
-                            sx={{ 
-                              whiteSpace: 'pre-wrap',
-                              mb: 1
-                            }}
-                          >
-                            {formatNoteContent(note.content)}
-                          </Typography>
-                          <Box sx={{ 
-                            display: 'flex', 
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            mt: 1
-                          }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Avatar
-                                src={note.createdByPhotoURL}
-                                sx={{ 
-                                  width: 24, 
-                                  height: 24,
-                                  fontSize: '0.75rem'
-                                }}
-                              >
-                                {note.createdByName.charAt(0)}
-                              </Avatar>
-                              <Box>
-                                <Typography 
-                                  variant="caption" 
-                                  sx={{ 
-                                    color: '#1d1d1f',
-                                    fontWeight: 500,
-                                    display: 'block'
-                                  }}
-                                >
-                                  {note.createdByName}
-                                </Typography>
-                                <Typography 
-                                  variant="caption" 
-                                  sx={{ color: '#86868b' }}
-                                >
-                                  {note.updatedAt && note.updatedAt > note.createdAt 
-                                    ? `Modifiée le ${note.updatedAt.toLocaleDateString()}`
-                                    : note.createdAt.toLocaleDateString()}
-                                </Typography>
-                              </Box>
-                            </Box>
-                            {canWrite && note.createdBy === currentUser?.uid && (
-                              <Box sx={{ display: 'flex', gap: 1 }}>
-                                <IconButton
-                                  size="small"
-                                  onClick={() => handleEditNote(note)}
-                                  sx={{ 
-                                    color: '#86868b',
-                                    '&:hover': { color: '#007AFF' }
-                                  }}
-                                >
-                                  <EditIcon fontSize="small" />
-                                </IconButton>
-                                <IconButton
-                                  size="small"
-                                  onClick={() => handleDeleteNote(note.id)}
-                                  sx={{ 
-                                    color: '#86868b',
-                                    '&:hover': { color: '#FF3B30' }
-                                  }}
-                                >
-                                  <DeleteIcon fontSize="small" />
-                                </IconButton>
-                              </Box>
-                            )}
-                          </Box>
-                        </>
-                      )}
-                    </Box>
-                  ))
-                )}
-              </Box>
-            </Box>
-          </Paper>
-        </Grid>
-      </Grid>
-
-      <Dialog 
-        open={openAddCandidateDialog} 
-        onClose={() => setOpenAddCandidateDialog(false)}
-        maxWidth="sm"
-        fullWidth
+      <MissionDetailShell
+        sidebar={
+          <MissionDetailSidebarPanel
+            numeroMission={mission?.numeroMission || ''}
+            mandat={mission?.mandat}
+            missionTypeLabel={missionTypeLabel}
+            createdByName={createdByName}
+            createdById={mission?.createdBy}
+            updatedAtLabel={updatedAtLabel}
+            chargeName={
+              chargeDisplayName ||
+              (mission.chargeName && !isEncryptedField(mission.chargeName) ? mission.chargeName : undefined)
+            }
+            chargeId={mission?.chargeId}
+            chargeEmail={structureMembers.find((m) => m.id === mission?.chargeId)?.email}
+            contactName={mission?.contact ? `${mission.contact.firstName} ${mission.contact.lastName}` : undefined}
+            contactEmail={mission?.contact?.email}
+            users={missionUsers}
+            isPublished={isPublished}
+            canWrite={canWrite}
+            isSaving={isSaving}
+            onOpenPermissions={() => setIsPermissionsDialogOpen(true)}
+            onTogglePublished={() => { void handlePublishMission(); }}
+          />
+        }
       >
-        <DialogTitle>Ajouter des candidats</DialogTitle>
-        <DialogContent>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
-            {loadingUsers ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-                <CircularProgress />
-              </Box>
-            ) : (
-              <Autocomplete
-                multiple
-                options={availableUsers}
-                value={selectedUsers}
-                onChange={(_, newValue) => {
-                  setSelectedUsers(newValue);
-                }}
-                getOptionLabel={(option) => `${option.displayName} (${option.email})`}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    label="Sélectionner des étudiants"
-                    required
-                    fullWidth
-                  />
-                )}
-                renderOption={(props, option) => (
-                  <Box component="li" {...props} key={`user-${option.id}`}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Avatar
-                        src={option.photoURL || undefined}
-                        sx={{ width: 32, height: 32 }}
-                        onError={(e) => {
-                          const target = e.currentTarget as HTMLImageElement;
-                          target.src = '';
-                          target.style.display = 'none';
-                        }}
-                      >
-                        {option.displayName.charAt(0)}
-                      </Avatar>
-                      <Box>
-                        <Typography variant="body1">{option.displayName}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {option.email}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  </Box>
-                )}
-              />
-            )}
-            <Autocomplete
-              value={newCandidate.status}
-              onChange={(_, newValue) => setNewCandidate(prev => ({ ...prev, status: newValue as string }))}
-              options={['En attente', 'Acceptée', 'Refusée']}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Statut"
-                  required
-                />
-              )}
-              fullWidth
-            />
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpenAddCandidateDialog(false)}>Annuler</Button>
-          <Button 
-            onClick={handleAddCandidate}
-            variant="contained"
-            color="primary"
-            disabled={selectedUsers.length === 0}
-          >
-            Ajouter {selectedUsers.length} candidat{selectedUsers.length > 1 ? 's' : ''}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        {renderMissionDetailBody()}
+      </MissionDetailShell>
+
+      <MissionSaveBar
+        dirtyCount={dirtyCount}
+        dirtyFields={dirtyFields}
+        onSave={() => void handleSavePendingChanges()}
+        onDiscard={handleDiscardPendingChanges}
+      />
+
+      <AddCandidatesDialog
+        open={openAddCandidateDialog}
+        structureId={mission?.structureId}
+        existingUserIds={applications.map((a) => a.userId)}
+        onClose={() => setOpenAddCandidateDialog(false)}
+        onSubmit={handleAddCandidates}
+      />
 
       {/* Dialog pour gérer les permissions */}
       <Dialog 
@@ -10385,62 +8972,6 @@ const MissionDetails: React.FC = () => {
           Gérer les accès à la mission
         </DialogTitle>
         <DialogContent sx={{ p: 0 }}>
-          <Box sx={{ mb: 4 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-              <Typography variant="subtitle1" sx={{ 
-                color: '#1d1d1f',
-                fontWeight: 500
-              }}>
-                Visibilité de la mission
-              </Typography>
-              <Chip
-                label={mission?.isPublic ? "Publique" : "Privée"}
-                color={mission?.isPublic ? "success" : "default"}
-                sx={{
-                  bgcolor: mission?.isPublic ? '#34C759' : '#f5f5f7',
-                  color: mission?.isPublic ? 'white' : '#1d1d1f',
-                  fontWeight: 500,
-                  borderRadius: '6px'
-                }}
-              />
-            </Box>
-            <Button
-              variant="outlined"
-              onClick={() => {
-                if (mission) {
-                  handleUpdateMission(mission.id, { isPublic: !mission.isPublic });
-                  setIsPermissionsDialogOpen(false);
-                }
-              }}
-              sx={{
-                borderColor: '#d2d2d7',
-                color: '#1d1d1f',
-                '&:hover': {
-                  borderColor: '#1d1d1f',
-                  backgroundColor: 'rgba(0,0,0,0.04)'
-                },
-                borderRadius: '8px',
-                textTransform: 'none',
-                fontWeight: 500,
-                px: 2,
-                py: 1
-              }}
-            >
-              {mission?.isPublic ? "Rendre privée" : "Rendre publique"}
-            </Button>
-            <Typography variant="body2" sx={{ 
-              mt: 1,
-              color: '#86868b',
-              fontSize: '0.875rem'
-            }}>
-              {mission?.isPublic 
-                ? "Tous les membres de la structure peuvent voir et modifier cette mission"
-                : "Seuls les utilisateurs avec accès peuvent voir et modifier cette mission"}
-            </Typography>
-          </Box>
-
-          <Divider sx={{ my: 3 }} />
-
           <Box sx={{ mb: 3 }}>
             <Typography variant="subtitle1" sx={{ 
               mb: 2,
@@ -10453,7 +8984,10 @@ const MissionDetails: React.FC = () => {
               <Autocomplete
                 fullWidth
                 options={availableUsers}
-                getOptionLabel={(option) => `${option.displayName} (${option.email})`}
+                getOptionLabel={(option) => {
+                  const name = getSafeDisplayName(option);
+                  return name === option.email ? option.email : `${name} (${option.email})`;
+                }}
                 onChange={(_, value) => setSelectedUserId(value?.id || null)}
                 renderInput={(params) => (
                   <TextField
@@ -10757,7 +9291,33 @@ const MissionDetails: React.FC = () => {
           </ListItemIcon>
           <ListItemText>Ajouter version signée</ListItemText>
         </MenuItem>
-        {canDeleteDocument() && [
+        <MenuItem
+          disabled={
+            !!documentMenuAnchor.document?.locked ||
+            !!documentMenuAnchor.document?.isSigned ||
+            documentMenuAnchor.document?.signatureStatus === 'pending'
+          }
+          onClick={() => {
+            setDocumentDialogs(prev => ({
+              ...prev,
+              sendSignature: true,
+              selectedDocument: documentMenuAnchor.document
+            }));
+            handleDocumentMenuClose();
+          }}
+        >
+          <ListItemIcon>
+            <GestureIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>
+            {documentMenuAnchor.document?.signatureStatus === 'pending'
+              ? 'Signature en cours…'
+              : documentMenuAnchor.document?.isSigned || documentMenuAnchor.document?.locked
+                ? 'Déjà signé'
+                : 'Envoyer en signature'}
+          </ListItemText>
+        </MenuItem>
+        {canDeleteDocument() && !(documentMenuAnchor.document?.locked || documentMenuAnchor.document?.isSigned) && [
           <Divider key="divider" />,
           <MenuItem
             key="delete"
@@ -10839,9 +9399,12 @@ const MissionDetails: React.FC = () => {
               <ListItemText
                 primary="Créé par"
                 secondary={
-                  <Box component="span">
-                    {documentDialogs.selectedDocument?.createdByName || documentDialogs.selectedDocument?.createdBy}
-                  </Box>
+                  <UserReferenceText
+                    userId={documentDialogs.selectedDocument?.createdBy}
+                    name={documentDialogs.selectedDocument?.createdByName}
+                    fallback={documentDialogs.selectedDocument?.createdBy || 'Utilisateur'}
+                    component="span"
+                  />
                 }
               />
             </ListItem>
@@ -10880,6 +9443,17 @@ const MissionDetails: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <SendForSignatureDialog
+        open={documentDialogs.sendSignature}
+        onClose={() => setDocumentDialogs((prev) => ({ ...prev, sendSignature: false }))}
+        generatedDocumentId={documentDialogs.selectedDocument?.id || ''}
+        documentTitle={documentDialogs.selectedDocument?.fileName}
+        onCreated={() => {
+          void fetchGeneratedDocuments();
+          enqueueSnackbar('Invitations de signature envoyées', { variant: 'success' });
+        }}
+      />
 
       {/* Dialog d'ajout de version signée */}
       <Dialog
@@ -10968,7 +9542,14 @@ const MissionDetails: React.FC = () => {
         }}
       >
         <DialogTitle sx={{ pb: 1 }}>
-          Horaires de travail - {workingHoursDialog.application?.userDisplayName}
+          Horaires de travail —{' '}
+          <UserReferenceText
+            userId={workingHoursApplication?.userId}
+            name={workingHoursApplication?.userDisplayName}
+            fallback="Candidat"
+            component="span"
+            sx={{ fontSize: 'inherit', fontWeight: 'inherit' }}
+          />
         </DialogTitle>
         <DialogContent>
           <Box sx={{ mt: 2, mb: 3 }}>
@@ -10984,6 +9565,7 @@ const MissionDetails: React.FC = () => {
                   value={newWorkingHour.date}
                   onChange={(e) => setNewWorkingHour(prev => ({ ...prev, date: e.target.value }))}
                   InputLabelProps={{ shrink: true }}
+                  disabled={loadingWorkingHoursDialog || !!savingWorkingHours[workingHoursApplication?.id || '']}
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: '12px'
@@ -10999,6 +9581,7 @@ const MissionDetails: React.FC = () => {
                   value={newWorkingHour.startTime}
                   onChange={(e) => setNewWorkingHour(prev => ({ ...prev, startTime: e.target.value }))}
                   InputLabelProps={{ shrink: true }}
+                  disabled={loadingWorkingHoursDialog || !!savingWorkingHours[workingHoursApplication?.id || '']}
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: '12px'
@@ -11014,6 +9597,7 @@ const MissionDetails: React.FC = () => {
                   value={newWorkingHour.endTime}
                   onChange={(e) => setNewWorkingHour(prev => ({ ...prev, endTime: e.target.value }))}
                   InputLabelProps={{ shrink: true }}
+                  disabled={loadingWorkingHoursDialog || !!savingWorkingHours[workingHoursApplication?.id || '']}
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: '12px'
@@ -11026,8 +9610,12 @@ const MissionDetails: React.FC = () => {
                   <Button
                     fullWidth
                     variant="contained"
-                    onClick={() => handleAddWorkingHour(workingHoursDialog.application?.id || '')}
-                    disabled={mission?.isArchived}
+                    onClick={() => void handleAddWorkingHour(workingHoursApplication?.id || '')}
+                    disabled={
+                      mission?.isArchived ||
+                      loadingWorkingHoursDialog ||
+                      !!savingWorkingHours[workingHoursApplication?.id || '']
+                    }
                     sx={{
                       height: '100%',
                       borderRadius: '12px',
@@ -11057,30 +9645,42 @@ const MissionDetails: React.FC = () => {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {workingHoursDialog.application?.workingHours?.map((wh) => (
-                  <TableRow key={wh.id}>
-                    <TableCell>{new Date(wh.date).toLocaleDateString()}</TableCell>
-                    <TableCell>{wh.startTime}</TableCell>
-                    <TableCell>{wh.endTime}</TableCell>
-                    <TableCell>
-                      <IconButton
-                        size="small"
-                        onClick={() => handleDeleteWorkingHour(wh.id)}
-                        sx={{ color: '#FF3B30' }}
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {(!workingHoursDialog.application?.workingHours || workingHoursDialog.application.workingHours.length === 0) && (
+                {loadingWorkingHoursDialog ? (
                   <TableRow>
                     <TableCell colSpan={4} align="center">
-                      <Typography color="text.secondary" sx={{ py: 2 }}>
-                        Aucun horaire enregistré
-                      </Typography>
+                      <CircularProgress size={24} sx={{ my: 2 }} />
                     </TableCell>
                   </TableRow>
+                ) : (
+                  <>
+                    {workingHoursApplication?.workingHours?.map((wh) => (
+                      <TableRow key={wh.id}>
+                        <TableCell>{new Date(wh.date).toLocaleDateString('fr-FR')}</TableCell>
+                        <TableCell>{wh.startTime}</TableCell>
+                        <TableCell>{wh.endTime}</TableCell>
+                        <TableCell>
+                          <IconButton
+                            size="small"
+                            onClick={() => void handleDeleteWorkingHour(wh.id)}
+                            disabled={!!savingWorkingHours[workingHoursApplication?.id || '']}
+                            sx={{ color: '#FF3B30' }}
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {(!workingHoursApplication?.workingHours ||
+                      workingHoursApplication.workingHours.length === 0) && (
+                      <TableRow>
+                        <TableCell colSpan={4} align="center">
+                          <Typography color="text.secondary" sx={{ py: 2 }}>
+                            Aucun horaire enregistré
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </>
                 )}
               </TableBody>
             </Table>
@@ -11339,9 +9939,13 @@ const MissionDetails: React.FC = () => {
                             target.style.display = 'none';
                           }}
                         >
-                          {app.userDisplayName?.charAt(0)}
+                        <UserAvatarInitials user={{ id: app.userId, displayName: app.userDisplayName, email: app.userEmail }} />
                         </Avatar>
-                        <Typography>{app.userDisplayName}</Typography>
+                        <UserReferenceText
+                          userId={app.userId}
+                          name={app.userDisplayName}
+                          fallback={app.userEmail.split('@')[0]}
+                        />
                       </Box>
                     </MenuItem>
                   ))}
@@ -11482,7 +10086,59 @@ const MissionDetails: React.FC = () => {
         </DialogActions>
       </Dialog>
 
+      <LetterMissionStudentSelectDialog
+        open={lmDialogOpen}
+        applications={applications.map((app) => ({
+          id: app.id,
+          userId: app.userId,
+          userEmail: app.userEmail,
+          userDisplayName: app.userDisplayName,
+          status: app.status,
+        }))}
+        generating={generatingDocType === 'lettre_mission'}
+        onClose={handleCloseLmDialog}
+        onGenerate={(id) => void handleLmGenerate(id)}
+      />
+
+      <GenerateFromTemplateDialog
+        open={manualGeneratorOpen}
+        onClose={() => setManualGeneratorOpen(false)}
+        structureId={mission?.structureId || ''}
+        missionId={mission?.id || ''}
+      />
+
       {/* Dialog pour les données manquantes */}
+      <AvenantStudentSelectDialog
+        open={avenantDialog.open}
+        step={avenantDialog.step}
+        applications={applications.map((app) => ({
+          id: app.id,
+          userId: app.userId,
+          userEmail: app.userEmail,
+          userDisplayName: app.userDisplayName,
+          status: app.status,
+        }))}
+        templateName={avenantDialog.templateName}
+        templateId={avenantDialog.templateId}
+        templateOptions={avenantDialog.templateOptions}
+        templateLoading={avenantDialog.templateLoading}
+        templateSaving={avenantDialog.templateSaving}
+        templateMissing={avenantDialog.templateMissing}
+        canChangeTemplate={canWrite}
+        generating={generatingDocType === 'avenant'}
+        checkingMissing={avenantDialog.checkingMissing}
+        templateTags={avenantDialog.templateTags}
+        tempData={tempData}
+        onClose={handleCloseAvenantDialog}
+        onContinue={(id) => void handleAvenantContinue(id)}
+        onGenerate={() => void handleAvenantGenerate()}
+        onBack={handleAvenantBack}
+        onRefreshMissing={() => void handleAvenantRefreshMissing()}
+        onTemplateChange={(id) => void handleAvenantTemplateChange(id)}
+        onTempDataChange={handleEditMissingData}
+        onSaveMissingField={(tag, value) => void handleAvenantSaveField(tag, value)}
+      />
+
       <Dialog
         open={missingDataDialog.open}
         onClose={handleCloseMissingDataDialog}
@@ -11505,7 +10161,14 @@ const MissionDetails: React.FC = () => {
           </Typography>
           
           <Box sx={{ maxHeight: 500, overflow: 'auto' }}>
-            {missingDataDialog.missingData.length > 0 && (
+            {missingDataDialog.detecting ? (
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 4, gap: 2 }}>
+                <CircularProgress size={32} />
+                <Typography variant="body2" color="text.secondary">
+                  Analyse du template en cours…
+                </Typography>
+              </Box>
+            ) : missingDataDialog.missingData.length > 0 && (
               <Box>
                 {Object.entries(
                   missingDataDialog.missingData.reduce((acc, item) => {

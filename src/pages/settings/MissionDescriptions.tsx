@@ -29,36 +29,15 @@ import { collection, addDoc, updateDoc, deleteDoc, doc, getDocs, query, where } 
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { styled } from '@mui/material';
-import { keyframes } from '@mui/system';
+import { } from '@mui/system';
 import { useSearchParams } from 'react-router-dom';
+import { tokens } from '../../theme/tokens';
+import { settingsPageStyles, SettingsPanel } from '../../components/ds';
+import { fadeIn, scaleIn } from '../../styles/animations';
 
-// Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
-const scaleIn = keyframes`
-  from {
-    transform: scale(0.95);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-`;
-
-// Styles personnalisés
 const StyledTextField = styled(TextField)(({ theme }) => ({
   '& .MuiOutlinedInput-root': {
-    borderRadius: '12px',
+    borderRadius: tokens.radius.md,
     transition: 'all 0.3s ease-in-out',
     '&:hover': {
       '& .MuiOutlinedInput-notchedOutline': {
@@ -70,7 +49,7 @@ const StyledTextField = styled(TextField)(({ theme }) => ({
 
 const StyledDialog = styled(Dialog)(({ theme }) => ({
   '& .MuiDialog-paper': {
-    borderRadius: '24px',
+    borderRadius: tokens.radius.xxl,
     boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
     animation: `${scaleIn} 0.3s ease-out`,
   },
@@ -215,56 +194,42 @@ const MissionDescriptions: React.FC = () => {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography 
-          variant="h5" 
-          sx={{ 
-            fontWeight: 700,
-            background: theme => `linear-gradient(90deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            animation: `${fadeIn} 0.5s ease-out`
-          }}
-        >
-          Types de mission
-        </Typography>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3, alignItems: 'center' }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Types de mission</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Définissez les modèles de description pour vos missions
+          </Typography>
+        </Box>
         <Button
           variant="contained"
           startIcon={<AddIcon />}
           onClick={() => handleOpenDialog()}
           sx={{
-            borderRadius: '12px',
+            borderRadius: tokens.radius.md,
             textTransform: 'none',
             fontWeight: 600,
             padding: '10px 24px',
-            transition: 'all 0.3s ease-in-out',
-            '&:hover': {
-              transform: 'translateY(-2px)',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-            },
+            bgcolor: tokens.colors.brandTeal,
+            boxShadow: tokens.shadows.button,
+            '&:hover': { bgcolor: tokens.colors.brandTeal700 },
           }}
         >
           Nouveau type de mission
         </Button>
       </Box>
 
-      <Paper sx={{ 
-        p: 3, 
-        borderRadius: '16px',
-        boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-        backdropFilter: 'blur(10px)',
-        backgroundColor: theme => alpha(theme.palette.background.paper, 0.8),
-        animation: `${fadeIn} 0.5s ease-out`
-      }}>
+      <SettingsPanel title="Types configurés" desc={`${descriptions.length} type${descriptions.length !== 1 ? 's' : ''} de mission`}>
         <List>
           {descriptions.map((description, index) => (
             <React.Fragment key={description.id}>
               <ListItem sx={{ 
-                borderRadius: '12px',
+                borderRadius: tokens.radius.md,
                 mb: 1,
                 transition: 'all 0.3s ease-in-out',
                 '&:hover': {
-                  bgcolor: theme => alpha(theme.palette.primary.main, 0.05),
+                  bgcolor: tokens.colors.primaryAlpha10,
                   transform: 'translateX(4px)',
                 }
               }}>
@@ -289,9 +254,9 @@ const MissionDescriptions: React.FC = () => {
                     edge="end" 
                     onClick={() => handleOpenDialog(description)}
                     sx={{
-                      color: 'primary.main',
+                      color: tokens.colors.brandTeal,
                       '&:hover': {
-                        bgcolor: theme => alpha(theme.palette.primary.main, 0.1),
+                        bgcolor: tokens.colors.primaryAlpha10,
                       }
                     }}
                   >
@@ -341,7 +306,7 @@ const MissionDescriptions: React.FC = () => {
             </ListItem>
           )}
         </List>
-      </Paper>
+      </SettingsPanel>
 
       <StyledDialog open={openDialog} onClose={handleCloseDialog} maxWidth="md" fullWidth>
         <DialogTitle sx={{ 

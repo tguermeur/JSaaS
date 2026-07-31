@@ -10,10 +10,17 @@ const ALLOWED_ROLES = ['admin_structure', 'admin', 'membre', 'superadmin'];
 
 interface ChangelogContextType {
   showChangelog: boolean;
+  showOnboarding: boolean;
+  hasCompletedOnboarding: boolean;
+  onboardingStep: number;
   markChangelogAsSeen: () => Promise<void>;
+  markOnboardingAsSeen: () => Promise<void>;
+  closeOnboardingAndSaveStep: (step: number) => Promise<void>;
   openChangelog: () => void;
+  openOnboarding: () => void;
   loading: boolean;
   showInfoButtonHint: boolean;
+  infoButtonHintMessage: string;
   hideInfoButtonHint: () => void;
   hasUnseenChangelog: boolean;
 }
@@ -22,22 +29,24 @@ const ChangelogContext = createContext<ChangelogContextType | undefined>(undefin
 
 export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [showChangelog, setShowChangelog] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
+  const [onboardingStep, setOnboardingStep] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showInfoButtonHint, setShowInfoButtonHint] = useState(false);
+  const [infoButtonHintMessage, setInfoButtonHintMessage] = useState('Cliquez ici pour revoir les nouveautés');
   const [hasUnseenChangelog, setHasUnseenChangelog] = useState(false);
   const { currentUser, userData } = useAuth();
 
   useEffect(() => {
-    const checkChangelogStatus = async () => {
+    const checkStatus = async () => {
       if (!currentUser) {
         setLoading(false);
         return;
       }
 
-      // Vérifier le rôle de l'utilisateur
       const userRole = userData?.status;
       if (!userRole || !ALLOWED_ROLES.includes(userRole)) {
-        // Utilisateur non autorisé (etudiant ou entreprise)
         setLoading(false);
         return;
       }
@@ -45,31 +54,34 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         const userRef = doc(db, 'users', currentUser.uid);
         const userDoc = await getDoc(userRef);
+        const data = userDoc.exists() ? userDoc.data() : null;
+        const hasSeenOnboarding = data?.hasSeenOnboardingTutorial === true;
+        const savedStep = typeof data?.onboardingTutorialStep === 'number' ? data.onboardingTutorialStep : 0;
+        const lastSeenVersion = data?.lastSeenChangelogVersion;
 
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          const lastSeenVersion = userData.lastSeenChangelogVersion;
+        setHasCompletedOnboarding(hasSeenOnboarding);
+        setOnboardingStep(Math.min(savedStep, 9));
 
-          // Si l'utilisateur n'a pas vu cette version, afficher la popup et marquer comme non vu
-          if (lastSeenVersion !== CURRENT_VERSION) {
-            setShowChangelog(true);
-            setHasUnseenChangelog(true);
-          } else {
-            setHasUnseenChangelog(false);
-          }
-        } else {
-          // Nouvel utilisateur, afficher la popup
+        // Nouveau compte : afficher le tutoriel d'onboarding à la place du changelog
+        if (!hasSeenOnboarding) {
+          setShowOnboarding(true);
+          setShowChangelog(false);
+          setHasUnseenChangelog(false);
+        } else if (lastSeenVersion !== CURRENT_VERSION) {
+          setShowOnboarding(false);
           setShowChangelog(true);
           setHasUnseenChangelog(true);
+        } else {
+          setHasUnseenChangelog(false);
         }
       } catch (error) {
-        console.error('Erreur lors de la vérification du changelog:', error);
+        console.error('Erreur lors de la vérification changelog/onboarding:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    checkChangelogStatus();
+    checkStatus();
   }, [currentUser, userData]);
 
   const markChangelogAsSeen = async () => {
@@ -83,14 +95,10 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
       setShowChangelog(false);
       setHasUnseenChangelog(false);
-      
-      // Afficher l'animation du bouton "i" après 500ms
+      setInfoButtonHintMessage('Cliquez ici pour revoir les nouveautés');
       setTimeout(() => {
         setShowInfoButtonHint(true);
-        // Masquer automatiquement après 5 secondes
-        setTimeout(() => {
-          setShowInfoButtonHint(false);
-        }, 5000);
+        setTimeout(() => setShowInfoButtonHint(false), 5000);
       }, 500);
     } catch (error) {
       console.error('Erreur lors de la mise à jour du changelog:', error);
@@ -99,9 +107,55 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
+  const markOnboardingAsSeen = async () => {
+    if (!currentUser) return;
+    try {
+      const userRef = doc(db, 'users', currentUser.uid);
+      await updateDoc(userRef, {
+        hasSeenOnboardingTutorial: true,
+        hasSeenOnboardingTutorialDate: new Date(),
+        onboardingTutorialStep: 0
+      });
+      setHasCompletedOnboarding(true);
+      setOnboardingStep(0);
+      setShowOnboarding(false);
+      setTimeout(() => setShowInfoButtonHint(true), 500);
+      setTimeout(() => setShowInfoButtonHint(false), 5000);
+    } catch (error) {
+      console.error('Erreur lors de la mise à jour onboarding:', error);
+      setShowOnboarding(false);
+    }
+  };
+
+  const closeOnboardingAndSaveStep = async (step: number) => {
+    if (!currentUser) return;
+    try {
+      const userRef = doc(db, 'users', currentUser.uid);
+      await updateDoc(userRef, {
+        onboardingTutorialStep: Math.min(step, 9),
+        onboardingTutorialStepUpdatedAt: new Date()
+      });
+      setOnboardingStep(step);
+      setShowOnboarding(false);
+      setInfoButtonHintMessage('Reprendre ici le tutoriel');
+      setTimeout(() => {
+        setShowInfoButtonHint(true);
+        setTimeout(() => setShowInfoButtonHint(false), 5000);
+      }, 500);
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde de l\'étape du tutoriel:', error);
+      setShowOnboarding(false);
+    }
+  };
+
   const openChangelog = () => {
     setShowChangelog(true);
-    setShowInfoButtonHint(false); // Masquer le hint si on rouvre
+    setShowInfoButtonHint(false);
+  };
+
+  const openOnboarding = () => {
+    setShowOnboarding(true);
+    setShowInfoButtonHint(false);
   };
 
   const hideInfoButtonHint = () => {
@@ -112,10 +166,17 @@ export const ChangelogProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     <ChangelogContext.Provider
       value={{
         showChangelog,
+        showOnboarding,
+        hasCompletedOnboarding,
+        onboardingStep,
         markChangelogAsSeen,
+        markOnboardingAsSeen,
+        closeOnboardingAndSaveStep,
         openChangelog,
+        openOnboarding,
         loading,
         showInfoButtonHint,
+        infoButtonHintMessage,
         hideInfoButtonHint,
         hasUnseenChangelog
       }}

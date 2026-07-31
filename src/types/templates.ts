@@ -1,4 +1,4 @@
-export type DocumentType = 
+export type DocumentType =
   | 'proposition_commerciale'
   | 'lettre_mission'
   | 'note_de_frais'
@@ -10,7 +10,9 @@ export type DocumentType =
   | 'convention_etude'
   | 'proces_verbal_recette'
   | 'rapport_pedagogique'
-  | 'avenant_convention';
+  | 'avenant_convention'
+  | 'bulletin_versement'
+  | 'convention_consultant';
 
 export interface TemplateAssignment {
   id?: string;
@@ -34,7 +36,9 @@ export const DOCUMENT_TYPES: { [key in DocumentType]: string } = {
   convention_etude: 'Convention Étude',
   proces_verbal_recette: 'PV Recette',
   rapport_pedagogique: 'Rapport Pédagogique',
-  avenant_convention: 'Avenant Convention'
+  avenant_convention: 'Avenant Convention',
+  bulletin_versement: 'Bulletin de Versement',
+  convention_consultant: 'Convention Consultant',
 };
 
 export interface TemplateVariable {

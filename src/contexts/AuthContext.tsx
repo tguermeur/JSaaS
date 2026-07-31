@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { auth, db } from '../firebase/config';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { auth, app, db } from '../firebase/config';
 import { onAuthStateChanged, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth';
 import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
@@ -13,6 +13,19 @@ import { getContactAccessPermissions, ContactAccessPermissions, isContactWithAcc
 // localStorage pour le transfert entre onglets, sessionStorage pour persister dans l'onglet actuel
 const IMPERSONATION_STORAGE_KEY = 'superadmin_impersonation';
 const IMPERSONATION_SESSION_KEY = 'superadmin_impersonation_session';
+const DEBUG_AUTH = import.meta.env.VITE_DEBUG_AUTH === 'true';
+const OWN_DECRYPT_CACHE_TTL_MS = 5 * 60 * 1000;
+const OWN_DECRYPT_COOLDOWN_MS = 30 * 1000;
+
+let ownDecryptInFlight: Promise<any> | null = null;
+let ownDecryptCache: { userId: string; expiresAt: number; data: any } | null = null;
+let ownDecryptCooldownUntil = 0;
+
+const clearOwnUserDecryptState = () => {
+  ownDecryptCache = null;
+  ownDecryptInFlight = null;
+  ownDecryptCooldownUntil = 0;
+};
 
 interface ImpersonationData {
   originalUserId: string;
@@ -77,14 +90,15 @@ export function AuthProvider({ children }) {
   // Ref pour bloquer les mises à jour de userData par onSnapshot quand on est en mode impersonation
   const isImpersonatingRef = useRef(false);
 
-  const logoutUser = async () => {
+  const logoutUser = useCallback(async () => {
     try {
+      clearOwnUserDecryptState();
       await signOut(auth);
     } catch (err) {
       console.error("Erreur de déconnexion:", err);
       throw err;
     }
-  };
+  }, []);
 
   const createOrUpdateUserDocument = async (user: User) => {
     try {
@@ -97,98 +111,190 @@ export function AuthProvider({ children }) {
   };
 
   useEffect(() => {
-    let unsubscribeSnapshot: (() => void) | null = null;
-    let lastLoginUpdated = false; // Ajout du flag pour éviter la boucle
-    let currentAuthUserUid: string | null = null;
+    if (!auth || !db) {
+      setLoading(false);
+      return;
+    }
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      console.log("Auth state changed:", user?.uid);
+    let unsubscribeAuth: (() => void) | null = null;
+    let unsubscribeSnapshot: (() => void) | null = null;
+    let lastLoginUpdated = false;
+    let currentAuthUserUid: string | null = null;
+    let cancelled = false;
+
+    const extractImportantFields = (data: Record<string, unknown>) => ({
+      displayName: data.displayName,
+      role: data.role,
+      phone: data.phone,
+      address: data.address,
+      status: data.status,
+      cvUrl: data.cvUrl,
+      photoURL: data.photoURL,
+      isOnline: data.isOnline,
+      structureId: data.structureId,
+      email: data.email,
+    });
+
+    const applyUserDocData = (user: User, data: Record<string, unknown>) => {
+      if (isImpersonatingRef.current) return;
+      const fields = extractImportantFields(data);
+      setUserData(data);
+      previousUserDataRef.current = fields;
+      setCurrentUser({
+        ...(user as ExtendedUser),
+        displayName: (data.displayName as string) || user.displayName,
+        role: data.role,
+        phone: data.phone,
+        address: data.address,
+        status: data.status,
+        cvUrl: data.cvUrl,
+        photoURL: data.photoURL,
+        isOnline: data.isOnline,
+        structureId: data.structureId,
+      } as ExtendedUser);
+    };
+
+    const hydrateUserDoc = async (user: User) => {
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid));
+        if (!snap.exists() || cancelled) return;
+        applyUserDocData(user, snap.data());
+        const data = snap.data();
+        if (isContactWithAccess(data) && user.uid) {
+          const permissions = await getContactAccessPermissions(user.uid);
+          if (!cancelled) setContactPermissions(permissions);
+        }
+      } catch (err) {
+        console.warn('Hydratation profil Firestore:', err);
+      }
+    };
+
+    const startAuth = async () => {
+      try {
+        await setPersistence(auth, browserLocalPersistence);
+      } catch {
+        /* persistance déjà active ou indisponible */
+      }
+
+      // En prod, onAuthStateChanged peut émettre null avant restauration IndexedDB → fausse déconnexion
+      await auth.authStateReady();
+      if (cancelled) return;
+
+      unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (DEBUG_AUTH) console.log("Auth state changed:", user?.uid);
       
-      // Réinitialiser le flag si l'utilisateur change
       if (user?.uid !== currentAuthUserUid) {
         lastLoginUpdated = false;
         currentAuthUserUid = user?.uid || null;
+        previousUserDataRef.current = null;
+        clearOwnUserDecryptState();
       }
-      
-      // Nettoyer le listener précédent s'il existe
+
       if (unsubscribeSnapshot) {
         unsubscribeSnapshot();
+        unsubscribeSnapshot = null;
       }
       
       try {
         if (user) {
-          // Forcer le rafraîchissement du token pour récupérer les Custom Claims
-          // lors de la connexion initiale
-          user.getIdToken(true).catch(e => console.error("Erreur refresh token initial:", e));
+          setCurrentUser(user as ExtendedUser);
+          setLoading(false);
 
           const userDocRef = doc(db, 'users', user.uid);
+
+          // Hydratation getDoc immédiate (ne pas attendre onSnapshot — lent en prod)
+          void hydrateUserDoc(user);
+
+          const loadingTimeout = setTimeout(() => {
+            if (!previousUserDataRef.current && !cancelled) {
+              void hydrateUserDoc(user);
+            }
+          }, 8000);
+
+          user.getIdToken(true).catch(e => console.error("Erreur refresh token initial:", e));
           
-          // Utiliser onSnapshot pour écouter les changements en temps réel
           unsubscribeSnapshot = onSnapshot(userDocRef, async (userDocSnap) => {
+            try {
             if (userDocSnap.exists()) {
               let newUserData = userDocSnap.data();
               const isEncrypted = (v: any) => typeof v === 'string' && v.startsWith('ENC:');
-              if (isEncrypted(newUserData.displayName) || isEncrypted(newUserData.firstName) || isEncrypted(newUserData.lastName)) {
+              // Ne jamais bloquer la connexion sur le déchiffrement (lent ou en échec en prod)
+              if (isEncrypted(newUserData.displayName)) {
+                newUserData = { ...newUserData, displayName: user.displayName || null };
+              }
+
+              const runOwnUserDecrypt = async (): Promise<typeof newUserData | null> => {
+                if (
+                  !isEncrypted(newUserData.firstName) &&
+                  !isEncrypted(newUserData.lastName) &&
+                  !isEncrypted(newUserData.displayName)
+                ) {
+                  return null;
+                }
                 try {
-                  const decryptOwnUserData = httpsCallable(getFunctions(), 'decryptOwnUserData');
-                  const result = await decryptOwnUserData({});
-                  const dec = (result.data as any)?.decryptedData;
-                  if (dec) {
-                    newUserData = {
-                      ...newUserData,
-                      displayName: (dec.displayName && !isEncrypted(dec.displayName) ? dec.displayName : null) || (dec.firstName || dec.lastName ? `${dec.firstName || ''} ${dec.lastName || ''}`.trim() : null) || newUserData.displayName,
-                      firstName: (dec.firstName && !isEncrypted(dec.firstName) ? dec.firstName : newUserData.firstName) ?? newUserData.firstName,
-                      lastName: (dec.lastName && !isEncrypted(dec.lastName) ? dec.lastName : newUserData.lastName) ?? newUserData.lastName
-                    };
+                  const now = Date.now();
+                  let dec: any = null;
+                  if (ownDecryptCache && ownDecryptCache.userId === user.uid && ownDecryptCache.expiresAt > now) {
+                    dec = ownDecryptCache.data;
+                  } else if (ownDecryptCooldownUntil <= now) {
+                    if (!ownDecryptInFlight) {
+                      const functionsInstance = app ? getFunctions(app, 'us-central1') : getFunctions();
+                      const decryptOwnUserData = httpsCallable(functionsInstance, 'decryptOwnUserData');
+                      ownDecryptInFlight = decryptOwnUserData({})
+                        .then((result) => {
+                          const decrypted = (result.data as any)?.decryptedData;
+                          if (decrypted) {
+                            ownDecryptCache = {
+                              userId: user.uid,
+                              data: decrypted,
+                              expiresAt: Date.now() + OWN_DECRYPT_CACHE_TTL_MS,
+                            };
+                          }
+                          return decrypted;
+                        })
+                        .catch((error) => {
+                          const code = String((error as any)?.code || '');
+                          const message = String((error as any)?.message || '');
+                          if (code.includes('resource-exhausted') || message.includes('429')) {
+                            ownDecryptCooldownUntil = Date.now() + OWN_DECRYPT_COOLDOWN_MS;
+                          }
+                          throw error;
+                        })
+                        .finally(() => {
+                          ownDecryptInFlight = null;
+                        });
+                    }
+                    dec = await ownDecryptInFlight;
                   }
+                  if (!dec) return null;
+                  return {
+                    ...newUserData,
+                    displayName:
+                      (dec.displayName && !isEncrypted(dec.displayName) ? dec.displayName : null) ||
+                      (dec.firstName || dec.lastName
+                        ? `${dec.firstName || ''} ${dec.lastName || ''}`.trim()
+                        : null) ||
+                      newUserData.displayName,
+                    firstName:
+                      (dec.firstName && !isEncrypted(dec.firstName) ? dec.firstName : newUserData.firstName) ??
+                      newUserData.firstName,
+                    lastName:
+                      (dec.lastName && !isEncrypted(dec.lastName) ? dec.lastName : newUserData.lastName) ??
+                      newUserData.lastName,
+                  };
                 } catch (e) {
                   console.warn('Décryptage userData (profil) ignoré:', e);
+                  return null;
                 }
-              }
-              
-              // Mettre à jour la dernière activité seulement si c'est un nouveau login
-              if (!newUserData.lastLogin && !lastLoginUpdated) {
-                lastLoginUpdated = true;
-                await updateDoc(userDocRef, {
-                  lastLogin: serverTimestamp(),
-                  isOnline: true
-                });
-              }
+              };
 
           // Comparer uniquement les champs importants pour l'UI (exclure TOUS les timestamps)
           const previousData = previousUserDataRef.current;
-          
-          // Extraire uniquement les champs qui affectent l'UI
-          const extractImportantFields = (data: any) => ({
-            displayName: data.displayName,
-            role: data.role,
-            phone: data.phone,
-            address: data.address,
-            status: data.status,
-            cvUrl: data.cvUrl,
-            photoURL: data.photoURL,
-            isOnline: data.isOnline,
-            structureId: data.structureId,
-            email: data.email
-          });
           
           const newImportantFields = extractImportantFields(newUserData);
           
           // Si c'est la première fois, toujours mettre à jour
           if (!previousData) {
-            // Synchroniser poleIds pour les règles Firestore (accès par pôle) si l'utilisateur a poles mais pas poleIds
-            const poles = newUserData.poles;
-            if (Array.isArray(poles) && poles.length > 0 && (!Array.isArray(newUserData.poleIds) || newUserData.poleIds.length === 0)) {
-              const poleIds = poles.map((p: any) => p && p.poleId).filter(Boolean);
-              if (poleIds.length > 0) {
-                try {
-                  await updateDoc(userDocRef, { poleIds });
-                } catch (err) {
-                  console.warn('Sync poleIds (règles Firestore):', (err as Error).message);
-                }
-              }
-            }
-
             const extendedUser = {
               ...user,
               displayName: newUserData.displayName || user.displayName,
@@ -205,25 +311,66 @@ export function AuthProvider({ children }) {
               structureId: newUserData.structureId
             };
 
-            // Vérifier juste avant de mettre à jour si on est en mode impersonation
             if (!isImpersonatingRef.current) {
               setCurrentUser(extendedUser);
               setUserData(newUserData);
-              // Stocker uniquement les champs importants pour la comparaison
               previousUserDataRef.current = newImportantFields;
-              
-              // Charger les permissions du contact si c'est un contact avec accès
-              if (isContactWithAccess(newUserData) && user.uid) {
-                const permissions = await getContactAccessPermissions(user.uid);
-                setContactPermissions(permissions);
-              } else {
-                setContactPermissions(null);
-              }
             } else {
               console.log("onSnapshot ignoré car en mode impersonation (première fois)");
             }
-            
+
             setLoading(false);
+
+            // Tâches secondaires sans bloquer l'accès à l'app (critique en prod)
+            void (async () => {
+              const decryptedData = await runOwnUserDecrypt();
+              if (decryptedData && !isImpersonatingRef.current) {
+                setUserData(decryptedData);
+                setCurrentUser((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        displayName: decryptedData.displayName || prev.displayName,
+                      }
+                    : prev
+                );
+                previousUserDataRef.current = extractImportantFields(decryptedData);
+              }
+
+              if (!isImpersonatingRef.current && isContactWithAccess(newUserData) && user.uid) {
+                const permissions = await getContactAccessPermissions(user.uid);
+                setContactPermissions(permissions);
+              }
+
+              const poles = newUserData.poles;
+              if (
+                Array.isArray(poles) &&
+                poles.length > 0 &&
+                (!Array.isArray(newUserData.poleIds) || newUserData.poleIds.length === 0)
+              ) {
+                const poleIds = poles.map((p: any) => p && p.poleId).filter(Boolean);
+                if (poleIds.length > 0) {
+                  try {
+                    await updateDoc(userDocRef, { poleIds });
+                  } catch (err) {
+                    console.warn('Sync poleIds (règles Firestore):', (err as Error).message);
+                  }
+                }
+              }
+
+              if (!newUserData.lastLogin && !lastLoginUpdated) {
+                lastLoginUpdated = true;
+                try {
+                  await updateDoc(userDocRef, {
+                    lastLogin: serverTimestamp(),
+                    isOnline: true,
+                  });
+                } catch (err) {
+                  console.warn('Mise à jour lastLogin ignorée:', (err as Error).message);
+                }
+              }
+            })();
+
             return;
           }
 
@@ -233,10 +380,7 @@ export function AuthProvider({ children }) {
 
           // Ne mettre à jour l'état que si les données importantes ont changé
           if (hasSignificantChange) {
-            console.log("Changement significatif détecté dans les données utilisateur", {
-              previous: previousData,
-              new: newImportantFields
-            });
+            if (DEBUG_AUTH) console.log("Changement significatif détecté dans les données utilisateur", { previous: previousData, new: newImportantFields });
 
             // Si structureId ou role a changé, forcer le rafraîchissement du token
             // pour récupérer les nouveaux Custom Claims mis à jour par la Cloud Function
@@ -270,13 +414,13 @@ export function AuthProvider({ children }) {
             if (isImpersonatingRef.current) {
               console.log("onSnapshot ignoré car en mode impersonation (changement significatif)");
             } else {
-              // Mettre à jour le profil Firebase Auth si nécessaire
-              // On ajoute une vérification stricte pour éviter les boucles infinies
-              if (newUserData.displayName && 
-                  newUserData.displayName !== user.displayName) {
-                console.log(`Mise à jour du displayName: "${user.displayName}" -> "${newUserData.displayName}"`);
-                // Ne pas attendre cette promesse pour éviter de bloquer ou de créer des boucles synchrones
-                updateProfile(user, { displayName: newUserData.displayName })
+              // Mettre à jour le profil Firebase Auth si nécessaire (jamais avec une valeur chiffrée)
+              const safeDisplayName = typeof newUserData.displayName === 'string' && !newUserData.displayName.startsWith('ENC:')
+                ? newUserData.displayName
+                : null;
+              if (safeDisplayName && safeDisplayName !== user.displayName) {
+                if (DEBUG_AUTH) console.log(`Mise à jour du displayName: "${user.displayName}" -> "${safeDisplayName}"`);
+                updateProfile(user, { displayName: safeDisplayName })
                   .catch(err => console.error("Erreur updateProfile:", err));
               }
 
@@ -309,21 +453,48 @@ export function AuthProvider({ children }) {
                 // Ne pas bloquer l'application si la création échoue
               });
             }
-            setLoading(false);
-          }, (error: any) => {
-            // Gérer les erreurs de permissions de manière silencieuse lors de la création de compte
-            if (error?.code === 'permission-denied') {
-              console.warn("Permissions insuffisantes pour lire le document utilisateur. Le document sera créé lors de l'inscription.");
-              // Ne pas bloquer l'application si c'est juste une erreur de permissions
-              // Le document sera créé lors de l'inscription
-              setCurrentUser(user);
+            } catch (innerError) {
+              console.error("Erreur dans onSnapshot (auth):", innerError);
+            } finally {
+              clearTimeout(loadingTimeout);
               setLoading(false);
+            }
+          }, (error: any) => {
+            clearTimeout(loadingTimeout);
+            const finishWithUserDoc = () => {
+              getDoc(userDocRef)
+                .then((snap) => {
+                  if (snap.exists() && !isImpersonatingRef.current) {
+                    const data = snap.data();
+                    setUserData(data);
+                    setCurrentUser({
+                      ...(user as ExtendedUser),
+                      displayName: data.displayName || user.displayName,
+                      role: data.role,
+                      status: data.status,
+                      structureId: data.structureId,
+                    });
+                  } else {
+                    setCurrentUser(user as ExtendedUser);
+                  }
+                })
+                .catch(() => {
+                  setCurrentUser(user as ExtendedUser);
+                })
+                .finally(() => setLoading(false));
+            };
+
+            if (error?.code === 'permission-denied') {
+              console.warn("Permissions insuffisantes pour l'écoute user — tentative getDoc:", error);
+              finishWithUserDoc();
             } else {
               console.error("Erreur lors de l'écoute des changements:", error);
-              setLoading(false);
+              finishWithUserDoc();
             }
           });
         } else {
+          previousUserDataRef.current = null;
+          clearOwnUserDecryptState();
           setCurrentUser(null);
           setUserData(null);
           setContactPermissions(null);
@@ -334,9 +505,13 @@ export function AuthProvider({ children }) {
         setLoading(false);
       }
     });
+    };
+
+    void startAuth();
 
     return () => {
-      unsubscribe();
+      cancelled = true;
+      unsubscribeAuth?.();
       if (unsubscribeSnapshot) {
         unsubscribeSnapshot();
       }
@@ -367,8 +542,13 @@ export function AuthProvider({ children }) {
           }
         }
       }
-    } catch (error) {
-      console.error("Erreur lors de la mise à jour de l'activité:", error);
+    } catch (error: any) {
+      const msg = error?.message ?? String(error);
+      if (msg.includes('INTERNAL ASSERTION') || msg.includes('Unexpected state')) {
+        if (DEBUG_AUTH) console.warn("Mise à jour activité ignorée (Firestore indisponible)");
+      } else {
+        console.error("Erreur lors de la mise à jour de l'activité:", error);
+      }
     }
   }, [currentUser]);
 
@@ -484,7 +664,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem(IMPERSONATION_STORAGE_KEY);
     sessionStorage.removeItem(IMPERSONATION_SESSION_KEY);
 
-    console.log("Impersonation arrêtée, retour au compte superadmin");
+    if (DEBUG_AUTH) console.log("Impersonation arrêtée, retour au compte superadmin");
   }, [isImpersonating, originalUserData]);
 
   // Restaurer l'impersonation au chargement
@@ -492,30 +672,27 @@ export function AuthProvider({ children }) {
   // - Sinon : charger depuis sessionStorage (refresh dans l'onglet impersonné)
   useEffect(() => {
     const restoreImpersonation = async () => {
-      console.log("[Impersonation] Tentative de restauration...");
-      console.log("[Impersonation] URL:", window.location.href);
-      
+      if (DEBUG_AUTH) {
+        console.log("[Impersonation] Tentative de restauration...", window.location.href);
+      }
+
       // Vérifier si le paramètre URL impersonate=true est présent (nouvel onglet)
       const urlParams = new URLSearchParams(window.location.search);
       const isNewTab = urlParams.get('impersonate') === 'true';
-      console.log("[Impersonation] isNewTab:", isNewTab);
-      
+
       // Vérifier d'abord sessionStorage (pour les refresh dans l'onglet impersonné)
       const sessionImpersonation = sessionStorage.getItem(IMPERSONATION_SESSION_KEY);
-      console.log("[Impersonation] sessionStorage:", sessionImpersonation ? "présent" : "absent");
-      
+
       // Déterminer la source des données
       let savedImpersonation: string | null = null;
-      
+
       if (isNewTab) {
         // Nouvel onglet : charger depuis localStorage
         savedImpersonation = localStorage.getItem(IMPERSONATION_STORAGE_KEY);
-        console.log("[Impersonation] localStorage:", savedImpersonation ? "présent" : "absent");
       } else if (sessionImpersonation) {
         // Refresh dans l'onglet impersonné : charger depuis sessionStorage
         savedImpersonation = sessionImpersonation;
       } else {
-        console.log("[Impersonation] Pas d'impersonation à restaurer");
         return; // Pas d'impersonation à restaurer
       }
       
@@ -601,23 +778,16 @@ export function AuthProvider({ children }) {
 
     // Ne restaurer que si le chargement initial est terminé et que l'utilisateur est superadmin
     // et que l'impersonation n'est pas déjà active
-    console.log("[Impersonation] Vérification conditions:", {
-      loading,
-      hasCurrentUser: !!currentUser,
-      hasUserData: !!userData,
-      isImpersonating,
-      userStatus: userData?.status,
-      userRole: userData?.role
-    });
+    if (DEBUG_AUTH) console.log("[Impersonation] Vérification conditions:", { loading, hasCurrentUser: !!currentUser, hasUserData: !!userData, isImpersonating, userStatus: userData?.status });
     
     if (!loading && currentUser && userData && !isImpersonating && (userData.status === 'superadmin' || userData.role === 'superadmin')) {
-      console.log("[Impersonation] Conditions remplies, lancement de restoreImpersonation");
+      if (DEBUG_AUTH) console.log("[Impersonation] Conditions remplies, lancement de restoreImpersonation");
       restoreImpersonation();
     }
   }, [loading, currentUser, userData, isImpersonating]);
 
   // Fonction de connexion améliorée
-  const login = async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     try {
       setLoading(true);
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
@@ -629,37 +799,53 @@ export function AuthProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [updateLastActivity]);
 
   // Calculer l'ID effectif de l'utilisateur (impersonné ou réel)
   const effectiveUserId = isImpersonating && impersonatedUserData?.uid 
     ? impersonatedUserData.uid 
     : currentUser?.uid || null;
 
-  const value = {
-    currentUser,
-    userData,
-    loading,
-    error,
-    login,
-    isAuthenticated: !!currentUser,
-    logoutUser,
-    updateLastActivity,
-    contactPermissions,
-    isContactWithAccess: isContactWithAccess(userData),
-    // Impersonation (Run as)
-    isImpersonating,
-    impersonatedUserData,
-    originalUserData,
-    startImpersonation,
-    stopImpersonation,
-    effectiveUserId
-  };
+  const value = useMemo(
+    () => ({
+      currentUser,
+      userData,
+      loading,
+      error,
+      login,
+      isAuthenticated: !!currentUser,
+      logoutUser,
+      updateLastActivity,
+      contactPermissions,
+      isContactWithAccess: isContactWithAccess(userData),
+      // Impersonation (Run as)
+      isImpersonating,
+      impersonatedUserData,
+      originalUserData,
+      startImpersonation,
+      stopImpersonation,
+      effectiveUserId,
+    }),
+    [
+      currentUser,
+      userData,
+      loading,
+      error,
+      login,
+      logoutUser,
+      updateLastActivity,
+      contactPermissions,
+      isImpersonating,
+      impersonatedUserData,
+      originalUserData,
+      startImpersonation,
+      stopImpersonation,
+      effectiveUserId,
+    ]
+  );
 
-  if (loading) {
-    return <div>Chargement...</div>;
-  }
-
+  // Ne jamais masquer toute l'app (sinon /login reste sur « Chargement… » en prod
+  // tant que Firestore n'a pas répondu). Les routes protégées gèrent leur propre attente.
   return (
     <AuthContext.Provider value={value}>
       {children}

@@ -8,6 +8,7 @@ import {
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { Cancel, Payment } from '@mui/icons-material';
+import { tokens } from '../theme/tokens';
 
 const CotisationCancel: React.FC = () => {
   const navigate = useNavigate();
@@ -19,20 +20,22 @@ const CotisationCancel: React.FC = () => {
       alignItems="center"
       minHeight="100vh"
       p={3}
-      bgcolor="grey.50"
+      sx={{ bgcolor: tokens.colors.surfaceAlt }}
     >
       <Paper
-        elevation={3}
+        elevation={0}
         sx={{
           maxWidth: 600,
           width: '100%',
           p: 4,
-          borderRadius: 2,
+          borderRadius: tokens.radius.xl,
+          border: `1px solid ${tokens.colors.borderDefault}`,
+          boxShadow: tokens.shadows.card,
         }}
       >
         <Box sx={{ textAlign: 'center', mb: 4 }}>
-          <Cancel sx={{ fontSize: 80, color: 'warning.main', mb: 2 }} />
-          <Typography variant="h3" gutterBottom color="warning.main">
+          <Cancel sx={{ fontSize: 80, color: tokens.colors.warning, mb: 2 }} />
+          <Typography variant="h3" gutterBottom sx={{ color: tokens.colors.warning, fontWeight: 600 }}>
             Paiement annulé
           </Typography>
           <Typography variant="h6" color="text.secondary">
@@ -40,7 +43,7 @@ const CotisationCancel: React.FC = () => {
           </Typography>
         </Box>
 
-        <Alert severity="info" sx={{ mb: 4 }}>
+        <Alert severity="info" sx={{ mb: 4, borderRadius: tokens.radius.md }}>
           <Typography variant="body1">
             Aucun montant n'a été débité de votre compte. Vous pouvez réessayer le paiement à tout moment.
           </Typography>
@@ -58,15 +61,28 @@ const CotisationCancel: React.FC = () => {
             size="large"
             startIcon={<Payment />}
             onClick={() => navigate('/cotisation/payment')}
-            sx={{ minWidth: 200 }}
+            sx={{
+              minWidth: 200,
+              bgcolor: tokens.colors.brandTeal,
+              borderRadius: tokens.radius.md,
+              textTransform: 'none',
+              fontWeight: 600,
+              '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+            }}
           >
             Réessayer le paiement
           </Button>
           <Button
             variant="outlined"
             size="large"
-            onClick={() => navigate('/dashboard')}
-            sx={{ minWidth: 200 }}
+            onClick={() => navigate('/app/dashboard')}
+            sx={{
+              minWidth: 200,
+              borderRadius: tokens.radius.md,
+              textTransform: 'none',
+              borderColor: tokens.colors.borderDefault,
+              color: tokens.colors.textPrimary,
+            }}
           >
             Retour au tableau de bord
           </Button>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -66,6 +67,8 @@ import { db, storage } from '../firebase/config';
 import { collection, addDoc, getDocs, query, where, doc, getDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import BackButton from '../components/ui/BackButton';
+import { tokens } from '../theme/tokens';
+import { settingsPageStyles, SettingsPanel } from '../components/ds';
 
 // Types et interfaces
 interface DocumentTemplate {
@@ -758,22 +761,21 @@ const DocumentGenerator: React.FC = () => {
   );
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box>
       <BackButton />
-      
-      {/* En-tête */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" gutterBottom>
-          Générateur de documents
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Créez des templates de documents intelligents avec des balises automatiques
-        </Typography>
+
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3 }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Générateur de documents</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Créez des templates de documents intelligents avec des balises automatiques
+          </Typography>
+        </Box>
       </Box>
 
-      {/* Stepper */}
-      <Card sx={{ mb: 3 }}>
-        <CardContent>
+      <Box sx={{ mb: 3 }}>
+        <SettingsPanel title="Étapes" desc="Suivez le processus de création de template">
           <Stepper activeStep={activeStep} alternativeLabel>
             {steps.map((step) => (
               <Step key={step.id}>
@@ -783,19 +785,16 @@ const DocumentGenerator: React.FC = () => {
               </Step>
             ))}
           </Stepper>
-        </CardContent>
-      </Card>
+        </SettingsPanel>
+      </Box>
 
       {/* Contenu de l'étape active */}
       {renderStepContent()}
 
       {/* Guide des balises (toujours visible) */}
       {activeStep >= 2 && (
-        <Card sx={{ mt: 3 }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              📖 Guide d'utilisation des balises
-            </Typography>
+        <Box sx={{ mt: 3 }}>
+        <SettingsPanel title="Guide d'utilisation des balises" desc="Syntaxe et exemples">
             <Grid container spacing={2}>
               <Grid item xs={12} md={4}>
                 <Alert severity="info">
@@ -828,24 +827,29 @@ const DocumentGenerator: React.FC = () => {
                 </Alert>
               </Grid>
             </Grid>
-          </CardContent>
-        </Card>
+        </SettingsPanel>
+        </Box>
       )}
 
       {/* Snackbar pour les notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-      >
-        <Alert
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          severity={snackbar.severity}
-          variant="filled"
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            variant="filled"
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

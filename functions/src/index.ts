@@ -45,7 +45,8 @@ import * as admin from 'firebase-admin';
 // #region agent log
 debugLog('index.ts:4', 'Before importing stripe module', {}, 'D');
 // #endregion
-import { createCheckoutSession, cancelSubscription, createSubscription, handleStripeWebhook, getStripeProducts, getStripeCustomers, cancelStripeSubscription, fetchPaymentHistory, createCotisationSession, getStructureCotisations, handleCotisationWebhook } from './stripe';
+import { createCheckoutSession, createCheckoutSessionForSignup, checkEmailDomainAvailable, getSignupCompletionData, completeSignupAfterPayment, initStructurePermissions, cancelSubscription, createSubscription, handleStripeWebhook, getStripeProducts, getStripeCustomers, cancelStripeSubscription, fetchPaymentHistory, createCotisationSession, getStructureCotisations, handleCotisationWebhook } from './stripe';
+import { saveStructureStripeSecret, fetchUserStripePaymentIntents, resolveStructureByEmail } from './structureStripeSecrets';
 // #region agent log
 debugLog('index.ts:6', 'After importing stripe module', {}, 'D');
 // #endregion
@@ -54,6 +55,7 @@ import * as express from 'express';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import axios from 'axios'; // Assurez-vous d'avoir axios installé: npm install axios dans functions/
+import { assertSuperAdmin, assertCanManageStructure, assertContactRateLimit } from './authHelpers';
 
 // #region agent log
 debugLog('index.ts:11', 'Before dotenv.config', { __dirname }, 'C');
@@ -185,6 +187,8 @@ const functionConfig = {
     'EMAILJS_SERVICE_ID',
     'EMAILJS_TEMPLATE_ID',
     'EMAILJS_TEMPLATE_ID_AMBASSADOR', // optionnel ; si défini, utilisé pour sendAmbassadorInvite
+    'EMAILJS_TEMPLATE_ID_PASSWORD_RESET',
+    'EMAILJS_TEMPLATE_ID_GENERIC',
     'EMAILJS_USER_ID',
     'EMAILJS_PRIVATE_KEY'
     // FRONTEND_URL : ne pas mettre dans secrets. Définir en variable d’env. non secrète
@@ -200,6 +204,12 @@ const lowResourceConfig = {
   ...functionConfig,
   maxInstances: 1, // Minimum pour économiser le quota CPU
   concurrency: 20, // Réduit encore plus
+};
+
+/** Formulaire de contact public (sans auth Firebase) */
+const publicContactConfig = {
+  ...lowResourceConfig,
+  allowUnauthenticated: true,
 };
 
 // Créer l'application Express
@@ -703,10 +713,10 @@ interface ContactEmailData {
 // Utilise lowResourceConfig pour éviter le quota CPU
 export const createUser = onCall(lowResourceConfig, async (request) => {
   try {
-    // Vérifier l'authentification
     if (!request.auth) {
-      throw new Error('Vous devez être connecté pour accéder à cette fonction.');
+      throw new functions.https.HttpsError('unauthenticated', 'Vous devez être connecté.');
     }
+    await assertSuperAdmin(request.auth.uid);
 
     const { email, password, displayName } = request.data as CreateUserData;
 
@@ -732,6 +742,51 @@ export const createUser = onCall(lowResourceConfig, async (request) => {
   }
 });
 
+/** Créer un utilisateur pour une structure (côté serveur) pour ne pas changer la session du superadmin. */
+interface CreateStructureUserData {
+  email: string;
+  tempPassword: string;
+  structureId: string;
+  displayName?: string;
+  firstName?: string;
+  lastName?: string;
+  status?: string;
+  birthDate?: string;
+  graduationYear?: string;
+  program?: string;
+  ecole?: string;
+  [key: string]: unknown;
+}
+
+export const createStructureUser = onCall(lowResourceConfig, async (request) => {
+  if (!request.auth) throw new Error('Non authentifié');
+  const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  const callerStatus = callerDoc.data()?.status ?? callerDoc.data()?.role;
+  if (callerStatus !== 'superadmin') {
+    throw new Error('Seul un superadmin peut créer un utilisateur pour une structure.');
+  }
+  const { email, tempPassword, structureId, ...rest } = request.data as CreateStructureUserData;
+  if (!email || !tempPassword || !structureId) {
+    throw new Error('email, tempPassword et structureId sont requis.');
+  }
+  const userRecord = await admin.auth().createUser({
+    email,
+    password: tempPassword,
+    displayName: (rest.displayName ?? [rest.firstName, rest.lastName].filter(Boolean).join(' ')) || email,
+    emailVerified: false
+  });
+  const userData: Record<string, unknown> = {
+    ...rest,
+    email,
+    structureId,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  };
+  // Ne pas stocker le mot de passe en base (sécurité)
+  await admin.firestore().collection('users').doc(userRecord.uid).set(userData);
+  return { uid: userRecord.uid };
+});
+
 interface CreateContactUserData {
   email: string;
   password: string;
@@ -748,9 +803,16 @@ interface CreateContactUserData {
 
 export const createContactUser = onCall(lowResourceConfig, async (request) => {
   try {
-    if (!request.auth) throw new Error('Non authentifié');
-    
+    if (!request.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Non authentifié');
+    }
+
     const { email, password, displayName, firstName, lastName, structureId, companyId, contactId, accessLevel, canViewEvents, canManageAmbassadors } = request.data as CreateContactUserData;
+
+    if (!structureId) {
+      throw new functions.https.HttpsError('invalid-argument', 'structureId requis');
+    }
+    await assertCanManageStructure(request.auth.uid, structureId);
 
     // Créer user Auth
     const userRecord = await admin.auth().createUser({
@@ -848,14 +910,20 @@ export const updateUserProfile = onCall(functionConfig, async (request) => {
  * - EMAILJS_PRIVATE_KEY (Private Key)
  */
 // Utilise lowResourceConfig pour éviter le quota CPU
-export const sendContactEmail = onCall(lowResourceConfig, async (request) => {
+export const sendContactEmail = onCall(publicContactConfig, async (request) => {
   try {
-    // Validation des données
     const { company, email, message } = request.data as ContactEmailData;
 
     if (!company || !email || !message) {
-      throw new Error('Tous les champs (société, email, message) sont requis.');
+      throw new functions.https.HttpsError('invalid-argument', 'Tous les champs sont requis.');
     }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new functions.https.HttpsError('invalid-argument', 'Email invalide.');
+    }
+    if (message.length > 5000) {
+      throw new functions.https.HttpsError('invalid-argument', 'Message trop long.');
+    }
+    await assertContactRateLimit(email);
 
     // Récupération des secrets depuis process.env (Firebase Functions v2 injecte automatiquement les secrets)
     // SÉCURITÉ: Aucun fallback - les secrets DOIVENT être définis
@@ -1029,6 +1097,143 @@ export const sendAmbassadorInvite = onCall(lowResourceConfig, async (request) =>
   }
 });
 
+interface DemarchageEmailData {
+  to_email: string;
+  firstName: string;
+  lastName: string;
+  position?: string;
+  prospectName: string;
+  message?: string;
+  /** Si fourni (ex. depuis VITE_EMAILJS_TEMPLATE_DEM1), ce template est utilisé à la place de EMAILJS_TEMPLATE_ID_DEMARCHAGE. */
+  template_id?: string;
+  /** Optionnel : paramètres pour le template de prospection (subject, from_name, logo_url, lien_demo, lien_essai, ton_prénom_nom, reply_to). */
+  subject?: string;
+  from_name?: string;
+  reply_to?: string;
+  logo_url?: string;
+  lien_demo?: string;
+  lien_essai?: string;
+  ton_prénom_nom?: string;
+}
+
+/**
+ * Envoie un email de démarchage (prospection JE/JS) via EmailJS.
+ * Réservé aux superadmins. Template optionnel : EMAILJS_TEMPLATE_ID_DEMARCHAGE.
+ */
+export const sendDemarchageEmail = onCall(lowResourceConfig, async (request) => {
+  try {
+    if (!request.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Vous devez être connecté pour envoyer un email de démarchage.'
+      );
+    }
+
+    const callerId = request.auth.uid;
+    const fs = admin.firestore();
+    const callerDoc = await fs.collection('users').doc(callerId).get();
+    const callerData = callerDoc.data();
+    const callerStatus = (callerData?.status ?? callerData?.role) as string | undefined;
+    if (callerStatus !== 'superadmin') {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Seul un superadmin peut envoyer des emails de démarchage.'
+      );
+    }
+
+    const body = (request.data || {}) as DemarchageEmailData;
+    const { to_email, firstName, lastName, position, prospectName, message } = body;
+
+    if (!to_email || !to_email.includes('@')) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Une adresse email valide (to_email) est requise.'
+      );
+    }
+
+    const rawServiceId = process.env.EMAILJS_SERVICE_ID;
+    const clientTemplateId = body.template_id?.trim();
+    const rawTemplateId =
+      clientTemplateId ||
+      process.env.EMAILJS_TEMPLATE_ID_DEMARCHAGE ||
+      process.env.EMAILJS_TEMPLATE_ID;
+    const rawUserId = process.env.EMAILJS_USER_ID;
+    const rawPrivateKey = process.env.EMAILJS_PRIVATE_KEY;
+    const serviceId = typeof rawServiceId === 'string' ? rawServiceId.trim() : '';
+    const templateId = typeof rawTemplateId === 'string' ? rawTemplateId.trim() : '';
+    const userId = typeof rawUserId === 'string' ? rawUserId.trim() : '';
+    const privateKey = typeof rawPrivateKey === 'string' ? rawPrivateKey.trim() : '';
+
+    if (!serviceId || !templateId || !userId || !privateKey) {
+      const missing: string[] = [];
+      if (!serviceId) missing.push('EMAILJS_SERVICE_ID');
+      if (!templateId) missing.push('EMAILJS_TEMPLATE_ID ou EMAILJS_TEMPLATE_ID_DEMARCHAGE');
+      if (!userId) missing.push('EMAILJS_USER_ID');
+      if (!privateKey) missing.push('EMAILJS_PRIVATE_KEY');
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        `Configuration EmailJS incomplète: ${missing.join(', ')}.`
+      );
+    }
+
+    const baseUrl = (process.env.FRONTEND_URL || 'https://js-connect.fr').replace(/\/$/, '');
+    const templateParams: Record<string, string> = {
+      to_email,
+      first_name: firstName || '',
+      last_name: lastName || '',
+      position: position || '',
+      prospect_name: prospectName || '',
+      message: message || '',
+      // Paramètres du template de prospection (js-connect-prospection.html)
+      prénom: firstName || '',
+      subject: body.subject ?? 'Votre JE jongle encore avec 5 outils qui datent de 2006 ?',
+      from_name: body.from_name ?? 'JS Connect',
+      reply_to: body.reply_to ?? '',
+      logo_url: body.logo_url ?? `${baseUrl}/images/logo.png`,
+      lien_demo: body.lien_demo ?? `${baseUrl}/demo`,
+      lien_essai: body.lien_essai ?? `${baseUrl}/register`,
+      ton_prénom_nom: body.ton_prénom_nom ?? "L'équipe JS Connect"
+    };
+
+    const emailData = {
+      service_id: serviceId,
+      template_id: templateId,
+      user_id: userId,
+      accessToken: privateKey,
+      template_params: templateParams
+    };
+
+    try {
+      await axios.post('https://api.emailjs.com/api/v1.0/email/send', emailData, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 15000
+      });
+    } catch (axiosErr: any) {
+      const status = axiosErr?.response?.status;
+      const data = axiosErr?.response?.data;
+      console.error('sendDemarchageEmail EmailJS error:', { status, data, message: axiosErr?.message });
+      const userMsg =
+        status === 403
+          ? 'EmailJS refuse les appels depuis le serveur (403). Vérifiez les restrictions dans le dashboard EmailJS.'
+          : status === 400
+            ? `EmailJS: paramètres invalides. Détails: ${typeof data === 'object' ? JSON.stringify(data) : data}`
+            : status
+              ? `EmailJS a refusé l\'envoi (${status}). Consultez les logs Firebase pour les détails.`
+              : axiosErr?.message || 'Impossible d\'envoyer l\'email de démarchage.';
+      throw new functions.https.HttpsError('internal', userMsg);
+    }
+
+    return { success: true, message: 'Email de démarchage envoyé avec succès' };
+  } catch (err: any) {
+    if (err instanceof functions.https.HttpsError) throw err;
+    console.error('sendDemarchageEmail:', err?.message || err);
+    throw new functions.https.HttpsError(
+      'internal',
+      err?.message || 'Impossible d\'envoyer l\'email de démarchage.'
+    );
+  }
+});
+
 /**
  * Retire le statut ambassadeur d'un utilisateur.
  * Autorisé : superadmin, ou admin/membre/entreprise de la même structure que l'utilisateur cible.
@@ -1081,10 +1286,163 @@ export const removeAmbassadorFromUser = onCall(lowResourceConfig, async (request
   }
 });
 
+/**
+ * Modifier le mot de passe d'un utilisateur (réservé aux superadmins).
+ */
+export const updateUserPassword = onCall(lowResourceConfig, async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Authentification requise.');
+  }
+  const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+  const callerData = callerDoc.data();
+  const callerStatus = (callerData?.status ?? callerData?.role) as string | undefined;
+  if (callerStatus !== 'superadmin') {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Seuls les superadmins peuvent modifier le mot de passe d\'un utilisateur.'
+    );
+  }
+  const { userId, newPassword } = request.data as { userId?: string; newPassword?: string };
+  if (!userId || !newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'userId et newPassword (min. 6 caractères) sont requis.'
+    );
+  }
+  await admin.auth().updateUser(userId, { password: newPassword });
+  return { success: true, message: 'Mot de passe mis à jour.' };
+});
+
+/**
+ * Envoyer un email à l'utilisateur pour qu'il réinitialise son mot de passe.
+ * Autorisé pour toute personne ayant accès à la page RH (même structure + permission rh ou admin/superadmin).
+ */
+export const sendPasswordResetEmailToUser = onCall(lowResourceConfig, async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Authentification requise.');
+  }
+  const { userId } = request.data as { userId?: string };
+  if (!userId) {
+    throw new functions.https.HttpsError('invalid-argument', 'userId requis.');
+  }
+
+  const callerId = request.auth.uid;
+  const fs = admin.firestore();
+  const [callerDoc, targetDoc] = await Promise.all([
+    fs.collection('users').doc(callerId).get(),
+    fs.collection('users').doc(userId).get()
+  ]);
+  const callerData = callerDoc.data();
+  const targetData = targetDoc.data();
+
+  if (!targetDoc.exists || !targetData) {
+    throw new functions.https.HttpsError('not-found', 'Utilisateur introuvable.');
+  }
+  const targetStructureId = targetData.structureId as string | undefined;
+  const callerStructureId = callerData?.structureId as string | undefined;
+  const callerStatus = (callerData?.status ?? callerData?.role) as string | undefined;
+
+  const isSuperAdmin = callerStatus === 'superadmin';
+  const isAdmin = callerStatus === 'admin';
+  const sameStructure = targetStructureId && callerStructureId && targetStructureId === callerStructureId;
+
+  let hasRHPermission = false;
+  if (sameStructure && targetStructureId) {
+    const [rhPerm, rhReadPerm] = await Promise.all([
+      fs.doc(`structures/${targetStructureId}/permissions/rh`).get(),
+      fs.doc(`structures/${targetStructureId}/permissions/rh_read`).get()
+    ]);
+    const perm = rhPerm.exists ? rhPerm.data() : rhReadPerm.exists ? rhReadPerm.data() : null;
+    const effectiveStatus = callerStatus || '';
+    const userPoleIds = Array.isArray(callerData?.poleIds) ? callerData.poleIds
+      : (Array.isArray((callerData as any)?.poles) ? (callerData as any).poles.map((p: { poleId?: string }) => p?.poleId).filter(Boolean) : []);
+    const roleOk = perm?.allowedRoles && (
+      (Array.isArray(perm.allowedRoles) && (perm.allowedRoles as string[]).includes(effectiveStatus)) ||
+      (effectiveStatus === 'membre' && (perm.allowedRoles as string[])?.includes?.('member')) ||
+      (effectiveStatus === 'member' && (perm.allowedRoles as string[])?.includes?.('membre'))
+    );
+    const poleOk = perm?.allowedPoles && userPoleIds.length > 0 &&
+      Array.isArray(perm.allowedPoles) && (perm.allowedPoles as string[]).some((p: string) => userPoleIds.includes(p));
+    const memberOk = perm?.allowedMembers && Array.isArray(perm.allowedMembers) &&
+      (perm.allowedMembers as string[]).includes(callerId);
+    hasRHPermission = !!(roleOk || poleOk || memberOk);
+  }
+
+  if (!isSuperAdmin && !(sameStructure && (isAdmin || hasRHPermission))) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'Vous n\'avez pas les droits pour envoyer un email de réinitialisation de mot de passe à cet utilisateur.'
+    );
+  }
+
+  const userRecord = await admin.auth().getUser(userId);
+  const email = userRecord.email;
+  if (!email || !email.includes('@')) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Cet utilisateur n\'a pas d\'adresse email valide dans Firebase Auth.'
+    );
+  }
+
+  const auth = admin.auth();
+  const resetLink = await auth.generatePasswordResetLink(email, { url: process.env.FRONTEND_URL || 'https://js-connect.fr' });
+
+  const rawServiceId = process.env.EMAILJS_SERVICE_ID;
+  const rawTemplateId = process.env.EMAILJS_TEMPLATE_ID_PASSWORD_RESET || process.env.EMAILJS_TEMPLATE_ID;
+  const rawUserId = process.env.EMAILJS_USER_ID;
+  const rawPrivateKey = process.env.EMAILJS_PRIVATE_KEY;
+  const serviceId = typeof rawServiceId === 'string' ? rawServiceId.trim() : '';
+  const templateId = typeof rawTemplateId === 'string' ? rawTemplateId.trim() : '';
+  const emailjsUserId = typeof rawUserId === 'string' ? rawUserId.trim() : '';
+  const privateKey = typeof rawPrivateKey === 'string' ? rawPrivateKey.trim() : '';
+
+  if (!serviceId || !templateId || !emailjsUserId || !privateKey) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Configuration EmailJS incomplète (EMAILJS_SERVICE_ID, TEMPLATE_ID, USER_ID, PRIVATE_KEY). Optionnel: EMAILJS_TEMPLATE_ID_PASSWORD_RESET pour le template de réinitialisation.'
+    );
+  }
+
+  const frontendUrl = (process.env.FRONTEND_URL || 'https://js-connect.fr').trim().replace(/\/$/, '');
+  const logoUrl = `${frontendUrl}/images/logo.png`;
+
+  const emailData = {
+    service_id: serviceId,
+    template_id: templateId,
+    user_id: emailjsUserId,
+    accessToken: privateKey,
+    template_params: {
+      to_email: email,
+      reset_link: resetLink,
+      subject: 'Réinitialisation de votre mot de passe - JS Connect',
+      logo_url: logoUrl
+    }
+  };
+
+  try {
+    await axios.post('https://api.emailjs.com/api/v1.0/email/send', emailData, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 15000
+    });
+    return { success: true, message: 'Email de réinitialisation envoyé avec succès.' };
+  } catch (axiosErr: any) {
+    console.error('sendPasswordResetEmailToUser EmailJS error:', axiosErr?.response?.data || axiosErr?.message);
+    throw new functions.https.HttpsError(
+      'internal',
+      axiosErr?.message || 'Impossible d\'envoyer l\'email de réinitialisation.'
+    );
+  }
+});
+
 // Exporter les autres fonctions
 export { 
   getStripeProducts,
   createCheckoutSession,
+  createCheckoutSessionForSignup,
+  checkEmailDomainAvailable,
+  getSignupCompletionData,
+  completeSignupAfterPayment,
+  initStructurePermissions,
   cancelSubscription,
   createSubscription,
   handleStripeWebhook,
@@ -1117,10 +1475,12 @@ export {
   decryptCompanyData,
   decryptOwnCompanyData,
   decryptCompanyDataForStructure,
+  decryptStructureDataForStructure,
   encryptContactData,
   decryptContactData,
   decryptContactDataForStructure,
   decryptProspectDataForStructure,
+  batchDecryptForStructure,
   encryptText,
   decryptText
 } from './encryptionFunctions';
@@ -1150,6 +1510,32 @@ export {
 // Exporter le trigger de chiffrement automatique des users
 export { encryptUserOnWrite } from './firestoreTriggers';
 
+export {
+  onAmbassadorApplicationWrite,
+  onAmbassadorDocumentWrite,
+  onAmbassadorProposalRequest,
+  flushAmbassadorApplicationDigests,
+} from './ambassadorNotifications';
+
+// Notifications unifiées (in-app + emails EmailJS)
+export { notifyUsersCallable } from './notifications/callableNotify';
+export {
+  onApplicationWrite,
+  onExpenseNoteWrite,
+  onMissionAssignmentWrite,
+} from './notifications/missionNotifications';
+export { onEtudeWrite } from './notifications/etudeNotifications';
+export {
+  onProspectWrite,
+  flushCommercialRelanceReminders,
+} from './notifications/commercialNotifications';
+export { flushTrialEndingReminders } from './notifications/billingNotifications';
+export { flushAmbassadorEventReminders } from './notifications/ambassadorExtras';
+export {
+  inviteStructureMember,
+  sendWelcomeEmailCallable,
+} from './notifications/structureInvite';
+
 // Exporter les fonctions de scoring IA (prospects, relances, analyse clients)
 export {
   computeProspectScores,
@@ -1157,3 +1543,40 @@ export {
   analyzePastClients,
   generateContactMessage,
 } from './scoring';
+
+// Export import IA (mapping colonnes CSV + normalisation/validation)
+export { getImportColumnMapping, normalizeAndValidateImportRows } from './importAi';
+
+// Seed données de test (entreprises, contacts, étudiants factices, missions, candidatures)
+export { seedTestData } from './seedTestData';
+
+// Lien de connexion diagnostic superadmin (magic link Firebase)
+export { generateSuperAdminLoginLink, searchUsersForSuperAdmin } from './superAdminLoginLink';
+
+// Suppression en cascade d'une mission (Admin SDK, contourne les limites des rules client)
+export { deleteMissionCascade } from './deleteMission';
+
+// Stripe structure (secrets privés, proxy paiements utilisateur)
+export { saveStructureStripeSecret, fetchUserStripePaymentIntents, resolveStructureByEmail };
+
+// Agrégats dashboard / stats structure
+export { recomputeStructureStats, onMissionStatsChange, onEtudeStatsChange } from './structureStats';
+
+export { migrateStripeSecretsAdmin } from './migrateStripeSecrets';
+
+// Signatures électroniques (SES)
+export {
+  createSignatureRequest,
+  cancelSignatureRequest,
+  deleteSignatureRequest,
+  resendSignatureInvite,
+  openSignLink,
+  openSignSession,
+  getSignSession,
+  submitSignature,
+  getSignatureAudit,
+  getSealedDocumentUrl,
+  listSignatureRequests,
+  sendSignerOtp,
+  verifySignerOtp,
+} from './signatures';

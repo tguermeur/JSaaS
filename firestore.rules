@@ -35,24 +35,26 @@ service cloud.firestore {
       return userData != null && (userData.role == 'admin' || userData.role == 'superadmin');
     }
     
+    // Tous les statuts considérés comme « staff » d'une structure
+    // (admin legacy, admin_structure, membre, ancien alias member, superadmin).
     function isStructureMember(structureId) {
       let userData = getUserData();
-      return userData != null && 
+      return userData != null &&
              userData.structureId == structureId &&
-             userData.status in ['admin', 'membre'];
+             (userData.status in ['admin', 'admin_structure', 'membre', 'member', 'superadmin']
+              || userData.role == 'admin' || userData.role == 'superadmin');
     }
-    
+
     function isStructureAdmin(structureId) {
       let userData = getUserData();
-      return userData != null && 
+      return userData != null &&
              userData.structureId == structureId &&
-             userData.status == 'admin';
+             (userData.status == 'admin' || userData.status == 'admin_structure'
+              || userData.role == 'admin' || userData.role == 'superadmin');
     }
 
     function canAccessStructure(structureId) {
-      let userData = getUserData();
-      return userData != null && userData.status in ['membre', 'admin'] && 
-             userData.structureId == structureId;
+      return isStructureMember(structureId);
     }
 
     function isEntreprise() {
@@ -668,7 +670,7 @@ service cloud.firestore {
         function canReadPermissions() {
           let userData = getUserData();
           return userData != null &&
-                 userData.status in ['admin', 'membre'] &&
+                 userData.status in ['admin', 'admin_structure', 'membre'] &&
                  userData.structureId == structureId;
         }
         
@@ -690,135 +692,24 @@ service cloud.firestore {
       }
 
       // Sous-collection folders (dossiers de documents)
+      // Règle: appartenance à la structure = accès lecture/écriture complet.
+      // La restriction par rôle (`isRestricted` / `allowedRoles`) est filtrée côté client
+      // (Dashboard, Documents…), pour éviter les `permission-denied` sur les requêtes listant.
       match /folders/{folderId} {
-        // L'utilisateur peut accéder si il appartient à la structure (via le path)
-        function canAccessFolder() {
-          let userData = getUserData();
-          return userData != null && 
-                 userData.structureId != null &&
-                 userData.structureId != '' &&
-                 userData.structureId == structureId;
-        }
-
-        // FONCTION CORRIGÉE pour l'accès aux dossiers restreints
-        function canAccessRestrictedFolder() {
-          let userData = getUserData();
-          let folderData = resource.data;
-          return canAccessFolder() && (
-            // Si le dossier n'est pas restreint, l'accès est autorisé
-            folderData.isRestricted != true ||
-            // Sinon, vérifier les permissions
-            isSuperAdmin() ||
-            userData.status == 'admin' ||
-            (
-              folderData.allowedRoles != null && 
-              folderData.allowedRoles.hasAny([userData.status])
-            )
-          );
-        }
-
-        allow read: if isAuthenticated() && (
-          isSuperAdmin() ||
-          canAccessRestrictedFolder()
-        );
-
-        allow create: if isAuthenticated() && (
-          isSuperAdmin() ||
-          (
-            getUserData().status in ['admin', 'membre'] && 
-            getUserData().structureId == structureId
-          )
-        );
-
-        allow update: if isAuthenticated() && (
-          isSuperAdmin() ||
-          (
-            getUserData().status in ['admin', 'membre'] && 
-            getUserData().structureId == structureId
-          )
-        );
-
-        allow delete: if isAuthenticated() && (
-          isSuperAdmin() ||
-          (
-            getUserData().status in ['admin', 'membre'] && 
-            getUserData().structureId == structureId
-          )
-        );
+        allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
+        allow create, update, delete: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
       }
 
       // Sous-collection folderColors (couleurs personnalisées des dossiers)
       match /folderColors/{colorId} {
-        allow read: if isAuthenticated() && (
-          isSuperAdmin() ||
-          getUserData().structureId == structureId
-        );
-        
-        allow write: if isAuthenticated() && (
-          isSuperAdmin() ||
-          (
-            getUserData().status in ['admin', 'membre'] && 
-            getUserData().structureId == structureId
-          )
-        );
+        allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
+        allow write: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
       }
 
       // Sous-collection documents (métadonnées de documents)
       match /documents/{documentId} {
-        // L'utilisateur peut accéder si il appartient à la structure (via le path)
-        function canAccessDocument() {
-          let userData = getUserData();
-          return userData != null && 
-                 userData.structureId != null &&
-                 userData.structureId != '' &&
-                 userData.structureId == structureId;
-        }
-
-        // FONCTION CORRIGÉE pour l'accès aux documents restreints
-        function canAccessRestrictedDocument() {
-          let userData = getUserData();
-          let docData = resource.data;
-          return canAccessDocument() && (
-            // Si le document n'est pas restreint, l'accès est autorisé
-            docData.isRestricted != true ||
-            // Sinon, vérifier les permissions
-            isSuperAdmin() ||
-            userData.status == 'admin' ||
-            (
-              docData.allowedRoles != null && 
-              docData.allowedRoles.hasAny([userData.status])
-            )
-          );
-        }
-
-        allow read: if isAuthenticated() && (
-          isSuperAdmin() ||
-          canAccessRestrictedDocument()
-        );
-
-        allow create: if isAuthenticated() && (
-          isSuperAdmin() ||
-          (
-            getUserData().status in ['admin', 'membre'] && 
-            getUserData().structureId == structureId
-          )
-        );
-
-        allow update: if isAuthenticated() && (
-          isSuperAdmin() ||
-          (
-            getUserData().status in ['admin', 'membre'] && 
-            getUserData().structureId == structureId
-          )
-        );
-
-        allow delete: if isAuthenticated() && (
-          isSuperAdmin() ||
-          (
-            getUserData().status in ['admin', 'membre'] && 
-            getUserData().structureId == structureId
-          )
-        );
+        allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
+        allow create, update, delete: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
       }
     }
 
@@ -923,7 +814,14 @@ service cloud.firestore {
     
     match /programs/{structureId} {
       allow read: if true;
-      allow write: if isAuthenticated() && isSuperAdmin();
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (
+          getUserData() != null &&
+          getUserData().structureId == structureId &&
+          getUserData().status in ['admin', 'admin_structure', 'membre', 'member']
+        )
+      );
     }
 
     // =========================================================================
@@ -1302,7 +1200,7 @@ service cloud.firestore {
         let userData = getUserData();
         return isSuperAdmin() ||
                (userData != null &&
-                userData.status in ['admin', 'membre']);
+                userData.status in ['admin', 'admin_structure', 'membre']);
       }
       
       allow read: if isAuthenticated() && canAccessHistory();
@@ -1316,10 +1214,53 @@ service cloud.firestore {
     // =========================================================================
     
     match /notifications/{notificationId} {
-      allow read: if isAuthenticated() && isOwner(resource.data.userId);
-      allow create: if isAuthenticated() && isOwner(request.resource.data.userId);
-      allow update: if isAuthenticated() && isOwner(resource.data.userId);
-      allow delete: if isAuthenticated() && isOwner(resource.data.userId);
+      function canReadNotification() {
+        let userData = getUserData();
+        return isOwner(resource.data.userId) ||
+               (
+                 resource.data.type == 'admin_notification' &&
+                 userData != null &&
+                 userData.status in ['admin', 'admin_structure', 'membre', 'member', 'superadmin']
+               );
+      }
+      allow read: if isAuthenticated() && (canReadNotification() || isSuperAdmin());
+      allow create: if isAuthenticated() && (
+        isOwner(request.resource.data.userId) ||
+        (request.resource.data.type == 'admin_notification' && isSuperAdmin()) ||
+        (request.resource.data.type == 'admin_notification' && getUserData() != null && getUserData().status in ['admin', 'admin_structure', 'membre'])
+      );
+      allow update: if isAuthenticated() && (canReadNotification() || isSuperAdmin());
+      allow delete: if isAuthenticated() && (isOwner(resource.data.userId) || isSuperAdmin());
+    }
+
+    // État interne des digests ambassadeur (géré par Cloud Functions uniquement)
+    match /ambassadorDigestState/{stateId} {
+      allow read, write: if false;
+    }
+
+    // Logs emails (écriture CF uniquement)
+    match /emailsLog/{logId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (getUserData() != null && getUserData().status in ['admin', 'admin_structure', 'superadmin'])
+      );
+      allow write: if false;
+    }
+
+    // Invitations structure (lecture publique pour inscription ; écriture CF ; acceptation client)
+    match /structureInvites/{inviteId} {
+      allow read: if true;
+      allow create: if false;
+      allow update: if isAuthenticated()
+        && resource.data.status == 'pending'
+        && request.resource.data.status == 'accepted'
+        && request.resource.data.acceptedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Dédup notifications billing (CF only)
+    match /billingNotificationState/{stateId} {
+      allow read, write: if false;
     }
 
     // =========================================================================
@@ -1602,6 +1543,13 @@ service cloud.firestore {
                  userData.status == 'entreprise' &&
                  exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
                  get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.userId == request.auth.uid
+               ) ||
+               (
+                 userData != null &&
+                 userData.status == 'entreprise' &&
+                 userData.companyId != null &&
+                 exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
+                 get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.companyId == userData.companyId
                );
       }
       
@@ -1636,6 +1584,54 @@ service cloud.firestore {
     // Favoris missions par utilisateur (Mission, Etude, Projet)
     match /userFavorites/{userId} {
       allow read, write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Statut en ligne (page RH) — collection legacy, lecture par membres de la structure
+    match /onlineUsers/{docId} {
+      function canAccessOnlineUsers() {
+        let userData = getUserData();
+        return userData != null &&
+               resource.data.structureId == userData.structureId &&
+               userData.status in ['admin', 'admin_structure', 'membre', 'member', 'superadmin'];
+      }
+      allow read: if isAuthenticated() && (isSuperAdmin() || canAccessOnlineUsers());
+      allow create, update: if isAuthenticated() &&
+        getUserData() != null &&
+        request.resource.data.structureId == getUserData().structureId &&
+        request.resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && isSuperAdmin();
+    }
+
+    // =========================================================================
+    // SIGNATURES ÉLECTRONIQUES (SES) — écriture Admin SDK uniquement
+    // =========================================================================
+
+    match /signatureRequests/{requestId} {
+      function canReadSignatureRequest() {
+        let userData = getUserData();
+        return isSuperAdmin() ||
+               (
+                 userData != null &&
+                 userData.structureId == resource.data.structureId &&
+                 userData.status in ['admin', 'admin_structure', 'membre', 'member']
+               );
+      }
+      allow read: if isAuthenticated() && canReadSignatureRequest();
+      allow create, update, delete: if false;
+
+      match /events/{eventId} {
+        allow read: if isAuthenticated() &&
+          exists(/databases/$(database)/documents/signatureRequests/$(requestId)) &&
+          (
+            isSuperAdmin() ||
+            (
+              getUserData() != null &&
+              getUserData().structureId == get(/databases/$(database)/documents/signatureRequests/$(requestId)).data.structureId &&
+              getUserData().status in ['admin', 'admin_structure', 'membre', 'member']
+            )
+          );
+        allow create, update, delete: if false;
+      }
     }
 
     // =========================================================================

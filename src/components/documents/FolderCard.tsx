@@ -19,6 +19,7 @@ import {
   PushPin as PinIcon,
 } from '@mui/icons-material';
 import { Folder } from '../../types/document';
+import UserReferenceText from '../common/UserReferenceText';
 
 interface FolderCardProps {
   folder: Folder;
@@ -181,8 +182,11 @@ const FolderCard: React.FC<FolderCardProps> = ({
           
           {/* Optional: Show creator or date subtly */}
           {folder.createdByName && (
-            <Typography
+            <UserReferenceText
+              userId={folder.createdBy}
+              name={folder.createdByName}
               variant="caption"
+              component="span"
               sx={{
                 color: '#86868b',
                 fontSize: '11px',
@@ -192,9 +196,7 @@ const FolderCard: React.FC<FolderCardProps> = ({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
               }}
-            >
-              {folder.createdByName}
-            </Typography>
+            />
           )}
         </Box>
       </CardActionArea>

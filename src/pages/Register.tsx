@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Box, 
   TextField, 
@@ -35,15 +35,23 @@ import {
 import { useNavigate, Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { styled } from '@mui/material';
 import { registerUser } from '../firebase/auth';
-import { createUserDocument } from '../firebase/firestore';
+import { createUserDocument, updateUserDocument } from '../firebase/firestore';
 import { UserData } from '../types/user';
-import { findStructureByEmail } from '../firebase/structure';
+import { findStructureByEmail, createStructure } from '../firebase/structure';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { loadStripe } from '@stripe/stripe-js';
 import { Structure } from '../types/structure';
 import { uploadCV, uploadFile } from '../firebase/storage';
-import { doc, getDoc, collection, addDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, addDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { getAuth } from 'firebase/auth';
 import axios from 'axios';
+import { DatePicker } from '@mui/x-date-pickers/DatePicker';
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
+import { fr } from 'date-fns/locale';
+import { tokens } from '../theme/tokens';
+import { getStructureAcademicConfig } from '../services/structureAcademicService';
 
 // Style pour l'input de fichier
 const VisuallyHiddenInput = styled('input')({
@@ -60,11 +68,53 @@ const VisuallyHiddenInput = styled('input')({
 
 type RegistrationType = 'student' | 'company' | 'structure';
 
+// Domaines email interdits pour l'inscription étudiant (adresses personnelles)
+const BLOCKED_EMAIL_DOMAINS = ['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.fr', 'outlook.com', 'hotmail.com', 'hotmail.fr', 'live.fr', 'live.com', 'orange.fr', 'free.fr', 'laposte.net', 'wanadoo.fr', 'sfr.fr', 'bbox.fr', 'icloud.com', 'me.com', 'msn.com'];
+
+function getEmailDomain(email: string): string {
+  const i = email.indexOf('@');
+  return i === -1 ? '' : email.slice(i + 1).toLowerCase();
+}
+
+// Formate une Date en string YYYY-MM-DD en utilisant le fuseau local
+function formatLocalDateOnly(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 const Register: React.FC = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [searchParams] = useSearchParams();
   const registrationType: RegistrationType = (searchParams.get('type') as RegistrationType) || 'student';
+  const planParam = searchParams.get('plan');
+  const inviteToken = searchParams.get('invite');
+  const inviteStructureId = searchParams.get('structure');
+
+  // Invitation RH : précharger la structure
+  useEffect(() => {
+    if (!inviteToken) return;
+    (async () => {
+      try {
+        const inviteSnap = await getDoc(doc(db, 'structureInvites', inviteToken));
+        if (!inviteSnap.exists()) return;
+        const invite = inviteSnap.data();
+        const sid = (invite.structureId || inviteStructureId) as string | undefined;
+        if (!sid) return;
+        const structureSnap = await getDoc(doc(db, 'structures', sid));
+        if (structureSnap.exists()) {
+          setStructure({ id: structureSnap.id, ...structureSnap.data() } as Structure);
+          if (invite.email) setEmail(String(invite.email));
+          setEmailError(`Invitation — ${invite.structureName || structureSnap.data()?.ecole || ''}`);
+        }
+      } catch (err) {
+        console.warn('Invite load failed:', err);
+      }
+    })();
+  }, [inviteToken, inviteStructureId]);
+  const isPremiumPlan = Boolean(planParam === 'premium' || (typeof window !== 'undefined' && window.location.search.includes('plan=premium')));
   
   const navigate = useNavigate();
   
@@ -84,8 +134,12 @@ const Register: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
-  const [birthDate, setBirthDate] = useState('');
+  const [birthDate, setBirthDate] = useState<Date | null>(null);
   const [birthPostalCode, setBirthPostalCode] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
+  const [postalCode, setPostalCode] = useState('');
+  const [city, setCity] = useState('');
   const [graduationYear, setGraduationYear] = useState('');
   const [cv, setCv] = useState<File | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
@@ -93,7 +147,9 @@ const Register: React.FC = () => {
   const [uploadProgress, setUploadProgress] = useState<boolean>(false);
   const [emailCheckTimer, setEmailCheckTimer] = useState<NodeJS.Timeout | null>(null);
   const [schoolPrograms, setSchoolPrograms] = useState<string[]>([]);
+  const [schoolCampuses, setSchoolCampuses] = useState<string[]>([]);
   const [selectedProgram, setSelectedProgram] = useState('');
+  const [selectedCampus, setSelectedCampus] = useState('');
   const [acceptsElectronicDocuments, setAcceptsElectronicDocuments] = useState<boolean>(false);
   const graduationYears = [2024, 2025, 2026, 2027, 2028, 2029, 2030];
   
@@ -110,6 +166,7 @@ const Register: React.FC = () => {
   const [structureName, setStructureName] = useState('');
   const [structureSchool, setStructureSchool] = useState('');
   const [structureEmail, setStructureEmail] = useState('');
+  const [structurePhone, setStructurePhone] = useState('');
   const [structurePassword, setStructurePassword] = useState('');
   const [structureConfirmPassword, setStructureConfirmPassword] = useState('');
   
@@ -125,16 +182,18 @@ const Register: React.FC = () => {
   // ========== FONCTIONS FLUX ÉTUDIANT ==========
   const validateEmail = async (email: string) => {
     try {
-      console.log("Validation de l'email:", email);
+      const domain = getEmailDomain(email);
+      if (BLOCKED_EMAIL_DOMAINS.includes(domain)) {
+        setEmailError("Les adresses personnelles (Gmail, Yahoo, Outlook, etc.) ne sont pas acceptées. Utilisez votre adresse email professionnelle ou de votre établissement.");
+        setStructure(null);
+        return false;
+      }
       const foundStructure = await findStructureByEmail(email);
-      console.log("Structure trouvée:", foundStructure);
-      
       if (!foundStructure) {
         setEmailError("Cette adresse email n'est pas associée à une école partenaire. Veuillez utiliser votre email académique.");
         setStructure(null);
         return false;
       }
-      
       setEmailError(null);
       setStructure(foundStructure);
       setEmailError(`Email validé - ${foundStructure.ecole}`);
@@ -159,30 +218,38 @@ const Register: React.FC = () => {
     if (newEmail && newEmail.includes('@')) {
       const timer = setTimeout(async () => {
         try {
+          const domain = getEmailDomain(newEmail);
+          if (BLOCKED_EMAIL_DOMAINS.includes(domain)) {
+            setEmailError("Les adresses personnelles (Gmail, Yahoo, Outlook, etc.) ne sont pas acceptées. Utilisez l'adresse de votre établissement.");
+            setStructure(null);
+            setSchoolPrograms([]);
+            setSchoolCampuses([]);
+            setSelectedCampus('');
+            return;
+          }
           const foundStructure = await findStructureByEmail(newEmail);
           if (foundStructure) {
             setEmailError(`Email validé - ${foundStructure.ecole}`);
             setStructure(foundStructure);
             
-            const programsRef = doc(db, 'programs', foundStructure.id);
-            const programsDoc = await getDoc(programsRef);
-            
-            if (programsDoc.exists()) {
-              const programsData = programsDoc.data();
-              setSchoolPrograms(programsData.programs || []);
-            } else {
-              setSchoolPrograms([]);
-            }
+            const academicConfig = await getStructureAcademicConfig(foundStructure.id!);
+            setSchoolPrograms(academicConfig.programs);
+            setSchoolCampuses(academicConfig.campuses);
+            setSelectedCampus('');
           } else {
             setEmailError("Cette adresse email n'est pas associée à une école partenaire");
             setStructure(null);
             setSchoolPrograms([]);
+            setSchoolCampuses([]);
+            setSelectedCampus('');
           }
         } catch (error) {
           console.error("Erreur lors de la vérification de l'email:", error);
           setEmailError("Erreur lors de la vérification de l'email");
           setStructure(null);
           setSchoolPrograms([]);
+          setSchoolCampuses([]);
+          setSelectedCampus('');
         }
       }, 1000);
 
@@ -214,8 +281,15 @@ const Register: React.FC = () => {
     if (activeStep === 0) {
       const errors: Record<string, string> = {};
       
-      if (!firstName || !lastName || !email || !birthDate || !birthPostalCode) {
-        setError('Veuillez remplir tous les champs obligatoires');
+      const missingFields: string[] = [];
+      if (!firstName) missingFields.push('Prénom');
+      if (!lastName) missingFields.push('Nom');
+      if (!email) missingFields.push('Adresse email académique');
+      if (!birthDate) missingFields.push('Date de naissance');
+      if (!birthPostalCode) missingFields.push('Code postal de naissance');
+      if (!phone) missingFields.push('Numéro de téléphone');
+      if (missingFields.length > 0) {
+        setError(`Veuillez remplir les champs obligatoires : ${missingFields.join(', ')}`);
         return;
       }
       
@@ -232,19 +306,26 @@ const Register: React.FC = () => {
       
       // Validation date de naissance (minimum 18 ans)
       const today = new Date();
-      const birthDateObj = new Date(birthDate);
-      const age = today.getFullYear() - birthDateObj.getFullYear();
-      const monthDiff = today.getMonth() - birthDateObj.getMonth();
-      const dayDiff = today.getDate() - birthDateObj.getDate();
+      const age = today.getFullYear() - birthDate.getFullYear();
+      const monthDiff = today.getMonth() - birthDate.getMonth();
+      const dayDiff = today.getDate() - birthDate.getDate();
       const actualAge = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? age - 1 : age;
       
       if (actualAge < 18) {
         errors.birthDate = 'Vous devez avoir au moins 18 ans pour vous inscrire';
       }
       
-      // Validation code postal (5 chiffres)
       if (birthPostalCode && !/^\d{5}$/.test(birthPostalCode)) {
         errors.birthPostalCode = 'Le code postal de naissance doit contenir exactement 5 chiffres';
+      }
+      
+      const phoneDigits = phone.replace(/\D/g, '');
+      if (phoneDigits.length !== 10) {
+        errors.phone = 'Le numéro de téléphone doit contenir exactement 10 chiffres';
+      }
+      
+      if (postalCode && !/^\d{5}$/.test(postalCode)) {
+        errors.postalCode = 'Le code postal doit contenir exactement 5 chiffres';
       }
       
       // Si des erreurs existent, les afficher et empêcher la progression
@@ -259,8 +340,12 @@ const Register: React.FC = () => {
       setFieldErrors({});
       setError(null);
     } else if (activeStep === 1) {
-      if (!graduationYear) {
+      if (!graduationYear || !selectedProgram) {
         setError('Veuillez remplir tous les champs obligatoires');
+        return;
+      }
+      if (schoolCampuses.length > 0 && !selectedCampus) {
+        setError('Veuillez sélectionner votre campus');
         return;
       }
       setError(null);
@@ -367,9 +452,10 @@ const Register: React.FC = () => {
           email,
           firstName,
           lastName,
-          birthDate,
+          birthDate: birthDate ? formatLocalDateOnly(birthDate) : '',
           graduationYear,
           program: selectedProgram,
+          ...(selectedCampus ? { campus: selectedCampus } : {}),
           createdAt: new Date(),
           status: 'etudiant' as const,
           structureId: structure.id,
@@ -377,11 +463,27 @@ const Register: React.FC = () => {
           cvUrl,
           acceptsElectronicDocuments: acceptsElectronicDocuments,
           acceptsElectronicDocumentsDate: acceptsElectronicDocuments ? new Date() : null,
-          birthPostalCode
-        } as any; // Utilisation de 'as any' car birthPostalCode n'est pas dans UserData pour l'instant
+          birthPostalCode,
+          phone: phone.replace(/\D/g, '') || undefined,
+          address: address || undefined,
+          postalCode: postalCode || undefined,
+          city: city || undefined,
+        };
         
         await createUserDocument(user.uid, userData);
-        navigate('/app/profile');
+        if (inviteToken) {
+          try {
+            await updateDoc(doc(db, 'structureInvites', inviteToken), {
+              status: 'accepted',
+              acceptedBy: user.uid,
+              acceptedAt: new Date(),
+            });
+          } catch (inviteErr) {
+            console.warn('Invite mark accepted failed:', inviteErr);
+          }
+        }
+        // Rediriger vers la route centrale qui choisit le bon écran selon le statut
+        navigate('/app');
       } catch (error) {
         console.error("Erreur lors de la création du document utilisateur:", error);
         setError("Erreur lors de la création du profil. Veuillez réessayer.");
@@ -480,8 +582,8 @@ const Register: React.FC = () => {
         await createUserDocument(user.uid, userData);
         
         setFieldErrors({}); // Effacer les erreurs après succès
-        // Rediriger vers le formulaire de mission après l'inscription
-        navigate('/app/mission?new=true');
+        // Rediriger vers la route centrale qui choisit le bon écran selon le statut
+        navigate('/app');
       } catch (error) {
         console.error("Erreur lors de la création du document utilisateur:", error);
         setError("Erreur lors de la création du profil. Veuillez réessayer.");
@@ -505,33 +607,42 @@ const Register: React.FC = () => {
   
   // ========== FONCTIONS FLUX STRUCTURE ==========
   const handleStructureSubmit = async () => {
-    if (!structureName || !structureSchool || !structureEmail || !structurePassword || !structureConfirmPassword) {
+    if (!structureName || !structureSchool || !structureEmail || !structurePhone) {
       setError('Veuillez remplir tous les champs obligatoires');
       return;
     }
-    
+    const structurePhoneDigits = structurePhone.replace(/\D/g, '');
+    if (structurePhoneDigits.length !== 10) {
+      setError('Le numéro de téléphone doit contenir exactement 10 chiffres');
+      return;
+    }
+    if (!isPremiumPlan && (!structurePassword || !structureConfirmPassword)) {
+      setError('Veuillez remplir tous les champs obligatoires');
+      return;
+    }
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(structureEmail)) {
       setError('Veuillez entrer une adresse email valide');
       return;
     }
-    
-    if (structurePassword !== structureConfirmPassword) {
-      setError('Les mots de passe ne correspondent pas');
-      return;
+
+    if (!isPremiumPlan) {
+      if (structurePassword !== structureConfirmPassword) {
+        setError('Les mots de passe ne correspondent pas');
+        return;
+      }
+      if (structurePassword.length < 8) {
+        setError('Le mot de passe doit contenir au moins 8 caractères');
+        return;
+      }
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+      if (!passwordRegex.test(structurePassword)) {
+        setError('Le mot de passe doit contenir au moins une lettre majuscule, une lettre minuscule et un chiffre');
+        return;
+      }
     }
-    
-    if (structurePassword.length < 8) {
-      setError('Le mot de passe doit contenir au moins 8 caractères');
-      return;
-    }
-    
-    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-    if (!passwordRegex.test(structurePassword)) {
-      setError('Le mot de passe doit contenir au moins une lettre majuscule, une lettre minuscule et un chiffre');
-      return;
-    }
-    
+
     if (!acceptTerms) {
       setError("Vous devez accepter les conditions d'utilisation et la politique de confidentialité");
       return;
@@ -540,32 +651,88 @@ const Register: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
-      
+
+      // Vérifier que le domaine email n'est pas déjà utilisé par une autre structure
+      const functions = getFunctions();
+      const checkEmailDomainAvailable = httpsCallable<{ email: string }, { available: boolean }>(functions, 'checkEmailDomainAvailable');
+      const { data: domainData } = await checkEmailDomainAvailable({ email: structureEmail.trim() });
+      if (!domainData?.available) {
+        setError('Ce domaine email est déjà utilisé par une autre structure. Utilisez une adresse avec un domaine professionnel ou d\'établissement non encore enregistré.');
+        setLoading(false);
+        return;
+      }
+
+      if (isPremiumPlan) {
+        const priceId = import.meta.env.VITE_STRIPE_PRICE_PREMIUM || import.meta.env.VITE_STRIPE_PRICE_PRO;
+        if (!priceId) {
+          setError(
+            'Configuration Stripe manquante : définissez VITE_STRIPE_PRICE_PREMIUM (ou VITE_STRIPE_PRICE_PRO). Voir STRIPE_TRIAL_SETUP.md.'
+          );
+          setLoading(false);
+          return;
+        }
+        const frontendUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+        const createCheckoutSessionForSignup = httpsCallable<
+          { priceId: string; email: string; structureName: string; structureSchool: string; success_url: string; cancel_url: string },
+          { sessionId: string }
+        >(functions, 'createCheckoutSessionForSignup');
+        const { data } = await createCheckoutSessionForSignup({
+          priceId,
+          email: structureEmail.trim(),
+          structureName: structureName.trim(),
+          structureSchool: structureSchool.trim(),
+          success_url: `${frontendUrl}/register/complete?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${frontendUrl}/register?type=structure&plan=premium&canceled=true`,
+        });
+        const sessionId = data.sessionId;
+        const stripe = await loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY);
+        if (stripe && sessionId) {
+          await stripe.redirectToCheckout({ sessionId });
+          return;
+        }
+        setError('Impossible de rediriger vers le paiement. Réessayez.');
+        setLoading(false);
+        return;
+      }
+
       const user = await registerUser(structureEmail, structurePassword, structureName);
       
-      try {
+      {
+        const emailDomain = structureEmail.includes('@') ? '@' + structureEmail.split('@')[1] : '@' + structureEmail;
+        const structureId = await createStructure({
+          nom: structureName,
+          ecole: structureSchool,
+          emailDomains: [emailDomain],
+          domaines: [emailDomain],
+          createdBy: user.uid,
+          structureType: 'junior'
+        });
         const userData: any = {
           displayName: structureName,
           email: structureEmail,
           firstName: structureName,
           lastName: '',
+          phone: structurePhone.replace(/\D/g, ''),
           createdAt: new Date(),
-          status: 'admin_structure' as any,
-          structureName: structureName,
+          status: 'admin' as any,
+          structureName,
           ecole: structureSchool,
-          // Initialiser l'essai gratuit
+          structureId,
           trialStartDate: new Date(),
-          trialEndDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 jours
+          trialEndDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
           hasActiveTrial: true
         };
-        
         await createUserDocument(user.uid, userData);
-        navigate('/app/profile');
-      } catch (error) {
-        console.error("Erreur lors de la création du document utilisateur:", error);
-        setError("Erreur lors de la création du profil. Veuillez réessayer.");
+        try {
+          const functions = getFunctions();
+          const initStructurePermissions = httpsCallable<{ structureId: string }, { ok: boolean }>(functions, 'initStructurePermissions');
+          await initStructurePermissions({ structureId });
+        } catch (e) {
+          console.warn('Initialisation des permissions structure (ignoré):', e);
+        }
+        // Rediriger vers la route centrale qui choisit le bon écran selon le statut
+        navigate('/app');
       }
-      
     } catch (error: any) {
       console.error("Erreur d'inscription:", error);
       if (error.code === 'auth/email-already-in-use') {
@@ -574,6 +741,8 @@ const Register: React.FC = () => {
         setError("Format d'email invalide");
       } else if (error.code === 'auth/weak-password') {
         setError("Le mot de passe est trop faible");
+      } else if (error.code === 'functions/already-exists' || error.code === 'already-exists') {
+        setError(error.message || 'Ce domaine email est déjà utilisé par une autre structure.');
       } else {
         setError(error.message || "Une erreur s'est produite lors de l'inscription");
       }
@@ -608,7 +777,7 @@ const Register: React.FC = () => {
           <Link 
             component={RouterLink} 
             to="/" 
-            sx={{ color: '#0071e3', textDecoration: 'none', fontWeight: 500 }}
+            sx={{ color: tokens.colors.ink, textDecoration: 'none', fontWeight: 500 }}
           >
             Choisir un autre profil
           </Link>
@@ -654,7 +823,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -674,7 +843,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -696,46 +865,45 @@ const Register: React.FC = () => {
             sx={{ 
               mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
           
-          <TextField
-            margin="normal"
-            required
-            fullWidth
-            id="birthDate"
-            label="Date de naissance"
-            name="birthDate"
-            type="date"
-            value={birthDate}
-            onChange={(e) => {
-              setBirthDate(e.target.value);
-              // Effacer l'erreur si elle existe
-              if (fieldErrors.birthDate) {
-                setFieldErrors(prev => {
-                  const newErrors = { ...prev };
-                  delete newErrors.birthDate;
-                  return newErrors;
-                });
-              }
-            }}
-            disabled={loading}
-            variant="outlined"
-            InputLabelProps={{
-              shrink: true,
-            }}
-            error={!!fieldErrors.birthDate}
-            helperText={fieldErrors.birthDate || "Vous devez avoir au moins 18 ans"}
-            inputProps={{ max: new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split('T')[0] }}
-            sx={{ 
-              mb: { xs: 1.5, sm: 2 },
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
-              }
-            }}
-          />
+          <LocalizationProvider dateAdapter={AdapterDateFns} adapterLocale={fr}>
+            <DatePicker
+              label="Date de naissance *"
+              value={birthDate}
+              onChange={(newValue) => {
+                setBirthDate(newValue);
+                if (fieldErrors.birthDate) {
+                  setFieldErrors(prev => {
+                    const newErrors = { ...prev };
+                    delete newErrors.birthDate;
+                    return newErrors;
+                  });
+                }
+              }}
+              maxDate={new Date(new Date().setFullYear(new Date().getFullYear() - 18))}
+              disabled={loading}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  fullWidth
+                  margin="normal"
+                  variant="outlined"
+                  error={!!fieldErrors.birthDate}
+                  helperText={fieldErrors.birthDate || "Vous devez avoir au moins 18 ans"}
+                  sx={{ 
+                    mb: { xs: 1.5, sm: 2 },
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: tokens.radius.sm
+                    }
+                  }}
+                />
+              )}
+            />
+          </LocalizationProvider>
           
           <TextField
             margin="normal"
@@ -746,10 +914,8 @@ const Register: React.FC = () => {
             name="birthPostalCode"
             value={birthPostalCode}
             onChange={(e) => {
-              // Ne garder que les chiffres
               const value = e.target.value.replace(/\D/g, '').slice(0, 5);
               setBirthPostalCode(value);
-              // Effacer l'erreur si elle existe
               if (fieldErrors.birthPostalCode) {
                 setFieldErrors(prev => {
                   const newErrors = { ...prev };
@@ -766,7 +932,107 @@ const Register: React.FC = () => {
             sx={{ 
               mb: { xs: 1.5, sm: 2 },
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
+              }
+            }}
+          />
+          
+          <TextField
+            margin="normal"
+            required
+            fullWidth
+            id="phone"
+            label="Numéro de téléphone"
+            name="phone"
+            type="tel"
+            value={phone}
+            onChange={(e) => {
+              const value = e.target.value.replace(/[^\d+\s()-]/g, '');
+              setPhone(value);
+              if (fieldErrors.phone) {
+                setFieldErrors(prev => {
+                  const newErrors = { ...prev };
+                  delete newErrors.phone;
+                  return newErrors;
+                });
+              }
+            }}
+            disabled={loading}
+            variant="outlined"
+            error={!!fieldErrors.phone}
+            helperText={fieldErrors.phone || "10 chiffres requis (ex: 06 12 34 56 78)"}
+            sx={{ 
+              mb: { xs: 1.5, sm: 2 },
+              '& .MuiOutlinedInput-root': {
+                borderRadius: tokens.radius.sm
+              }
+            }}
+          />
+          
+          <TextField
+            margin="normal"
+            fullWidth
+            id="address"
+            label="Adresse"
+            name="address"
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            disabled={loading}
+            variant="outlined"
+            helperText="Numéro et nom de rue (modifiable depuis le profil)"
+            sx={{ 
+              mb: { xs: 1.5, sm: 2 },
+              '& .MuiOutlinedInput-root': {
+                borderRadius: tokens.radius.sm
+              }
+            }}
+          />
+          
+          <TextField
+            margin="normal"
+            fullWidth
+            id="postalCode"
+            label="Code postal"
+            name="postalCode"
+            value={postalCode}
+            onChange={(e) => {
+              const value = e.target.value.replace(/\D/g, '').slice(0, 5);
+              setPostalCode(value);
+              if (fieldErrors.postalCode) {
+                setFieldErrors(prev => {
+                  const newErrors = { ...prev };
+                  delete newErrors.postalCode;
+                  return newErrors;
+                });
+              }
+            }}
+            disabled={loading}
+            variant="outlined"
+            inputProps={{ maxLength: 5 }}
+            error={!!fieldErrors.postalCode}
+            helperText={fieldErrors.postalCode || "5 chiffres requis"}
+            sx={{ 
+              mb: { xs: 1.5, sm: 2 },
+              '& .MuiOutlinedInput-root': {
+                borderRadius: tokens.radius.sm
+              }
+            }}
+          />
+          
+          <TextField
+            margin="normal"
+            fullWidth
+            id="city"
+            label="Ville"
+            name="city"
+            value={city}
+            onChange={(e) => setCity(e.target.value)}
+            disabled={loading}
+            variant="outlined"
+            sx={{ 
+              mb: { xs: 1.5, sm: 2 },
+              '& .MuiOutlinedInput-root': {
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -781,7 +1047,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 3,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           >
@@ -810,6 +1076,36 @@ const Register: React.FC = () => {
               {!structure && "Veuillez d'abord renseigner votre email académique"}
             </FormHelperText>
           </FormControl>
+
+          {schoolCampuses.length > 0 && (
+            <FormControl
+              fullWidth
+              required
+              sx={{
+                mb: 3,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: tokens.radius.sm
+                }
+              }}
+            >
+              <InputLabel id="campus-label">Campus</InputLabel>
+              <Select
+                labelId="campus-label"
+                id="campus"
+                value={selectedCampus}
+                label="Campus"
+                onChange={(e) => setSelectedCampus(e.target.value)}
+                disabled={loading}
+              >
+                {schoolCampuses.map((campus) => (
+                  <MenuItem key={campus} value={campus}>
+                    {campus}
+                  </MenuItem>
+                ))}
+              </Select>
+              <FormHelperText>Sélectionnez le campus de votre établissement</FormHelperText>
+            </FormControl>
+          )}
           
           <FormControl 
             fullWidth 
@@ -817,7 +1113,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 3,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           >
@@ -848,7 +1144,7 @@ const Register: React.FC = () => {
                 variant="outlined"
                 startIcon={<CloudUploadIcon />}
                 sx={{ 
-                  borderRadius: '8px',
+                  borderRadius: tokens.radius.sm,
                   textTransform: 'none',
                   py: 1.5
                 }}
@@ -894,7 +1190,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
             InputProps={{
@@ -928,7 +1224,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
             InputProps={{
@@ -951,10 +1247,10 @@ const Register: React.FC = () => {
               <Checkbox
                 checked={acceptTerms}
                 onChange={(e) => setAcceptTerms(e.target.checked)}
-                color="primary"
+                color="default"
                 sx={{
                   '&.Mui-checked': {
-                    color: '#0071e3',
+                    color: tokens.colors.ink,
                   },
                 }}
               />
@@ -962,11 +1258,11 @@ const Register: React.FC = () => {
             label={
               <Typography variant="body2">
                 En cochant cette case, j'accepte les{' '}
-                <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+                <Link component={RouterLink} to="/mentions-legales" sx={{ color: tokens.colors.ink, textDecoration: 'none' }}>
                   Conditions d'utilisation
                 </Link>{' '}
                 et la{' '}
-                <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+                <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: tokens.colors.ink, textDecoration: 'none' }}>
                   Politique de confidentialité
                 </Link>
               </Typography>
@@ -979,10 +1275,10 @@ const Register: React.FC = () => {
               <Checkbox
                 checked={acceptsElectronicDocuments}
                 onChange={(e) => setAcceptsElectronicDocuments(e.target.checked)}
-                color="primary"
+                color="default"
                 sx={{
                   '&.Mui-checked': {
-                    color: '#0071e3',
+                    color: tokens.colors.ink,
                   },
                 }}
               />
@@ -1023,15 +1319,18 @@ const Register: React.FC = () => {
           endIcon={activeStep < steps.length - 1 ? <ArrowForward /> : undefined}
           fullWidth={isMobile}
           sx={{ 
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xxl,
             px: { xs: 2, sm: 3 },
             py: { xs: 1.25, sm: 1 },
             textTransform: 'none',
             fontWeight: 500,
             fontSize: { xs: '0.85rem', sm: '0.875rem' },
-            bgcolor: '#0071e3',
+            bgcolor: tokens.colors.marketingBlack,
+            color: tokens.colors.marketingWhite,
+            boxShadow: 'none',
             '&:hover': {
-              bgcolor: '#0062c3'
+              bgcolor: tokens.colors.marketingBlack,
+              opacity: 0.9,
             }
           }}
         >
@@ -1064,7 +1363,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -1083,7 +1382,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -1102,7 +1401,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -1122,7 +1421,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -1156,7 +1455,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
           />
@@ -1176,7 +1475,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
             InputProps={{
@@ -1210,7 +1509,7 @@ const Register: React.FC = () => {
             sx={{ 
               mb: 2,
               '& .MuiOutlinedInput-root': {
-                borderRadius: '8px'
+                borderRadius: tokens.radius.sm
               }
             }}
             InputProps={{
@@ -1233,10 +1532,10 @@ const Register: React.FC = () => {
               <Checkbox
                 checked={acceptTerms}
                 onChange={(e) => setAcceptTerms(e.target.checked)}
-                color="primary"
+                color="default"
                 sx={{
                   '&.Mui-checked': {
-                    color: '#0071e3',
+                    color: tokens.colors.ink,
                   },
                 }}
               />
@@ -1244,11 +1543,11 @@ const Register: React.FC = () => {
             label={
               <Typography variant="body2">
                 En cochant cette case, j'accepte les{' '}
-                <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+                <Link component={RouterLink} to="/mentions-legales" sx={{ color: tokens.colors.ink, textDecoration: 'none' }}>
                   Conditions d'utilisation
                 </Link>{' '}
                 et la{' '}
-                <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+                <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: tokens.colors.ink, textDecoration: 'none' }}>
                   Politique de confidentialité
                 </Link>
               </Typography>
@@ -1262,15 +1561,18 @@ const Register: React.FC = () => {
         onClick={handleCompanySubmit}
         disabled={loading}
         sx={{ 
-          borderRadius: '20px',
+          borderRadius: tokens.radius.xxl,
           px: 3,
           py: 1.5,
           mt: 3,
           textTransform: 'none',
           fontWeight: 500,
-          bgcolor: '#0071e3',
+          bgcolor: tokens.colors.marketingBlack,
+          color: tokens.colors.marketingWhite,
+          boxShadow: 'none',
           '&:hover': {
-            bgcolor: '#0062c3'
+            bgcolor: tokens.colors.marketingBlack,
+            opacity: 0.9,
           }
         }}
       >
@@ -1289,16 +1591,16 @@ const Register: React.FC = () => {
         severity="success" 
         sx={{ 
           mb: 3, 
-          borderRadius: '8px',
-          bgcolor: '#f0f9ff',
-          border: '1px solid #0ea5e9'
+          borderRadius: tokens.radius.sm,
+          bgcolor: tokens.colors.bgSubtle,
+          border: `1px solid ${tokens.colors.borderSoft}`
         }}
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-          🎉 Votre essai gratuit de 1 mois commence dès l'inscription.
+          🎉 Votre essai gratuit de 2 mois commence dès l'inscription.
         </Typography>
         <Typography variant="body2">
-          Accédez à toutes les fonctionnalités pendant 30 jours, sans engagement.
+          Accédez à toutes les fonctionnalités pendant 60 jours, sans engagement.
         </Typography>
       </Alert>
       
@@ -1317,7 +1619,7 @@ const Register: React.FC = () => {
         sx={{ 
           mb: 2,
           '& .MuiOutlinedInput-root': {
-            borderRadius: '8px'
+            borderRadius: tokens.radius.sm
           }
         }}
       />
@@ -1336,7 +1638,7 @@ const Register: React.FC = () => {
         sx={{ 
           mb: 2,
           '& .MuiOutlinedInput-root': {
-            borderRadius: '8px'
+            borderRadius: tokens.radius.sm
           }
         }}
       />
@@ -1356,7 +1658,7 @@ const Register: React.FC = () => {
         sx={{ 
           mb: 2,
           '& .MuiOutlinedInput-root': {
-            borderRadius: '8px'
+            borderRadius: tokens.radius.sm
           }
         }}
       />
@@ -1365,78 +1667,106 @@ const Register: React.FC = () => {
         margin="normal"
         required
         fullWidth
-        name="structurePassword"
-        label="Mot de passe"
-        type={showPassword ? 'text' : 'password'}
-        id="structurePassword"
-        value={structurePassword}
-        onChange={(e) => setStructurePassword(e.target.value)}
+        id="structurePhone"
+        label="Numéro de téléphone"
+        name="structurePhone"
+        type="tel"
+        value={structurePhone}
+        onChange={(e) => setStructurePhone(e.target.value.replace(/[^\d+\s()-]/g, ''))}
         disabled={loading}
         variant="outlined"
+        helperText="10 chiffres requis (ex: 06 12 34 56 78)"
         sx={{ 
           mb: 2,
           '& .MuiOutlinedInput-root': {
-            borderRadius: '8px'
+            borderRadius: tokens.radius.sm
           }
         }}
-        InputProps={{
-          endAdornment: (
-            <InputAdornment position="end">
-              <IconButton
-                aria-label="toggle password visibility"
-                onClick={handleTogglePasswordVisibility}
-                edge="end"
-              >
-                {showPassword ? <VisibilityOff /> : <Visibility />}
-              </IconButton>
-            </InputAdornment>
-          )
-        }}
-        helperText="8 caractères minimum, avec au moins une majuscule, une minuscule et un chiffre"
       />
       
-      <TextField
-        margin="normal"
-        required
-        fullWidth
-        name="structureConfirmPassword"
-        label="Confirmer le mot de passe"
-        type={showConfirmPassword ? 'text' : 'password'}
-        id="structureConfirmPassword"
-        value={structureConfirmPassword}
-        onChange={(e) => setStructureConfirmPassword(e.target.value)}
-        disabled={loading}
-        variant="outlined"
-        sx={{ 
-          mb: 2,
-          '& .MuiOutlinedInput-root': {
-            borderRadius: '8px'
-          }
-        }}
-        InputProps={{
-          endAdornment: (
-            <InputAdornment position="end">
-              <IconButton
-                aria-label="toggle confirm password visibility"
-                onClick={handleToggleConfirmPasswordVisibility}
-                edge="end"
-              >
-                {showConfirmPassword ? <VisibilityOff /> : <Visibility />}
-              </IconButton>
-            </InputAdornment>
-          )
-        }}
-      />
+      {isPremiumPlan ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1, mb: 2 }}>
+          Vous définirez votre mot de passe après le paiement (étape suivante).
+        </Typography>
+      ) : (
+        <>
+          <TextField
+            margin="normal"
+            required
+            fullWidth
+            name="structurePassword"
+            label="Mot de passe"
+            type={showPassword ? 'text' : 'password'}
+            id="structurePassword"
+            value={structurePassword}
+            onChange={(e) => setStructurePassword(e.target.value)}
+            disabled={loading}
+            variant="outlined"
+            sx={{ 
+              mb: 2,
+              '& .MuiOutlinedInput-root': {
+                borderRadius: tokens.radius.sm
+              }
+            }}
+            InputProps={{
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton
+                    aria-label="toggle password visibility"
+                    onClick={handleTogglePasswordVisibility}
+                    edge="end"
+                  >
+                    {showPassword ? <VisibilityOff /> : <Visibility />}
+                  </IconButton>
+                </InputAdornment>
+              )
+            }}
+            helperText="8 caractères minimum, avec au moins une majuscule, une minuscule et un chiffre"
+          />
+          <TextField
+            margin="normal"
+            required
+            fullWidth
+            name="structureConfirmPassword"
+            label="Confirmer le mot de passe"
+            type={showConfirmPassword ? 'text' : 'password'}
+            id="structureConfirmPassword"
+            value={structureConfirmPassword}
+            onChange={(e) => setStructureConfirmPassword(e.target.value)}
+            disabled={loading}
+            variant="outlined"
+            sx={{ 
+              mb: 2,
+              '& .MuiOutlinedInput-root': {
+                borderRadius: tokens.radius.sm
+              }
+            }}
+            InputProps={{
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton
+                    aria-label="toggle confirm password visibility"
+                    onClick={handleToggleConfirmPasswordVisibility}
+                    edge="end"
+                  >
+                    {showConfirmPassword ? <VisibilityOff /> : <Visibility />}
+                  </IconButton>
+                </InputAdornment>
+              )
+            }}
+          />
+        </>
+      )}
       
       <FormControlLabel
         control={
           <Checkbox
             checked={acceptTerms}
             onChange={(e) => setAcceptTerms(e.target.checked)}
-            color="primary"
+            color="default"
             sx={{
               '&.Mui-checked': {
-                color: '#0071e3',
+                color: tokens.colors.ink,
               },
             }}
           />
@@ -1444,11 +1774,11 @@ const Register: React.FC = () => {
         label={
           <Typography variant="body2">
             En cochant cette case, j'accepte les{' '}
-            <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+            <Link component={RouterLink} to="/mentions-legales" sx={{ color: tokens.colors.ink, textDecoration: 'none' }}>
               Conditions d'utilisation
             </Link>{' '}
             et la{' '}
-            <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none' }}>
+            <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: tokens.colors.ink, textDecoration: 'none' }}>
               Politique de confidentialité
             </Link>
           </Typography>
@@ -1462,19 +1792,24 @@ const Register: React.FC = () => {
         onClick={handleStructureSubmit}
         disabled={loading}
         sx={{ 
-          borderRadius: '20px',
+          borderRadius: tokens.radius.xxl,
           px: 3,
           py: 1.5,
           textTransform: 'none',
           fontWeight: 500,
-          bgcolor: '#0071e3',
+          bgcolor: tokens.colors.marketingBlack,
+          color: tokens.colors.marketingWhite,
+          boxShadow: 'none',
           '&:hover': {
-            bgcolor: '#0062c3'
+            bgcolor: tokens.colors.marketingBlack,
+            opacity: 0.9,
           }
         }}
       >
         {loading ? (
           <CircularProgress size={24} color="inherit" />
+        ) : isPremiumPlan ? (
+          'Continuer vers le paiement'
         ) : (
           'Créer le compte'
         )}
@@ -1490,7 +1825,7 @@ const Register: React.FC = () => {
         justifyContent: 'center',
         alignItems: 'center',
         minHeight: { xs: 'calc(100vh - 80px)', sm: '100vh' },
-        bgcolor: '#ffffff',
+        bgcolor: tokens.colors.marketingWhite,
         p: { xs: 1.5, sm: 2 }
       }}
     >
@@ -1500,7 +1835,7 @@ const Register: React.FC = () => {
           p: { xs: 2.5, sm: 4 },
           maxWidth: 600,
           width: '100%',
-          borderRadius: '12px',
+          borderRadius: tokens.radius.md,
           boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)'
         }}
       >
@@ -1512,7 +1847,8 @@ const Register: React.FC = () => {
           sx={{ 
             fontWeight: 600, 
             fontSize: { xs: '1.25rem', sm: '1.5rem', md: '2rem' },
-            mb: { xs: 2, sm: 3 }
+            mb: { xs: 2, sm: 3 },
+            color: tokens.colors.ink,
           }}
         >
           {getTitle()}
@@ -1521,7 +1857,7 @@ const Register: React.FC = () => {
         {getChangeProfileLink()}
         
         {error && (
-          <Alert severity="error" sx={{ mb: 3, borderRadius: '8px' }}>
+          <Alert severity="error" sx={{ mb: 3, borderRadius: tokens.radius.sm }}>
             {error}
           </Alert>
         )}
@@ -1543,7 +1879,7 @@ const Register: React.FC = () => {
             to="/login" 
             variant="body2"
             sx={{ 
-              color: '#0071e3',
+              color: tokens.colors.ink,
               textDecoration: 'none',
               fontWeight: 500,
               fontSize: { xs: '0.8rem', sm: '0.875rem' },
@@ -1559,11 +1895,11 @@ const Register: React.FC = () => {
       
       <Typography variant="body2" color="text.secondary" sx={{ mt: { xs: 2, sm: 4 }, mb: { xs: 2, sm: 0 }, textAlign: 'center', px: { xs: 2, sm: 0 }, fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
         En créant un compte, vous acceptez les{' '}
-        <Link component={RouterLink} to="/mentions-legales" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
+        <Link component={RouterLink} to="/mentions-legales" sx={{ color: tokens.colors.ink, textDecoration: 'none', fontSize: 'inherit' }}>
           Conditions d'utilisation
         </Link>{' '}
         et la{' '}
-        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: '#0071e3', textDecoration: 'none', fontSize: 'inherit' }}>
+        <Link component={RouterLink} to="/politique-confidentialite" sx={{ color: tokens.colors.ink, textDecoration: 'none', fontSize: 'inherit' }}>
           Politique de confidentialité
         </Link>{' '}
         de JS Connect.

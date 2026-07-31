@@ -39,7 +39,7 @@ function debugLog(location: string, message: string, data: any, hypothesisId: st
 // #region agent log
 debugLog('twoFactor.ts:1', 'twoFactor module loading', {}, 'E');
 // #endregion
-import { onCall } from 'firebase-functions/v2/https';
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import * as admin from 'firebase-admin';
 import * as speakeasy from 'speakeasy';
 import { decrypt } from './encryption';
@@ -50,10 +50,26 @@ const functionConfig = {
   timeoutSeconds: 300,
   region: 'us-central1',
   minInstances: 0,
-  maxInstances: 1, // Réduit au minimum pour respecter le quota CPU
-  concurrency: 20, // Réduit au minimum
-  secrets: ['ENCRYPTION_KEY'], // Nécessaire pour déchiffrer twoFactorSecret
+  maxInstances: 2,
+  concurrency: 1,
+  secrets: ['ENCRYPTION_KEY'],
 };
+
+function toHttpsError(error: unknown): HttpsError {
+  if (error instanceof HttpsError) return error;
+  const msg = error instanceof Error ? error.message : String(error);
+  if (msg.includes('Code invalide') || msg.includes('2FA non configurée')) {
+    return new HttpsError('invalid-argument', msg);
+  }
+  if (msg.includes('Non autorisé') || msg.includes('Document utilisateur')) {
+    return new HttpsError('permission-denied', msg);
+  }
+  if (msg.includes('ENCRYPTION_KEY') || msg.includes('chiffrement')) {
+    return new HttpsError('failed-precondition', 'Configuration serveur 2FA indisponible. Contactez le support.');
+  }
+  console.error('[twoFactor] Erreur non gérée:', error);
+  return new HttpsError('internal', 'Erreur serveur lors de la vérification 2FA. Réessayez.');
+}
 
 /**
  * Génère un secret TOTP et un QR code pour l'authentification à deux facteurs
@@ -246,26 +262,23 @@ export const verifyTwoFactorCode = onCall(functionConfig, async (request) => {
   // #endregion
   
   if (!request.auth) {
-    throw new Error('Non autorisé');
-  }
-  
-  const { uid, code, deviceInfo } = request.data;
-  
-  // #region agent log
-  console.log('[verifyTwoFactorCode] Request data parsed', { uid, codeLength: code?.length, hasDeviceInfo: !!deviceInfo, deviceInfo });
-  debugLog('verifyTwoFactorCode:2', 'Request data parsed', { uid, codeLength: code?.length, hasDeviceInfo: !!deviceInfo, deviceInfo }, 'A');
-  // #endregion
-  
-  if (!uid || uid !== request.auth.uid) {
-    throw new Error('Non autorisé');
+    throw new HttpsError('unauthenticated', 'Non autorisé');
   }
 
-  if (!code || code.length !== 6) {
-    throw new Error('Code invalide');
+  const { uid, code, deviceInfo } = request.data;
+
+  console.log('[verifyTwoFactorCode] Request data parsed', { uid, codeLength: code?.length, hasDeviceInfo: !!deviceInfo });
+
+  if (!uid || uid !== request.auth.uid) {
+    throw new HttpsError('permission-denied', 'Non autorisé');
+  }
+
+  const token = String(code ?? '').replace(/\D/g, '');
+  if (token.length !== 6) {
+    throw new HttpsError('invalid-argument', 'Code invalide');
   }
 
   try {
-    // #region agent log
     console.log('[verifyTwoFactorCode] Fetching user document', { uid });
     debugLog('verifyTwoFactorCode:3', 'Fetching user document', { uid }, 'B');
     // #endregion
@@ -340,11 +353,10 @@ export const verifyTwoFactorCode = onCall(functionConfig, async (request) => {
     const verified = speakeasy.totp.verify({
       secret: secret,
       encoding: 'base32',
-      token: code,
-      window: 2
+      token,
+      window: 2,
     });
 
-    // #region agent log
     console.log('[verifyTwoFactorCode] TOTP verification result', { verified });
     debugLog('verifyTwoFactorCode:6', 'TOTP verification result', { verified }, 'C');
     // #endregion
@@ -424,22 +436,11 @@ export const verifyTwoFactorCode = onCall(functionConfig, async (request) => {
       // #endregion
 
       try {
-        await admin.firestore()
-          .collection('users')
-          .doc(uid)
-          .update({
-            secureDevices
-          });
-        // #region agent log
+        await admin.firestore().collection('users').doc(uid).update({ secureDevices });
         console.log('[verifyTwoFactorCode] Firestore update successful');
-        debugLog('verifyTwoFactorCode:11', 'Firestore update successful', {}, 'E');
-        // #endregion
-      } catch (updateError: any) {
-        // #region agent log
-        console.error('[verifyTwoFactorCode] Firestore update error', { error: updateError.message, stack: updateError.stack, code: updateError.code });
-        debugLog('verifyTwoFactorCode:11-error', 'Firestore update error', { error: updateError.message, stack: updateError.stack, code: updateError.code }, 'E');
-        // #endregion
-        throw updateError;
+      } catch (updateError: unknown) {
+        // Ne pas bloquer la connexion si l'enregistrement de l'appareil échoue
+        console.warn('[verifyTwoFactorCode] secureDevices non mis à jour:', updateError);
       }
     }
 
@@ -449,28 +450,9 @@ export const verifyTwoFactorCode = onCall(functionConfig, async (request) => {
     // #endregion
 
     return { success: true };
-  } catch (error: any) {
-    // #region agent log
-    console.error('[verifyTwoFactorCode] Error caught', { 
-      errorMessage: error.message, 
-      errorStack: error.stack, 
-      errorName: error.name, 
-      errorCode: error.code,
-      errorString: String(error)
-    });
-    debugLog('verifyTwoFactorCode:13', 'Error caught', { errorMessage: error.message, errorStack: error.stack, errorName: error.name }, 'A');
-    // #endregion
-    
-    console.error('Erreur vérification code 2FA:', error);
-    
-    // Propager l'erreur avec un message clair
-    // Si c'est déjà une Error avec un message, la retourner telle quelle
-    if (error instanceof Error) {
-      throw error;
-    }
-    
-    // Sinon, créer une nouvelle Error avec le message disponible
-    throw new Error(error.message || error.toString() || 'Code invalide');
+  } catch (error: unknown) {
+    console.error('[verifyTwoFactorCode] Error caught:', error);
+    throw toHttpsError(error);
   }
 });
 

@@ -6,7 +6,6 @@ import {
   Paper,
   CircularProgress,
   Alert,
-  Container,
   Button,
   Grid,
   Table,
@@ -16,15 +15,7 @@ import {
   TableHead,
   TableRow,
   IconButton,
-  Tooltip,
-  Breadcrumbs,
-  Link,
   Divider,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-  Tabs,
-  Tab,
   TextField,
   Chip,
   Menu,
@@ -42,11 +33,11 @@ import {
   Select,
   FormControlLabel,
   Checkbox,
+  Link,
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
-  ExpandMore as ExpandMoreIcon,
-  Info as InfoIcon,
+  ChevronLeft as ChevronLeftIcon,
   CheckCircle as CheckCircleIcon,
   RadioButtonUnchecked as RadioButtonUncheckedIcon,
   Business as BusinessIcon,
@@ -68,17 +59,21 @@ import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
 import { auditService, Mission } from '../services/auditService';
-import { getFunctions, httpsCallable } from 'firebase/functions';
 import { DocumentType, DOCUMENT_TYPES } from '../types/templates';
 import { collection, query, where, orderBy, getDocs, doc, deleteDoc, getDoc, updateDoc, addDoc } from 'firebase/firestore';
 import { db, storage, getStorageInstance } from '../firebase/config';
 import app, { isStorageAvailable } from '../firebase/config';
-import { FileText, Download, Trash2, Upload } from 'lucide-react';
+import { FileText } from 'lucide-react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { useSnackbar } from 'notistack';
 import { SelectChangeEvent } from '@mui/material/Select';
 import TaggingInput from '../components/ui/TaggingInput';
 import { NotificationService } from '../services/notificationService';
+import { tokens } from '../theme/tokens';
+import { getSafeDisplayName } from '../utils/decryptUserUtils';
+import UserReferenceText from '../components/common/UserReferenceText';
+import { useDecryptedUserName } from '../hooks/useDecryptedUserName';
+import { AppPageShell } from '../components/ds';
 
 interface GeneratedDocument {
   id: string;
@@ -143,6 +138,14 @@ interface TaggedUser {
   role?: string;
 }
 
+const NoteAuthorInitials: React.FC<{ userId?: string; name?: string }> = ({ userId, name = '' }) => {
+  const { initials } = useDecryptedUserName(
+    userId ? { id: userId, displayName: name } : { displayName: name },
+    name.slice(0, 2).toUpperCase()
+  );
+  return <>{initials || name.slice(0, 2).toUpperCase() || '?'}</>;
+};
+
 const AuditMissionDetails: React.FC = () => {
   const { missionId } = useParams<{ missionId: string }>();
   const navigate = useNavigate();
@@ -152,7 +155,6 @@ const AuditMissionDetails: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { currentUser, userData } = useAuth();
-  const [userNames, setUserNames] = useState<{ [key: string]: string }>({});
   const [uploadingDoc, setUploadingDoc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedTab, setSelectedTab] = useState(0);
@@ -238,52 +240,9 @@ const AuditMissionDetails: React.FC = () => {
       });
       
       setGeneratedDocuments(documents);
-
-      // Récupérer les IDs des utilisateurs qui ont généré des documents
-      const userIds = [...new Set([
-        ...documents.map(doc => doc.createdBy),
-        ...documents.map(doc => doc.auditedBy)
-      ])].filter(Boolean);
-      
-      if (userIds.length > 0) {
-        await fetchUserNames(userIds);
-      }
     } catch (error) {
       console.error('Erreur lors de la récupération des documents générés:', error);
       setError('Erreur lors de la récupération des documents générés');
-    }
-  };
-
-  // Fonction pour récupérer les noms d'utilisateurs (déchiffrés via Cloud Function)
-  const fetchUserNames = async (userIds: string[]) => {
-    const uniqueIds = [...new Set(userIds)].filter(Boolean);
-    if (uniqueIds.length === 0) return;
-    try {
-      const functions = getFunctions();
-      const decryptUser = httpsCallable(functions, 'decryptUserDataForStructure');
-      const next: Record<string, string> = {};
-      for (const uid of uniqueIds) {
-        try {
-          const res = await decryptUser({ userId: uid });
-          const dec = (res.data as { decryptedData?: { firstName?: string; lastName?: string; displayName?: string } })?.decryptedData;
-          if (dec) {
-            const name = dec.displayName || (dec.firstName && dec.lastName ? `${dec.firstName} ${dec.lastName}`.trim() : '') || '';
-            if (name) next[uid] = name;
-          }
-        } catch {
-          // fallback: lecture Firestore si pas de déchiffrement
-          const userDoc = await getDoc(doc(db, 'users', uid));
-          if (userDoc.exists()) {
-            const d = userDoc.data();
-            next[uid] = d.displayName || `${d.firstName || ''} ${d.lastName || ''}`.trim() || 'Utilisateur inconnu';
-          } else {
-            next[uid] = 'Utilisateur inconnu';
-          }
-        }
-      }
-      setUserNames(prev => ({ ...prev, ...next }));
-    } catch (error) {
-      console.error('Erreur lors de la récupération des noms d\'utilisateurs:', error);
     }
   };
 
@@ -320,14 +279,14 @@ const AuditMissionDetails: React.FC = () => {
     }
   };
 
-  // Charger les détails de la mission et ses documents
+  // Charger les détails de la mission
   useEffect(() => {
     const fetchMissionDetails = async () => {
       if (!missionId) return;
       
       try {
         setLoading(true);
-        // Récupérer les détails de la mission
+        setError(null);
         const missionDetails = await auditService.getMissionById(missionId);
         
         if (!missionDetails) {
@@ -336,11 +295,6 @@ const AuditMissionDetails: React.FC = () => {
         }
         
         setMission(missionDetails);
-        
-        // Récupérer les documents générés
-        await fetchGeneratedDocuments();
-        
-        // Récupérer les utilisateurs disponibles pour le tagging
         await fetchAvailableUsers();
       } catch (err) {
         setError('Erreur lors du chargement des données');
@@ -352,6 +306,12 @@ const AuditMissionDetails: React.FC = () => {
 
     fetchMissionDetails();
   }, [missionId]);
+
+  // Charger les documents générés dès que missionId et structureId sont disponibles (aligné MissionDetails)
+  useEffect(() => {
+    if (!missionId || !userData?.structureId) return;
+    fetchGeneratedDocuments();
+  }, [missionId, userData?.structureId]);
 
   const handleBackToAudit = () => {
     navigate('/app/audit');
@@ -633,7 +593,7 @@ const AuditMissionDetails: React.FC = () => {
         missionId: selectedDocument.missionId,
         createdAt: new Date(),
         createdBy: currentUser?.uid || '',
-        createdByName: currentUser?.displayName || 'Utilisateur inconnu',
+        createdByName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
         createdByPhotoURL: currentUser?.photoURL || null, // Utiliser null au lieu de undefined
         type: 'document' as const
       };
@@ -757,8 +717,6 @@ const AuditMissionDetails: React.FC = () => {
         // Trier les notes par date de création (les plus récentes en premier)
         notes.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         setDocumentNotes(notes);
-        const createdByIds = notes.map(n => n.createdBy).filter(Boolean);
-        if (createdByIds.length) fetchUserNames(createdByIds);
       } catch (error) {
         console.error('Erreur lors du chargement des notes:', error);
       }
@@ -813,8 +771,6 @@ const AuditMissionDetails: React.FC = () => {
 
         console.log('Notes organisées finales:', organizedNotes);
         setMissionNotesList(organizedNotes);
-        const createdByIds = organizedNotes.map(n => n.createdBy).filter(Boolean);
-        if (createdByIds.length) fetchUserNames(createdByIds);
       } catch (error) {
         console.error('Erreur lors du chargement des notes de mission:', error);
       }
@@ -1071,7 +1027,7 @@ const AuditMissionDetails: React.FC = () => {
         missionId,
         createdAt: new Date(),
         createdBy: currentUser?.uid || '',
-        createdByName: currentUser?.displayName || 'Utilisateur inconnu',
+        createdByName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
         createdByPhotoURL: currentUser?.photoURL || null, // Utiliser null au lieu de undefined
         type: 'mission' as const,
         isClosed: false,
@@ -1289,7 +1245,7 @@ const AuditMissionDetails: React.FC = () => {
         missionId: replyingToNote.missionId,
         createdAt: new Date(),
         createdBy: currentUser?.uid || '',
-        createdByName: currentUser?.displayName || 'Utilisateur inconnu',
+        createdByName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
         createdByPhotoURL: currentUser?.photoURL || null, // Utiliser null au lieu de undefined
         type: 'mission' as const,
         isReply: true,
@@ -1419,10 +1375,35 @@ const AuditMissionDetails: React.FC = () => {
     }
   };
 
+  const panelSx = {
+    p: 2.5,
+    mb: 2.5,
+    borderRadius: tokens.radius.lg,
+    boxShadow: 'none',
+    bgcolor: tokens.colors.bgPaper,
+    border: `1px solid ${tokens.colors.divider}`,
+  };
+
+  const actionBtnSx = {
+    borderRadius: tokens.radius.md,
+    textTransform: 'none' as const,
+    fontWeight: 600,
+    px: 2,
+  };
+
   if (loading || permissionLoading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="80vh">
-        <CircularProgress />
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          flex: 1,
+          minHeight: 0,
+          bgcolor: tokens.colors.surfaceAlt,
+        }}
+      >
+        <CircularProgress sx={{ color: tokens.colors.brandTeal }} />
       </Box>
     );
   }
@@ -1436,126 +1417,122 @@ const AuditMissionDetails: React.FC = () => {
     );
   }
 
-  if (error) {
+  if (error || !mission) {
     return (
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-        <Alert severity="error" sx={{ mb: 3 }}>
-          {error}
-        </Alert>
-        <Button
-          variant="contained"
-          startIcon={<ArrowBackIcon />}
-          onClick={handleBackToAudit}
-        >
-          Retour à l'audit
-        </Button>
-      </Container>
-    );
-  }
-
-  if (!mission) {
-    return (
-      <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-        <Alert severity="warning" sx={{ mb: 3 }}>
-          Mission non trouvée
-        </Alert>
-        <Button
-          variant="contained"
-          startIcon={<ArrowBackIcon />}
-          onClick={handleBackToAudit}
-        >
-          Retour à l'audit
-        </Button>
-      </Container>
+      <AppPageShell eyebrow="Audit" title="Détail mission">
+        <Box sx={{ px: 3, py: 3 }}>
+          <Alert severity={error ? 'error' : 'warning'} sx={{ mb: 2, borderRadius: tokens.radius.md }}>
+            {error || 'Mission non trouvée'}
+          </Alert>
+          <Button
+            variant="contained"
+            startIcon={<ArrowBackIcon />}
+            onClick={handleBackToAudit}
+            sx={{
+              ...actionBtnSx,
+              bgcolor: tokens.colors.brandTeal,
+              boxShadow: tokens.shadows.button,
+              '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+            }}
+          >
+            Retour à l&apos;audit
+          </Button>
+        </Box>
+      </AppPageShell>
     );
   }
 
   return (
-    <Box sx={{ 
-      p: { xs: 2, md: 4 },
-      maxWidth: '1400px',
-      margin: '0 auto',
-      fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-    }}>
-      <Grid container spacing={3}>
-        {/* Colonne principale (75%) */}
-        <Grid item xs={12} md={9}>
-          <Paper sx={{ 
-            p: 3, 
-            mb: 3,
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-            bgcolor: '#fff'
-          }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Button
-                startIcon={<ArrowBackIcon />}
-                onClick={handleBackToAudit}
-                sx={{
-                  color: 'text.secondary',
-                  '&:hover': {
-                    backgroundColor: 'rgba(0, 0, 0, 0.04)',
-                  },
-                }}
-              >
-                Retour à l'audit
-              </Button>
-              {!mission?.isArchived && canWrite && (
-                <Button
-                  variant="outlined"
-                  color="primary"
-                  onClick={handleArchiveMission}
-                  sx={{
-                    borderRadius: '10px',
-                    textTransform: 'none',
-                    fontWeight: 500,
-                    borderColor: '#007AFF',
-                    color: '#007AFF',
-                    '&:hover': {
-                      borderColor: '#0A84FF',
-                      backgroundColor: 'rgba(0, 122, 255, 0.04)'
-                    }
-                  }}
-                >
-                  Archiver la mission
-                </Button>
-              )}
-            </Box>
-
-            <Typography variant="h4" sx={{ 
-              fontWeight: 600,
-              color: '#1d1d1f',
-              mb: 3,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 2
-            }}>
+    <AppPageShell
+      eyebrow={
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <IconButton
+            size="small"
+            onClick={handleBackToAudit}
+            sx={{ color: tokens.colors.gray400, p: 0.25, mr: 0.25 }}
+            aria-label="Retour à l'audit"
+          >
+            <ChevronLeftIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+          <Typography sx={{ fontSize: 11, color: tokens.colors.gray400 }}>Qualité</Typography>
+          <Typography sx={{ fontSize: 11, color: tokens.colors.gray300 }}>/</Typography>
+          <Box
+            component="button"
+            type="button"
+            onClick={handleBackToAudit}
+            sx={{
+              fontSize: 11,
+              color: tokens.colors.gray500,
+              border: 'none',
+              bgcolor: 'transparent',
+              p: 0,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+              '&:hover': { color: tokens.colors.gray700 },
+            }}
+          >
+            Audit
+          </Box>
+          <Typography sx={{ fontSize: 11, color: tokens.colors.gray300 }}>/</Typography>
+          <Typography
+            sx={{ fontSize: 11, color: tokens.colors.gray900, fontFamily: 'monospace', fontWeight: 500 }}
+          >
+            {mission.numeroMission}
+          </Typography>
+        </Box>
+      }
+      title={`Mission #${mission.numeroMission}`}
+      subtitle={mission.company || undefined}
+      status={
+        mission.isArchived
+          ? { label: 'Archivée', color: tokens.colors.info }
+          : { label: 'Active', color: tokens.colors.success }
+      }
+      actions={
+        !mission.isArchived && canWrite ? (
+          <Button
+            variant="outlined"
+            onClick={handleArchiveMission}
+            sx={{
+              ...actionBtnSx,
+              borderColor: tokens.colors.brandTeal,
+              color: tokens.colors.brandTeal,
+              '&:hover': {
+                borderColor: tokens.colors.brandTeal700,
+                bgcolor: tokens.colors.primaryAlpha10,
+              },
+            }}
+          >
+            Archiver
+          </Button>
+        ) : undefined
+      }
+    >
+      <Box sx={{ px: 3, py: 2.5, pb: 4, width: '100%' }}>
+      <Grid container spacing={2.5} alignItems="stretch">
+        {/* Informations */}
+        <Grid item xs={12} md={9} sx={{ display: 'flex' }}>
+          <Paper elevation={0} sx={{ ...panelSx, mb: 0, flex: 1, width: '100%', display: 'flex', flexDirection: 'column' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2.5, gap: 1, flexWrap: 'wrap' }}>
+              <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+                Informations
+              </Typography>
               <Link
                 component={RouterLink}
                 to={missionId ? `/app/mission/${missionId}` : '#'}
                 sx={{
-                  color: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: tokens.colors.brandTeal,
                   textDecoration: 'none',
-                  '&:hover': { textDecoration: 'underline', color: '#007AFF' }
+                  '&:hover': { textDecoration: 'underline' },
                 }}
               >
-                Mission #{mission?.numeroMission}
+                Ouvrir la fiche mission
               </Link>
-              {mission?.isArchived && (
-                <Chip
-                  label="Archivée"
-                  size="small"
-                  sx={{
-                    backgroundColor: 'rgba(0, 122, 255, 0.1)',
-                    color: '#007AFF',
-                    fontWeight: 500,
-                    borderRadius: '6px'
-                  }}
-                />
-              )}
-            </Typography>
+            </Box>
 
-            <Grid container spacing={4}>
+            <Grid container spacing={3}>
               <Grid item xs={12} md={6}>
                 <Box sx={{ 
                   display: 'flex', 
@@ -1571,18 +1548,18 @@ const AuditMissionDetails: React.FC = () => {
                       width: 40,
                       height: 40,
                       borderRadius: '10px',
-                      backgroundColor: '#f5f5f7',
+                      backgroundColor: tokens.colors.bgSubtle,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: '#1d1d1f'
+                      color: tokens.colors.textPrimary
                     }}>
                       <BusinessIcon />
                     </Box>
                     <Box>
                       <Typography sx={{ 
                         fontSize: '0.875rem', 
-                        color: '#86868b',
+                        color: tokens.colors.textSecondary,
                         mb: 0.5
                       }}>
                         Entreprise
@@ -1590,7 +1567,7 @@ const AuditMissionDetails: React.FC = () => {
                       <Typography sx={{ 
                         fontSize: '1rem',
                         fontWeight: 500,
-                        color: '#1d1d1f'
+                        color: tokens.colors.textPrimary
                       }}>
                         {mission?.company || '-'}
                       </Typography>
@@ -1606,18 +1583,18 @@ const AuditMissionDetails: React.FC = () => {
                       width: 40,
                       height: 40,
                       borderRadius: '10px',
-                      backgroundColor: '#f5f5f7',
+                      backgroundColor: tokens.colors.bgSubtle,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: '#1d1d1f'
+                      color: tokens.colors.textPrimary
                     }}>
                       <LocationOnIcon />
                     </Box>
                     <Box>
                       <Typography sx={{ 
                         fontSize: '0.875rem', 
-                        color: '#86868b',
+                        color: tokens.colors.textSecondary,
                         mb: 0.5
                       }}>
                         Localisation
@@ -1625,7 +1602,7 @@ const AuditMissionDetails: React.FC = () => {
                       <Typography sx={{ 
                         fontSize: '1rem',
                         fontWeight: 500,
-                        color: '#1d1d1f'
+                        color: tokens.colors.textPrimary
                       }}>
                         {mission?.location || '-'}
                       </Typography>
@@ -1641,29 +1618,31 @@ const AuditMissionDetails: React.FC = () => {
                       width: 40,
                       height: 40,
                       borderRadius: '10px',
-                      backgroundColor: '#f5f5f7',
+                      backgroundColor: tokens.colors.bgSubtle,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: '#1d1d1f'
+                      color: tokens.colors.textPrimary
                     }}>
                       <PersonIcon />
                     </Box>
                     <Box>
                       <Typography sx={{ 
                         fontSize: '0.875rem', 
-                        color: '#86868b',
+                        color: tokens.colors.textSecondary,
                         mb: 0.5
                       }}>
                         Auditeur
                       </Typography>
-                      <Typography sx={{ 
-                        fontSize: '1rem',
-                        fontWeight: 500,
-                        color: '#1d1d1f'
-                      }}>
-                        {mission?.auditor && userNames[mission.auditor] ? userNames[mission.auditor] : 'Non assigné'}
-                      </Typography>
+                      <UserReferenceText
+                        userId={mission?.auditor}
+                        fallback="Non assigné"
+                        sx={{
+                          fontSize: '1rem',
+                          fontWeight: 500,
+                          color: tokens.colors.textPrimary,
+                        }}
+                      />
                     </Box>
                   </Box>
                 </Box>
@@ -1684,18 +1663,18 @@ const AuditMissionDetails: React.FC = () => {
                       width: 40,
                       height: 40,
                       borderRadius: '10px',
-                      backgroundColor: '#f5f5f7',
+                      backgroundColor: tokens.colors.bgSubtle,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: '#1d1d1f'
+                      color: tokens.colors.textPrimary
                     }}>
                       <PersonIcon />
                     </Box>
                     <Box>
                       <Typography sx={{ 
                         fontSize: '0.875rem', 
-                        color: '#86868b',
+                        color: tokens.colors.textSecondary,
                         mb: 0.5
                       }}>
                         Chargé de mission
@@ -1703,7 +1682,7 @@ const AuditMissionDetails: React.FC = () => {
                       <Typography sx={{ 
                         fontSize: '1rem',
                         fontWeight: 500,
-                        color: '#1d1d1f'
+                        color: tokens.colors.textPrimary
                       }}>
                         {mission?.missionManager || 'Non assigné'}
                       </Typography>
@@ -1719,18 +1698,18 @@ const AuditMissionDetails: React.FC = () => {
                       width: 40,
                       height: 40,
                       borderRadius: '10px',
-                      backgroundColor: '#f5f5f7',
+                      backgroundColor: tokens.colors.bgSubtle,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: '#1d1d1f'
+                      color: tokens.colors.textPrimary
                     }}>
                       <CalendarIcon />
                     </Box>
                     <Box>
                       <Typography sx={{ 
                         fontSize: '0.875rem', 
-                        color: '#86868b',
+                        color: tokens.colors.textSecondary,
                         mb: 0.5
                       }}>
                         Période
@@ -1738,7 +1717,7 @@ const AuditMissionDetails: React.FC = () => {
                       <Typography sx={{ 
                         fontSize: '1rem',
                         fontWeight: 500,
-                        color: '#1d1d1f'
+                        color: tokens.colors.textPrimary
                       }}>
                         {mission?.startDate ? new Date(mission.startDate).toLocaleDateString() : '-'} - {mission?.endDate ? new Date(mission.endDate).toLocaleDateString() : '-'}
                       </Typography>
@@ -1748,218 +1727,43 @@ const AuditMissionDetails: React.FC = () => {
               </Grid>
             </Grid>
           </Paper>
-
-          {/* Documents générés */}
-          <Paper sx={{ 
-            p: 3,
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-            bgcolor: '#fff'
-          }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Typography variant="h6">Documents</Typography>
-              <Button
-                variant="contained"
-                startIcon={<AddIcon />}
-                onClick={handleAddDocument}
-                disabled={mission?.isArchived || !canWrite}
-                sx={{
-                  opacity: mission?.isArchived ? 0.5 : 1,
-                  '&.Mui-disabled': {
-                    backgroundColor: 'rgba(0, 0, 0, 0.12)',
-                    color: 'rgba(0, 0, 0, 0.26)'
-                  }
-                }}
-              >
-                Ajouter un document
-              </Button>
-            </Box>
-
-            <TableContainer>
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Nom du document</TableCell>
-                    <TableCell>Type</TableCell>
-                    <TableCell>Généré par</TableCell>
-                    <TableCell>Date de création</TableCell>
-                    <TableCell>Statut</TableCell>
-                    <TableCell>Statut d'audit</TableCell>
-                    <TableCell></TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {documentTypes.map((docType) => {
-                    const documents = generatedDocuments.filter(doc => doc.documentType === docType);
-                    if (documents.length === 0) return null;
-
-                    return (
-                      <React.Fragment key={docType}>
-                        <TableRow
-                          sx={{
-                            backgroundColor: '#f5f5f7',
-                          }}
-                        >
-                          <TableCell
-                            colSpan={7}
-                            sx={{
-                              py: 1.5,
-                              px: 2,
-                              fontWeight: 500,
-                              color: '#1d1d1f',
-                            }}
-                          >
-                            {getDocumentTypeLabel(docType)} ({documents.length})
-                          </TableCell>
-                        </TableRow>
-                        {documents.map((doc) => (
-                          <TableRow 
-                            key={doc.id}
-                            onClick={() => window.open(doc.fileUrl, '_blank')}
-                            sx={{
-                              cursor: 'pointer',
-                              '&:hover': {
-                                backgroundColor: 'rgba(0, 0, 0, 0.02)',
-                              },
-                            }}
-                          >
-                            <TableCell>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                <FileText size={20} />
-                                <Typography sx={{ 
-                                  fontSize: '0.875rem',
-                                  color: '#1d1d1f'
-                                }}>
-                                  {doc.fileName}
-                                </Typography>
-                              </Box>
-                            </TableCell>
-                            <TableCell>
-                              <Chip
-                                label={getDocumentTypeLabel(doc.documentType)}
-                                size="small"
-                                sx={{
-                                  backgroundColor: 'rgba(0, 122, 255, 0.1)',
-                                  color: '#007AFF',
-                                  fontWeight: 500,
-                                  borderRadius: '6px'
-                                }}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                <Typography sx={{ fontSize: '0.875rem' }}>
-                                  {userNames[doc.createdBy] || 'N/A'}
-                                </Typography>
-                              </Box>
-                            </TableCell>
-                            <TableCell>
-                              <Typography sx={{ fontSize: '0.875rem' }}>
-                                {doc.createdAt.toLocaleDateString()}
-                              </Typography>
-                            </TableCell>
-                            <TableCell>
-                              <Button
-                                variant="outlined"
-                                size="small"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleToggleSigned(doc);
-                                }}
-                                startIcon={doc.isSigned ? <CheckCircleIcon /> : <RadioButtonUncheckedIcon />}
-                                sx={{
-                                  borderColor: doc.isSigned ? '#34C759' : '#FF9500',
-                                  color: doc.isSigned ? '#34C759' : '#FF9500',
-                                  backgroundColor: doc.isSigned ? 'rgba(52, 199, 89, 0.1)' : 'rgba(255, 149, 0, 0.1)',
-                                  '&:hover': {
-                                    borderColor: doc.isSigned ? '#32B350' : '#FF9500',
-                                    backgroundColor: doc.isSigned ? 'rgba(52, 199, 89, 0.2)' : 'rgba(255, 149, 0, 0.2)',
-                                  },
-                                  textTransform: 'none',
-                                  borderRadius: '8px',
-                                  fontWeight: 500
-                                }}
-                              >
-                                {doc.isSigned ? 'Signé' : 'Non signé'}
-                              </Button>
-                            </TableCell>
-                            <TableCell>
-                              <Button
-                                variant="outlined"
-                                size="small"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleToggleAudit(doc);
-                                }}
-                                startIcon={doc.isAudited ? <CheckCircleIcon /> : <RadioButtonUncheckedIcon />}
-                                sx={{
-                                  borderColor: doc.isAudited ? '#34C759' : '#FF9500',
-                                  color: doc.isAudited ? '#34C759' : '#FF9500',
-                                  backgroundColor: doc.isAudited ? 'rgba(52, 199, 89, 0.1)' : 'rgba(255, 149, 0, 0.1)',
-                                  '&:hover': {
-                                    borderColor: doc.isAudited ? '#32B350' : '#FF9500',
-                                    backgroundColor: doc.isAudited ? 'rgba(52, 199, 89, 0.2)' : 'rgba(255, 149, 0, 0.2)',
-                                  },
-                                  textTransform: 'none',
-                                  borderRadius: '8px',
-                                  fontWeight: 500
-                                }}
-                              >
-                                {doc.isAudited ? 'Audité' : 'Non audité'}
-                              </Button>
-                            </TableCell>
-                            <TableCell align="right">
-                              <IconButton
-                                onClick={(e) => handleMenuOpen(e, doc)}
-                                size="small"
-                                sx={{ 
-                                  color: '#86868b',
-                                  '&:hover': {
-                                    backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                                  }
-                                }}
-                              >
-                                <MoreVertIcon fontSize="small" />
-                              </IconButton>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </React.Fragment>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Paper>
         </Grid>
 
         {/* Colonne des notes (25%) */}
-        <Grid item xs={12} md={3}>
-          <Paper sx={{ 
-            p: 3,
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-            bgcolor: '#fff',
-            position: 'sticky',
-            top: 24
-          }}>
-            <Typography variant="h6" sx={{ 
-              fontWeight: 500,
-              color: '#1d1d1f',
-              mb: 3,
+        <Grid item xs={12} md={3} sx={{ display: 'flex' }}>
+          <Paper
+            elevation={0}
+            sx={{
+              ...panelSx,
+              mb: 0,
+              flex: 1,
+              width: '100%',
               display: 'flex',
-              alignItems: 'center',
-              gap: 1
-            }}>
-              <NoteAddIcon sx={{ fontSize: 20 }} />
-              Notes d'audit
+              flexDirection: 'column',
+              minHeight: 0,
+            }}
+          >
+            <Typography
+              sx={{
+                fontSize: 14,
+                fontWeight: 600,
+                color: tokens.colors.gray900,
+                mb: 2,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+              }}
+            >
+              <NoteAddIcon sx={{ fontSize: 18, color: tokens.colors.gray500 }} />
+              Notes d&apos;audit
             </Typography>
 
             {/* Liste des notes */}
             <Box sx={{ 
-              maxHeight: 'calc(100vh - 400px)',
+              flex: 1,
+              minHeight: 0,
               overflowY: 'auto',
-              mb: 3
+              mb: 2,
             }}>
               {/* Combiner les notes de mission et les notes de documents */}
               {[...missionNotesList, ...documentNotes].length === 0 ? (
@@ -1967,7 +1771,7 @@ const AuditMissionDetails: React.FC = () => {
                   variant="body2" 
                   sx={{ 
                     textAlign: 'center',
-                    color: '#86868b',
+                    color: tokens.colors.textSecondary,
                     py: 4
                   }}
                 >
@@ -1991,8 +1795,8 @@ const AuditMissionDetails: React.FC = () => {
                         <Paper
                           sx={{
                             p: 2,
-                            backgroundColor: note.isClosed ? '#f8f8f8' : '#f5f5f7',
-                            borderRadius: '12px',
+                            backgroundColor: note.isClosed ? '#f8f8f8' : tokens.colors.bgSubtle,
+                            borderRadius: tokens.radius.md,
                             border: '1px solid',
                             borderColor: note.isClosed ? 'rgba(0, 0, 0, 0.08)' : 'divider',
                             position: 'relative',
@@ -2005,7 +1809,7 @@ const AuditMissionDetails: React.FC = () => {
                               left: 0,
                               width: '4px',
                               height: '100%',
-                              backgroundColor: '#34C759',
+                              backgroundColor: tokens.colors.success,
                               borderTopLeftRadius: '12px',
                               borderBottomLeftRadius: '12px'
                             } : {}
@@ -2022,23 +1826,23 @@ const AuditMissionDetails: React.FC = () => {
                                     opacity: note.isClosed ? 0.7 : 1
                                   }}
                                 >
-                                  {(userNames[note.createdBy] || note.createdByName).charAt(0)}
+                                  <NoteAuthorInitials userId={note.createdBy} name={note.createdByName} />
                                 </Avatar>
-                                <Typography 
-                                  component="span" 
-                                  variant="subtitle2" 
-                                  sx={{ 
+                                <UserReferenceText
+                                  userId={note.createdBy}
+                                  name={note.createdByName}
+                                  component="span"
+                                  variant="subtitle2"
+                                  sx={{
                                     fontWeight: 500,
-                                    color: note.isClosed ? '#86868b' : '#1d1d1f'
+                                    color: note.isClosed ? tokens.colors.textSecondary : tokens.colors.textPrimary,
                                   }}
-                                >
-                                  {userNames[note.createdBy] || note.createdByName}
-                                </Typography>
+                                />
                                 <Typography 
                                   component="span" 
                                   variant="caption" 
                                   sx={{ 
-                                    color: note.isClosed ? '#86868b' : '#86868b',
+                                    color: note.isClosed ? tokens.colors.textSecondary : tokens.colors.textSecondary,
                                     opacity: note.isClosed ? 0.7 : 1
                                   }}
                                 >
@@ -2049,7 +1853,7 @@ const AuditMissionDetails: React.FC = () => {
                                 size="small"
                                 onClick={(e) => handleNoteMenuOpen(e, note)}
                                 sx={{ 
-                                  color: '#86868b',
+                                  color: tokens.colors.textSecondary,
                                   '&:hover': {
                                     backgroundColor: 'rgba(0, 0, 0, 0.04)'
                                   }
@@ -2062,7 +1866,7 @@ const AuditMissionDetails: React.FC = () => {
                           <Box 
                             sx={{ 
                               whiteSpace: 'pre-wrap',
-                              color: note.isClosed ? '#86868b' : '#1d1d1f',
+                              color: note.isClosed ? tokens.colors.textSecondary : tokens.colors.textPrimary,
                               opacity: note.isClosed ? 0.8 : 1,
                               fontSize: '0.875rem',
                               lineHeight: 1.5
@@ -2083,13 +1887,19 @@ const AuditMissionDetails: React.FC = () => {
                                     alignItems: 'center', 
                                     gap: 1,
                                     mb: 1,
-                                    color: '#007AFF',
+                                    color: tokens.colors.info,
                                     fontSize: '0.75rem',
                                     fontWeight: 500
                                   }}>
                                     <ReplyIcon sx={{ fontSize: 16 }} />
-                                    <Typography variant="caption">
-                                      Réponse de {userNames[reply.createdBy] || reply.createdByName}
+                                    <Typography variant="caption" component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                      Réponse de{' '}
+                                      <UserReferenceText
+                                        userId={reply.createdBy}
+                                        name={reply.createdByName}
+                                        component="span"
+                                        variant="caption"
+                                      />
                                     </Typography>
                                   </Box>
                                   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -2102,13 +1912,13 @@ const AuditMissionDetails: React.FC = () => {
                                           opacity: reply.isClosed ? 0.7 : 1
                                         }}
                                       >
-                                        {(userNames[reply.createdBy] || reply.createdByName).charAt(0)}
+                                        <NoteAuthorInitials userId={reply.createdBy} name={reply.createdByName} />
                                       </Avatar>
                                       <Typography 
                                         component="span" 
                                         variant="caption" 
                                         sx={{ 
-                                          color: reply.isClosed ? '#86868b' : '#86868b',
+                                          color: reply.isClosed ? tokens.colors.textSecondary : tokens.colors.textSecondary,
                                           opacity: reply.isClosed ? 0.7 : 1
                                         }}
                                       >
@@ -2119,7 +1929,7 @@ const AuditMissionDetails: React.FC = () => {
                                       size="small"
                                       onClick={(e) => handleNoteMenuOpen(e, reply)}
                                       sx={{ 
-                                        color: '#86868b',
+                                        color: tokens.colors.textSecondary,
                                         '&:hover': {
                                           backgroundColor: 'rgba(0, 0, 0, 0.04)'
                                         }
@@ -2131,7 +1941,7 @@ const AuditMissionDetails: React.FC = () => {
                                   <Box 
                                     sx={{ 
                                       whiteSpace: 'pre-wrap',
-                                      color: reply.isClosed ? '#86868b' : '#1d1d1f',
+                                      color: reply.isClosed ? tokens.colors.textSecondary : tokens.colors.textPrimary,
                                       opacity: reply.isClosed ? 0.8 : 1,
                                       fontSize: '0.875rem',
                                       lineHeight: 1.5
@@ -2156,8 +1966,8 @@ const AuditMissionDetails: React.FC = () => {
                       <Paper
                         sx={{
                           p: 2,
-                          backgroundColor: '#f5f5f7', // Même couleur que les notes basiques
-                          borderRadius: '12px',
+                          backgroundColor: tokens.colors.bgSubtle, // Même couleur que les notes basiques
+                          borderRadius: tokens.radius.md,
                           border: '1px solid',
                           borderColor: 'divider',
                           position: 'relative',
@@ -2169,7 +1979,7 @@ const AuditMissionDetails: React.FC = () => {
                             left: 0,
                             width: '3px',
                             height: '100%',
-                            backgroundColor: '#007AFF',
+                            backgroundColor: tokens.colors.info,
                             borderTopLeftRadius: '12px',
                             borderBottomLeftRadius: '12px'
                           }
@@ -2182,11 +1992,11 @@ const AuditMissionDetails: React.FC = () => {
                           alignItems: 'center',
                           gap: 0.5
                         }}>
-                          <DescriptionIcon sx={{ fontSize: 14, color: '#007AFF' }} />
+                          <DescriptionIcon sx={{ fontSize: 14, color: tokens.colors.info }} />
                           <Typography 
                             variant="caption" 
                             sx={{ 
-                              color: '#007AFF',
+                              color: tokens.colors.info,
                               fontSize: '0.75rem',
                               fontWeight: 500
                             }}
@@ -2201,23 +2011,20 @@ const AuditMissionDetails: React.FC = () => {
                               src={note.createdByPhotoURL}
                               sx={{ width: 24, height: 24 }}
                             >
-                              {(userNames[note.createdBy] || note.createdByName).charAt(0)}
+                              <NoteAuthorInitials userId={note.createdBy} name={note.createdByName} />
                             </Avatar>
-                            <Typography 
-                              component="span" 
-                              variant="subtitle2" 
-                              sx={{ 
-                                fontWeight: 500,
-                                color: '#1d1d1f'
-                              }}
-                            >
-                              {userNames[note.createdBy] || note.createdByName}
-                            </Typography>
+                            <UserReferenceText
+                              userId={note.createdBy}
+                              name={note.createdByName}
+                              component="span"
+                              variant="subtitle2"
+                              sx={{ fontWeight: 500, color: tokens.colors.textPrimary }}
+                            />
                             <Typography 
                               component="span" 
                               variant="caption" 
                               sx={{ 
-                                color: '#86868b'
+                                color: tokens.colors.textSecondary
                               }}
                             >
                               {note.createdAt.toLocaleDateString()}
@@ -2227,7 +2034,7 @@ const AuditMissionDetails: React.FC = () => {
                             size="small"
                             onClick={() => handleDeleteNote(note.id)}
                             sx={{ 
-                              color: '#FF3B30',
+                              color: tokens.colors.error,
                               '&:hover': {
                                 backgroundColor: 'rgba(255, 59, 48, 0.04)'
                               }
@@ -2239,7 +2046,7 @@ const AuditMissionDetails: React.FC = () => {
                         <Box 
                           sx={{ 
                             whiteSpace: 'pre-wrap',
-                            color: '#1d1d1f',
+                            color: tokens.colors.textPrimary,
                             fontSize: '0.875rem',
                             lineHeight: 1.5
                           }}
@@ -2253,15 +2060,17 @@ const AuditMissionDetails: React.FC = () => {
               )}
             </Box>
 
+            <Box sx={{ flexShrink: 0 }}>
             <TaggingInput
               value={missionNotes}
               onChange={setMissionNotes}
               placeholder={mission?.isArchived ? "Impossible d'ajouter des notes à une mission archivée" : !canWrite ? "Vous n'avez pas les droits d'écriture pour ajouter une note" : "Ajouter une note générale..."}
               multiline={true}
-              rows={4}
+              rows={3}
               availableUsers={availableUsers}
               onTaggedUsersChange={setTaggedUsers}
             />
+            </Box>
 
             <Button
               fullWidth
@@ -2269,22 +2078,212 @@ const AuditMissionDetails: React.FC = () => {
               onClick={handleSaveMissionNote}
               disabled={!missionNotes.trim() || mission?.isArchived || !canWrite}
               sx={{
-                mt: 2, // Ajouter du padding au-dessus du bouton
-                backgroundColor: '#007AFF',
-                '&:hover': {
-                  backgroundColor: '#0A84FF'
-                },
-                borderRadius: '10px',
-                textTransform: 'none',
-                fontWeight: 500,
-                py: 1.5
+                mt: 2,
+                flexShrink: 0,
+                ...actionBtnSx,
+                bgcolor: tokens.colors.brandTeal,
+                boxShadow: tokens.shadows.button,
+                py: 1.25,
+                '&:hover': { bgcolor: tokens.colors.brandTeal700 },
               }}
             >
               Enregistrer la note
             </Button>
           </Paper>
         </Grid>
+
+        {/* Documents — pleine largeur */}
+        <Grid item xs={12}>
+          {/* Documents générés */}
+          <Paper elevation={0} sx={{ ...panelSx, mb: 0 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 1, flexWrap: 'wrap' }}>
+              <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+                Documents
+              </Typography>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={handleAddDocument}
+                disabled={mission?.isArchived || !canWrite}
+                sx={{
+                  ...actionBtnSx,
+                  bgcolor: tokens.colors.brandTeal,
+                  boxShadow: tokens.shadows.button,
+                  '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+                  '&.Mui-disabled': {
+                    backgroundColor: tokens.colors.gray200,
+                    color: tokens.colors.gray400,
+                    boxShadow: 'none',
+                  },
+                }}
+              >
+                Ajouter un document
+              </Button>
+            </Box>
+
+            <TableContainer sx={{ overflowX: 'auto' }}>
+              <Table sx={{ minWidth: 720 }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: tokens.colors.gray500, bgcolor: tokens.colors.surfaceAlt, borderBottom: `1px solid ${tokens.colors.divider}` }}>Nom du document</TableCell>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: tokens.colors.gray500, bgcolor: tokens.colors.surfaceAlt, borderBottom: `1px solid ${tokens.colors.divider}` }}>Type</TableCell>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: tokens.colors.gray500, bgcolor: tokens.colors.surfaceAlt, borderBottom: `1px solid ${tokens.colors.divider}` }}>Généré par</TableCell>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: tokens.colors.gray500, bgcolor: tokens.colors.surfaceAlt, borderBottom: `1px solid ${tokens.colors.divider}` }}>Date de création</TableCell>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: tokens.colors.gray500, bgcolor: tokens.colors.surfaceAlt, borderBottom: `1px solid ${tokens.colors.divider}` }}>Statut</TableCell>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: tokens.colors.gray500, bgcolor: tokens.colors.surfaceAlt, borderBottom: `1px solid ${tokens.colors.divider}` }}>Statut d&apos;audit</TableCell>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: tokens.colors.gray500, bgcolor: tokens.colors.surfaceAlt, borderBottom: `1px solid ${tokens.colors.divider}` }} />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {documentTypes.map((docType) => {
+                    const documents = generatedDocuments.filter(doc => doc.documentType === docType);
+                    if (documents.length === 0) return null;
+
+                    return (
+                      <React.Fragment key={docType}>
+                        <TableRow
+                          sx={{
+                            backgroundColor: tokens.colors.bgSubtle,
+                          }}
+                        >
+                          <TableCell
+                            colSpan={7}
+                            sx={{
+                              py: 1.5,
+                              px: 2,
+                              fontWeight: 500,
+                              color: tokens.colors.textPrimary,
+                            }}
+                          >
+                            {getDocumentTypeLabel(docType)} ({documents.length})
+                          </TableCell>
+                        </TableRow>
+                        {documents.map((doc) => (
+                          <TableRow 
+                            key={doc.id}
+                            onClick={() => window.open(doc.fileUrl, '_blank')}
+                            sx={{
+                              cursor: 'pointer',
+                              '&:hover': {
+                                backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                              },
+                            }}
+                          >
+                            <TableCell>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <FileText size={20} />
+                                <Typography sx={{ 
+                                  fontSize: '0.875rem',
+                                  color: tokens.colors.textPrimary
+                                }}>
+                                  {doc.fileName}
+                                </Typography>
+                              </Box>
+                            </TableCell>
+                            <TableCell>
+                              <Chip
+                                label={getDocumentTypeLabel(doc.documentType)}
+                                size="small"
+                                sx={{
+                                  backgroundColor: 'rgba(0, 122, 255, 0.1)',
+                                  color: tokens.colors.info,
+                                  fontWeight: 500,
+                                  borderRadius: '6px'
+                                }}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Typography sx={{ fontSize: '0.875rem' }}>
+                                <UserReferenceText
+                                  userId={doc.createdBy}
+                                  fallback="N/A"
+                                  sx={{ fontSize: '0.875rem' }}
+                                />
+                                </Typography>
+                              </Box>
+                            </TableCell>
+                            <TableCell>
+                              <Typography sx={{ fontSize: '0.875rem' }}>
+                                {doc.createdAt.toLocaleDateString()}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant="outlined"
+                                size="small"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleSigned(doc);
+                                }}
+                                startIcon={doc.isSigned ? <CheckCircleIcon /> : <RadioButtonUncheckedIcon />}
+                                sx={{
+                                  borderColor: doc.isSigned ? tokens.colors.success : tokens.colors.warning,
+                                  color: doc.isSigned ? tokens.colors.success : tokens.colors.warning,
+                                  backgroundColor: doc.isSigned ? 'rgba(52, 199, 89, 0.1)' : 'rgba(255, 149, 0, 0.1)',
+                                  '&:hover': {
+                                    borderColor: doc.isSigned ? '#32B350' : tokens.colors.warning,
+                                    backgroundColor: doc.isSigned ? 'rgba(52, 199, 89, 0.2)' : 'rgba(255, 149, 0, 0.2)',
+                                  },
+                                  textTransform: 'none',
+                                  borderRadius: tokens.radius.sm,
+                                  fontWeight: 500
+                                }}
+                              >
+                                {doc.isSigned ? 'Signé' : 'Non signé'}
+                              </Button>
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant="outlined"
+                                size="small"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleAudit(doc);
+                                }}
+                                startIcon={doc.isAudited ? <CheckCircleIcon /> : <RadioButtonUncheckedIcon />}
+                                sx={{
+                                  borderColor: doc.isAudited ? tokens.colors.success : tokens.colors.warning,
+                                  color: doc.isAudited ? tokens.colors.success : tokens.colors.warning,
+                                  backgroundColor: doc.isAudited ? 'rgba(52, 199, 89, 0.1)' : 'rgba(255, 149, 0, 0.1)',
+                                  '&:hover': {
+                                    borderColor: doc.isAudited ? '#32B350' : tokens.colors.warning,
+                                    backgroundColor: doc.isAudited ? 'rgba(52, 199, 89, 0.2)' : 'rgba(255, 149, 0, 0.2)',
+                                  },
+                                  textTransform: 'none',
+                                  borderRadius: tokens.radius.sm,
+                                  fontWeight: 500
+                                }}
+                              >
+                                {doc.isAudited ? 'Audité' : 'Non audité'}
+                              </Button>
+                            </TableCell>
+                            <TableCell align="right">
+                              <IconButton
+                                onClick={(e) => handleMenuOpen(e, doc)}
+                                size="small"
+                                sx={{ 
+                                  color: tokens.colors.textSecondary,
+                                  '&:hover': {
+                                    backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                                  }
+                                }}
+                              >
+                                <MoreVertIcon fontSize="small" />
+                              </IconButton>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Paper>
+        </Grid>
       </Grid>
+      </Box>
 
       {/* Menu pour les actions sur les documents */}
       <Menu
@@ -2295,21 +2294,21 @@ const AuditMissionDetails: React.FC = () => {
         PaperProps={{
           sx: {
             mt: 1,
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-            borderRadius: '12px',
+            boxShadow: tokens.shadows.md,
+            borderRadius: tokens.radius.md,
             minWidth: 180
           }
         }}
       >
         <MenuItem onClick={handleNoteClick} sx={{ py: 1.5 }} disabled={mission?.isArchived || !canWrite}>
           <ListItemIcon>
-            <NoteAddIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? '#86868b' : '#007AFF' }} />
+            <NoteAddIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? tokens.colors.textSecondary : tokens.colors.info }} />
           </ListItemIcon>
           <ListItemText>Ajouter une note</ListItemText>
         </MenuItem>
         <MenuItem onClick={handleRenameClick} sx={{ py: 1.5 }} disabled={mission?.isArchived || !canWrite}>
           <ListItemIcon>
-            <EditIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? '#86868b' : '#007AFF' }} />
+            <EditIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? tokens.colors.textSecondary : tokens.colors.info }} />
           </ListItemIcon>
           <ListItemText>Renommer</ListItemText>
         </MenuItem>
@@ -2319,16 +2318,16 @@ const AuditMissionDetails: React.FC = () => {
           disabled={selectedDocument?.isSigned || mission?.isArchived || !canWrite}
         >
           <ListItemIcon>
-            <CheckCircleOutlineIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? '#86868b' : '#34C759' }} />
+            <CheckCircleOutlineIcon fontSize="small" sx={{ color: mission?.isArchived || !canWrite ? tokens.colors.textSecondary : tokens.colors.success }} />
           </ListItemIcon>
           <ListItemText>
             {selectedDocument?.isSigned ? 'Document signé' : 'Marquer comme signé'}
           </ListItemText>
         </MenuItem>
         <Divider />
-        <MenuItem onClick={handleDeleteClick} sx={{ py: 1.5, color: '#FF3B30' }} disabled={mission?.isArchived || !canWrite}>
+        <MenuItem onClick={handleDeleteClick} sx={{ py: 1.5, color: tokens.colors.error }} disabled={mission?.isArchived || !canWrite}>
           <ListItemIcon>
-            <DeleteIcon fontSize="small" sx={{ color: mission?.isArchived ? '#86868b' : '#FF3B30' }} />
+            <DeleteIcon fontSize="small" sx={{ color: mission?.isArchived ? tokens.colors.textSecondary : tokens.colors.error }} />
           </ListItemIcon>
           <ListItemText>Supprimer</ListItemText>
         </MenuItem>
@@ -2342,15 +2341,15 @@ const AuditMissionDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.md,
           }
         }}
       >
         <DialogTitle sx={{ 
           pb: 1,
           fontWeight: 500,
-          color: '#1d1d1f'
+          color: tokens.colors.textPrimary
         }}>
           Renommer le document
         </DialogTitle>
@@ -2364,16 +2363,16 @@ const AuditMissionDetails: React.FC = () => {
             variant="outlined"
             sx={{
               '& .MuiOutlinedInput-root': {
-                borderRadius: '12px',
-                backgroundColor: '#f5f5f7',
+                borderRadius: tokens.radius.md,
+                backgroundColor: tokens.colors.bgSubtle,
                 '& fieldset': {
                   borderColor: 'transparent'
                 },
                 '&:hover fieldset': {
-                  borderColor: '#d2d2d7'
+                  borderColor: ''
                 },
                 '&.Mui-focused fieldset': {
-                  borderColor: '#007AFF'
+                  borderColor: tokens.colors.info
                 }
               }
             }}
@@ -2383,7 +2382,7 @@ const AuditMissionDetails: React.FC = () => {
           <Button 
             onClick={() => setRenameDialogOpen(false)}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               '&:hover': {
                 backgroundColor: 'rgba(0, 0, 0, 0.04)'
               }
@@ -2395,7 +2394,7 @@ const AuditMissionDetails: React.FC = () => {
             onClick={handleRenameDocument}
             variant="contained"
             sx={{
-              backgroundColor: '#007AFF',
+              backgroundColor: tokens.colors.info,
               '&:hover': {
                 backgroundColor: '#0A84FF'
               },
@@ -2417,15 +2416,15 @@ const AuditMissionDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.md,
           }
         }}
       >
         <DialogTitle sx={{ 
           pb: 1,
           fontWeight: 500,
-          color: '#1d1d1f'
+          color: tokens.colors.textPrimary
         }}>
           Ajouter une note au document
         </DialogTitle>
@@ -2433,7 +2432,7 @@ const AuditMissionDetails: React.FC = () => {
           {/* Liste des notes existantes */}
           {documentNotes.filter(note => note.documentId === selectedDocument?.id).length > 0 && (
             <Box sx={{ mb: 3 }}>
-              <Typography variant="subtitle2" sx={{ mb: 2, color: '#1d1d1f' }}>
+              <Typography variant="subtitle2" sx={{ mb: 2, color: tokens.colors.textPrimary }}>
                 Notes existantes
               </Typography>
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -2444,8 +2443,8 @@ const AuditMissionDetails: React.FC = () => {
                       key={note.id}
                       sx={{
                         p: 2,
-                        backgroundColor: '#f5f5f7',
-                        borderRadius: '12px',
+                        backgroundColor: tokens.colors.bgSubtle,
+                        borderRadius: tokens.radius.md,
                         border: '1px solid',
                         borderColor: 'divider'
                       }}
@@ -2456,12 +2455,16 @@ const AuditMissionDetails: React.FC = () => {
                             src={note.createdByPhotoURL}
                             sx={{ width: 24, height: 24 }}
                           >
-                            {(userNames[note.createdBy] || note.createdByName).charAt(0)}
+                            <NoteAuthorInitials userId={note.createdBy} name={note.createdByName} />
                           </Avatar>
-                          <Typography component="span" variant="subtitle2" sx={{ fontWeight: 500 }}>
-                            {userNames[note.createdBy] || note.createdByName}
-                          </Typography>
-                          <Typography component="span" variant="caption" sx={{ color: '#86868b' }}>
+                          <UserReferenceText
+                            userId={note.createdBy}
+                            name={note.createdByName}
+                            component="span"
+                            variant="subtitle2"
+                            sx={{ fontWeight: 500 }}
+                          />
+                          <Typography component="span" variant="caption" sx={{ color: tokens.colors.textSecondary }}>
                             {note.createdAt.toLocaleDateString()}
                           </Typography>
                         </Box>
@@ -2469,7 +2472,7 @@ const AuditMissionDetails: React.FC = () => {
                           size="small"
                           onClick={() => handleDeleteNote(note.id)}
                           sx={{ 
-                            color: '#FF3B30',
+                            color: tokens.colors.error,
                             '&:hover': {
                               backgroundColor: 'rgba(255, 59, 48, 0.04)'
                             }
@@ -2502,7 +2505,7 @@ const AuditMissionDetails: React.FC = () => {
           <Button 
             onClick={() => setNoteDialogOpen(false)}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               '&:hover': {
                 backgroundColor: 'rgba(0, 0, 0, 0.04)'
               }
@@ -2515,7 +2518,7 @@ const AuditMissionDetails: React.FC = () => {
             variant="contained"
             disabled={!documentNote.trim()}
             sx={{
-              backgroundColor: '#007AFF',
+              backgroundColor: tokens.colors.info,
               '&:hover': {
                 backgroundColor: '#0A84FF'
               },
@@ -2537,20 +2540,20 @@ const AuditMissionDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.md,
           }
         }}
       >
         <DialogTitle sx={{ 
           pb: 1,
           fontWeight: 500,
-          color: '#1d1d1f',
+          color: tokens.colors.textPrimary,
           display: 'flex',
           alignItems: 'center',
           gap: 1
         }}>
-          <DescriptionIcon sx={{ fontSize: 20, color: '#007AFF' }} />
+          <DescriptionIcon sx={{ fontSize: 20, color: tokens.colors.info }} />
           Ajouter un document
         </DialogTitle>
         <DialogContent>
@@ -2562,16 +2565,16 @@ const AuditMissionDetails: React.FC = () => {
                 onChange={handleDocumentTypeChange}
                 label="Type de document"
                 sx={{
-                  borderRadius: '12px',
-                  backgroundColor: '#f5f5f7',
+                  borderRadius: tokens.radius.md,
+                  backgroundColor: tokens.colors.bgSubtle,
                   '& .MuiOutlinedInput-notchedOutline': {
                     borderColor: 'transparent'
                   },
                   '&:hover .MuiOutlinedInput-notchedOutline': {
-                    borderColor: '#d2d2d7'
+                    borderColor: ''
                   },
                   '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                    borderColor: '#007AFF'
+                    borderColor: tokens.colors.info
                   }
                 }}
               >
@@ -2588,9 +2591,9 @@ const AuditMissionDetails: React.FC = () => {
               mb: 3,
               p: 3,
               border: '2px dashed',
-              borderColor: '#d2d2d7',
-              borderRadius: '12px',
-              backgroundColor: '#f5f5f7',
+              borderColor: '',
+              borderRadius: tokens.radius.md,
+              backgroundColor: tokens.colors.bgSubtle,
               textAlign: 'center'
             }}>
               <input
@@ -2606,8 +2609,8 @@ const AuditMissionDetails: React.FC = () => {
                   component="span"
                   startIcon={<UploadIcon />}
                   sx={{
-                    borderColor: '#007AFF',
-                    color: '#007AFF',
+                    borderColor: tokens.colors.info,
+                    color: tokens.colors.info,
                     '&:hover': {
                       borderColor: '#0A84FF',
                       backgroundColor: 'rgba(0, 122, 255, 0.04)'
@@ -2623,12 +2626,12 @@ const AuditMissionDetails: React.FC = () => {
               {documentFile ? (
                 <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
                   <FileText size={20} color="#1d1d1f" />
-                  <Typography variant="body2" sx={{ color: '#1d1d1f' }}>
+                  <Typography variant="body2" sx={{ color: tokens.colors.textPrimary }}>
                     {documentFile.name}
                   </Typography>
                 </Box>
               ) : (
-                <Typography variant="body2" sx={{ mt: 2, color: '#86868b' }}>
+                <Typography variant="body2" sx={{ mt: 2, color: tokens.colors.textSecondary }}>
                   Glissez-déposez un fichier ou cliquez pour sélectionner
                 </Typography>
               )}
@@ -2640,15 +2643,15 @@ const AuditMissionDetails: React.FC = () => {
                   checked={isDocumentSigned}
                   onChange={(e) => setIsDocumentSigned(e.target.checked)}
                   sx={{
-                    color: '#007AFF',
+                    color: tokens.colors.info,
                     '&.Mui-checked': {
-                      color: '#007AFF',
+                      color: tokens.colors.info,
                     },
                   }}
                 />
               }
               label={
-                <Typography sx={{ color: '#1d1d1f' }}>
+                <Typography sx={{ color: tokens.colors.textPrimary }}>
                   Document signé
                 </Typography>
               }
@@ -2664,7 +2667,7 @@ const AuditMissionDetails: React.FC = () => {
           <Button 
             onClick={handleCloseAddDocument}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               '&:hover': {
                 backgroundColor: 'rgba(0, 0, 0, 0.04)'
               }
@@ -2677,7 +2680,7 @@ const AuditMissionDetails: React.FC = () => {
             variant="contained"
             disabled={!documentFile || !selectedDocumentType}
             sx={{
-              backgroundColor: '#007AFF',
+              backgroundColor: tokens.colors.info,
               '&:hover': {
                 backgroundColor: '#0A84FF'
               },
@@ -2703,8 +2706,8 @@ const AuditMissionDetails: React.FC = () => {
         PaperProps={{
           sx: {
             mt: 1,
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-            borderRadius: '12px',
+            boxShadow: tokens.shadows.md,
+            borderRadius: tokens.radius.md,
             minWidth: 180
           }
         }}
@@ -2713,7 +2716,7 @@ const AuditMissionDetails: React.FC = () => {
           !selectedNote.isReply && !mission?.isArchived && canWrite && (
             <MenuItem key="reopen" onClick={handleReopenNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
-                <CheckCircleOutlineIcon fontSize="small" sx={{ color: '#34C759' }} />
+                <CheckCircleOutlineIcon fontSize="small" sx={{ color: tokens.colors.success }} />
               </ListItemIcon>
               <ListItemText>Réouvrir la note</ListItemText>
             </MenuItem>
@@ -2722,7 +2725,7 @@ const AuditMissionDetails: React.FC = () => {
           selectedNote?.createdBy === currentUser?.uid && !selectedNote.isReply && !mission?.isArchived && canWrite && (
             <MenuItem key="edit" onClick={handleEditNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
-                <EditIcon fontSize="small" sx={{ color: '#007AFF' }} />
+                <EditIcon fontSize="small" sx={{ color: tokens.colors.info }} />
               </ListItemIcon>
               <ListItemText>Modifier</ListItemText>
             </MenuItem>
@@ -2730,7 +2733,7 @@ const AuditMissionDetails: React.FC = () => {
           !mission?.isArchived && canWrite && (
             <MenuItem key="reply" onClick={handleReplyNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
-                <ReplyIcon fontSize="small" sx={{ color: '#007AFF' }} />
+                <ReplyIcon fontSize="small" sx={{ color: tokens.colors.info }} />
               </ListItemIcon>
               <ListItemText>Répondre</ListItemText>
             </MenuItem>
@@ -2738,7 +2741,7 @@ const AuditMissionDetails: React.FC = () => {
           !selectedNote?.isReply && !mission?.isArchived && canWrite && (
             <MenuItem key="close" onClick={handleCloseNote} sx={{ py: 1.5 }}>
               <ListItemIcon>
-                <CloseIcon fontSize="small" sx={{ color: '#007AFF' }} />
+                <CloseIcon fontSize="small" sx={{ color: tokens.colors.info }} />
               </ListItemIcon>
               <ListItemText>Clôturer</ListItemText>
             </MenuItem>
@@ -2748,10 +2751,10 @@ const AuditMissionDetails: React.FC = () => {
             <MenuItem 
               key="delete"
               onClick={() => selectedNote && handleDeleteNote(selectedNote.id)} 
-              sx={{ py: 1.5, color: '#FF3B30' }}
+              sx={{ py: 1.5, color: tokens.colors.error }}
             >
               <ListItemIcon>
-                <DeleteIcon fontSize="small" sx={{ color: '#FF3B30' }} />
+                <DeleteIcon fontSize="small" sx={{ color: tokens.colors.error }} />
               </ListItemIcon>
               <ListItemText>Supprimer</ListItemText>
             </MenuItem>
@@ -2767,15 +2770,15 @@ const AuditMissionDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.md,
           }
         }}
       >
         <DialogTitle sx={{ 
           pb: 1,
           fontWeight: 500,
-          color: '#1d1d1f'
+          color: tokens.colors.textPrimary
         }}>
           Modifier la note
         </DialogTitle>
@@ -2794,7 +2797,7 @@ const AuditMissionDetails: React.FC = () => {
           <Button 
             onClick={() => setEditNoteDialogOpen(false)}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               '&:hover': {
                 backgroundColor: 'rgba(0, 0, 0, 0.04)'
               }
@@ -2807,7 +2810,7 @@ const AuditMissionDetails: React.FC = () => {
             variant="contained"
             disabled={!editedNoteContent.trim()}
             sx={{
-              backgroundColor: '#007AFF',
+              backgroundColor: tokens.colors.info,
               '&:hover': {
                 backgroundColor: '#0A84FF'
               },
@@ -2833,22 +2836,22 @@ const AuditMissionDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.md,
           }
         }}
       >
         <DialogTitle sx={{ 
           pb: 1,
           fontWeight: 500,
-          color: '#1d1d1f'
+          color: tokens.colors.textPrimary
         }}>
           Répondre à la note
         </DialogTitle>
         <DialogContent sx={{ pt: 2 }}>
           {replyingToNote && (
-            <Box sx={{ mb: 2, p: 2, bgcolor: '#f5f5f7', borderRadius: '8px' }}>
-              <Typography variant="body2" sx={{ color: '#86868b', mb: 1 }}>
+            <Box sx={{ mb: 2, p: 2, bgcolor: tokens.colors.bgSubtle, borderRadius: tokens.radius.sm }}>
+              <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, mb: 1 }}>
                 Répondre à :
               </Typography>
               <Typography variant="body1">
@@ -2874,7 +2877,7 @@ const AuditMissionDetails: React.FC = () => {
               setReplyContent('');
             }}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               '&:hover': {
                 backgroundColor: 'rgba(0, 0, 0, 0.04)'
               }
@@ -2887,7 +2890,7 @@ const AuditMissionDetails: React.FC = () => {
             variant="contained"
             disabled={!replyContent.trim()}
             sx={{
-              backgroundColor: '#007AFF',
+              backgroundColor: tokens.colors.info,
               '&:hover': {
                 backgroundColor: '#0A84FF'
               },
@@ -2912,15 +2915,15 @@ const AuditMissionDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.md,
           }
         }}
       >
         <DialogTitle sx={{ 
           pb: 1,
           fontWeight: 500,
-          color: '#1d1d1f'
+          color: tokens.colors.textPrimary
         }}>
           Confirmer l'audit
         </DialogTitle>
@@ -2936,7 +2939,7 @@ const AuditMissionDetails: React.FC = () => {
               setDocumentToAudit(null);
             }}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               '&:hover': {
                 backgroundColor: 'rgba(0, 0, 0, 0.04)'
               }
@@ -2948,7 +2951,7 @@ const AuditMissionDetails: React.FC = () => {
             onClick={handleConfirmAudit}
             variant="contained"
             sx={{
-              backgroundColor: '#007AFF',
+              backgroundColor: tokens.colors.info,
               '&:hover': {
                 backgroundColor: '#0A84FF'
               },
@@ -2970,15 +2973,15 @@ const AuditMissionDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.md,
           }
         }}
       >
         <DialogTitle sx={{ 
           pb: 1,
           fontWeight: 500,
-          color: '#1d1d1f'
+          color: tokens.colors.textPrimary
         }}>
           Confirmer l'archivage
         </DialogTitle>
@@ -2991,7 +2994,7 @@ const AuditMissionDetails: React.FC = () => {
           <Button 
             onClick={() => setConfirmArchiveDialogOpen(false)}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               '&:hover': {
                 backgroundColor: 'rgba(0, 0, 0, 0.04)'
               }
@@ -3003,7 +3006,7 @@ const AuditMissionDetails: React.FC = () => {
             onClick={handleConfirmArchive}
             variant="contained"
             sx={{
-              backgroundColor: '#007AFF',
+              backgroundColor: tokens.colors.info,
               '&:hover': {
                 backgroundColor: '#0A84FF'
               },
@@ -3016,7 +3019,7 @@ const AuditMissionDetails: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
+    </AppPageShell>
   );
 };
 

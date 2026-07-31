@@ -14,33 +14,37 @@ import {
 } from './encryption';
 import { verifyTwoFactorCodeForAccess } from './twoFactor';
 import { logEncryptedDataAccess } from './accessLogging';
+import { assertUserCanAccessStoragePath } from './storageAccess';
+import { setRestrictedCorsHeaders } from './corsUtils';
+import { userHasRHReadAccess } from './authHelpers';
 
 const functionConfig = {
-  memory: '512MiB' as const, // Plus de mémoire pour les fichiers
-  timeoutSeconds: 540, // 9 minutes max pour les gros fichiers
+  memory: '256MiB' as const,
+  timeoutSeconds: 540,
   region: 'us-central1',
   minInstances: 0,
-  maxInstances: 1, // Réduit au minimum pour respecter le quota CPU
-  concurrency: 3, // Réduit au minimum pour les fichiers
+  maxInstances: 8,
+  concurrency: 20,
   allowUnauthenticated: false,
+  cors: true,
   secrets: ['ENCRYPTION_KEY'],
 };
 
 const storage = getStorage();
 
-/**
- * Helper pour définir les en-têtes CORS
- */
-function setCorsHeaders(res: any) {
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.set('Access-Control-Max-Age', '3600');
+function applyCors(res: any, req: { headers: { origin?: string } }): boolean {
+  return setRestrictedCorsHeaders(res, req.headers.origin);
 }
 
 /** Extrait missionId du chemin Storage missions/{missionId}/documents/... */
 function extractMissionIdFromPath(filePath: string): string | null {
   const m = /^missions\/([^/]+)\/documents\//.exec(filePath);
+  return m ? m[1] : null;
+}
+
+/** Extrait l'userId propriétaire pour cvs/, documents/, profilePictures/. */
+function extractPersonalFileOwnerId(filePath: string): string | null {
+  const m = /^(?:cvs|documents|profilePictures)\/([^/]+)/.exec(filePath);
   return m ? m[1] : null;
 }
 
@@ -69,10 +73,11 @@ async function userHasMissionAccess(uid: string, missionId: string): Promise<boo
  * Endpoint HTTP: POST /encrypt-file
  */
 export const encryptFile = onRequest(functionConfig, async (req, res) => {
-  // Gérer CORS pour les requêtes preflight (OPTIONS)
-  setCorsHeaders(res);
+  if (!applyCors(res, req)) {
+    res.status(403).send('Origin not allowed');
+    return;
+  }
 
-  // Répondre immédiatement aux requêtes OPTIONS (preflight)
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
     return;
@@ -81,7 +86,7 @@ export const encryptFile = onRequest(functionConfig, async (req, res) => {
   // Vérifier l'authentification pour les autres méthodes
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    setCorsHeaders(res);
+    applyCors(res, req);
     res.status(401).json({ error: 'Non autorisé' });
     return;
   }
@@ -91,7 +96,7 @@ export const encryptFile = onRequest(functionConfig, async (req, res) => {
     const decodedToken = await admin.auth().verifyIdToken(token);
     
     if (!decodedToken.uid) {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(401).json({ error: 'Token invalide' });
       return;
     }
@@ -99,8 +104,16 @@ export const encryptFile = onRequest(functionConfig, async (req, res) => {
     const { filePath } = req.body;
 
     if (!filePath) {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(400).json({ error: 'filePath requis' });
+      return;
+    }
+
+    try {
+      await assertUserCanAccessStoragePath(decodedToken.uid, filePath);
+    } catch {
+      applyCors(res, req);
+      res.status(403).json({ error: 'Accès refusé à ce fichier' });
       return;
     }
 
@@ -111,7 +124,7 @@ export const encryptFile = onRequest(functionConfig, async (req, res) => {
     // Vérifier que le fichier existe
     const [exists] = await file.exists();
     if (!exists) {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(404).json({ error: 'Fichier non trouvé' });
       return;
     }
@@ -216,7 +229,7 @@ export const encryptFile = onRequest(functionConfig, async (req, res) => {
   } catch (error: any) {
     console.error('Erreur lors du chiffrement du fichier:', error);
     // S'assurer que les en-têtes CORS sont présents même en cas d'erreur
-    setCorsHeaders(res);
+    applyCors(res, req);
     res.status(500).json({ error: error.message || 'Erreur lors du chiffrement du fichier' });
   }
 });
@@ -227,7 +240,10 @@ export const encryptFile = onRequest(functionConfig, async (req, res) => {
  * - POST ?filePath=... + body { twoFactorCode } : 2FA requise (fichier chiffré, non propriétaire, hors missions).
  */
 export const decryptFile = onRequest(functionConfig, async (req, res) => {
-  setCorsHeaders(res);
+  if (!applyCors(res, req)) {
+    res.status(403).send('Origin not allowed');
+    return;
+  }
 
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
@@ -236,7 +252,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
 
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    setCorsHeaders(res);
+    applyCors(res, req);
     res.status(401).json({ error: 'Non autorisé' });
     return;
   }
@@ -245,14 +261,14 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     const token = authHeader.split('Bearer ')[1];
     const decodedToken = await admin.auth().verifyIdToken(token);
     if (!decodedToken.uid) {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(401).json({ error: 'Token invalide' });
       return;
     }
 
     const filePath = (req.query?.filePath as string) || (req as any).query?.filePath;
     if (!filePath || typeof filePath !== 'string') {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(400).json({ error: 'filePath requis' });
       return;
     }
@@ -269,6 +285,14 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
 
     const requestingUserId = decodedToken.uid;
 
+    try {
+      await assertUserCanAccessStoragePath(requestingUserId, filePath);
+    } catch {
+      applyCors(res, req);
+      res.status(403).json({ error: 'Accès refusé à ce fichier' });
+      return;
+    }
+
     // Récupérer le fichier depuis Storage
     const bucket = storage.bucket();
     const file = bucket.file(filePath);
@@ -276,7 +300,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     // Vérifier que le fichier existe
     const [exists] = await file.exists();
     if (!exists) {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(404).json({ error: 'Fichier non trouvé' });
       return;
     }
@@ -306,7 +330,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     if (isPDFHeader && metadata.contentType === 'application/pdf') {
       // Le fichier a un header PDF valide, le retourner tel quel (pas besoin de 2FA)
       console.log('[decryptFile] Fichier PDF détecté avec header valide, retour sans déchiffrement');
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
       res.send(fileBuffer);
@@ -322,7 +346,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     if (!isLikelyEncrypted) {
       // Le fichier n'est pas chiffré, le retourner tel quel (pas besoin de 2FA)
       console.log('[decryptFile] Fichier non chiffré détecté, retour direct');
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
       res.send(fileBuffer);
@@ -350,7 +374,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
             const iv = Buffer.from(retryEncryptionMetadata.iv, 'hex');
             const tag = Buffer.from(retryEncryptionMetadata.tag, 'hex');
             const decrypted = await decryptBuffer(fileBuffer, iv, tag);
-            setCorsHeaders(res);
+            applyCors(res, req);
             res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
             res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
             res.send(decrypted);
@@ -377,7 +401,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       if (finalIsPDFHeader && metadata.contentType === 'application/pdf') {
         // Le fichier a un header PDF valide, il n'est probablement pas chiffré
         console.log('[decryptFile] Métadonnées manquantes mais header PDF valide détecté, retour du fichier tel quel');
-        setCorsHeaders(res);
+        applyCors(res, req);
         res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
         res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
         res.send(fileBuffer);
@@ -386,7 +410,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       
       // Si vraiment aucune métadonnée et pas de header PDF valide, retourner une erreur
       console.error('[decryptFile] Fichier semble chiffré mais métadonnées non disponibles après retries');
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(400).json({ 
         error: 'Le fichier semble chiffré mais les métadonnées de chiffrement ne sont pas encore disponibles. Veuillez réessayer dans quelques instants.' 
       });
@@ -396,6 +420,11 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     const isOwner = filePath.includes(`/${requestingUserId}/`) || filePath.startsWith(`${requestingUserId}/`);
     const missionId = extractMissionIdFromPath(filePath);
     const isMissionExempt = missionId != null && (await userHasMissionAccess(requestingUserId, missionId));
+    const personalOwnerId = extractPersonalFileOwnerId(filePath);
+    const isRHExempt =
+      personalOwnerId != null &&
+      personalOwnerId !== requestingUserId &&
+      (await userHasRHReadAccess(requestingUserId, personalOwnerId));
 
     if (isOwner) {
       console.log('[decryptFile] Utilisateur propriétaire du fichier, déchiffrement sans 2FA');
@@ -408,7 +437,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       } catch (logError) {
         console.error('Erreur lors du logging:', logError);
       }
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
       res.send(decrypted);
@@ -426,7 +455,25 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       } catch (logError) {
         console.error('Erreur lors du logging:', logError);
       }
-      setCorsHeaders(res);
+      applyCors(res, req);
+      res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
+      res.send(decrypted);
+      return;
+    }
+
+    if (isRHExempt) {
+      console.log('[decryptFile] Accès RH, exemption 2FA (permission lecture RH)');
+      const [encryptedBuffer] = await file.download();
+      const iv = Buffer.from(encryptionMetadata.iv, 'hex');
+      const tag = Buffer.from(encryptionMetadata.tag, 'hex');
+      const decrypted = await decryptBuffer(encryptedBuffer, iv, tag);
+      try {
+        await logEncryptedDataAccess(requestingUserId, 'decrypt_file', filePath, true, { ip: req.ip, userAgent: req.headers['user-agent'] });
+      } catch (logError) {
+        console.error('Erreur lors du logging:', logError);
+      }
+      applyCors(res, req);
       res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
       res.send(decrypted);
@@ -437,13 +484,13 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     const requestingUser = requestingUserDoc.data();
 
     if (!requestingUser?.twoFactorEnabled) {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(403).json({ error: 'Vous devez activer l\'authentification à deux facteurs (2FA) pour accéder aux données cryptées' });
       return;
     }
 
     if (!twoFactorCode || typeof twoFactorCode !== 'string' || twoFactorCode.length !== 6) {
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(403).json({ error: 'Validation 2FA requise pour accéder aux données cryptées. Veuillez fournir un code 2FA valide.' });
       return;
     }
@@ -455,7 +502,7 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
       } catch {
         /* ignore */
       }
-      setCorsHeaders(res);
+      applyCors(res, req);
       res.status(403).json({ error: 'Code 2FA invalide. Veuillez réessayer.' });
       return;
     }
@@ -469,13 +516,13 @@ export const decryptFile = onRequest(functionConfig, async (req, res) => {
     } catch (logError) {
       console.error('Erreur lors du logging:', logError);
     }
-    setCorsHeaders(res);
+    applyCors(res, req);
     res.setHeader('Content-Type', metadata.contentType || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${filePath.split('/').pop()}"`);
     res.send(decrypted);
   } catch (error: any) {
     console.error('Erreur lors du déchiffrement du fichier:', error);
-    setCorsHeaders(res);
+    applyCors(res, req);
     res.status(500).json({ error: error.message || 'Erreur lors du déchiffrement du fichier' });
   }
 });

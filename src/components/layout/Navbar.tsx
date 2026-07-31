@@ -43,10 +43,15 @@ import {
   Description as DescriptionIcon,
   History as HistoryIcon,
   Schedule as ScheduleIcon,
-  Info as InfoIcon
+  HelpOutline as HelpIcon,
+  Info as InfoIcon,
+  School as SchoolIcon
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useStructure } from '../../hooks/useStructure';
+import { useDecryptedUserName } from '../../hooks/useDecryptedUserName';
+import UserNameSkeleton from '../common/UserNameSkeleton';
 import { useNotifications } from '../../contexts/NotificationContext';
 import { addReport } from '../../services/reportService';
 import { uploadErrorImage } from '../../firebase/storage';
@@ -58,12 +63,14 @@ import NotificationBadge from '../ui/NotificationBadge';
 import NotificationList from '../ui/NotificationList';
 import { useSnackbar } from 'notistack';
 import { useChangelog } from '../../contexts/ChangelogContext';
+import { tokens } from '../../theme/tokens';
+import { useAmbassadorBranding } from '../../hooks/useAmbassadorBranding';
 
 const StyledAppBar = styled(AppBar)(({ theme }) => ({
   backgroundColor: '#ffffff',
   color: '#111827',
   boxShadow: 'none',
-  borderBottom: '1px solid #f0f0f0',
+  borderBottom: `1px solid ${tokens.colors.borderLight}`,
   zIndex: theme.zIndex.drawer + 1,
 }));
 
@@ -107,7 +114,18 @@ const VisuallyHiddenInput = styled('input')({
 
 const Navbar: React.FC<NavbarProps> = () => {
   const navigate = useNavigate();
-  const { currentUser, logoutUser } = useAuth();
+  const { currentUser, logoutUser, userData, contactPermissions, isContactWithAccess } = useAuth();
+  const { fullName, initials, loading: userNameLoading } = useDecryptedUserName(
+    currentUser?.uid
+      ? {
+          id: currentUser.uid,
+          displayName: userData?.displayName ?? currentUser.displayName ?? undefined,
+          firstName: userData?.firstName,
+          lastName: userData?.lastName,
+        }
+      : null,
+    currentUser?.email?.split('@')[0] ?? 'Utilisateur',
+  );
   const { 
     persistentNotifications, 
     unreadCount, 
@@ -115,11 +133,13 @@ const Navbar: React.FC<NavbarProps> = () => {
     markAllAsRead 
   } = useNotifications();
   const { enqueueSnackbar } = useSnackbar();
-  const { openChangelog, showInfoButtonHint, hideInfoButtonHint, hasUnseenChangelog } = useChangelog();
+  const { openChangelog, openOnboarding, hasCompletedOnboarding, showInfoButtonHint, infoButtonHintMessage, hideInfoButtonHint, hasUnseenChangelog } = useChangelog();
 
   // États pour le menu utilisateur
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
+  const [infoMenuAnchorEl, setInfoMenuAnchorEl] = useState<null | HTMLElement>(null);
+  const infoMenuOpen = Boolean(infoMenuAnchorEl);
 
   // États pour les rapports de bugs/idées
   const [bugDialogOpen, setBugDialogOpen] = useState(false);
@@ -151,39 +171,9 @@ const Navbar: React.FC<NavbarProps> = () => {
   const [visibleNotifications, setVisibleNotifications] = useState<Set<string>>(new Set());
   const searchRef = useRef<HTMLDivElement>(null);
 
-  // États pour les données utilisateur
-  const [userData, setUserData] = useState<any>(null);
-  const [structureType, setStructureType] = useState<'junior' | 'jobservice' | null>(null);
-
-  // Récupérer les données utilisateur et le type de structure
-  useEffect(() => {
-    const fetchUserData = async () => {
-      if (!currentUser?.uid) return;
-
-      try {
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        if (userDoc.exists()) {
-          const data = userDoc.data();
-          setUserData(data);
-          
-          // Récupérer le type de structure
-          if (data.structureId) {
-            const structureDoc = await getDoc(doc(db, 'structures', data.structureId));
-            if (structureDoc.exists()) {
-              const structureData = structureDoc.data();
-              setStructureType(structureData.structureType || 'jobservice');
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Erreur lors de la récupération des données utilisateur:', error);
-      }
-    };
-
-    fetchUserData();
-  }, [currentUser]);
-
-  const { contactPermissions, isContactWithAccess } = useAuth();
+  // Type de structure (cache partagé avec Sidebar)
+  const { structure: cachedStructure } = useStructure(userData?.structureId);
+  const structureType = (cachedStructure?.structureType as 'junior' | 'jobservice' | null) || null;
   
   const isEtudiant = userData?.status === "etudiant";
   const isEntreprise = userData?.status === "entreprise";
@@ -192,10 +182,20 @@ const Navbar: React.FC<NavbarProps> = () => {
   const isMember = userData?.status === "membre";
   const isAdminStructure = userData?.status === "admin_structure";
   const isJuniorEntreprise = isAdminStructure || isAdmin || isMember || isSuperAdmin;
+
+  const { logoLargeUrl, logoUrl, loading: companyBrandingLoading } = useAmbassadorBranding(
+    userData?.structureId,
+    isEntreprise ? userData?.companyId : undefined
+  );
+  const companyHeaderLogo = logoLargeUrl || logoUrl;
+  const showCompanyHeaderLogo = isEntreprise && !companyBrandingLoading && !!companyHeaderLogo;
   
-  // Permissions pour la recherche et notifications (uniquement pour JE)
+  // Permissions pour la recherche et notifications
   const canSearch = isJuniorEntreprise;
-  const canSeeNotifications = isJuniorEntreprise;
+  const canSeeAmbassadorNotifications =
+    isContactWithAccess &&
+    (contactPermissions?.canViewEvents || contactPermissions?.canManageAmbassadors);
+  const canSeeNotifications = isJuniorEntreprise || canSeeAmbassadorNotifications;
   
   // Les contacts avec accès ne peuvent pas voir le bouton "Voir les nouveautés"
   const canSeeChangelog = !isContactWithAccess;
@@ -224,12 +224,10 @@ const Navbar: React.FC<NavbarProps> = () => {
   };
 
   const getInitials = () => {
-    if (!currentUser?.displayName) return '?';
-    return currentUser.displayName
-      .split(' ')
-      .map(name => name[0])
-      .join('')
-      .toUpperCase();
+    if (userNameLoading) return '';
+    if (initials) return initials;
+    if (!currentUser?.email) return '?';
+    return currentUser.email.charAt(0).toUpperCase();
   };
 
   const handleErrorImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -328,14 +326,8 @@ const Navbar: React.FC<NavbarProps> = () => {
       const activities = await getUserRecentActivity(currentUser.uid);
       
       // Récupérer le type de structure si pas encore chargé
-      let currentStructureType = structureType;
-      if (!currentStructureType && userData.structureId) {
-        const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
-        if (structureDoc.exists()) {
-          currentStructureType = structureDoc.data().structureType || 'jobservice';
-          setStructureType(currentStructureType);
-        }
-      }
+      const currentStructureType =
+        structureType || cachedStructure?.structureType || 'jobservice';
 
       // Filtrer les missions/études par structureId
       const recentMissions = activities
@@ -521,15 +513,9 @@ const Navbar: React.FC<NavbarProps> = () => {
           return;
         }
         
-        // Récupérer le type de structure si pas encore chargé
-        let currentStructureType = structureType;
-        if (!currentStructureType && userData.structureId) {
-          const structureDoc = await getDoc(doc(db, 'structures', userData.structureId));
-          if (structureDoc.exists()) {
-            currentStructureType = structureDoc.data().structureType || 'jobservice';
-            setStructureType(currentStructureType);
-          }
-        }
+        // Récupérer le type de structure depuis le cache partagé
+        const currentStructureType =
+          structureType || cachedStructure?.structureType || 'jobservice';
         
         // Rechercher les missions/études selon le type de structure
         if (currentStructureType === 'junior') {
@@ -673,7 +659,7 @@ const Navbar: React.FC<NavbarProps> = () => {
         }));
 
         setSearchResults({
-          missions,
+          missions: results.missions,
           users,
           companies
         });
@@ -774,6 +760,14 @@ const Navbar: React.FC<NavbarProps> = () => {
       // Fermer le menu de notifications
       handleNotificationsClose();
 
+      if (
+        notification.type === 'ambassador_update' &&
+        notification.metadata?.eventId
+      ) {
+        navigate(`/app/ambassadeurs/event/${notification.metadata.eventId}`);
+        return;
+      }
+
       // Redirection spécifique pour les notifications de note de mission
       if (
         (notification.type === 'mission_note' || notification.type === 'mission_update') &&
@@ -799,7 +793,7 @@ const Navbar: React.FC<NavbarProps> = () => {
 
   return (
     <StyledAppBar position="fixed">
-      <StyledToolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
+      <StyledToolbar sx={{ display: 'flex', justifyContent: 'space-between', position: 'relative' }}>
         {/* Section gauche - Logo */}
         <Box 
           sx={{ 
@@ -836,6 +830,37 @@ const Navbar: React.FC<NavbarProps> = () => {
             JS Connect
           </Typography>
         </Box>
+
+        {showCompanyHeaderLogo && (
+          <Box
+            sx={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              maxHeight: 48,
+              maxWidth: 'min(320px, calc(100vw - 320px))',
+              px: 1,
+              pointerEvents: 'none',
+            }}
+          >
+            <Box
+              component="img"
+              src={companyHeaderLogo}
+              alt="Logo entreprise"
+              sx={{
+                maxHeight: 40,
+                maxWidth: '100%',
+                width: 'auto',
+                objectFit: 'contain',
+                display: 'block',
+              }}
+            />
+          </Box>
+        )}
         
         {/* Section centrale - Barre de recherche */}
         {canSearch && (
@@ -857,10 +882,10 @@ const Navbar: React.FC<NavbarProps> = () => {
               onFocus={() => setSearchOpen(true)}
               onClick={() => setSearchOpen(true)}
               sx={{
-                backgroundColor: '#f5f5f7',
-                borderRadius: '8px',
+                backgroundColor: tokens.colors.bgSubtle,
+                borderRadius: tokens.radius.sm,
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: '8px',
+                  borderRadius: tokens.radius.sm,
                   '& fieldset': {
                     borderColor: 'transparent'
                   },
@@ -875,7 +900,7 @@ const Navbar: React.FC<NavbarProps> = () => {
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
-                    <SearchIcon sx={{ color: '#86868b' }} />
+                    <SearchIcon sx={{ color: tokens.colors.textSecondary }} />
                   </InputAdornment>
                 ),
                 endAdornment: isSearching ? (
@@ -894,7 +919,7 @@ const Navbar: React.FC<NavbarProps> = () => {
                   zIndex: 1000, 
                   width: '100%', 
                   mt: 1,
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   overflow: 'hidden',
                   boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
                   border: '1px solid rgba(0,0,0,0.08)'
@@ -906,8 +931,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                   {!searchQuery.trim() ? (
                     <>
                       {/* Section Actions Rapides */}
-                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: '1px solid #f0f0f0' }}>
-                        <Typography variant="xs" sx={{ fontWeight: 600, color: '#86868b', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: `1px solid ${tokens.colors.borderLight}` }}>
+                        <Typography variant="xs" sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                           Actions rapides
                         </Typography>
                       </ListItem>
@@ -950,8 +975,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                       <Divider sx={{ my: 0 }} />
 
                       {/* Section Missions/Études Récentes */}
-                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: '1px solid #f0f0f0', borderTop: '1px solid #f0f0f0' }}>
-                        <Typography variant="xs" sx={{ fontWeight: 600, color: '#86868b', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: `1px solid ${tokens.colors.borderLight}`, borderTop: `1px solid ${tokens.colors.borderLight}` }}>
+                        <Typography variant="xs" sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                           {structureType === 'junior' ? 'Études récentes' : 'Missions récentes'}
                         </Typography>
                       </ListItem>
@@ -987,8 +1012,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                       <Divider sx={{ my: 0 }} />
 
                       {/* Section Documents Récents */}
-                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: '1px solid #f0f0f0', borderTop: '1px solid #f0f0f0' }}>
-                        <Typography variant="xs" sx={{ fontWeight: 600, color: '#86868b', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      <ListItem sx={{ py: 1.5, px: 2, bgcolor: '#fafafa', borderBottom: `1px solid ${tokens.colors.borderLight}`, borderTop: `1px solid ${tokens.colors.borderLight}` }}>
+                        <Typography variant="xs" sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                           Fichiers récents
                         </Typography>
                       </ListItem>
@@ -1043,8 +1068,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                         <ListItemText
                           primary={
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <BusinessIcon fontSize="small" sx={{ color: '#86868b' }} />
-                              <Typography variant="subtitle2" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
+                              <BusinessIcon fontSize="small" sx={{ color: tokens.colors.textSecondary }} />
+                              <Typography variant="subtitle2" sx={{ fontWeight: 500, color: tokens.colors.textPrimary }}>
                                 Entreprises ({searchResults.companies.length})
                               </Typography>
                             </Box>
@@ -1085,8 +1110,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                         <ListItemText
                           primary={
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <BusinessIcon fontSize="small" sx={{ color: '#86868b' }} />
-                              <Typography variant="subtitle2" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
+                              <BusinessIcon fontSize="small" sx={{ color: tokens.colors.textSecondary }} />
+                              <Typography variant="subtitle2" sx={{ fontWeight: 500, color: tokens.colors.textPrimary }}>
                                 Missions ({searchResults.missions.length})
                               </Typography>
                             </Box>
@@ -1127,8 +1152,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                         <ListItemText
                           primary={
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Person fontSize="small" sx={{ color: '#86868b' }} />
-                              <Typography variant="subtitle2" sx={{ fontWeight: 500, color: '#1d1d1f' }}>
+                              <Person fontSize="small" sx={{ color: tokens.colors.textSecondary }} />
+                              <Typography variant="subtitle2" sx={{ fontWeight: 500, color: tokens.colors.textPrimary }}>
                                 Utilisateurs ({searchResults.users.length})
                               </Typography>
                             </Box>
@@ -1179,7 +1204,7 @@ const Navbar: React.FC<NavbarProps> = () => {
           <IconButton
             onClick={() => setBugDialogOpen(true)}
             size="small"
-            sx={{ color: '#86868b' }}
+            sx={{ color: tokens.colors.textSecondary }}
           >
             <BugReportIcon fontSize="small" />
           </IconButton>
@@ -1188,7 +1213,7 @@ const Navbar: React.FC<NavbarProps> = () => {
           <IconButton
             onClick={() => setIdeaDialogOpen(true)}
             size="small"
-            sx={{ color: '#86868b' }}
+            sx={{ color: tokens.colors.textSecondary }}
           >
             <LightbulbIcon fontSize="small" />
           </IconButton>
@@ -1226,24 +1251,63 @@ const Navbar: React.FC<NavbarProps> = () => {
                 }}
               >
                 <IconButton
-                  onClick={() => {
-                    openChangelog();
+                  onClick={(e) => {
+                    setInfoMenuAnchorEl(e.currentTarget);
                     hideInfoButtonHint();
                   }}
                   size="small"
                   sx={{ 
-                    color: '#86868b',
+                    color: tokens.colors.textSecondary,
                     transition: 'all 0.2s ease',
                     '&:hover': {
-                      color: '#667eea',
+                      color: tokens.colors.primary,
                       transform: 'scale(1.1)'
                     }
                   }}
-                  title="Voir les nouveautés"
+                  title="Aide et tutoriel"
                 >
-                  <InfoIcon fontSize="small" />
+                  <HelpIcon fontSize="small" />
                 </IconButton>
               </Badge>
+              <Menu
+                anchorEl={infoMenuAnchorEl}
+                open={infoMenuOpen}
+                onClose={() => setInfoMenuAnchorEl(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                slotProps={{ paper: { sx: { mt: 1.5 } } }}
+              >
+                {!hasCompletedOnboarding && (
+                  <MenuItem
+                    onClick={() => {
+                      setInfoMenuAnchorEl(null);
+                      openOnboarding();
+                    }}
+                    sx={{ bgcolor: 'action.hover' }}
+                  >
+                    <ListItemIcon><SchoolIcon fontSize="small" color="primary" /></ListItemIcon>
+                    <ListItemText primary="Reprendre le tutoriel" secondary="Terminer la découverte de la plateforme" />
+                  </MenuItem>
+                )}
+                <MenuItem
+                  onClick={() => {
+                    setInfoMenuAnchorEl(null);
+                    openChangelog();
+                  }}
+                >
+                  <ListItemIcon><InfoIcon fontSize="small" /></ListItemIcon>
+                  Nouveautés
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    setInfoMenuAnchorEl(null);
+                    openOnboarding();
+                  }}
+                >
+                  <ListItemIcon><SchoolIcon fontSize="small" /></ListItemIcon>
+                  Tutoriel : utiliser la plateforme
+                </MenuItem>
+              </Menu>
             
             {/* Animation de hint avec message */}
             {showInfoButtonHint && (
@@ -1257,7 +1321,7 @@ const Navbar: React.FC<NavbarProps> = () => {
                     width: 12,
                     height: 12,
                     borderRadius: '50%',
-                    background: '#667eea',
+                    background: tokens.colors.primary,
                     animation: 'pulse 2s infinite',
                     '@keyframes pulse': {
                       '0%': {
@@ -1286,8 +1350,8 @@ const Navbar: React.FC<NavbarProps> = () => {
                     mt: 1,
                     px: 2,
                     py: 1,
-                    borderRadius: '8px',
-                    background: '#667eea',
+                    borderRadius: tokens.radius.sm,
+                    background: tokens.colors.primary,
                     color: 'white',
                     fontSize: '0.75rem',
                     fontWeight: 500,
@@ -1313,11 +1377,11 @@ const Navbar: React.FC<NavbarProps> = () => {
                       height: 0,
                       borderLeft: '6px solid transparent',
                       borderRight: '6px solid transparent',
-                      borderBottom: '6px solid #667eea',
+                      borderBottom: `6px solid ${tokens.colors.brandTeal}`,
                     }
                   }}
                 >
-                  Cliquez ici pour revoir les nouveautés
+                  {infoButtonHintMessage}
                 </Paper>
               </>
             )}
@@ -1330,7 +1394,7 @@ const Navbar: React.FC<NavbarProps> = () => {
               onClick={handleNotificationsClick}
               size="small"
               sx={{ 
-                color: '#86868b',
+                color: tokens.colors.textSecondary,
                 position: 'relative'
               }}
             />
@@ -1395,9 +1459,13 @@ const Navbar: React.FC<NavbarProps> = () => {
           anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
         >
           <Box sx={{ px: 2, py: 1 }}>
-            <Typography variant="subtitle1" fontWeight="bold">
-              {currentUser?.displayName}
-            </Typography>
+            {userNameLoading ? (
+              <UserNameSkeleton width={140} sx={{ fontSize: '1rem', mb: 0.5 }} />
+            ) : (
+              <Typography variant="subtitle1" fontWeight="bold">
+                {fullName}
+              </Typography>
+            )}
             <Typography variant="body2" color="text.secondary">
               {currentUser?.email}
             </Typography>

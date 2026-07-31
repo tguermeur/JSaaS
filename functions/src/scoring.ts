@@ -10,6 +10,7 @@ import { decrypt } from './encryption';
 
 const functionConfig = {
   memory: '128MiB' as const,
+  cpu: 0.25, // Réduit l'usage du quota CPU projet (évite "Quota exceeded for total allowable CPU")
   timeoutSeconds: 120,
   region: 'us-central1' as const,
   minInstances: 0,
@@ -127,7 +128,12 @@ export const computeProspectScores = onCall(functionConfig, async (request) => {
   }
 
   const db = admin.firestore();
-  const prospectsSnap = await db.collection('prospects').where('structureId', '==', structureId).get();
+  const SCORING_BATCH_LIMIT = 50;
+  const prospectsSnap = await db
+    .collection('prospects')
+    .where('structureId', '==', structureId)
+    .limit(SCORING_BATCH_LIMIT)
+    .get();
   const settingsSnap = await db.collection('scoringSettings').where('structureId', '==', structureId).limit(1).get();
   const settings = settingsSnap.docs[0]?.data();
   const weights = getScoreWeights(settings);
@@ -139,15 +145,18 @@ export const computeProspectScores = onCall(functionConfig, async (request) => {
     const p = docSnap.data();
     const prospectId = docSnap.id;
 
-    // Dernière activité
-    const activitiesSnap = await db
-      .collection('prospects')
-      .doc(prospectId)
-      .collection('activities')
-      .orderBy('timestamp', 'desc')
-      .limit(1)
-      .get();
-    const lastActivityTs = activitiesSnap.docs[0]?.data()?.timestamp ?? null;
+    // Dernière activité : champ dénormalisé lastActivityAt (évite N+1)
+    let lastActivityTs = p.lastActivityAt ?? null;
+    if (!lastActivityTs) {
+      const activitiesSnap = await db
+        .collection('prospects')
+        .doc(prospectId)
+        .collection('activities')
+        .orderBy('timestamp', 'desc')
+        .limit(1)
+        .get();
+      lastActivityTs = activitiesSnap.docs[0]?.data()?.timestamp ?? null;
+    }
 
     const createdAt = p.createdAt ?? null;
     const comp = completenessScore(p);
@@ -194,7 +203,12 @@ export const getRelanceSuggestions = onCall(functionConfig, async (request) => {
   }
 
   const db = admin.firestore();
-  const prospectsSnap = await db.collection('prospects').where('structureId', '==', structureId).get();
+  const RELANCE_PROSPECT_LIMIT = 50;
+  const prospectsSnap = await db
+    .collection('prospects')
+    .where('structureId', '==', structureId)
+    .limit(RELANCE_PROSPECT_LIMIT)
+    .get();
   const now = new Date();
   const today = now.toISOString().split('T')[0];
   const relanceStatuses: PipelineStatus[] = ['contacte', 'a_recontacter', 'negociation'];

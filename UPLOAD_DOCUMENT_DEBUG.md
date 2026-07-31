@@ -85,7 +85,7 @@ Les règles Storage se trouvent dans `storage.rules`. Pour tester les permission
 
 ### Option 2 : Redéployer les règles Storage
 ```bash
-firebase deploy --only storage:rules
+firebase deploy --only storage
 ```
 
 ### Option 3 : Ajouter l'utilisateur aux permissions de la mission

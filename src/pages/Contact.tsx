@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Container,
@@ -15,7 +16,12 @@ import {
   Phone as PhoneIcon,
   LocationOn as LocationIcon
 } from '@mui/icons-material';
-import emailjs from '@emailjs/browser';
+import { httpsCallable } from 'firebase/functions';
+import { getFirebaseFunctions } from '../firebase/config';
+import { tokens } from '../theme/tokens';
+import PublicNav from '../components/layout/PublicNav';
+import Footer from '../components/Footer';
+import PageMeta from '../components/common/PageMeta';
 
 const Contact: React.FC = () => {
   const [formData, setFormData] = useState({
@@ -29,6 +35,7 @@ const Contact: React.FC = () => {
     message: '',
     severity: 'success' as 'success' | 'error'
   });
+  const [sending, setSending] = useState(false);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -40,13 +47,20 @@ const Contact: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSending(true);
     try {
-      await emailjs.send(
-        'YOUR_SERVICE_ID',
-        'YOUR_TEMPLATE_ID',
-        formData,
-        'YOUR_PUBLIC_KEY'
-      );
+      const functionsInstance = getFirebaseFunctions();
+      if (!functionsInstance) {
+        throw new Error("Le service Functions n'est pas disponible");
+      }
+      const sendContactEmail = httpsCallable(functionsInstance, 'sendContactEmail');
+      await sendContactEmail({
+        company: formData.name || formData.subject || 'Contact',
+        email: formData.email,
+        message: formData.subject
+          ? `[${formData.subject}]\n\n${formData.message}`
+          : formData.message,
+      });
       setSnackbar({
         open: true,
         message: 'Votre message a été envoyé avec succès !',
@@ -59,22 +73,35 @@ const Contact: React.FC = () => {
         message: ''
       });
     } catch (error) {
+      console.error('Contact form error:', error);
       setSnackbar({
         open: true,
         message: 'Une erreur est survenue. Veuillez réessayer.',
         severity: 'error'
       });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const fieldSx = {
+    '& .MuiOutlinedInput-root': {
+      borderRadius: tokens.radius.md,
+      '&:hover .MuiOutlinedInput-notchedOutline': {
+        borderColor: tokens.colors.ink
+      }
     }
   };
 
   return (
     <Box sx={{ 
       minHeight: '100vh', 
-      bgcolor: '#fff',
-      pt: { xs: 8, md: 12 },
+      bgcolor: tokens.colors.marketingWhite,
       pb: { xs: 8, md: 12 }
     }}>
-      <Container maxWidth="lg">
+      <PageMeta title="Contact" description="Contactez l'équipe JS Connect pour votre Junior-Entreprise." />
+      <PublicNav selectedProfile="junior" showPricing />
+      <Container maxWidth="lg" sx={{ pt: { xs: 4, md: 6 } }}>
         <Typography
           variant="h1"
           sx={{
@@ -82,7 +109,7 @@ const Contact: React.FC = () => {
             fontWeight: 600,
             textAlign: 'center',
             mb: { xs: 4, md: 8 },
-            color: '#1d1d1f',
+            color: tokens.colors.ink,
             letterSpacing: '-0.02em'
           }}
         >
@@ -95,8 +122,8 @@ const Contact: React.FC = () => {
               elevation={0}
               sx={{
                 p: { xs: 3, md: 6 },
-                borderRadius: '20px',
-                border: '1px solid #e5e5e7',
+                borderRadius: tokens.radius.xl,
+                border: `1px solid ${tokens.colors.borderSoft}`,
                 height: '100%'
               }}
             >
@@ -106,7 +133,7 @@ const Contact: React.FC = () => {
                   fontSize: { xs: '1.8rem', md: '2.2rem' },
                   fontWeight: 600,
                   mb: 4,
-                  color: '#1d1d1f'
+                  color: tokens.colors.ink
                 }}
               >
                 Parlons de votre projet
@@ -116,7 +143,7 @@ const Contact: React.FC = () => {
                 sx={{
                   fontSize: '1.1rem',
                   lineHeight: 1.6,
-                  color: '#86868b',
+                  color: tokens.colors.inkMuted,
                   mb: 4
                 }}
               >
@@ -125,20 +152,20 @@ const Contact: React.FC = () => {
 
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <EmailIcon sx={{ color: '#0071e3', fontSize: 24 }} />
-                  <Typography sx={{ color: '#1d1d1f' }}>
+                  <EmailIcon sx={{ color: tokens.colors.ink, fontSize: 24 }} />
+                  <Typography sx={{ color: tokens.colors.ink }}>
                     contact@jsconnect.fr
                   </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <PhoneIcon sx={{ color: '#0071e3', fontSize: 24 }} />
-                  <Typography sx={{ color: '#1d1d1f' }}>
+                  <PhoneIcon sx={{ color: tokens.colors.ink, fontSize: 24 }} />
+                  <Typography sx={{ color: tokens.colors.ink }}>
                     +33 1 23 45 67 89
                   </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <LocationIcon sx={{ color: '#0071e3', fontSize: 24 }} />
-                  <Typography sx={{ color: '#1d1d1f' }}>
+                  <LocationIcon sx={{ color: tokens.colors.ink, fontSize: 24 }} />
+                  <Typography sx={{ color: tokens.colors.ink }}>
                     Paris, France
                   </Typography>
                 </Box>
@@ -151,8 +178,8 @@ const Contact: React.FC = () => {
               elevation={0}
               sx={{
                 p: { xs: 3, md: 6 },
-                borderRadius: '20px',
-                border: '1px solid #e5e5e7'
+                borderRadius: tokens.radius.xl,
+                border: `1px solid ${tokens.colors.borderSoft}`
               }}
             >
               <form onSubmit={handleSubmit}>
@@ -165,14 +192,7 @@ const Contact: React.FC = () => {
                     value={formData.name}
                     onChange={handleChange}
                     variant="outlined"
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: '12px',
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#0071e3'
-                        }
-                      }
-                    }}
+                    sx={fieldSx}
                   />
                   <TextField
                     required
@@ -183,14 +203,7 @@ const Contact: React.FC = () => {
                     value={formData.email}
                     onChange={handleChange}
                     variant="outlined"
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: '12px',
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#0071e3'
-                        }
-                      }
-                    }}
+                    sx={fieldSx}
                   />
                   <TextField
                     required
@@ -200,14 +213,7 @@ const Contact: React.FC = () => {
                     value={formData.subject}
                     onChange={handleChange}
                     variant="outlined"
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: '12px',
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#0071e3'
-                        }
-                      }
-                    }}
+                    sx={fieldSx}
                   />
                   <TextField
                     required
@@ -219,32 +225,29 @@ const Contact: React.FC = () => {
                     multiline
                     rows={4}
                     variant="outlined"
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: '12px',
-                        '&:hover .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#0071e3'
-                        }
-                      }
-                    }}
+                    sx={fieldSx}
                   />
                   <Button
                     type="submit"
                     variant="contained"
                     size="large"
+                    disabled={sending}
                     sx={{
-                      bgcolor: '#0071e3',
-                      color: '#fff',
+                      bgcolor: tokens.colors.marketingBlack,
+                      color: tokens.colors.marketingWhite,
                       py: 1.5,
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.xxl,
                       fontSize: '1.1rem',
                       fontWeight: 500,
+                      textTransform: 'none',
+                      boxShadow: 'none',
                       '&:hover': {
-                        bgcolor: '#0077ed'
+                        bgcolor: tokens.colors.marketingBlack,
+                        opacity: 0.9
                       }
                     }}
                   >
-                    Envoyer le message
+                    {sending ? 'Envoi…' : 'Envoyer le message'}
                   </Button>
                 </Box>
               </form>
@@ -252,27 +255,32 @@ const Contact: React.FC = () => {
           </Grid>
         </Grid>
       </Container>
+      <Footer />
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          severity={snackbar.severity}
-          sx={{
-            width: '100%',
-            borderRadius: '12px',
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)'
-          }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            sx={{
+              width: '100%',
+              borderRadius: tokens.radius.md,
+              boxShadow: tokens.shadows.alert
+            }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };
 
-export default Contact; 
+export default Contact;

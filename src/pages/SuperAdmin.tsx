@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -33,7 +34,8 @@ import {
   Divider,
   Tooltip,
   CircularProgress,
-  LinearProgress
+  LinearProgress,
+  Radio
 } from '@mui/material';
 import { createStructure, getStructures, deleteStructure } from '../firebase/structure';
 import { Structure } from '../types/structure';
@@ -50,7 +52,8 @@ import {
   limit,
   serverTimestamp,
   addDoc,
-  setDoc 
+  setDoc,
+  deleteDoc
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import EditIcon from '@mui/icons-material/Edit';
@@ -64,17 +67,27 @@ import ReplyIcon from '@mui/icons-material/Reply';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import StripeCustomers from './settings/StripeCustomers';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
-import { createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
 import { auth } from '../firebase/config';
 import { useNotifications } from '../contexts/NotificationContext';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { sendDemarchageEmailClient } from '../services/emailjsDemarchage';
 import LockIcon from '@mui/icons-material/Lock';
 import { decryptActivityUsersList, decryptUsersList } from '../utils/decryptUserUtils';
-import { toDateFromFirestore } from '../utils/dateUtils';
+import { toDateFromFirestore, formatDate } from '../utils/dateUtils';
 import SecurityIcon from '@mui/icons-material/Security';
 import LoginIcon from '@mui/icons-material/Login';
 import HowToRegIcon from '@mui/icons-material/HowToReg';
-import SwitchAccountIcon from '@mui/icons-material/SwitchAccount';
+import LinkIcon from '@mui/icons-material/Link';
+import { tokens } from '../theme/tokens';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import AddIcon from '@mui/icons-material/Add';
+import SendIcon from '@mui/icons-material/Send';
+import ContactMailIcon from '@mui/icons-material/ContactMail';
+import ScienceIcon from '@mui/icons-material/Science';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import { getStripeCustomers } from '../services/stripeApiService';
 
 interface StructureData {
   id: string;
@@ -82,6 +95,16 @@ interface StructureData {
   ecole: string;
   domaines?: string[];
   createdAt?: any;
+  subscriptionStatus?: string;
+  email?: string;
+  /** junior = JE (études), jobservice = JS (missions) */
+  structureType?: 'junior' | 'jobservice';
+}
+
+interface StripeCustomerInfo {
+  subscriptionStatus: string;
+  subscriptionTitle?: string;
+  cancelAtPeriodEnd?: boolean;
 }
 
 interface SuperAdmin {
@@ -143,6 +166,25 @@ interface AddUserDialogProps {
   structureId: string;
   structureName: string;
   onAddUser: (userData: any) => void;
+}
+
+// Démarchage SuperAdmin : prospects (JE/JS) et contacts, hors structures
+interface DemarchageProspect {
+  id: string;
+  type: 'je' | 'js';
+  name: string;
+  school?: string;
+  createdAt?: any;
+}
+
+interface DemarchageContact {
+  id: string;
+  firstName: string;
+  lastName: string;
+  position: string;
+  email: string;
+  /** Date du dernier envoi d'email de démarchage (Firestore Timestamp) */
+  lastEmailSentAt?: any;
 }
 
 // Composant pour le dialogue d'envoi de notification
@@ -255,15 +297,17 @@ const AddUserDialog: React.FC<AddUserDialogProps> = ({
   structureName,
   onAddUser,
 }) => {
-  const [userData, setUserData] = useState({
+  const initialState = {
     email: '',
     displayName: '',
     firstName: '',
     lastName: '',
+    password: '',
+    confirmPassword: '',
     birthDate: '',
     graduationYear: '',
     program: '',
-    status: 'etudiant',
+    status: 'etudiant' as const,
     structureId: '',
     ecole: '',
     birthPlace: '',
@@ -275,13 +319,24 @@ const AddUserDialog: React.FC<AddUserDialogProps> = ({
     socialSecurityNumber: '',
     phone: '',
     profileCompletion: 0
-  });
+  };
+
+  const [userData, setUserData] = useState(initialState);
 
   const [errors, setErrors] = useState({
     email: '',
     firstName: '',
-    lastName: ''
+    lastName: '',
+    password: '',
+    confirmPassword: ''
   });
+
+  React.useEffect(() => {
+    if (open) {
+      setUserData({ ...initialState });
+      setErrors({ email: '', firstName: '', lastName: '', password: '', confirmPassword: '' });
+    }
+  }, [open]);
 
   const validateEmail = (email: string) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -306,6 +361,17 @@ const AddUserDialog: React.FC<AddUserDialogProps> = ({
         ...prev,
         [name]: value.trim() === '' ? 'Ce champ est obligatoire' : ''
       }));
+    } else if (name === 'password') {
+      setErrors(prev => ({
+        ...prev,
+        password: value.length >= 8 ? '' : 'Minimum 8 caractères',
+        confirmPassword: userData.confirmPassword ? (value !== userData.confirmPassword ? 'Les mots de passe ne correspondent pas' : '') : prev.confirmPassword
+      }));
+    } else if (name === 'confirmPassword') {
+      setErrors(prev => ({
+        ...prev,
+        confirmPassword: value !== userData.password ? 'Les mots de passe ne correspondent pas' : ''
+      }));
     }
   };
 
@@ -321,7 +387,9 @@ const AddUserDialog: React.FC<AddUserDialogProps> = ({
     return (
       validateEmail(userData.email) &&
       userData.firstName.trim() !== '' &&
-      userData.lastName.trim() !== ''
+      userData.lastName.trim() !== '' &&
+      userData.password.length >= 8 &&
+      userData.password === userData.confirmPassword
     );
   };
 
@@ -341,6 +409,34 @@ const AddUserDialog: React.FC<AddUserDialogProps> = ({
               error={!!errors.email}
               helperText={errors.email}
               required
+            />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              fullWidth
+              label="Mot de passe"
+              name="password"
+              type="password"
+              value={userData.password}
+              onChange={handleTextChange}
+              error={!!errors.password}
+              helperText={errors.password || 'Minimum 8 caractères'}
+              required
+              autoComplete="new-password"
+            />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              fullWidth
+              label="Confirmer le mot de passe"
+              name="confirmPassword"
+              type="password"
+              value={userData.confirmPassword}
+              onChange={handleTextChange}
+              error={!!errors.confirmPassword}
+              helperText={errors.confirmPassword}
+              required
+              autoComplete="new-password"
             />
           </Grid>
           <Grid item xs={12} md={6}>
@@ -480,8 +576,10 @@ const AddUserDialog: React.FC<AddUserDialogProps> = ({
         <Button onClick={onClose}>Annuler</Button>
         <Button 
           onClick={() => {
+            const { confirmPassword, ...rest } = userData;
             onAddUser({
-              ...userData,
+              ...rest,
+              password: userData.password,
               displayName: `${userData.firstName} ${userData.lastName}`.trim(),
               structureId: structureId,
               ecole: structureName
@@ -513,7 +611,7 @@ const SuperAdmin: React.FC = () => {
   const [superAdmins, setSuperAdmins] = useState<SuperAdmin[]>([]);
   const [editingStructure, setEditingStructure] = useState<string | null>(null);
   const [editedData, setEditedData] = useState<Partial<StructureData>>({});
-  const { currentUser, startImpersonation, isImpersonating } = useAuth();
+  const { currentUser } = useAuth();
   const navigate = useNavigate();
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState<{
@@ -544,6 +642,9 @@ const SuperAdmin: React.FC = () => {
   const [migrationError, setMigrationError] = useState<string | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
 
+  // État pour le seed des données de test
+  const [seedLoading, setSeedLoading] = useState<string | null>(null);
+
   // États pour la migration member -> membre
   const [memberMigrationLoading, setMemberMigrationLoading] = useState(false);
   const [memberMigrationStats, setMemberMigrationStats] = useState<{
@@ -554,7 +655,7 @@ const SuperAdmin: React.FC = () => {
   const [memberMigrationError, setMemberMigrationError] = useState<string | null>(null);
 
   // Ajouter un nouvel onglet
-  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Connexions & Inscriptions', 'Clients Stripe', 'Migration Chiffrement', 'Migration Données'];
+  const tabs = ['Structures', 'Rapports', 'Super Admins', 'Notifications', 'Connexions & Inscriptions', 'Clients Stripe', 'Démarchage', 'Migration Chiffrement', 'Migration Données'];
 
   // Ajouter l'état pour le filtre de statut (après les autres états)
   const [reportStatusFilter, setReportStatusFilter] = useState<string>('all');
@@ -568,21 +669,135 @@ const SuperAdmin: React.FC = () => {
   const [recentLogins, setRecentLogins] = useState<Array<{id: string; email: string; displayName: string; structureName: string; lastActivity: Date; status?: string}>>([]);
   const [activityLoading, setActivityLoading] = useState(false);
 
-  // Fonction pour démarrer l'impersonation (Run as) - ouvre dans un nouvel onglet
-  const handleRunAs = async (userId: string, userName: string) => {
-    if (window.confirm(`Voulez-vous vraiment vous connecter en tant que "${userName}" ?\n\nUn nouvel onglet va s'ouvrir avec l'application vue comme cet utilisateur.`)) {
-      try {
-        // Préparer l'impersonation sans modifier l'état local (openInNewTab = true)
-        await startImpersonation(userId, true);
-        setMessage({ type: 'success', text: `Mode "Run as" activé pour ${userName} - Nouvel onglet ouvert` });
-        setOpen(true);
-        // Ouvrir dans un nouvel onglet avec un paramètre pour indiquer qu'il faut charger l'impersonation
-        window.open('/app/dashboard?impersonate=true', '_blank');
-      } catch (error) {
-        console.error('Erreur lors du Run as:', error);
-        setMessage({ type: 'error', text: 'Erreur lors de l\'activation du mode "Run as"' });
-        setOpen(true);
-      }
+  // Lien de connexion diagnostic (magic link Firebase)
+  const [loginLinkUsers, setLoginLinkUsers] = useState<
+    Array<{ id: string; email: string; displayName: string; structureName: string; status: string }>
+  >([]);
+  const [loginLinkUsersLoading, setLoginLinkUsersLoading] = useState(false);
+  const [selectedLoginLinkUserId, setSelectedLoginLinkUserId] = useState<string | null>(null);
+  const [loginLinkSearchQuery, setLoginLinkSearchQuery] = useState('');
+  const [loginLinkHasSearched, setLoginLinkHasSearched] = useState(false);
+  const [generatingLinkFor, setGeneratingLinkFor] = useState<string | null>(null);
+  const productionAppOrigin = (
+    (import.meta.env.VITE_APP_URL as string | undefined)?.trim() || 'https://js-connect.fr'
+  ).replace(/\/$/, '');
+
+  const isLocalDevHost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+
+  const [loginLinkBaseUrl, setLoginLinkBaseUrl] = useState(
+    isLocalDevHost ? window.location.origin : productionAppOrigin
+  );
+  const [loginLinkDialog, setLoginLinkDialog] = useState<{
+    open: boolean;
+    link: string;
+    email: string;
+    displayName: string;
+    targetOrigin: string;
+  }>({ open: false, link: '', email: '', displayName: '', targetOrigin: '' });
+
+  // États pour Démarchage (prospects JE/JS hors structures)
+  const [demarchageProspects, setDemarchageProspects] = useState<DemarchageProspect[]>([]);
+  const [demarchageContactsByProspect, setDemarchageContactsByProspect] = useState<Record<string, DemarchageContact[]>>({});
+  const [demarchageLoading, setDemarchageLoading] = useState(false);
+  const [demarchageExpanded, setDemarchageExpanded] = useState<string | null>(null);
+  const [newProspectForm, setNewProspectForm] = useState<{ type: 'je' | 'js'; name: string; school: string }>({ type: 'je', name: '', school: '' });
+  const [newContactForm, setNewContactForm] = useState<{ prospectId: string; prospectName: string; firstName: string; lastName: string; position: string; email: string } | null>(null);
+  const [sendingEmailContactId, setSendingEmailContactId] = useState<string | null>(null);
+
+  // Clients Stripe pour la colonne Abonnement (Structures existantes) — même source que Organization / Clients Stripe
+  const [stripeCustomersByEmail, setStripeCustomersByEmail] = useState<Record<string, StripeCustomerInfo>>({});
+  const [loadingStripeCustomers, setLoadingStripeCustomers] = useState(false);
+
+  const searchLoginLinkUsers = async (query: string) => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setLoginLinkUsers([]);
+      setLoginLinkHasSearched(false);
+      setSelectedLoginLinkUserId(null);
+      return;
+    }
+
+    setLoginLinkUsersLoading(true);
+    setSelectedLoginLinkUserId(null);
+    try {
+      const fn = httpsCallable(getFunctions(), 'searchUsersForSuperAdmin');
+      const result = await fn({ query: q, limit: 25 });
+      const data = result.data as {
+        users: Array<{
+          id: string;
+          email: string;
+          displayName: string;
+          structureName: string;
+          status: string;
+        }>;
+      };
+      setLoginLinkUsers(data.users || []);
+      setLoginLinkHasSearched(true);
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      console.error('Erreur recherche utilisateurs:', error);
+      setLoginLinkUsers([]);
+      setLoginLinkHasSearched(true);
+      setMessage({
+        type: 'error',
+        text: err?.message || 'Erreur lors de la recherche.',
+      });
+      setOpen(true);
+    } finally {
+      setLoginLinkUsersLoading(false);
+    }
+  };
+
+  const handleGenerateLoginLink = async (params: {
+    userId?: string;
+    displayName?: string;
+  }) => {
+    const key = params.userId || 'selected';
+    setGeneratingLinkFor(key);
+    try {
+      const fn = httpsCallable(getFunctions(), 'generateSuperAdminLoginLink');
+      const result = await fn({ userId: params.userId, baseUrl: loginLinkBaseUrl });
+      const data = result.data as {
+        loginLink: string;
+        email: string;
+        displayName: string;
+        targetOrigin: string;
+        expiresInMinutes: number;
+      };
+      window.localStorage.setItem('emailForSignIn', data.email);
+      setLoginLinkDialog({
+        open: true,
+        link: data.loginLink,
+        email: data.email,
+        displayName: data.displayName || params.displayName || data.email,
+        targetOrigin: data.targetOrigin || loginLinkBaseUrl,
+      });
+    } catch (error: unknown) {
+      console.error('Erreur génération lien de connexion:', error);
+      const errMsg =
+        error instanceof Error
+          ? error.message
+          : typeof error === 'object' &&
+              error !== null &&
+              'message' in error &&
+              typeof (error as { message: unknown }).message === 'string'
+            ? (error as { message: string }).message
+            : 'Impossible de générer le lien de connexion.';
+      setMessage({ type: 'error', text: errMsg });
+      setOpen(true);
+    } finally {
+      setGeneratingLinkFor(null);
+    }
+  };
+
+  const handleCopyLoginLink = async () => {
+    try {
+      await navigator.clipboard.writeText(loginLinkDialog.link);
+      setMessage({ type: 'success', text: 'Lien copié dans le presse-papiers.' });
+      setOpen(true);
+    } catch {
+      setMessage({ type: 'error', text: 'Impossible de copier le lien.' });
+      setOpen(true);
     }
   };
 
@@ -600,8 +815,7 @@ const SuperAdmin: React.FC = () => {
         
         // Vérifier à la fois role et status pour la compatibilité
         if (!userDoc.exists() || (userData?.role !== 'superadmin' && userData?.status !== 'superadmin')) {
-          console.error('Accès non autorisé');
-          navigate('/dashboard');
+          navigate('/app/dashboard');
           return;
         }
         
@@ -612,7 +826,7 @@ const SuperAdmin: React.FC = () => {
         fetchNotifications();
       } catch (error) {
         console.error('Erreur lors de la vérification des permissions:', error);
-        navigate('/dashboard');
+        navigate('/app/dashboard');
       }
     };
 
@@ -622,7 +836,7 @@ const SuperAdmin: React.FC = () => {
   const fetchStructures = async () => {
     try {
       const structuresRef = collection(db, 'structures');
-      const snapshot = await getDocs(structuresRef);
+      const snapshot = await getDocs(query(structuresRef, limit(200)));
       const structuresData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
@@ -637,6 +851,45 @@ const SuperAdmin: React.FC = () => {
     }
   };
 
+  // Charger les clients Stripe pour la colonne Abonnement (même logique que Organization / Clients Stripe)
+  useEffect(() => {
+    if (tabValue !== 0) return;
+    let cancelled = false;
+    const load = async () => {
+      setLoadingStripeCustomers(true);
+      try {
+        let customers: Array<{ email?: string; subscriptionStatus: string; subscriptionTitle?: string; cancelAtPeriodEnd?: boolean }> = [];
+        try {
+          customers = await getStripeCustomers();
+        } catch {
+          const functions = getFunctions();
+          const getStripeCustomersCallable = httpsCallable(functions, 'getStripeCustomers');
+          const result = await getStripeCustomersCallable();
+          customers = (result.data as Array<{ email?: string; subscriptionStatus: string; subscriptionTitle?: string; cancelAtPeriodEnd?: boolean }>) || [];
+        }
+        if (!cancelled) {
+          const byEmail: Record<string, StripeCustomerInfo> = {};
+          customers.forEach((c) => {
+            if (c.email && c.email.trim()) {
+              byEmail[c.email.toLowerCase().trim()] = {
+                subscriptionStatus: c.subscriptionStatus,
+                subscriptionTitle: c.subscriptionTitle,
+                cancelAtPeriodEnd: c.cancelAtPeriodEnd
+              };
+            }
+          });
+          setStripeCustomersByEmail(byEmail);
+        }
+      } catch (err) {
+        if (!cancelled) console.error('Erreur chargement clients Stripe:', err);
+      } finally {
+        if (!cancelled) setLoadingStripeCustomers(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [tabValue]);
+
   const fetchReports = async () => {
     try {
       const reportsData = await getReports();
@@ -649,7 +902,7 @@ const SuperAdmin: React.FC = () => {
   const fetchSuperAdmins = async () => {
     try {
       const usersRef = collection(db, 'users');
-      const snapshot = await getDocs(usersRef);
+      const snapshot = await getDocs(query(usersRef, limit(500)));
       const superAdminUsers = snapshot.docs
         .filter(doc => {
           const data = doc.data();
@@ -727,8 +980,7 @@ const SuperAdmin: React.FC = () => {
       setNotifications(sortedNotifications);
     } catch (error) {
       console.error('Erreur lors de la récupération des notifications:', error);
-      setMessage({ type: 'error', text: 'Erreur lors de la récupération des notifications' });
-      setOpen(true);
+      // Ne pas afficher de popup pour cette erreur
     }
   };
 
@@ -848,6 +1100,46 @@ const SuperAdmin: React.FC = () => {
     }
   };
 
+  const handleSeedTestData = async (structure: StructureData) => {
+    const isJE = structure.structureType === 'junior';
+    const missionsLabel = isJE ? 'études' : 'missions';
+    if (!window.confirm(`Générer des données de test (entreprises, contacts, ${missionsLabel}, candidatures) pour cette structure ?`)) return;
+    setSeedLoading(structure.id);
+    try {
+      const functions = getFunctions();
+      const seedTestDataFn = httpsCallable<{ structureId: string; structureType?: 'junior' | 'jobservice' }, {
+        success: boolean;
+        message: string;
+        counts: {
+          companies: number;
+          contacts: number;
+          students: number;
+          missions: number;
+          etudes: number;
+          applications: number;
+          notes: number;
+          historyEntries: number;
+        };
+      }>(functions, 'seedTestData');
+      const { data } = await seedTestDataFn({ structureId: structure.id, structureType: structure.structureType });
+      const counts = data?.counts;
+      const itemsCount = isJE ? (counts?.etudes ?? 0) : (counts?.missions ?? 0);
+      setMessage({
+        type: 'success',
+        text: counts
+          ? `Données de test créées : ${counts.companies} entreprises, ${counts.contacts} contacts, ${counts.students} étudiants, ${itemsCount} ${missionsLabel}, ${counts.applications ?? 0} candidatures, ${counts.notes ?? 0} notes, ${counts.historyEntries ?? 0} entrées d'historique.`
+          : (data?.message || 'Données de test créées avec succès.')
+      });
+      setOpen(true);
+    } catch (error: unknown) {
+      const err = error as { message?: string };
+      setMessage({ type: 'error', text: err?.message || 'Erreur lors de la génération des données de test.' });
+      setOpen(true);
+    } finally {
+      setSeedLoading(null);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -926,15 +1218,15 @@ const SuperAdmin: React.FC = () => {
       // Créer une notification pour l'utilisateur
       const report = reports.find(r => r.id === reportId);
       if (report) {
-        await addDoc(collection(db, 'notifications'), {
-          userId: report.userId,
-          type: 'report_update',
-          title: 'Mise à jour de votre rapport',
-          message: `Le statut de votre ${report.type === 'bug' ? 'rapport d\'erreur' : 'idée'} a été mis à jour en "${newStatus}"`,
-          read: false,
-          createdAt: serverTimestamp(),
-          reportId: reportId
-        });
+        const { NotificationService } = await import('../services/notificationService');
+        await NotificationService.sendToUser(
+          report.userId,
+          'report_update',
+          'Mise à jour de votre rapport',
+          `Le statut de votre ${report.type === 'bug' ? 'rapport d\'erreur' : 'idée'} a été mis à jour en "${newStatus}"`,
+          'medium',
+          { reportId }
+        );
       }
 
       setMessage({ type: 'success', text: 'Statut du rapport mis à jour avec succès' });
@@ -985,15 +1277,15 @@ const SuperAdmin: React.FC = () => {
       // Créer une notification pour l'utilisateur
       const report = reports.find(r => r.id === reportId);
       if (report) {
-        await addDoc(collection(db, 'notifications'), {
-          userId: report.userId,
-          type: 'report_response',
-          title: 'Nouvelle réponse à votre rapport',
-          message: `Une réponse a été apportée à votre ${report.type === 'bug' ? 'rapport d\'erreur' : 'idée'}`,
-          read: false,
-          createdAt: serverTimestamp(),
-          reportId: reportId
-        });
+        const { NotificationService } = await import('../services/notificationService');
+        await NotificationService.sendToUser(
+          report.userId,
+          'report_response',
+          'Nouvelle réponse à votre rapport',
+          `Une réponse a été apportée à votre ${report.type === 'bug' ? 'rapport d\'erreur' : 'idée'}`,
+          'medium',
+          { reportId }
+        );
       }
 
       // Réinitialiser le champ de réponse
@@ -1202,9 +1494,12 @@ const SuperAdmin: React.FC = () => {
       let userIds: string[] = [];
 
       if (notificationForm.recipientType === 'all') {
-        // Récupérer tous les utilisateurs
-        const usersSnapshot = await getDocs(collection(db, 'users'));
-        userIds = usersSnapshot.docs.map(doc => doc.id);
+        setMessage({
+          type: 'error',
+          text: 'Envoi à tous les utilisateurs désactivé (performance). Choisissez une structure ou un utilisateur.',
+        });
+        setOpen(true);
+        return;
       } else if (notificationForm.recipientType === 'structure') {
         // Récupérer les utilisateurs de la structure sélectionnée
         const usersSnapshot = await getDocs(
@@ -1222,21 +1517,24 @@ const SuperAdmin: React.FC = () => {
         return;
       }
 
-      // Créer une notification pour chaque destinataire
-      const notificationPromises = userIds.map(userId =>
-        sendNotification({
-          type: 'admin_notification',
-          title: notificationForm.title,
-          message: notificationForm.message,
-          priority: 'medium',
-          userId,
+      // Créer une notification pour chaque destinataire (via CF)
+      const { NotificationService } = await import('../services/notificationService');
+      await NotificationService.sendToUsers(
+        userIds,
+        'admin_notification',
+        notificationForm.title,
+        notificationForm.message,
+        'medium',
+        {
           recipientType: notificationForm.recipientType,
-          structureId: notificationForm.recipientType === 'structure' ? notificationForm.selectedStructureId : undefined,
-          recipientCount: userIds.length
-        })
+          structureId:
+            notificationForm.recipientType === 'structure'
+              ? notificationForm.selectedStructureId
+              : undefined,
+          recipientCount: userIds.length,
+        },
+        'admin'
       );
-
-      await Promise.all(notificationPromises);
 
       // Réinitialiser le formulaire
       setNotificationForm({
@@ -1452,61 +1750,254 @@ const SuperAdmin: React.FC = () => {
     }
   }, [tabValue, structures.length]);
 
-  // Fonction pour gérer l'ajout d'un utilisateur à une structure
+  // Recherche utilisateurs (lien connexion) — uniquement à la saisie, debounce 450 ms
+  useEffect(() => {
+    if (tabValue !== 4) return;
+    const q = loginLinkSearchQuery.trim();
+    if (q.length < 2) {
+      setLoginLinkUsers([]);
+      setLoginLinkHasSearched(false);
+      setSelectedLoginLinkUserId(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void searchLoginLinkUsers(q);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [loginLinkSearchQuery, tabValue]);
+
+  // Charger les prospects et contacts du démarchage quand l'onglet est sélectionné
+  const fetchDemarchageProspects = async () => {
+    setDemarchageLoading(true);
+    try {
+      const prospectsRef = collection(db, 'superadmin_prospects');
+      const snapshot = await getDocs(query(prospectsRef, orderBy('createdAt', 'desc')));
+      const prospects: DemarchageProspect[] = snapshot.docs.map(d => ({
+        id: d.id,
+        type: (d.data().type as 'je' | 'js') || 'je',
+        name: d.data().name || '',
+        school: d.data().school,
+        createdAt: d.data().createdAt
+      }));
+      setDemarchageProspects(prospects);
+
+      const contactsByProspect: Record<string, DemarchageContact[]> = {};
+      await Promise.all(
+        prospects.map(async (p) => {
+          const contactsRef = collection(db, 'superadmin_prospects', p.id, 'contacts');
+          const contactsSnap = await getDocs(contactsRef);
+          contactsByProspect[p.id] = contactsSnap.docs.map(c => ({
+            id: c.id,
+            firstName: c.data().firstName || '',
+            lastName: c.data().lastName || '',
+            position: c.data().position || '',
+            email: c.data().email || '',
+            lastEmailSentAt: c.data().lastEmailSentAt ?? null
+          }));
+        })
+      );
+      setDemarchageContactsByProspect(contactsByProspect);
+    } catch (err) {
+      console.error('Erreur chargement prospects démarchage:', err);
+      setMessage({ type: 'error', text: 'Erreur lors du chargement des prospects' });
+      setOpen(true);
+    } finally {
+      setDemarchageLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tabValue === 6) {
+      fetchDemarchageProspects();
+    }
+  }, [tabValue]);
+
+  const handleCreateDemarchageProspect = async () => {
+    if (!newProspectForm.name.trim()) {
+      setMessage({ type: 'error', text: 'Le nom est requis' });
+      setOpen(true);
+      return;
+    }
+    try {
+      const ref = await addDoc(collection(db, 'superadmin_prospects'), {
+        type: newProspectForm.type,
+        name: newProspectForm.name.trim(),
+        school: newProspectForm.school.trim() || null,
+        createdAt: serverTimestamp()
+      });
+      setNewProspectForm({ type: 'je', name: '', school: '' });
+      await fetchDemarchageProspects();
+      setMessage({ type: 'success', text: newProspectForm.type === 'je' ? 'Junior Entreprise créée' : 'Job Service créé' });
+      setOpen(true);
+    } catch (err) {
+      console.error('Erreur création prospect:', err);
+      setMessage({ type: 'error', text: 'Erreur lors de la création' });
+      setOpen(true);
+    }
+  };
+
+  const handleAddDemarchageContact = async () => {
+    if (!newContactForm || !newContactForm.email.trim()) {
+      setMessage({ type: 'error', text: 'L\'email est requis' });
+      setOpen(true);
+      return;
+    }
+    try {
+      await addDoc(
+        collection(db, 'superadmin_prospects', newContactForm.prospectId, 'contacts'),
+        {
+          firstName: newContactForm.firstName.trim(),
+          lastName: newContactForm.lastName.trim(),
+          position: newContactForm.position.trim(),
+          email: newContactForm.email.trim()
+        }
+      );
+      setNewContactForm(null);
+      await fetchDemarchageProspects();
+      setMessage({ type: 'success', text: 'Contact ajouté' });
+      setOpen(true);
+    } catch (err) {
+      console.error('Erreur ajout contact:', err);
+      setMessage({ type: 'error', text: 'Erreur lors de l\'ajout du contact' });
+      setOpen(true);
+    }
+  };
+
+  const handleDeleteDemarchageContact = async (prospectId: string, contactId: string) => {
+    if (!window.confirm('Supprimer ce contact ?')) return;
+    try {
+      await deleteDoc(doc(db, 'superadmin_prospects', prospectId, 'contacts', contactId));
+      await fetchDemarchageProspects();
+      setMessage({ type: 'success', text: 'Contact supprimé' });
+      setOpen(true);
+    } catch (err) {
+      console.error('Erreur suppression contact:', err);
+      setMessage({ type: 'error', text: 'Erreur lors de la suppression du contact' });
+      setOpen(true);
+    }
+  };
+
+  const handleDeleteDemarchageProspect = async (prospectId: string) => {
+    if (!window.confirm('Supprimer cette JE/JS et tous ses contacts ?')) return;
+    try {
+      const contactsRef = collection(db, 'superadmin_prospects', prospectId, 'contacts');
+      const contactsSnap = await getDocs(contactsRef);
+      await Promise.all(contactsSnap.docs.map((d) => deleteDoc(doc(db, 'superadmin_prospects', prospectId, 'contacts', d.id))));
+      await deleteDoc(doc(db, 'superadmin_prospects', prospectId));
+      await fetchDemarchageProspects();
+      setDemarchageExpanded((id) => (id === prospectId ? null : id));
+      setMessage({ type: 'success', text: 'Prospect supprimé' });
+      setOpen(true);
+    } catch (err) {
+      console.error('Erreur suppression prospect:', err);
+      setMessage({ type: 'error', text: 'Erreur lors de la suppression du prospect' });
+      setOpen(true);
+    }
+  };
+
+  const handleSendDemarchageEmail = async (prospect: DemarchageProspect, contact: DemarchageContact) => {
+    setSendingEmailContactId(contact.id);
+    try {
+      const result = await sendDemarchageEmailClient({
+        to_email: contact.email,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        position: contact.position,
+        prospectName: prospect.name,
+      });
+      if (result.ok) {
+        const contactRef = doc(db, 'superadmin_prospects', prospect.id, 'contacts', contact.id);
+        await updateDoc(contactRef, { lastEmailSentAt: serverTimestamp() });
+        setDemarchageContactsByProspect(prev => {
+          const list = prev[prospect.id] ?? [];
+          return {
+            ...prev,
+            [prospect.id]: list.map(c =>
+              c.id === contact.id ? { ...c, lastEmailSentAt: { toDate: () => new Date() } } : c
+            )
+          };
+        });
+        setMessage({ type: 'success', text: `Email envoyé à ${contact.email}` });
+        setOpen(true);
+      } else {
+        setMessage({ type: 'error', text: result.error || 'Erreur lors de l\'envoi de l\'email' });
+        setOpen(true);
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err?.message || 'Erreur lors de l\'envoi de l\'email' });
+      setOpen(true);
+    } finally {
+      setSendingEmailContactId(null);
+    }
+  };
+
+  // Créer l'utilisateur côté serveur pour garder la session superadmin (aucune redirection vers le nouveau compte)
   const handleAddUserToStructure = async (userData: any) => {
     if (!selectedStructureForUser) return;
+    if (!userData.password || userData.password.length < 8) {
+      setMessage({ type: 'error', text: 'Le mot de passe doit contenir au moins 8 caractères.' });
+      setOpen(true);
+      return;
+    }
 
     try {
-      const auth = getAuth();
-      // Générer un mot de passe temporaire
-      const tempPassword = Math.random().toString(36).slice(-8);
-      
-      // Créer l'utilisateur dans Firebase Auth
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        userData.email,
-        tempPassword
-      );
+      const functions = getFunctions();
+      const createStructureUserFn = httpsCallable<
+        { email: string; tempPassword: string; structureId: string; [key: string]: unknown },
+        { data?: { uid: string } }
+      >(functions, 'createStructureUser');
 
-      // Ajouter les informations supplémentaires dans Firestore
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
-        ...userData,
+      await createStructureUserFn({
+        email: userData.email,
+        tempPassword: userData.password,
         structureId: selectedStructureForUser.id,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        tempPassword: tempPassword // Stocker le mot de passe temporaire
+        displayName: userData.displayName,
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        status: userData.status,
+        birthDate: userData.birthDate,
+        graduationYear: userData.graduationYear,
+        program: userData.program,
+        ecole: userData.ecole
       });
-      
-      setMessage({ 
-        type: 'success', 
-        text: `Utilisateur créé avec succès. Mot de passe temporaire : ${tempPassword}` 
+
+      setMessage({
+        type: 'success',
+        text: 'Compte créé. L\'utilisateur peut se connecter avec cet email et le mot de passe défini.'
       });
       setOpen(true);
-      
-      // Rafraîchir la liste des utilisateurs de la structure
+
       if (selectedStructureForUser) {
         handleViewUsers(selectedStructureForUser.id, '', selectedStructureForUser.name);
       }
     } catch (error: any) {
       console.error('Erreur lors de la création de l\'utilisateur:', error);
-      let errorMessage = 'Erreur lors de la création de l\'utilisateur';
-      
-      if (error.code === 'auth/invalid-email') {
-        errorMessage = 'L\'adresse email n\'est pas valide';
-      } else if (error.code === 'auth/email-already-in-use') {
-        errorMessage = 'Cette adresse email est déjà utilisée';
+      let errorMessage = error?.message ?? 'Erreur lors de la création de l\'utilisateur';
+      if (error?.code === 'functions/invalid-argument' || error?.details?.code === 'invalid-argument') {
+        errorMessage = error?.message || errorMessage;
       }
-      
       setMessage({ type: 'error', text: errorMessage });
       setOpen(true);
     }
   };
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box sx={{ p: 3, bgcolor: tokens.colors.appBg, minHeight: '100vh' }}>
+      <Typography sx={{ ...tokens.typography.pageTitle, color: tokens.colors.gray900, mb: 2 }}>
+        Super Admin
+      </Typography>
       <Tabs 
         value={tabValue} 
         onChange={(e, newValue) => setTabValue(newValue)}
+        sx={{
+          bgcolor: tokens.colors.bgPaper,
+          borderRadius: tokens.radius.lg,
+          border: `1px solid ${tokens.colors.divider}`,
+          px: 1,
+          '& .MuiTab-root': { textTransform: 'none', fontWeight: 500 },
+          '& .Mui-selected': { color: tokens.colors.brandTeal },
+          '& .MuiTabs-indicator': { bgcolor: tokens.colors.brandTeal },
+        }}
       >
         {tabs.map((tab, index) => (
           <Tab key={tab} label={tab} />
@@ -1515,7 +2006,7 @@ const SuperAdmin: React.FC = () => {
 
       {tabValue === 0 ? (
         <>
-          <Paper sx={{ p: 3, mt: 3, mb: 3 }}>
+          <Paper sx={{ p: 3, mt: 3, mb: 3, borderRadius: tokens.radius.lg, boxShadow: tokens.shadows.md, border: `1px solid ${tokens.colors.divider}` }}>
             <form onSubmit={handleSubmit}>
               <Grid container spacing={3}>
                 <Grid item xs={12} md={6}>
@@ -1581,19 +2072,20 @@ const SuperAdmin: React.FC = () => {
             </form>
           </Paper>
 
-          <Paper sx={{ p: 3, mt: 3 }}>
+          <Paper sx={{ p: 3, mt: 3, borderRadius: tokens.radius.lg, boxShadow: tokens.shadows.md, border: `1px solid ${tokens.colors.divider}` }}>
             <Typography variant="h6" gutterBottom>
               Structures existantes
             </Typography>
             <TableContainer>
               <Table>
                 <TableHead>
-                  <TableRow>
-                    <TableCell>Nom</TableCell>
-                    <TableCell>École</TableCell>
-                    <TableCell>Domaines emails</TableCell>
-                    <TableCell>Date de création</TableCell>
-                    <TableCell>Actions</TableCell>
+                  <TableRow sx={{ bgcolor: tokens.colors.gray50 }}>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem' }}>Nom</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem' }}>École</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem' }}>Domaines emails</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem' }}>Abonnement</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem' }}>Date de création</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem' }}>Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -1672,17 +2164,36 @@ const SuperAdmin: React.FC = () => {
                           </Box>
                         ) : (
                           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                            {structure.domaines?.map((domain: string, index: number) => (
-                              <Chip key={index} label={domain} size="small" onDelete={() => handleRemoveDomain(index)} />
+                            {(Array.isArray(structure.domaines) ? structure.domaines : []).map((domain: string, index: number) => (
+                              <Chip key={index} label={typeof domain === 'string' ? domain : String(domain)} size="small" onDelete={() => handleRemoveDomain(index)} />
                             ))}
                           </Box>
                         )}
                       </TableCell>
                       <TableCell>
+                        {(() => {
+                          const structureEmail = structure.email?.trim();
+                          const stripeInfo = structureEmail ? stripeCustomersByEmail[structureEmail.toLowerCase()] : null;
+                          const status = stripeInfo?.subscriptionStatus ?? structure.subscriptionStatus;
+                          if (loadingStripeCustomers && !status) return <Typography variant="body2" color="text.secondary">Chargement…</Typography>;
+                          if (!status) return '—';
+                          const label = status === 'active' ? 'Actif' : status === 'trialing' ? 'Essai' : status === 'canceled' ? 'Annulé' : status === 'past_due' ? 'Impayé' : status === 'incomplete' ? 'Incomplet' : status;
+                          const color = status === 'active' || status === 'trialing' ? 'success' : status === 'canceled' || status === 'unpaid' ? 'error' : status === 'past_due' || status === 'incomplete' ? 'warning' : 'default';
+                          return (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+                              <Chip size="small" label={label} color={color as 'success' | 'error' | 'warning' | 'default'} variant="outlined" />
+                              {stripeInfo?.cancelAtPeriodEnd && (
+                                <Chip size="small" label="Annulation prévue" color="warning" variant="outlined" />
+                              )}
+                            </Box>
+                          );
+                        })()}
+                      </TableCell>
+                      <TableCell>
                         {new Date(structure.createdAt).toLocaleDateString()}
                       </TableCell>
                       <TableCell>
-                        <Box sx={{ display: 'flex', gap: 1 }}>
+                        <Box sx={{ display: 'flex', gap: 1 }} component="span">
                           {editingStructure === structure.id ? (
                             <>
                               <IconButton
@@ -1728,6 +2239,21 @@ const SuperAdmin: React.FC = () => {
                                 >
                                   <PersonAddIcon />
                                 </IconButton>
+                              </Tooltip>
+                              <Tooltip title={structure.structureType === 'junior' ? 'Générer des données de test (entreprises, contacts, études, candidatures)' : 'Générer des données de test (entreprises, contacts, missions, candidatures)'}>
+                                <span style={{ display: 'inline-flex' }}>
+                                  <IconButton
+                                    color="secondary"
+                                    onClick={() => handleSeedTestData(structure)}
+                                    disabled={seedLoading === structure.id}
+                                  >
+                                    {seedLoading === structure.id ? (
+                                      <CircularProgress size={24} color="secondary" />
+                                    ) : (
+                                      <ScienceIcon />
+                                    )}
+                                  </IconButton>
+                                </span>
                               </Tooltip>
                             </>
                           )}
@@ -2057,13 +2583,155 @@ const SuperAdmin: React.FC = () => {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
             Vue d'ensemble des dernières connexions et inscriptions, toutes structures confondues.
           </Typography>
-          
-          {isImpersonating && (
-            <Alert severity="warning" sx={{ mb: 3 }}>
-              Vous êtes actuellement en mode "Run as". Pour utiliser à nouveau cette fonctionnalité, 
-              vous devez d'abord revenir à votre compte en cliquant sur le bouton dans le bandeau rouge en haut de l'écran.
-            </Alert>
-          )}
+
+          <Paper variant="outlined" sx={{ p: 2, mb: 3, bgcolor: 'action.hover' }}>
+            <Typography variant="h6" gutterBottom>
+              Diagnostic permissions — lien de connexion
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Recherchez un utilisateur par <strong>email</strong> (ou UID), sélectionnez-le puis générez un lien de
+              connexion <strong>réel</strong>. Le lien expire en environ 1&nbsp;h — préférez un onglet privé.
+            </Typography>
+
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>
+                Cible du lien
+              </Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Radio
+                    size="small"
+                    checked={loginLinkBaseUrl === productionAppOrigin}
+                    onChange={() => setLoginLinkBaseUrl(productionAppOrigin)}
+                  />
+                  <Typography variant="body2">
+                    Production — <strong>{productionAppOrigin}</strong>
+                  </Typography>
+                </Box>
+                {isLocalDevHost && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Radio
+                      size="small"
+                      checked={loginLinkBaseUrl === window.location.origin}
+                      onChange={() => setLoginLinkBaseUrl(window.location.origin)}
+                    />
+                    <Typography variant="body2">
+                      Local — <strong>{window.location.origin}</strong>
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+              {!isLocalDevHost && (
+                <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1 }}>
+                  Pour un lien local, ouvrez Super Admin depuis{' '}
+                  <strong>http://localhost:&lt;port&gt;</strong> (ex. 3008, 3011).
+                </Typography>
+              )}
+            </Box>
+
+            <TextField
+              size="small"
+              label="Rechercher par email ou UID"
+              placeholder="ex. jean.dupont@… ou identifiant Firebase"
+              value={loginLinkSearchQuery}
+              onChange={(e) => setLoginLinkSearchQuery(e.target.value)}
+              fullWidth
+              sx={{ mb: 2 }}
+            />
+
+            {loginLinkUsersLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                <CircularProgress size={28} />
+              </Box>
+            ) : (
+              <TableContainer sx={{ maxHeight: 360, mb: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell padding="checkbox" />
+                      <TableCell>Utilisateur</TableCell>
+                      <TableCell>Structure</TableCell>
+                      <TableCell>Rôle</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {!loginLinkHasSearched ? (
+                      <TableRow>
+                        <TableCell colSpan={4} align="center" sx={{ py: 3, color: 'text.secondary' }}>
+                          Saisissez au moins 2 caractères pour lancer la recherche
+                        </TableCell>
+                      </TableRow>
+                    ) : loginLinkUsers.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} align="center" sx={{ py: 3, color: 'text.secondary' }}>
+                          Aucun utilisateur trouvé
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      loginLinkUsers.map((user) => (
+                        <TableRow
+                          key={user.id}
+                          hover
+                          selected={selectedLoginLinkUserId === user.id}
+                          onClick={() => setSelectedLoginLinkUserId(user.id)}
+                          sx={{ cursor: 'pointer' }}
+                        >
+                          <TableCell padding="checkbox">
+                            <Radio
+                              checked={selectedLoginLinkUserId === user.id}
+                              onChange={() => setSelectedLoginLinkUserId(user.id)}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" fontWeight="medium">
+                              {user.displayName}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {user.email}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>{user.structureName}</TableCell>
+                          <TableCell>
+                            <Chip label={user.status || '—'} size="small" variant="outlined" />
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                {loginLinkHasSearched
+                  ? `${loginLinkUsers.length} résultat${loginLinkUsers.length > 1 ? 's' : ''} (max. 25)`
+                  : 'Aucune recherche en cours'}
+              </Typography>
+              <Button
+                variant="contained"
+                startIcon={
+                  generatingLinkFor === 'selected' ? (
+                    <CircularProgress size={18} color="inherit" />
+                  ) : (
+                    <LinkIcon />
+                  )
+                }
+                disabled={!selectedLoginLinkUserId || generatingLinkFor === 'selected'}
+                onClick={() => {
+                  const user = loginLinkUsers.find((u) => u.id === selectedLoginLinkUserId);
+                  if (!user) return;
+                  void handleGenerateLoginLink({
+                    userId: user.id,
+                    displayName: user.displayName,
+                  });
+                }}
+              >
+                Générer le lien
+              </Button>
+            </Box>
+          </Paper>
 
           {activityLoading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -2083,13 +2751,12 @@ const SuperAdmin: React.FC = () => {
                         <TableCell>Utilisateur</TableCell>
                         <TableCell>Structure</TableCell>
                         <TableCell>Date et heure d'inscription</TableCell>
-                        <TableCell align="center">Actions</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {recentSignups.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                          <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                             Aucune inscription récente
                           </TableCell>
                         </TableRow>
@@ -2103,18 +2770,6 @@ const SuperAdmin: React.FC = () => {
                             <TableCell>{user.structureName}</TableCell>
                             <TableCell>
                               {formatDateTime(user.createdAt)}
-                            </TableCell>
-                            <TableCell align="center">
-                              <Tooltip title={`Se connecter en tant que ${user.displayName}`}>
-                                <IconButton
-                                  size="small"
-                                  color="primary"
-                                  onClick={() => handleRunAs(user.id, user.displayName)}
-                                  disabled={isImpersonating}
-                                >
-                                  <SwitchAccountIcon fontSize="small" />
-                                </IconButton>
-                              </Tooltip>
                             </TableCell>
                           </TableRow>
                         ))
@@ -2135,13 +2790,12 @@ const SuperAdmin: React.FC = () => {
                         <TableCell>Utilisateur</TableCell>
                         <TableCell>Structure</TableCell>
                         <TableCell>Date et heure de dernière connexion</TableCell>
-                        <TableCell align="center">Actions</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {recentLogins.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                          <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                             Aucune connexion récente
                           </TableCell>
                         </TableRow>
@@ -2155,18 +2809,6 @@ const SuperAdmin: React.FC = () => {
                             <TableCell>{user.structureName}</TableCell>
                             <TableCell>
                               {formatDateTime(user.lastActivity)}
-                            </TableCell>
-                            <TableCell align="center">
-                              <Tooltip title={`Se connecter en tant que ${user.displayName}`}>
-                                <IconButton
-                                  size="small"
-                                  color="primary"
-                                  onClick={() => handleRunAs(user.id, user.displayName)}
-                                  disabled={isImpersonating}
-                                >
-                                  <SwitchAccountIcon fontSize="small" />
-                                </IconButton>
-                              </Tooltip>
                             </TableCell>
                           </TableRow>
                         ))
@@ -2188,8 +2830,317 @@ const SuperAdmin: React.FC = () => {
               </Button>
             </Box>
           )}
+
+          <Dialog
+            open={loginLinkDialog.open}
+            onClose={() => setLoginLinkDialog((d) => ({ ...d, open: false }))}
+            maxWidth="md"
+            fullWidth
+          >
+            <DialogTitle>Lien de connexion — {loginLinkDialog.displayName}</DialogTitle>
+            <DialogContent>
+              <Alert severity="info" sx={{ mb: 2 }}>
+                Environnement cible : <strong>{loginLinkDialog.targetOrigin}</strong>
+              </Alert>
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                Ce lien vous connecte <strong>réellement</strong> en tant que {loginLinkDialog.email}. Votre
+                session superadmin sera remplacée dans cet onglet. Utilisez un onglet privé si vous souhaitez
+                conserver votre session actuelle. Expire dans ~1&nbsp;h.
+              </Alert>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                {loginLinkDialog.email}
+              </Typography>
+              <TextField
+                fullWidth
+                multiline
+                minRows={3}
+                value={loginLinkDialog.link}
+                InputProps={{ readOnly: true }}
+                sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setLoginLinkDialog((d) => ({ ...d, open: false }))}>
+                Fermer
+              </Button>
+              <Button startIcon={<ContentCopyIcon />} onClick={() => void handleCopyLoginLink()}>
+                Copier
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<OpenInNewIcon />}
+                onClick={() => window.open(loginLinkDialog.link, '_blank', 'noopener,noreferrer')}
+              >
+                Ouvrir le lien
+              </Button>
+            </DialogActions>
+          </Dialog>
+        </Paper>
+      ) : tabValue === 5 ? (
+        <Paper sx={{ p: 3, mt: 3 }}>
+          <StripeCustomers />
         </Paper>
       ) : tabValue === 6 ? (
+        <Paper sx={{ p: 3, mt: 3 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
+            <ContactMailIcon color="primary" sx={{ fontSize: 40 }} />
+            <Box>
+              <Typography variant="h5" gutterBottom>
+                Démarchage — Prospects JE / JS
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Créer des Junior Entreprises ou Job Services prospectés et leurs contacts, puis envoyer un email via EmailJS (hors structures).
+              </Typography>
+            </Box>
+          </Box>
+
+          <Box sx={{ mb: 3 }}>
+            <Typography variant="subtitle1" gutterBottom fontWeight="bold">
+              Créer une JE ou une JS
+            </Typography>
+            <Grid container spacing={2} alignItems="center">
+              <Grid item xs={12} sm={2}>
+                <FormControl fullWidth size="small">
+                  <InputLabel>Type</InputLabel>
+                  <Select
+                    value={newProspectForm.type}
+                    label="Type"
+                    onChange={(e) => setNewProspectForm(prev => ({ ...prev, type: e.target.value as 'je' | 'js' }))}
+                  >
+                    <MenuItem value="je">Junior Entreprise</MenuItem>
+                    <MenuItem value="js">Job Service</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Nom"
+                  placeholder="Nom de la JE / JS"
+                  value={newProspectForm.name}
+                  onChange={(e) => setNewProspectForm(prev => ({ ...prev, name: e.target.value }))}
+                />
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="École (optionnel)"
+                  value={newProspectForm.school}
+                  onChange={(e) => setNewProspectForm(prev => ({ ...prev, school: e.target.value }))}
+                />
+              </Grid>
+              <Grid item>
+                <Button
+                  variant="contained"
+                  startIcon={<AddIcon />}
+                  onClick={handleCreateDemarchageProspect}
+                  disabled={!newProspectForm.name.trim() || demarchageLoading}
+                >
+                  Créer
+                </Button>
+              </Grid>
+            </Grid>
+          </Box>
+
+          <Divider sx={{ my: 3 }} />
+
+          <Typography variant="subtitle1" gutterBottom fontWeight="bold">
+            Prospects et contacts
+          </Typography>
+          {demarchageLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress />
+            </Box>
+          ) : demarchageProspects.length === 0 ? (
+            <Typography color="text.secondary">Aucun prospect. Créez une JE ou une JS ci-dessus.</Typography>
+          ) : (
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell width={48} />
+                    <TableCell>Type</TableCell>
+                    <TableCell>Nom</TableCell>
+                    <TableCell>École</TableCell>
+                    <TableCell>Contacts</TableCell>
+                    <TableCell align="right" width={80}>Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {demarchageProspects.map((prospect) => {
+                    const contacts = demarchageContactsByProspect[prospect.id] || [];
+                    const isExpanded = demarchageExpanded === prospect.id;
+                    return (
+                      <React.Fragment key={prospect.id}>
+                        <TableRow>
+                          <TableCell>
+                            <IconButton
+                              size="small"
+                              onClick={() => setDemarchageExpanded(isExpanded ? null : prospect.id)}
+                            >
+                              {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                            </IconButton>
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              label={prospect.type === 'je' ? 'JE' : 'JS'}
+                              size="small"
+                              color={prospect.type === 'je' ? 'primary' : 'secondary'}
+                              variant="outlined"
+                            />
+                          </TableCell>
+                          <TableCell>{prospect.name}</TableCell>
+                          <TableCell>{prospect.school || '—'}</TableCell>
+                          <TableCell>{contacts.length} contact(s)</TableCell>
+                          <TableCell align="right">
+                            <Tooltip title="Supprimer la JE/JS et tous ses contacts">
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => handleDeleteDemarchageProspect(prospect.id)}
+                              >
+                                <DeleteIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          </TableCell>
+                        </TableRow>
+                        {isExpanded && (
+                          <TableRow>
+                            <TableCell colSpan={6} sx={{ py: 0, borderBottom: 'none', bgcolor: 'action.hover' }}>
+                              <Box sx={{ pl: 4, pr: 2, py: 2 }}>
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                                  <Typography variant="subtitle2">Contacts</Typography>
+                                  <Button
+                                    size="small"
+                                    startIcon={<AddIcon />}
+                                    onClick={() => setNewContactForm({
+                                      prospectId: prospect.id,
+                                      prospectName: prospect.name,
+                                      firstName: '',
+                                      lastName: '',
+                                      position: '',
+                                      email: ''
+                                    })}
+                                  >
+                                    Ajouter un contact
+                                  </Button>
+                                </Box>
+                                {contacts.length === 0 ? (
+                                  <Typography variant="body2" color="text.secondary">Aucun contact. Ajoutez-en un pour envoyer un email.</Typography>
+                                ) : (
+                                    <Table size="small">
+                                    <TableHead>
+                                      <TableRow>
+                                        <TableCell>Prénom</TableCell>
+                                        <TableCell>Nom</TableCell>
+                                        <TableCell>Poste</TableCell>
+                                        <TableCell>Email</TableCell>
+                                        <TableCell>Mail envoyé</TableCell>
+                                        <TableCell align="right">Actions</TableCell>
+                                      </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                      {contacts.map((contact) => (
+                                        <TableRow key={contact.id}>
+                                          <TableCell>{contact.firstName}</TableCell>
+                                          <TableCell>{contact.lastName}</TableCell>
+                                          <TableCell>{contact.position}</TableCell>
+                                          <TableCell>{contact.email}</TableCell>
+                                          <TableCell>
+                                            {contact.lastEmailSentAt
+                                              ? formatDate(toDateFromFirestore(contact.lastEmailSentAt))
+                                              : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            <Button
+                                              size="small"
+                                              variant="outlined"
+                                              startIcon={sendingEmailContactId === contact.id ? <CircularProgress size={16} /> : <SendIcon />}
+                                              disabled={sendingEmailContactId !== null}
+                                              onClick={() => handleSendDemarchageEmail(prospect, contact)}
+                                            >
+                                              Envoyer un mail
+                                            </Button>
+                                            <Tooltip title="Supprimer le contact">
+                                              <IconButton
+                                                size="small"
+                                                color="error"
+                                                onClick={() => handleDeleteDemarchageContact(prospect.id, contact.id)}
+                                              >
+                                                <DeleteIcon fontSize="small" />
+                                              </IconButton>
+                                            </Tooltip>
+                                          </TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                )}
+                              </Box>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+
+          {newContactForm && (
+            <Dialog open={!!newContactForm} onClose={() => setNewContactForm(null)} maxWidth="sm" fullWidth>
+              <DialogTitle>Ajouter un contact — {newContactForm.prospectName}</DialogTitle>
+              <DialogContent dividers>
+                <Grid container spacing={2} sx={{ pt: 1 }}>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      label="Prénom"
+                      value={newContactForm.firstName}
+                      onChange={(e) => setNewContactForm(prev => prev ? { ...prev, firstName: e.target.value } : null)}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      label="Nom"
+                      value={newContactForm.lastName}
+                      onChange={(e) => setNewContactForm(prev => prev ? { ...prev, lastName: e.target.value } : null)}
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      label="Poste"
+                      value={newContactForm.position}
+                      onChange={(e) => setNewContactForm(prev => prev ? { ...prev, position: e.target.value } : null)}
+                    />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <TextField
+                      fullWidth
+                      label="Email"
+                      type="email"
+                      required
+                      value={newContactForm.email}
+                      onChange={(e) => setNewContactForm(prev => prev ? { ...prev, email: e.target.value } : null)}
+                    />
+                  </Grid>
+                </Grid>
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={() => setNewContactForm(null)}>Annuler</Button>
+                <Button variant="contained" onClick={handleAddDemarchageContact} disabled={!newContactForm.email.trim()}>
+                  Ajouter
+                </Button>
+              </DialogActions>
+            </Dialog>
+          )}
+        </Paper>
+      ) : tabValue === 7 ? (
         <Paper sx={{ p: 3, mt: 3 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
             <SecurityIcon color="primary" sx={{ fontSize: 40 }} />
@@ -2303,7 +3254,7 @@ const SuperAdmin: React.FC = () => {
             </Box>
           )}
         </Paper>
-      ) : tabValue === 7 ? (
+      ) : tabValue === 8 ? (
         <Paper sx={{ p: 3, mt: 3 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3 }}>
             <PersonAddIcon color="primary" sx={{ fontSize: 40 }} />
@@ -2427,26 +3378,27 @@ const SuperAdmin: React.FC = () => {
             </Box>
           )}
         </Paper>
-      ) : (
-        <Paper sx={{ p: 3, mt: 3 }}>
-          <StripeCustomers />
-        </Paper>
-      )}
+      ) : null}
 
       <ImageDialog />
-      <Snackbar
-        open={open}
-        autoHideDuration={6000}
-        onClose={() => setOpen(false)}
-      >
-        <Alert 
-          onClose={() => setOpen(false)} 
-          severity={message.type as 'success' | 'error'} 
-          sx={{ width: '100%' }}
+      {createPortal(
+        <Snackbar
+          open={open}
+          autoHideDuration={6000}
+          onClose={() => setOpen(false)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {message.text}
-        </Alert>
-      </Snackbar>
+          <Alert 
+            onClose={() => setOpen(false)} 
+            severity={message.type as 'success' | 'error'} 
+            sx={{ width: '100%' }}
+          >
+            {message.text}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
 
       <UsersDialog />
 

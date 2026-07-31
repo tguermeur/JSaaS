@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from "firebase/firestore";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
 
 // IMPORT CRITIQUE: Importer le module Storage de manière à forcer l'enregistrement du service
@@ -8,26 +8,11 @@ import { getFunctions } from "firebase/functions";
 import "firebase/storage";
 import { getStorage, ref } from "firebase/storage";
 
-// Diagnostic des imports au chargement du module
-console.log('[Firebase Config] 📦 Vérification des imports:');
-console.log('  - initializeApp:', typeof initializeApp === 'function' ? '✅' : '❌');
-console.log('  - getAuth:', typeof getAuth === 'function' ? '✅' : '❌');
-console.log('  - initializeFirestore:', typeof initializeFirestore === 'function' ? '✅' : '❌');
-console.log('  - getStorage:', typeof getStorage === 'function' ? '✅' : '❌');
-console.log('  - ref:', typeof ref === 'function' ? '✅' : '❌');
-console.log('  - getFunctions:', typeof getFunctions === 'function' ? '✅' : '❌');
-console.log('  - Module firebase/storage importé (side-effect): ✅');
+const DEBUG_FIREBASE = import.meta.env.VITE_DEBUG_FIREBASE === 'true';
 
-// Diagnostic des variables d'environnement
-console.group('[Firebase Config] 🔍 DIAGNOSTIC .ENV');
-console.log('📍 VITE_FIREBASE_API_KEY:', import.meta.env.VITE_FIREBASE_API_KEY ? '✅ Défini' : '❌ Non défini (utilise valeur par défaut)');
-console.log('📍 VITE_FIREBASE_AUTH_DOMAIN:', import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '❌ Non défini');
-console.log('📍 VITE_FIREBASE_PROJECT_ID:', import.meta.env.VITE_FIREBASE_PROJECT_ID || '❌ Non défini');
-console.log('📍 VITE_FIREBASE_STORAGE_BUCKET:', import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '❌ Non défini');
-console.log('📍 VITE_FIREBASE_MESSAGING_SENDER_ID:', import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '❌ Non défini');
-console.log('📍 VITE_FIREBASE_APP_ID:', import.meta.env.VITE_FIREBASE_APP_ID ? '✅ Défini' : '❌ Non défini');
-console.log('📍 Toutes les variables .env:', Object.keys(import.meta.env).filter(k => k.startsWith('VITE_FIREBASE')));
-console.groupEnd();
+if (DEBUG_FIREBASE) {
+  console.log('[Firebase Config] 📦 Imports et .env:', Object.keys(import.meta.env).filter(k => k.startsWith('VITE_FIREBASE')));
+}
 
 // Configuration Firebase - TOUTES les valeurs DOIVENT être définies dans les variables d'environnement
 // Pas de valeurs par défaut pour des raisons de sécurité
@@ -54,45 +39,27 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-console.log('[Firebase Config] 📋 Configuration finale:', {
-  apiKey: firebaseConfig.apiKey ? '✅ Défini' : '❌',
-  authDomain: firebaseConfig.authDomain,
-  projectId: firebaseConfig.projectId,
-  storageBucket: firebaseConfig.storageBucket || '❌ Non défini (utilisera bucket par défaut)',
-  messagingSenderId: firebaseConfig.messagingSenderId,
-  appId: firebaseConfig.appId ? '✅ Défini' : '❌'
-});
+if (DEBUG_FIREBASE) {
+  console.log('[Firebase Config] 📋 Configuration:', { projectId: firebaseConfig.projectId, storageBucket: firebaseConfig.storageBucket });
+}
 
 // Initialiser Firebase avec gestion d'erreur
 export let app: any = null;
 try {
   app = initializeApp(firebaseConfig);
-  console.log('Firebase app initialisé avec succès');
-  console.log('[Firebase Config] ✅ Module firebase/storage déjà importé (side-effect)');
-  
-  // Vérifier immédiatement les services enregistrés (Firebase v9+ utilise container.providers)
+  if (DEBUG_FIREBASE) console.log('Firebase app initialisé');
   try {
     const appInternal = app as any;
-    if (appInternal.container && appInternal.container.providers) {
-      const providers = appInternal.container.providers;
-      const providerNames = Array.from(providers.keys());
-      console.log('[Firebase Config] 📍 Services enregistrés après init:', providerNames);
-      const hasStorage = providerNames.some(name => 
-        name.includes('storage') || 
-        name.includes('Storage') || 
-        name === 'storage' ||
-        name === 'storage-compat'
-      );
-      console.log('[Firebase Config] 📍 Service Storage présent:', hasStorage ? '✅ OUI' : '❌ NON');
-      
-      if (!hasStorage) {
-        console.warn('[Firebase Config] ⚠️ Le service Storage n\'est pas enregistré - le module doit s\'enregistrer automatiquement');
-      }
-    } else {
-      console.warn('[Firebase Config] ⚠️ container.providers non disponible');
+    if (appInternal.container?.providers && !DEBUG_FIREBASE) {
+      const hasStorage = Array.from(appInternal.container.providers.keys()).some((name: string) =>
+        name.includes('storage') || name === 'storage' || name === 'storage-compat');
+      if (!hasStorage) console.warn('[Firebase Config] Service Storage non enregistré');
+    } else if (DEBUG_FIREBASE) {
+      const providerNames = appInternal.container?.providers ? Array.from(appInternal.container.providers.keys()) : [];
+      console.log('[Firebase Config] Services:', providerNames);
     }
   } catch (e) {
-    console.warn('[Firebase Config] ⚠️ Erreur lors de la vérification des services:', e);
+    if (DEBUG_FIREBASE) console.warn('[Firebase Config] Vérif. services:', e);
   }
 } catch (error) {
   console.error('Erreur lors de l\'initialisation de Firebase app:', error);
@@ -103,20 +70,19 @@ try {
 // Initialiser les services avec gestion d'erreur
 export const auth = app ? getAuth(app) : null;
 
-// Configuration Firestore avec persistance et gestion des onglets.
-// En dev (Vite) ou sur localhost, on force le long polling pour éviter les erreurs
-// "access control checks" sur les canaux Listen/Write (CORS / WebChannel bloqué).
+// Configuration Firestore : en dev/localhost, cache mémoire + long polling pour limiter
+// les erreurs "access control checks" et "Unexpected state" quand la connexion est bloquée.
 const isLocalhost = typeof window !== 'undefined' && /localhost|127\.0\.0\.1|^0\.0\.0\.0$/.test(window.location?.hostname ?? '');
 const isDev = import.meta.env.DEV === true;
+const useDevFirestore = isLocalhost || isDev;
 export const db = app ? initializeFirestore(app, {
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager()
-  }),
-  ...(isLocalhost || isDev ? { experimentalForceLongPolling: true } : {})
+  localCache: useDevFirestore
+    ? memoryLocalCache()
+    : persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+  ...(useDevFirestore ? { experimentalForceLongPolling: true } : {})
 }) : null;
 
-// Configuration pour la production - pas d'émulateurs
-console.log('Configuration Firebase pour la production - utilisation des services cloud');
+if (DEBUG_FIREBASE) console.log('Configuration Firebase - services cloud');
 
 // Fonction helper pour tester si storage est vraiment utilisable
 const testStorageInstance = (storageInstance: any): boolean => {
@@ -150,164 +116,18 @@ const initializeStorageAsync = async (): Promise<any> => {
     return null;
   }
 
-  console.group('🔍 DIAGNOSTIC FIREBASE STORAGE');
-  console.log('═══════════════════════════════════════════════════════════');
-  console.log('🔍 INITIALISATION FIREBASE STORAGE - DÉBUT (ASYNCHRONE)');
-  console.log('═══════════════════════════════════════════════════════════');
-  
-  // Diagnostic 1: Vérifier les imports
-  console.group('📦 DIAGNOSTIC 1: Vérification des imports');
-  console.log('✅ getStorage importé:', typeof getStorage === 'function' ? 'OUI' : 'NON');
-  console.log('✅ ref importé:', typeof ref === 'function' ? 'OUI' : 'NON');
-  console.log('📍 Module firebase/storage disponible:', typeof getStorage !== 'undefined');
-  
-  // Vérifier la structure de getStorage
-  if (typeof getStorage === 'function') {
-    console.log('📍 getStorage est une fonction');
-    console.log('📍 Nom de la fonction:', getStorage.name);
-    console.log('📍 Longueur des paramètres:', getStorage.length);
-    // Essayer d'inspecter la fonction
-    try {
-      const storageModule = (getStorage as any);
-      console.log('📍 Propriétés de getStorage:', Object.keys(storageModule).slice(0, 10));
-    } catch (e) {
-      // Ignorer
-    }
-  } else {
-    console.error('❌ getStorage n\'est PAS une fonction! Type:', typeof getStorage);
-    console.error('❌ Valeur de getStorage:', getStorage);
-  }
-  console.groupEnd();
-  
-  // Diagnostic 2: Vérifier l'app Firebase
-  console.group('📱 DIAGNOSTIC 2: État de l\'app Firebase');
-  console.log('📍 App disponible:', !!app);
-  console.log('📍 Type de app:', typeof app);
-  console.log('📍 Nom de l\'app:', app?.name || 'N/A');
-  console.log('📍 Options de l\'app:', app?.options || 'N/A');
-  console.log('📍 Project ID:', app?.options?.projectId || firebaseConfig.projectId);
-  console.log('📍 Storage Bucket config:', app?.options?.storageBucket || firebaseConfig.storageBucket || 'undefined');
-  
-  // Vérifier les services enregistrés dans l'app (Firebase v9+ utilise container.providers)
-  try {
-    const appInternal = app as any;
-    console.log('📍 Services enregistrés dans l\'app:');
-    
-    // Firebase v9+ utilise app.container.providers (Map)
-    if (appInternal.container && appInternal.container.providers) {
-      const providers = appInternal.container.providers;
-      const providerNames = Array.from(providers.keys());
-      console.log('  - Services dans container.providers:', providerNames);
-      console.log('  - Nombre de services:', providerNames.length);
-      
-      if (providerNames.length > 0) {
-        providerNames.forEach(name => {
-          const provider = providers.get(name);
-          console.log(`    • ${name}:`, {
-            isComponentSet: provider?.isComponentSet?.() || false,
-            type: typeof provider
-          });
-        });
-      }
-      
-      // Vérifier spécifiquement le service Storage
-      const storageProvider = providerNames.find(name => 
-        name.includes('storage') || 
-        name.includes('Storage') || 
-        name === 'storage' ||
-        name === 'storage-compat'
-      );
-      
-      if (storageProvider) {
-        console.log('  - ✅ Service Storage trouvé:', storageProvider);
-      } else {
-        console.log('  - ❌ Service Storage NON trouvé dans container.providers');
-        console.log('  - 💡 Le service Storage doit s\'enregistrer automatiquement lors de l\'import');
-      }
-    } else {
-      console.log('  - ❌ container.providers non disponible');
-      console.log('  - container existe:', !!appInternal.container);
-      if (appInternal.container) {
-        console.log('  - Propriétés du container:', Object.keys(appInternal.container));
-      }
-    }
-    
-    // Vérifier aussi _services pour compatibilité (anciennes versions)
-    if (appInternal._services) {
-      console.log('  - _services (ancien format):', Object.keys(appInternal._services));
-    }
-    
-    // Vérifier d'autres propriétés internes
-    console.log('  - Propriétés de l\'app:', Object.keys(appInternal).filter(k => k.startsWith('_') || k === 'container'));
-  } catch (e) {
-    console.log('  - ❌ Erreur lors de l\'accès aux services internes:', e);
-  }
-  console.groupEnd();
-  
-  // Diagnostic 3: Configuration
-  console.group('⚙️ DIAGNOSTIC 3: Configuration');
-  console.log('📍 Bucket configuré dans .env:', firebaseConfig.storageBucket || 'undefined');
-  console.log('📍 Project ID:', firebaseConfig.projectId);
-  console.log('📍 API Key définie:', !!firebaseConfig.apiKey);
-  console.log('📍 App ID:', firebaseConfig.appId);
-  console.groupEnd();
-  
-  // Attendre un peu pour que Firebase SDK détecte Storage
-  console.log('⏳ Attente de 500ms pour la détection Storage par Firebase SDK...');
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // Méthode 1: getStorage() sans paramètres (PRIORITÉ - utilise le bucket par défaut)
-  console.group('🔧 TENTATIVE 1: getStorage() sans paramètres');
-  try {
-    console.log('📍 App passée à getStorage:', !!app);
-    console.log('📍 Type de app:', typeof app);
-    console.log('📍 storageBucket configuré:', firebaseConfig.storageBucket || 'undefined (utilisera le bucket par défaut)');
-    
-    // Vérifier juste avant l'appel
-    console.log('📍 Vérification pré-appel:');
-    console.log('  - getStorage est une fonction:', typeof getStorage === 'function');
-    console.log('  - app est un objet:', typeof app === 'object');
-    console.log('  - app n\'est pas null:', app !== null);
-    
-    // Appel de getStorage avec logging détaillé
-    // IMPORTANT: getStorage(app) lie automatiquement Storage à Auth de l'app
-    console.log('📍 Appel de getStorage(app)...');
-    console.log('📍 Vérification Auth avant Storage init:', {hasAuth:!!auth,authApp:auth?._delegate?.app?.name});
-    const startTime = performance.now();
-    storage = getStorage(app);
-    const endTime = performance.now();
-    console.log(`✅ getStorage() exécuté en ${(endTime - startTime).toFixed(2)}ms`);
-    console.log('✅ Storage instance créée:', !!storage);
-    console.log('✅ Type de storage:', typeof storage);
-    console.log('✅ Firebase Storage initialisé (bucket par défaut - détection automatique)');
-    console.log('📍 Firebase SDK a détecté le bucket par défaut du projet');
+  if (DEBUG_FIREBASE) {
+    console.group('🔍 DIAGNOSTIC FIREBASE STORAGE');
+    console.log('Init Storage (asynchrone)');
     console.groupEnd();
+  }
+  await new Promise(resolve => setTimeout(resolve, 500));
+  try {
+    storage = getStorage(app);
+    if (DEBUG_FIREBASE) console.log('✅ Firebase Storage initialisé');
     return storage;
   } catch (error: any) {
-    const errorMsg = error?.message || String(error);
-    console.error('❌ Méthode 1 (bucket par défaut) échouée:', errorMsg);
-    console.error('❌ Erreur complète:', error);
-    console.error('❌ Code d\'erreur:', error?.code);
-    console.error('❌ Nom de l\'erreur:', error?.name);
-    console.error('❌ Stack:', error?.stack);
-    
-    // Diagnostic approfondi de l'erreur
-    console.group('🔬 DIAGNOSTIC ERREUR DÉTAILLÉ');
-    if (error?.code) {
-      console.log('📍 Code d\'erreur:', error.code);
-    }
-    if (error?.message) {
-      console.log('📍 Message:', error.message);
-      if (error.message.includes('not available')) {
-        console.log('⚠️ Le service Storage n\'est pas disponible dans le SDK');
-        console.log('💡 Cela peut indiquer:');
-        console.log('   1. Le module firebase/storage n\'est pas correctement bundlé');
-        console.log('   2. Le service Storage n\'est pas enregistré dans l\'app Firebase');
-        console.log('   3. Un problème de timing - le service n\'est pas encore prêt');
-      }
-    }
-    console.groupEnd();
-    console.groupEnd();
+    if (DEBUG_FIREBASE) console.error('❌ Storage init:', error?.message || error);
     
     // Méthode 1a: getStorage() avec le bucket spécifique depuis .env (si défini)
     try {
@@ -316,82 +136,45 @@ const initializeStorageAsync = async (): Promise<any> => {
         const gsBucket = firebaseConfig.storageBucket.startsWith('gs://') 
           ? firebaseConfig.storageBucket 
           : `gs://${firebaseConfig.storageBucket}`;
-        console.log('🔍 Tentative Méthode 1a avec bucket spécifique (format gs://):', gsBucket);
         storage = getStorage(app, gsBucket);
-        console.log('✅ Firebase Storage initialisé (bucket spécifique gs://:', gsBucket + ')');
         return storage;
       }
     } catch (error1a: any) {
-      const errorMsg1a = error1a?.message || String(error1a);
-      console.error('❌ Méthode 1a (sans gs://) échouée:', errorMsg1a);
-      
-      // Méthode 1b: getStorage() sans paramètres (détection automatique - fallback)
       try {
-        console.log('🔍 Tentative Méthode 1b (détection automatique)');
         storage = getStorage(app);
-        console.log('✅ Firebase Storage initialisé (méthode par défaut - détection automatique)');
-        console.log('📍 Bucket détecté automatiquement par Firebase (peut être EUROPE-WEST3)');
+        return storage;
       } catch (fallbackError: any) {
-        const fallbackErrorMsg = fallbackError?.message || String(fallbackError);
-        console.error('❌ Méthode 1b (détection automatique) échouée:', fallbackErrorMsg);
-        console.error('❌ Erreur complète:', fallbackError);
-        
-        // Méthode 2: getStorage() avec bucket explicite (sans gs://)
         try {
           if (firebaseConfig.storageBucket) {
-            // Enlever le préfixe gs:// si présent
             const bucketName = firebaseConfig.storageBucket.replace(/^gs:\/\//, '');
             storage = getStorage(app, bucketName);
-            console.log('✅ Firebase Storage initialisé (avec bucket explicite:', bucketName + ')');
+            return storage;
           }
-        } catch (secondError: any) {
-          console.warn('⚠️ Méthode 2 échouée:', secondError?.message);
-          
-          // Méthode 3: getStorage() avec format gs://
+        } catch (_second: any) {
           try {
-            const gsBucket = firebaseConfig.storageBucket.startsWith('gs://') 
+            const gsBucket = firebaseConfig.storageBucket?.startsWith('gs://') 
               ? firebaseConfig.storageBucket 
               : `gs://${firebaseConfig.storageBucket}`;
             storage = getStorage(app, gsBucket);
-            console.log('✅ Firebase Storage initialisé (format gs://:', gsBucket + ')');
-          } catch (thirdError: any) {
-            console.warn('⚠️ Méthode 3 échouée:', thirdError?.message);
-            
-            // Méthode 4: Essayer avec le bucket sans le suffixe .firebasestorage.app
+            return storage;
+          } catch (_third: any) {
             try {
-              const bucketWithoutSuffix = firebaseConfig.storageBucket.replace(/\.firebasestorage\.app$/, '');
-              storage = getStorage(app, bucketWithoutSuffix);
-              console.log('✅ Firebase Storage initialisé (sans suffixe:', bucketWithoutSuffix + ')');
-            } catch (fourthError: any) {
-              console.warn('⚠️ Méthode 4 échouée:', fourthError?.message);
-              
-              // Méthode 5: Essayer avec le format complet firebasestorage.app
+              const bucketWithoutSuffix = firebaseConfig.storageBucket?.replace(/\.firebasestorage\.app$/, '');
+              if (bucketWithoutSuffix) {
+                storage = getStorage(app, bucketWithoutSuffix);
+                return storage;
+              }
+            } catch (_fourth: any) {
               try {
                 const fullBucketName = `${firebaseConfig.storageBucket}.firebasestorage.app`;
                 storage = getStorage(app, fullBucketName);
-                console.log('✅ Firebase Storage initialisé (format complet:', fullBucketName + ')');
-              } catch (fifthError: any) {
-                console.warn('⚠️ Méthode 5 échouée:', fifthError?.message);
-                
-                // Méthode 6: Essayer avec le project ID comme bucket
+                return storage;
+              } catch (_fifth: any) {
                 try {
-                  const projectBucket = `${firebaseConfig.projectId}.appspot.com`;
-                  storage = getStorage(app, projectBucket);
-                  console.log('✅ Firebase Storage initialisé (bucket par défaut:', projectBucket + ')');
-                } catch (sixthError: any) {
-                  console.error('❌ Toutes les méthodes d\'initialisation Storage ont échoué');
-                  console.error('💡 Cela peut être dû à:');
-                  console.error('   1. Le bucket n\'est pas correctement lié à Firebase dans Firebase Console');
-                  console.error('   2. Les APIs Storage ne sont pas activées dans Google Cloud Console');
-                  console.error('   3. Le nom du bucket dans .env ne correspond pas au bucket créé');
-                  console.error('   4. Le bucket doit être lié à Firebase dans Firebase Console → Storage');
-                  console.error('');
-                  console.error('📋 Vérifications à faire:');
-                  console.error('   1. Allez dans Firebase Console → Storage');
-                  console.error('   2. Vérifiez que le bucket "jsaas-dd2f7.firebasestorage.app" apparaît dans la liste');
-                  console.error('   3. Si le bucket n\'apparaît pas, il faut le lier à Firebase');
-                  console.error('   4. Le nom exact du bucket devrait être visible dans Firebase Console');
-                  console.error('💡 Storage sera null, mais peut être initialisé plus tard si nécessaire');
+                  storage = getStorage(app, `${firebaseConfig.projectId}.appspot.com`);
+                  return storage;
+                } catch (_sixth: any) {
+                  console.error('❌ Firebase Storage: init échouée (bucket/APIs à vérifier dans la console Firebase)');
                   storage = null;
                 }
               }
@@ -401,50 +184,6 @@ const initializeStorageAsync = async (): Promise<any> => {
       }
     }
   }
-  
-  // Diagnostic final
-  console.group('📊 DIAGNOSTIC FINAL');
-  console.log('═══════════════════════════════════════════════════════════');
-  if (storage) {
-    console.log('✅ FIREBASE STORAGE INITIALISÉ AVEC SUCCÈS');
-    console.log('✅ Firebase Storage prêt à l\'emploi');
-    console.log('📍 Storage instance:', storage);
-    console.log('📍 Type:', typeof storage);
-    
-    // Tester si on peut créer une référence
-    try {
-      const testRef = ref(storage, '__test__');
-      console.log('✅ Test de référence réussi:', !!testRef);
-    } catch (testError) {
-      console.warn('⚠️ Test de référence échoué:', testError);
-    }
-  } else {
-    console.error('❌ FIREBASE STORAGE NON INITIALISÉ - TOUTES LES MÉTHODES ONT ÉCHOUÉ');
-    console.warn('⚠️ Firebase Storage non initialisé - certaines fonctionnalités seront désactivées');
-    
-    // Diagnostic approfondi du problème
-    console.group('🔬 ANALYSE DU PROBLÈME');
-    console.log('💡 L\'erreur "Service storage is not available" signifie que Firebase SDK ne peut pas détecter Storage');
-    console.log('');
-    console.log('🔍 Causes possibles:');
-    console.log('   1. ❌ Le module firebase/storage n\'est pas correctement bundlé par Vite');
-    console.log('   2. ❌ Le service Storage n\'est pas enregistré dans l\'app Firebase');
-    console.log('   3. ❌ Un problème de timing - le service n\'est pas encore prêt');
-    console.log('   4. ❌ Le bucket Storage n\'est pas activé dans Firebase Console');
-    console.log('   5. ❌ Les APIs Storage ne sont pas activées dans Google Cloud Console');
-    console.log('');
-    console.log('🔧 Solutions à essayer:');
-    console.log('   1. Vérifier que firebase/storage est dans vite.config.ts optimizeDeps.include');
-    console.log('   2. Nettoyer le cache Vite: rm -rf node_modules/.vite');
-    console.log('   3. Redémarrer le serveur de développement');
-    console.log('   4. Vérifier dans Firebase Console que Storage est activé');
-    console.log('   5. Vérifier dans Google Cloud Console que l\'API Storage est activée');
-    console.groupEnd();
-  }
-  console.log('═══════════════════════════════════════════════════════════');
-  console.groupEnd();
-  console.groupEnd(); // Fermer le groupe principal
-  
   return storage;
 };
 
@@ -454,15 +193,11 @@ if (app) {
   // Lancer l'initialisation asynchrone immédiatement
   storageInitializationPromise = initializeStorageAsync();
   storageInitializationPromise.then((result) => {
-    if (result) {
-      storage = result;
-      console.log('✅ Storage initialisé de manière asynchrone');
-    }
+    if (result) storage = result;
   }).catch((error) => {
-    console.error('❌ Erreur lors de l\'initialisation asynchrone:', error);
+    if (DEBUG_FIREBASE) console.error('❌ Init Storage asynchrone:', error);
   });
 } else {
-  console.error('❌ App Firebase non disponible - Storage non initialisé');
   storage = null;
 }
 
@@ -514,13 +249,12 @@ export const getFirebaseFunctions = async () => {
       // Initialisation des fonctions avec gestion d'erreur améliorée
       try {
         functionsInstance = getFunctions(app, 'us-central1');
-        console.log('Firebase Functions initialisé avec succès (mode production)');
+        if (DEBUG_FIREBASE) console.log('Firebase Functions initialisé (us-central1)');
       } catch (functionsError) {
         console.error('Erreur lors de l\'initialisation de Firebase Functions:', functionsError);
-        // Essayer sans spécifier la région
         try {
           functionsInstance = getFunctions(app);
-          console.log('Firebase Functions initialisé avec succès (région par défaut)');
+          if (DEBUG_FIREBASE) console.log('Firebase Functions initialisé (région par défaut)');
         } catch (fallbackError) {
           console.error('Erreur lors de l\'initialisation de Firebase Functions (fallback):', fallbackError);
           return null;

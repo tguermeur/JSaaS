@@ -1,13 +1,5 @@
 import React from 'react';
-import { 
-  Box, 
-  Typography, 
-  Tabs,
-  Tab,
-  Container,
-  useTheme,
-  keyframes
-} from '@mui/material';
+import { Box, Typography, Tabs, Tab } from '@mui/material';
 import { 
   Description as DescriptionIcon,
   Assignment as AssignmentIcon,
@@ -23,18 +15,10 @@ import {
 } from '@mui/icons-material';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { tokens } from '../theme/tokens';
+import { settingsPageStyles } from '../components/ds';
 
 // Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
 
 interface TabItem {
   label: string;
@@ -49,8 +33,6 @@ const Settings: React.FC = () => {
   const { userData } = useAuth();
   const isSuperAdmin = userData?.status === 'superadmin';
   const isAdmin = userData?.status === 'admin';
-  const theme = useTheme();
-
   // Définir tous les onglets possibles - Structure en premier
   const allTabs: TabItem[] = [
     {
@@ -75,7 +57,11 @@ const Settings: React.FC = () => {
       label: 'Accès',
       path: '/app/settings/authorizations',
       icon: <SecurityIcon />,
-      visible: isSuperAdmin || isAdmin || userData?.status === 'membre'
+      visible:
+        isSuperAdmin ||
+        isAdmin ||
+        userData?.status === 'admin_structure' ||
+        userData?.status === 'membre'
     },
     {
       label: 'Types de mission',
@@ -99,7 +85,7 @@ const Settings: React.FC = () => {
       label: 'Abonnement',
       path: '/app/settings/billing',
       icon: <PaymentIcon />,
-      visible: isSuperAdmin || isAdmin
+      visible: isSuperAdmin || isAdmin || userData?.status === 'admin_structure'
     },
     {
       label: 'Notifications',
@@ -140,78 +126,78 @@ const Settings: React.FC = () => {
   }, [isMainSettings, navigate]);
 
   return (
-    <Container maxWidth="xl" sx={{ py: 1.5, px: 3 }}>
-      <Box sx={{ 
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 0
-      }}>
-        {/* Barre d'onglets - style Apple */}
-        <Box sx={{ 
-          borderBottom: '1px solid #e5e5ea',
-          mb: 3
-        }}>
-          <Tabs
-            value={activeTab}
-            onChange={handleTabChange}
-            variant="scrollable"
-            scrollButtons="auto"
-            sx={{
+    <Box sx={{ ...settingsPageStyles.root, height: 'auto', minHeight: '100%' }}>
+      <Box
+        component="header"
+        sx={{
+          ...settingsPageStyles.header,
+          flexDirection: 'column',
+          alignItems: 'stretch',
+          py: 0,
+          px: 0,
+          borderBottom: `1px solid ${tokens.colors.divider}`,
+        }}
+      >
+        <Box sx={{ px: 3, pt: 2, pb: 0.5 }}>
+          <Typography sx={settingsPageStyles.eyebrow}>Configuration</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Paramètres</Typography>
+        </Box>
+        <Tabs
+          value={activeTab}
+          onChange={handleTabChange}
+          variant="scrollable"
+          scrollButtons="auto"
+          sx={{
+            minHeight: 44,
+            px: 1,
+            '& .MuiTab-root': {
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
               minHeight: 44,
-              '& .MuiTab-root': {
-                textTransform: 'none',
-                fontWeight: 500,
-                fontSize: '0.875rem',
-                minHeight: 44,
-                paddingX: 2.5,
-                paddingY: 1,
-                color: '#86868b',
-                transition: 'color 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                '&.Mui-selected': {
-                  color: '#1d1d1f',
-                  fontWeight: 600
-                },
-                '&:hover': {
-                  color: '#1d1d1f',
-                  backgroundColor: 'transparent'
-                },
-                '& .MuiTab-iconWrapper': {
-                  marginRight: 1,
-                  '& svg': {
-                    fontSize: '1rem'
-                  }
-                }
+              paddingX: 2.5,
+              paddingY: 1,
+              color: tokens.colors.textSecondary,
+              transition: tokens.transitions.fast,
+              '&.Mui-selected': {
+                color: tokens.colors.brandTeal,
+                fontWeight: 600,
               },
-              '& .MuiTabs-indicator': {
-                height: 2,
-                backgroundColor: '#1d1d1f',
-                borderRadius: '1px 1px 0 0'
+              '&:hover': {
+                color: tokens.colors.textPrimary,
+                backgroundColor: 'transparent',
               },
-              '& .MuiTabs-scrollButtons': {
-                color: '#86868b',
-                '&.Mui-disabled': {
-                  opacity: 0.3
-                }
-              }
-            }}
-          >
-            {visibleTabs.map((tab, index) => (
-              <Tab
-                key={tab.path}
-                label={tab.label}
-                icon={tab.icon}
-                iconPosition="start"
-              />
-            ))}
-          </Tabs>
-        </Box>
-
-        {/* Contenu de la page */}
-        <Box sx={{ mt: 2 }}>
-          <Outlet />
-        </Box>
+              '& .MuiTab-iconWrapper': {
+                marginRight: 1,
+                '& svg': { fontSize: '1rem' },
+              },
+            },
+            '& .MuiTabs-indicator': {
+              height: 2,
+              backgroundColor: tokens.colors.brandTeal,
+              borderRadius: '1px 1px 0 0',
+            },
+            '& .MuiTabs-scrollButtons': {
+              color: tokens.colors.textSecondary,
+              '&.Mui-disabled': { opacity: 0.3 },
+            },
+          }}
+        >
+          {visibleTabs.map((tab) => (
+            <Tab
+              key={tab.path}
+              label={tab.label}
+              icon={tab.icon}
+              iconPosition="start"
+            />
+          ))}
+        </Tabs>
       </Box>
-    </Container>
+
+      <Box sx={{ flex: 1, overflow: 'auto', p: 3 }}>
+        <Outlet />
+      </Box>
+    </Box>
   );
 };
 

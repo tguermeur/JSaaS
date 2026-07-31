@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -56,7 +57,8 @@ import {
   Lock as LockIcon,
   HelpOutline as HelpIcon,
   Info as InfoIcon,
-  RecordVoiceOver as RecordVoiceOverIcon
+  RecordVoiceOver as RecordVoiceOverIcon,
+  Folder as FolderIcon
 } from '@mui/icons-material';
 import { 
   canAccessPage, 
@@ -70,6 +72,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { usePermission } from '../../hooks/usePermission';
 import AccessDenied from '../../components/common/AccessDenied';
 import { decryptUsersList } from '../../utils/decryptUserUtils';
+import { tokens } from '../../theme/tokens';
+import { settingsPageStyles, SettingsPanel } from '../../components/ds';
 
 // Pôles par défaut
 const DEFAULT_POLES = [
@@ -111,6 +115,11 @@ const DEFAULT_PERMISSIONS_CONFIG: Record<string, {
     write: { roles: ['admin'], poles: ['dev', 'com'] },
     read: { roles: ['membre', 'admin'], poles: [] },
     description: 'Modification par admins et pôle commercial'
+  },
+  documents: {
+    write: { roles: ['admin'], poles: [] },
+    read: { roles: ['membre', 'admin'], poles: [] },
+    description: 'Espace documents de la structure'
   },
   commercial: {
     write: { roles: ['admin'], poles: ['dev', 'com'] },
@@ -232,6 +241,15 @@ const Authorizations: React.FC = () => {
       id: 'entreprises',
       name: 'Entreprises',
       icon: <BusinessIcon />,
+      access: [
+        { id: '1', name: 'Admin', role: 'Modification', icon: <AdminIcon />, color: theme.palette.error.main },
+        { id: '2', name: 'Tous les membres', role: 'Lecture', icon: <GroupIcon />, color: theme.palette.info.main }
+      ]
+    },
+    {
+      id: 'documents',
+      name: 'Documents',
+      icon: <FolderIcon />,
       access: [
         { id: '1', name: 'Admin', role: 'Modification', icon: <AdminIcon />, color: theme.palette.error.main },
         { id: '2', name: 'Tous les membres', role: 'Lecture', icon: <GroupIcon />, color: theme.palette.info.main }
@@ -945,57 +963,45 @@ const Authorizations: React.FC = () => {
   };
 
   return (
-    <Box sx={{ width: '100%', px: { xs: 2, sm: 3, md: 4 } }}>
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h5" sx={{ 
-          fontWeight: 600,
-          letterSpacing: '-0.5px',
-          mb: 1
-        }}>
-          Gestion des autorisations
-        </Typography>
-        <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
-          Gérez les accès aux différentes pages de l'application
-        </Typography>
+    <Box sx={{ width: '100%' }}>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3, flexDirection: 'column', alignItems: 'stretch' }}>
+        <Box sx={{ mb: 2 }}>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Gestion des autorisations</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Gérez les accès aux différentes pages de l&apos;application
+          </Typography>
+        </Box>
         
         {/* Info-bulle explicative */}
         <Paper
           elevation={0}
           sx={{
             p: 2,
-            borderRadius: 2,
-            backgroundColor: alpha(theme.palette.info.main, 0.08),
-            border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
+            borderRadius: tokens.radius.md,
+            backgroundColor: tokens.colors.infoLight,
+            border: `1px solid ${tokens.colors.primaryAlpha20}`,
             display: 'flex',
             alignItems: 'flex-start',
             gap: 1.5,
           }}
         >
-          <InfoIcon sx={{ color: theme.palette.info.main, mt: 0.2 }} />
+          <InfoIcon sx={{ color: tokens.colors.brandNavy, mt: 0.2 }} />
           <Box>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5, color: theme.palette.info.dark }}>
-              Comprendre les niveaux d'accès
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5, color: tokens.colors.brandNavy }}>
+              Comprendre les niveaux d&apos;accès
             </Typography>
             <Typography variant="body2" color="text.secondary">
               <strong>Lecture</strong> : Permet de visualiser les données sans pouvoir les modifier.
               <br />
               <strong>Modification</strong> : Permet de créer, modifier et supprimer des données. 
-              <em> L'accès en modification inclut automatiquement l'accès en lecture.</em>
+              <em> L&apos;accès en modification inclut automatiquement l&apos;accès en lecture.</em>
             </Typography>
           </Box>
         </Paper>
       </Box>
 
-      <Paper 
-        elevation={0}
-        sx={{ 
-          border: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
-          borderRadius: 2,
-          overflow: 'hidden',
-          width: '100%'
-        }}
-      >
-        <Box sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
+      <SettingsPanel title="Matrice des permissions" desc="Configurez les droits de lecture et de modification par page">
           <TableContainer>
             <Table>
               <TableHead>
@@ -1094,8 +1100,7 @@ const Authorizations: React.FC = () => {
               </TableBody>
             </Table>
           </TableContainer>
-        </Box>
-      </Paper>
+      </SettingsPanel>
 
       <Dialog 
         open={openDialog} 
@@ -1222,7 +1227,7 @@ const Authorizations: React.FC = () => {
                       sx={{ 
                         width: 32, 
                         height: 32, 
-                        bgcolor: theme.palette.secondary.main,
+                        bgcolor: tokens.colors.brandTeal,
                         fontSize: '0.875rem'
                       }}
                     >
@@ -1279,7 +1284,7 @@ const Authorizations: React.FC = () => {
                         sx={{ 
                           width: 32, 
                           height: 32, 
-                          bgcolor: theme.palette.secondary.main,
+                          bgcolor: tokens.colors.brandTeal,
                           fontSize: '0.875rem'
                         }}
                       >
@@ -1343,7 +1348,7 @@ const Authorizations: React.FC = () => {
                           height: 32, 
                           bgcolor: member.status === 'admin' 
                             ? theme.palette.primary.main 
-                            : theme.palette.secondary.main
+                            : tokens.colors.brandTeal
                         }}
                       >
                         {member.displayName.charAt(0)}
@@ -1395,20 +1400,24 @@ const Authorizations: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert 
-          onClose={() => setSnackbar({ ...snackbar, open: false })} 
-          severity={snackbar.severity}
-          sx={{ width: '100%' }}
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
+          onClose={() => setSnackbar({ ...snackbar, open: false })}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert 
+            onClose={() => setSnackbar({ ...snackbar, open: false })} 
+            severity={snackbar.severity}
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

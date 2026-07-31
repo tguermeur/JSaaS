@@ -80,15 +80,15 @@ import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
 import { deleteProspect } from '../firebase/prospects';
 import { computeProspectScores, generateContactMessage } from '../services/scoringService';
-import Navbar from '../components/layout/Navbar';
-import Sidebar from '../components/layout/Sidebar';
 import { DateTimePicker } from '@mui/x-date-pickers/DateTimePicker';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { fr } from 'date-fns/locale';
 import { uploadFile } from '../firebase/storage';
 import { auth } from '../firebase/config';
-import { decryptUsersList } from '../utils/decryptUserUtils';
+import { decryptUsersList, getSafeDisplayName } from '../utils/decryptUserUtils';
+import UserNameText from '../components/common/UserNameText';
+import { tokens } from '../theme/tokens';
 
 interface Experience {
   company?: string;
@@ -395,7 +395,7 @@ const ProspectDetails: React.FC = () => {
               await saveActivity({
                 type: 'creation',
                 userId: currentUser.uid,
-                userName: currentUser.displayName || 'Utilisateur inconnu',
+                userName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
                 timestamp: serverTimestamp()
               });
             }
@@ -526,7 +526,7 @@ const ProspectDetails: React.FC = () => {
         await saveActivity({
           type: 'modification',
           userId: userData?.uid || '',
-          userName: userData?.displayName || 'Utilisateur inconnu',
+          userName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
           details: changes,
           timestamp: serverTimestamp()
         });
@@ -559,7 +559,7 @@ const ProspectDetails: React.FC = () => {
         await saveActivity({
           type: 'modification',
           userId: userData?.uid || '',
-          userName: userData?.displayName || 'Utilisateur inconnu',
+          userName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
           details: {
             field: 'Statut',
             oldValue: oldStatus || 'Non défini',
@@ -810,7 +810,7 @@ const ProspectDetails: React.FC = () => {
       const activity: Omit<Activity, 'id'> = {
         type: selectedActivityType as Activity['type'],
         userId: userData?.uid || '',
-        userName: userData?.displayName || 'Utilisateur inconnu',
+        userName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
         timestamp: serverTimestamp()
       };
 
@@ -968,20 +968,14 @@ const ProspectDetails: React.FC = () => {
     });
   }, [activities]);
 
-  // Layout principal
+  // Layout principal (sous ProtectedLayout — pas de Navbar/Sidebar locaux)
   return (
-    <Box sx={{ width: '100vw', minHeight: '100vh', bgcolor: '#f7f8fa' }}>
-      <>
-        <Navbar />
-        <Sidebar open={true} onClose={() => {}} />
-      </>
-      <Box 
-        sx={{ 
-          marginLeft: '64px', // Largeur de la sidebar gauche
-          paddingTop: '64px', // Hauteur de la navbar
-          minHeight: 'calc(100vh - 64px)',
-          width: 'calc(100vw - 64px)',
-          overflowX: 'auto'
+    <Box sx={{ width: '100%', minHeight: '100%', bgcolor: '#f7f8fa' }}>
+      <Box
+        sx={{
+          minHeight: '100%',
+          width: '100%',
+          overflowX: 'auto',
         }}
       >
         {loading || permissionLoading ? (
@@ -1005,7 +999,7 @@ const ProspectDetails: React.FC = () => {
               {/* Breadcrumbs */}
               <Box sx={{ mb: 1.5 }}>
                 <Typography variant="body2" color="textSecondary">
-                  <span style={{ cursor: 'pointer', color: '#0071e3' }} onClick={() => navigate('/app/commercial')}>Contacts</span> &gt; Fiche société
+                  <span style={{ cursor: 'pointer', color: tokens.colors.brandTeal }} onClick={() => navigate('/app/commercial')}>Contacts</span> &gt; Fiche société
                 </Typography>
               </Box>
 
@@ -1017,7 +1011,7 @@ const ProspectDetails: React.FC = () => {
               )}
               
               {suggestedNextStep && (
-                <Alert severity="info" icon={<NotificationsIcon />} sx={{ mb: 2, borderRadius: 2, bgcolor: '#e3f2fd' }}>
+                <Alert severity="info" icon={<NotificationsIcon />} sx={{ mb: 2, borderRadius: 2, bgcolor: tokens.colors.brandTeal100 }}>
                   Action recommandée : <strong>{suggestedNextStep}</strong>
                 </Alert>
               )}
@@ -1028,7 +1022,7 @@ const ProspectDetails: React.FC = () => {
                 <Avatar
                   src={displayProspect.photoUrl}
                     alt={getProspectName(displayProspect)}
-                    sx={{ width: 64, height: 64, bgcolor: '#f5f5f7', fontSize: 32, mr: 2, flexShrink: 0 }}
+                    sx={{ width: 64, height: 64, bgcolor: tokens.colors.bgSubtle, fontSize: 32, mr: 2, flexShrink: 0 }}
                 >
                     {getProspectName(displayProspect).charAt(0)}
                 </Avatar>
@@ -1196,7 +1190,14 @@ const ProspectDetails: React.FC = () => {
                     ) : (
                       <Chip 
                         avatar={<Avatar sx={{ width: 24, height: 24, fontSize: '0.7rem' }}>{(structureMembers.find(m => m.id === prospect?.ownerId)?.displayName || '?').charAt(0)}</Avatar>}
-                        label={structureMembers.find(m => m.id === prospect?.ownerId)?.displayName || 'Non assigné'} 
+                        label={
+                          <UserNameText
+                            user={structureMembers.find(m => m.id === prospect?.ownerId)}
+                            component="span"
+                            fallback="Non assigné"
+                            sx={{ fontSize: 'inherit' }}
+                          />
+                        }
                         size="small" 
                         variant="outlined"
                         onClick={handleEdit}
@@ -1211,9 +1212,9 @@ const ProspectDetails: React.FC = () => {
                       startIcon={<SaveIcon />}
                       onClick={handleSave}
                       sx={{ 
-                        bgcolor: '#0071e3',
+                        bgcolor: tokens.colors.brandTeal,
                         color: 'white',
-                        '&:hover': { bgcolor: '#0077ed' }
+                        '&:hover': { bgcolor: tokens.colors.brandTeal700 }
                       }}
                     >
                       Enregistrer
@@ -1236,7 +1237,7 @@ const ProspectDetails: React.FC = () => {
                   <Paper sx={{ p: 2, mb: 2, borderRadius: 3 }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
                       <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                        <PersonIcon sx={{ color: '#0071e3', mr: 1 }} />
+                        <PersonIcon sx={{ color: tokens.colors.brandTeal, mr: 1 }} />
                         <Typography variant="subtitle1" fontWeight={600}>Contact</Typography>
                     </Box>
                       {canWrite && (
@@ -1356,7 +1357,7 @@ const ProspectDetails: React.FC = () => {
                                     href={prospect.linkedinUrl} 
                                     target="_blank" 
                                     rel="noopener noreferrer"
-                                    style={{ color: '#0071e3', textDecoration: 'none' }}
+                                    style={{ color: tokens.colors.brandTeal, textDecoration: 'none' }}
                                   >
                                     Voir le profil LinkedIn
                                   </a>
@@ -1417,7 +1418,7 @@ const ProspectDetails: React.FC = () => {
                                     href={displayProspect.linkedinUrl} 
                                     target="_blank" 
                                     rel="noopener noreferrer"
-                                    style={{ color: '#0071e3', textDecoration: 'none' }}
+                                    style={{ color: tokens.colors.brandTeal, textDecoration: 'none' }}
                                   >
                                     Voir le profil LinkedIn
                                   </a>
@@ -1467,14 +1468,14 @@ const ProspectDetails: React.FC = () => {
                             minHeight: 44,
                             paddingX: 2.5,
                             paddingY: 1,
-                            color: '#86868b',
+                            color: tokens.colors.textSecondary,
                             transition: 'color 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
                             '&.Mui-selected': {
-                              color: '#0071e3',
+                              color: tokens.colors.brandTeal,
                               fontWeight: 600
                             },
                             '&:hover': {
-                              color: '#0071e3',
+                              color: tokens.colors.brandTeal,
                               backgroundColor: 'transparent'
                             },
                             '& .MuiTab-iconWrapper': {
@@ -1486,11 +1487,11 @@ const ProspectDetails: React.FC = () => {
                           },
                           '& .MuiTabs-indicator': {
                             height: 2,
-                            backgroundColor: '#0071e3',
+                            backgroundColor: tokens.colors.brandTeal,
                             borderRadius: '1px 1px 0 0'
                           },
                           '& .MuiTabs-scrollButtons': {
-                            color: '#0071e3',
+                            color: tokens.colors.brandTeal,
                             '&.Mui-disabled': {
                               opacity: 0.3
                             }
@@ -1553,7 +1554,7 @@ const ProspectDetails: React.FC = () => {
                               switch (activity.type) {
                                 case 'creation':
                                   icon = <PersonIcon sx={{ color: '#fff' }} />;
-                                  iconBg = '#0071e3';
+                                  iconBg = tokens.colors.brandTeal;
                                   title = 'Contact créé';
                                   break;
                                 case 'modification':
@@ -1830,7 +1831,7 @@ const ProspectDetails: React.FC = () => {
                                           await saveActivity({
                                             type: 'modification',
                                             userId: userData?.uid || '',
-                                            userName: userData?.displayName || 'Utilisateur inconnu',
+                                            userName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
                                             details: {
                                               field: 'Date de relance',
                                               oldValue: oldDate ? formatDate(oldDate) : 'Aucune',
@@ -1846,7 +1847,7 @@ const ProspectDetails: React.FC = () => {
                                         }
                                       }
                                     }}
-                                    sx={{ color: '#0071e3' }}
+                                    sx={{ color: tokens.colors.brandTeal }}
                                   >
                                     <CheckCircleIcon />
                                   </IconButton>
@@ -1930,7 +1931,7 @@ const ProspectDetails: React.FC = () => {
                                 sx={{
                                   p: 2,
                                   borderRadius: 2,
-                                  bgcolor: '#f5f5f7',
+                                  bgcolor: tokens.colors.bgSubtle,
                                   border: '1px solid #e0e0e0'
                                 }}
                               >
@@ -2255,7 +2256,7 @@ const ProspectDetails: React.FC = () => {
                     onClick={handleActivitySubmit} 
                     variant="contained"
                     sx={{
-                      backgroundColor: '#0071e3',
+                      backgroundColor: tokens.colors.brandTeal,
                       '&:hover': {
                         backgroundColor: '#0077ed'
                       },
@@ -2333,7 +2334,7 @@ const ProspectDetails: React.FC = () => {
                     onClick={handleActivitySubmit} 
                     variant="contained"
                     sx={{
-                      backgroundColor: '#0071e3',
+                      backgroundColor: tokens.colors.brandTeal,
                       '&:hover': {
                         backgroundColor: '#0077ed'
                       },
@@ -2403,7 +2404,7 @@ const ProspectDetails: React.FC = () => {
                     onClick={handleActivitySubmit} 
                     variant="contained"
                     sx={{
-                      backgroundColor: '#0071e3',
+                      backgroundColor: tokens.colors.brandTeal,
                       '&:hover': {
                         backgroundColor: '#0077ed'
                       },
@@ -2494,7 +2495,7 @@ const ProspectDetails: React.FC = () => {
                     onClick={handleActivitySubmit} 
                     variant="contained"
                     sx={{
-                      backgroundColor: '#0071e3',
+                      backgroundColor: tokens.colors.brandTeal,
                       '&:hover': {
                         backgroundColor: '#0077ed'
                       },

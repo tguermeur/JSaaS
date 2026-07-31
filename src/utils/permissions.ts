@@ -1,28 +1,29 @@
-export type UserStatus = 'superadmin' | 'admin' | 'membre' | 'etudiant';
+export type UserStatus = 'superadmin' | 'admin' | 'admin_structure' | 'membre' | 'etudiant';
 
 // Accès aux pages principales (Dashboard, Mission, Entreprises, Organization)
+// admin_structure = admin de la structure (créateur JE), même accès qu'un admin
 export const canAccessStructureContent = (userStatus?: string): boolean => {
-  return ['superadmin', 'admin', 'membre'].includes(userStatus || '');
+  return ['superadmin', 'admin', 'admin_structure', 'membre'].includes(userStatus || '');
 };
 
-// Accès aux modifications (réservé aux admin)
+// Accès aux modifications (réservé aux admin et admin_structure)
 export const canModifyStructureContent = (userStatus?: string): boolean => {
-  return ['superadmin', 'admin'].includes(userStatus || '');
+  return ['superadmin', 'admin', 'admin_structure'].includes(userStatus || '');
 };
 
-// Accès à la gestion des utilisateurs (réservé aux admin)
+// Accès à la gestion des utilisateurs (réservé aux admin et admin_structure)
 export const canManageUsers = (userStatus?: string): boolean => {
-  return ['superadmin', 'admin'].includes(userStatus || '');
+  return ['superadmin', 'admin', 'admin_structure'].includes(userStatus || '');
 };
 
-// Accès à la gestion des permissions (réservé aux admin)
+// Accès à la gestion des permissions (réservé aux admin et admin_structure)
 export const canManagePermissions = (userStatus?: string): boolean => {
-  return ['superadmin', 'admin'].includes(userStatus || '');
+  return ['superadmin', 'admin', 'admin_structure'].includes(userStatus || '');
 };
 
 // Accès aux pages étudiants uniquement
 export const canAccessStudentContent = (userStatus?: string): boolean => {
-  return ['etudiant', 'superadmin', 'admin', 'membre'].includes(userStatus || '');
+  return ['etudiant', 'superadmin', 'admin', 'admin_structure', 'membre'].includes(userStatus || '');
 };
 
 // Interface pour les permissions de page

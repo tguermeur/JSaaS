@@ -1,4 +1,5 @@
 // Après modification des règles : firebase deploy --only storage
+// (ne pas utiliser storage:rules — ce n’est pas un nom de bucket valide)
 // (nécessaire pour que structures/{id}/logo soit lisible et éviter les 403)
 rules_version = '2';
 service firebase.storage {
@@ -36,7 +37,15 @@ service firebase.storage {
     function isSuperAdmin() {
       return isAuthenticated() && 
              userExists() &&
-             getUserData().status == 'superadmin';
+             (getUserData().status == 'superadmin' || getUserData().role == 'superadmin');
+    }
+
+    // Membre structure sans étudiant (pas de list récursif Storage pour les étudiants)
+    function isStructureStaff(structureId) {
+      return isAuthenticated() &&
+             userExists() &&
+             getUserData().structureId == structureId &&
+             getUserData().status in ['admin', 'admin_structure', 'member', 'membre'];
     }
     
     // Vérifie si l'utilisateur est admin ou member d'une structure
@@ -88,22 +97,16 @@ service firebase.storage {
              (
                isStructureMember(structureId) &&
                (
-                 // Si le document n'existe pas dans Firestore, autoriser l'accès
-                 !firestore.exists(docPath) ||
+                 firestore.exists(docPath) &&
                  (
-                   firestore.exists(docPath) &&
+                   firestore.get(docPath).data.isRestricted != true ||
                    (
-                     // Document non restreint
-                     firestore.get(docPath).data.isRestricted != true ||
-                     // Document restreint - vérifier permissions
+                     firestore.get(docPath).data.isRestricted == true &&
                      (
-                       firestore.get(docPath).data.isRestricted == true &&
+                       getUserData().status == 'admin' ||
                        (
-                         getUserData().status == 'admin' ||
-                         (
-                           firestore.get(docPath).data.allowedRoles != null &&
-                           firestore.get(docPath).data.allowedRoles.hasAny([getUserData().status])
-                         )
+                         firestore.get(docPath).data.allowedRoles != null &&
+                         firestore.get(docPath).data.allowedRoles.hasAny([getUserData().status])
                        )
                      )
                    )
@@ -120,6 +123,11 @@ service firebase.storage {
     // =========================================================================
     // RÈGLES POUR LES DOCUMENTS DE STRUCTURE
     // =========================================================================
+    
+    // Permet le listage récursif (listAll) du dossier structure pour les membres (page Stockage)
+    match /structures/{structureId}/{allPaths=**} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isStructureStaff(structureId));
+    }
     
     match /structures/{structureId}/documents/{fileId} {
       allow read: if isAuthenticated() && canAccessDocument(structureId, fileId);
@@ -261,7 +269,7 @@ service firebase.storage {
                  firestore.exists(targetUserPath) &&
                  userExists() &&
                  getUserData().structureId == firestore.get(targetUserPath).data.structureId &&
-                 getUserData().status in ['admin', 'member', 'membre']
+                 getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
                );
       }
       
@@ -271,7 +279,16 @@ service firebase.storage {
     
     // Photos de profil (lecture publique pour que les URLs utilisées dans <img> fonctionnent sans token Auth)
     match /profilePictures/{userId} {
-      allow read: if true;
+      allow read: if isAuthenticated() && (
+        isOwner(userId) ||
+        isSuperAdmin() ||
+        (
+          firestore.exists(/databases/(default)/documents/users/$(userId)) &&
+          userExists() &&
+          getUserData().structureId == firestore.get(/databases/(default)/documents/users/$(userId)).data.structureId &&
+          getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
+        )
+      );
       allow write: if isOwner(userId);
     }
     
@@ -283,7 +300,18 @@ service firebase.storage {
     
     // Documents personnels génériques
     match /documents/{userId}/{fileName} {
-      allow read: if isOwner(userId) || isSuperAdmin();
+      function canReadPersonalDocument() {
+        let targetUserPath = /databases/(default)/documents/users/$(userId);
+        return isSuperAdmin() ||
+               isOwner(userId) ||
+               (
+                 firestore.exists(targetUserPath) &&
+                 userExists() &&
+                 getUserData().structureId == firestore.get(targetUserPath).data.structureId &&
+                 getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
+               );
+      }
+      allow read: if isAuthenticated() && canReadPersonalDocument();
       allow write: if isOwner(userId);
     }
 
@@ -313,10 +341,10 @@ service firebase.storage {
     // RÈGLES POUR LES LOGOS ET IMAGES
     // =========================================================================
     
-    // Logo de structure : lecture publique (URL de téléchargement utilisée dans <img>, évite 403)
+    // Logo de structure : lecture publique (URL utilisée dans <img>). Écriture : tout membre de la structure (aligné avec paramètres structure).
     match /structures/{structureId}/logo {
-      allow read: if true;
-      allow write: if isAuthenticated() && isStructureAdmin(structureId);
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (isSuperAdmin() || isStructureStaff(structureId));
     }
     
     // Logos d'entreprises
@@ -328,8 +356,16 @@ service firebase.storage {
                (
                  firestore.exists(companyPath) &&
                  userExists() &&
-                 getUserData().structureId == firestore.get(companyPath).data.structureId &&
-                 getUserData().status in ['admin', 'member', 'membre']
+                 (
+                   (
+                     getUserData().structureId == firestore.get(companyPath).data.structureId &&
+                     getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
+                   ) ||
+                   (
+                     getUserData().status == 'entreprise' &&
+                     getUserData().companyId == companyId
+                   )
+                 )
                );
       }
       
@@ -377,6 +413,42 @@ service firebase.storage {
       allow write: if isAuthenticated() && 
                       userExists() &&
                       getUserData().status in ['admin', 'member', 'membre', 'superadmin'];
+    }
+
+    // =========================================================================
+    // SIGNATURES ÉLECTRONIQUES — uploads client + PDF scellés (Admin SDK)
+    // =========================================================================
+
+    // Uploads PDF depuis la page Signatures (staff structure)
+    match /structures/{structureId}/signatures/uploads/{fileName} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isStructureStaff(structureId));
+      allow create: if isAuthenticated() &&
+                       (isSuperAdmin() || isStructureStaff(structureId)) &&
+                       request.resource.size < 25 * 1024 * 1024 &&
+                       request.resource.contentType == 'application/pdf';
+      allow update, delete: if false;
+    }
+
+    // PDF scellés + images de signature — écriture Admin SDK uniquement
+    match /structures/{structureId}/signatures/{requestId}/{allPaths=**} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || isStructureStaff(structureId));
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // RÈGLES POUR LES DOCUMENTS D'ÉTUDES (upload Proposition commerciale, etc.)
+    // =========================================================================
+    match /etudes/{etudeId}/documents/{fileName} {
+      allow read, write: if isAuthenticated() &&
+                          userExists() &&
+                          (
+                            isSuperAdmin() ||
+                            (
+                              firestore.exists(/databases/(default)/documents/etudes/$(etudeId)) &&
+                              firestore.get(/databases/(default)/documents/etudes/$(etudeId)).data.structureId == getUserData().structureId &&
+                              getUserData().status in ['admin', 'admin_structure', 'member', 'membre', 'etudiant']
+                            )
+                          );
     }
   }
 }

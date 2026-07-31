@@ -6,7 +6,6 @@ import {
   Paper, 
   CircularProgress,
   Alert,
-  Container,
   useTheme,
   useMediaQuery,
   Chip,
@@ -18,6 +17,8 @@ import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useSearchParams } from 'react-router-dom';
 import { getStripeCustomers, fetchPaymentHistory } from '../../services/stripeApiService';
+import { tokens } from '../../theme/tokens';
+import { settingsPageStyles, SettingsPanel } from '../../components/ds';
 
 declare global {
   namespace JSX {
@@ -264,45 +265,26 @@ const Billing: React.FC = () => {
 
   if (error) {
     return (
-      <Container maxWidth="md" sx={{ py: 2 }}>
-        <Alert severity="error" sx={{ borderRadius: 2 }}>
+      <Box sx={{ py: 2, maxWidth: 720, mx: 'auto' }}>
+        <Alert severity="error" sx={{ borderRadius: tokens.radius.md }}>
           {error}
         </Alert>
-      </Container>
+      </Box>
     );
   }
 
   return (
-    <Container maxWidth="md" sx={{ py: 2 }}>
-      <Box sx={{ 
-        textAlign: 'center', 
-        mb: 3,
-        px: isMobile ? 2 : 4
-      }}>
-        <Typography 
-          variant="h4" 
-          component="h1" 
-          gutterBottom
-          sx={{ 
-            fontWeight: 600,
-            fontSize: isMobile ? '1.5rem' : '2rem',
-            letterSpacing: '-0.02em'
-          }}
-        >
-          {isAdmin ? 'Gestion des Abonnements' : 'Plan d\'abonnement'}
-        </Typography>
-        <Typography 
-          variant="subtitle1" 
-          color="text.secondary"
-          sx={{ 
-            fontWeight: 400,
-            maxWidth: '600px',
-            mx: 'auto',
-            mb: 2
-          }}
-        >
-          Accédez à toutes les fonctionnalités premium de JS Connect
-        </Typography>
+    <Box sx={{ maxWidth: 720, mx: 'auto' }}>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3, textAlign: 'center', justifyContent: 'center' }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>
+            {isAdmin ? 'Gestion des abonnements' : 'Plan d\'abonnement'}
+          </Typography>
+          <Typography sx={{ ...settingsPageStyles.sub, mx: 'auto' }}>
+            Accédez à toutes les fonctionnalités premium de JS Connect
+          </Typography>
+        </Box>
       </Box>
 
       {loading ? (
@@ -315,48 +297,18 @@ const Billing: React.FC = () => {
           <CircularProgress />
         </Box>
       ) : (
-        <Paper 
-          elevation={0}
-          sx={{ 
-            p: isMobile ? 2 : 4,
-            borderRadius: 3,
-            background: 'linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%)',
-            border: '1px solid',
-            borderColor: 'divider',
-            maxWidth: '600px',
-            mx: 'auto'
-          }}
-        >
-          <Box sx={{ textAlign: 'center', mb: 3 }}>
-            <Typography 
-              variant="h5" 
-              gutterBottom
-              sx={{ 
-                fontWeight: 600,
-                fontSize: isMobile ? '1.25rem' : '1.5rem',
-                letterSpacing: '-0.01em'
-              }}
-            >
-              JS Connect Pro
-            </Typography>
-            <Typography 
-              variant="h4" 
-              color="primary"
-              sx={{ 
-                fontWeight: 600,
-                mb: 1
-              }}
+        <SettingsPanel title="JS Connect Pro" desc="Abonnement mensuel — annulez à tout moment">
+          <Box sx={{ textAlign: 'center' }}>
+            <Typography
+              variant="h4"
+              sx={{ fontWeight: 600, mb: 1, color: tokens.colors.brandTeal }}
             >
               149€ <Typography component="span" variant="body1" color="text.secondary">/mois</Typography>
             </Typography>
-            <Typography 
-              variant="body2" 
+            <Typography
+              variant="body2"
               color="text.secondary"
-              sx={{ 
-                maxWidth: '400px',
-                mx: 'auto',
-                mb: 2
-              }}
+              sx={{ maxWidth: '400px', mx: 'auto', mb: 2 }}
             >
               Profitez de toutes les fonctionnalités premium de JS Connect avec notre abonnement mensuel.
               Annulez à tout moment.
@@ -369,7 +321,7 @@ const Billing: React.FC = () => {
                   Email de facturation : {organizationEmail}
                 </Typography>
                 {loadingStripeCustomers ? (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1, justifyContent: 'center' }}>
                     <CircularProgress size={16} />
                     <Typography variant="body2" color="text.secondary">
                       Vérification du statut client...
@@ -377,7 +329,7 @@ const Billing: React.FC = () => {
                   </Box>
                 ) : (
                   <Box sx={{ mt: 1 }}>
-                    <Chip 
+                    <Chip
                       label={isStripeCustomer ? 'Structure cliente Stripe' : 'Structure non cliente'}
                       color={isStripeCustomer ? 'success' : 'default'}
                       size="small"
@@ -385,42 +337,45 @@ const Billing: React.FC = () => {
                     />
                   </Box>
                 )}
-                
               </>
             )}
           </Box>
-        </Paper>
+        </SettingsPanel>
       )}
 
-      <Divider sx={{ my: 4 }} />
-      <Typography variant="h6" sx={{ mb: 2 }}>
-        Historique des paiements
-      </Typography>
-      
-      {loadingPayments ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-          <CircularProgress />
-        </Box>
-      ) : payments.length === 0 ? (
-        <Paper sx={{ p: 3, textAlign: 'center' }}>
-          <Typography variant="body2" color="text.secondary">
-            {import.meta.env.DEV 
-              ? 'Mode développement : L\'historique des paiements n\'est pas disponible localement. En production, vos paiements Stripe s\'afficheront ici.'
-              : !isStripeCustomer 
-                ? 'Cette structure n\'est pas encore cliente Stripe. Aucun paiement à afficher.'
-                : 'Aucun paiement trouvé pour cette structure.'
-            }
-          </Typography>
-          {!isStripeCustomer && !import.meta.env.DEV && (
-            <Typography variant="body2" color="primary" sx={{ mt: 1 }}>
-              Contactez votre administrateur pour configurer les paiements Stripe.
+      <SettingsPanel title="Historique des paiements" desc="Vos transactions Stripe récentes">
+        {loadingPayments ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+            <CircularProgress />
+          </Box>
+        ) : payments.length === 0 ? (
+          <Box sx={{ p: 1, textAlign: 'center' }}>
+            <Typography variant="body2" color="text.secondary">
+              {import.meta.env.DEV
+                ? 'Mode développement : L\'historique des paiements n\'est pas disponible localement. En production, vos paiements Stripe s\'afficheront ici.'
+                : !isStripeCustomer
+                  ? 'Cette structure n\'est pas encore cliente Stripe. Aucun paiement à afficher.'
+                  : 'Aucun paiement trouvé pour cette structure.'}
             </Typography>
-          )}
-        </Paper>
-      ) : (
-        <Box>
-          {payments.map(payment => (
-            <Paper key={payment.id} sx={{ p: 3, mb: 2, borderRadius: 2 }}>
+            {!isStripeCustomer && !import.meta.env.DEV && (
+              <Typography variant="body2" sx={{ mt: 1, color: tokens.colors.brandTeal }}>
+                Contactez votre administrateur pour configurer les paiements Stripe.
+              </Typography>
+            )}
+          </Box>
+        ) : (
+          <Box>
+            {payments.map((payment) => (
+              <Paper
+                key={payment.id}
+                elevation={0}
+                sx={{
+                  p: 2.5,
+                  mb: 1.5,
+                  borderRadius: tokens.radius.md,
+                  border: `1px solid ${tokens.colors.divider}`,
+                }}
+              >
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <Box sx={{ flex: 1 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
@@ -449,7 +404,7 @@ const Billing: React.FC = () => {
                       minute: '2-digit'
                     })}
                   </Typography>
-                  <Typography variant="h6" sx={{ fontWeight: 600, color: 'primary.main' }}>
+                  <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.brandTeal }}>
                     {(payment.amount / 100).toFixed(2)} {payment.currency.toUpperCase()}
                   </Typography>
                 </Box>
@@ -487,9 +442,9 @@ const Billing: React.FC = () => {
             </Paper>
           ))}
         </Box>
-      )}
-
-    </Container>
+        )}
+      </SettingsPanel>
+    </Box>
   );
 };
 

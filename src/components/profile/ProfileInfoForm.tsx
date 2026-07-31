@@ -23,6 +23,9 @@ import { updateUserDocument } from '../../firebase/firestore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSnackbar } from 'notistack';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { formatPhoneDisplay } from '../../utils/formatPhone';
+import { tokens } from '../../theme/tokens';
+import { getStructureAcademicConfig } from '../../services/structureAcademicService';
 
 // --- Types & Styles ---
 
@@ -33,7 +36,7 @@ interface ProfileInfoFormProps {
 
 const textFieldStyles = {
   '& .MuiOutlinedInput-root': {
-    backgroundColor: '#f8f9fa',
+    backgroundColor: tokens.colors.bgDefault,
     '& fieldset': { borderColor: 'transparent' },
     '&:hover fieldset': { borderColor: 'rgba(0, 0, 0, 0.1)' },
     '&.Mui-focused fieldset': { borderColor: 'primary.main', borderWidth: '1px' },
@@ -138,6 +141,17 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
   
   // État pour les erreurs de validation par champ
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [structureCampuses, setStructureCampuses] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!userData.structureId) {
+      setStructureCampuses([]);
+      return;
+    }
+    void getStructureAcademicConfig(userData.structureId).then((config) => {
+      setStructureCampuses(config.campuses);
+    });
+  }, [userData.structureId]);
 
   const formatDate = (date: any) => {
     if (!date) return '';
@@ -206,15 +220,14 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
     // Validation en temps réel pour certains champs
     let processedValue = value;
     
-    if (name === 'postalCode') {
-      // Code postal : seulement 5 chiffres
+    if (name === 'postalCode' || name === 'birthPostalCode') {
       processedValue = value.replace(/\D/g, '').slice(0, 5);
     } else if (name === 'phone') {
       // Téléphone : seulement chiffres, espaces, +, - et ()
       processedValue = value.replace(/[^\d+\s()-]/g, '');
     } else if (name === 'socialSecurityNumber') {
-      // Numéro de sécurité sociale : seulement 13 chiffres
-      processedValue = value.replace(/\D/g, '').slice(0, 13);
+      // Numéro de sécurité sociale : seulement 15 chiffres
+      processedValue = value.replace(/\D/g, '').slice(0, 15);
     }
     
     setFormData(prev => ({ ...prev, [name]: processedValue }));
@@ -243,43 +256,52 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
       }));
   };
 
-  const validateFormData = (): Record<string, string> => {
+  /** Valide uniquement les champs de la section en cours d'édition pour éviter des erreurs sur des champs non visibles. */
+  const validateFormData = (sectionKey: string): Record<string, string> => {
     const errors: Record<string, string> = {};
     
-    // Validation date de naissance (minimum 18 ans)
-    if (formData.birthDate) {
-      const today = new Date();
-      const birthDateObj = new Date(formData.birthDate);
-      const age = today.getFullYear() - birthDateObj.getFullYear();
-      const monthDiff = today.getMonth() - birthDateObj.getMonth();
-      const dayDiff = today.getDate() - birthDateObj.getDate();
-      const actualAge = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? age - 1 : age;
-      
-      if (actualAge < 18) {
-        errors.birthDate = 'Vous devez avoir au moins 18 ans';
+    // Section Informations Personnelles
+    if (sectionKey === 'personal') {
+      if (formData.birthDate) {
+        const today = new Date();
+        const birthDateObj = new Date(formData.birthDate);
+        const age = today.getFullYear() - birthDateObj.getFullYear();
+        const monthDiff = today.getMonth() - birthDateObj.getMonth();
+        const dayDiff = today.getDate() - birthDateObj.getDate();
+        const actualAge = monthDiff < 0 || (monthDiff === 0 && dayDiff < 0) ? age - 1 : age;
+        if (actualAge < 18) {
+          errors.birthDate = 'Vous devez avoir au moins 18 ans';
+        }
+      }
+      if (formData.birthPostalCode && formData.birthPostalCode.trim() !== '') {
+        if (!/^\d{5}$/.test(formData.birthPostalCode)) {
+          errors.birthPostalCode = 'Le code postal de naissance doit contenir exactement 5 chiffres';
+        }
+      }
+      if (formData.phone && formData.phone.trim() !== '') {
+        const phoneDigits = formData.phone.replace(/\D/g, '');
+        if (phoneDigits.length !== 10) {
+          errors.phone = 'Le numéro de téléphone doit contenir exactement 10 chiffres';
+        }
       }
     }
     
-    // Validation code postal (5 chiffres) - seulement si rempli
-    if (formData.postalCode && formData.postalCode.trim() !== '') {
-      if (!/^\d{5}$/.test(formData.postalCode)) {
-        errors.postalCode = 'Le code postal doit contenir exactement 5 chiffres';
+    // Section Adresse (code postal n'est pas dans Informations Personnelles)
+    if (sectionKey === 'address') {
+      if (formData.postalCode && formData.postalCode.trim() !== '') {
+        if (!/^\d{5}$/.test(formData.postalCode)) {
+          errors.postalCode = 'Le code postal doit contenir exactement 5 chiffres';
+        }
       }
     }
     
-    // Validation téléphone (10 chiffres) - seulement si rempli
-    if (formData.phone && formData.phone.trim() !== '') {
-      const phoneDigits = formData.phone.replace(/\D/g, '');
-      if (phoneDigits.length !== 10) {
-        errors.phone = 'Le numéro de téléphone doit contenir exactement 10 chiffres';
-      }
-    }
-    
-    // Validation numéro de sécurité sociale (13 chiffres) - seulement si rempli
-    if (formData.socialSecurityNumber && formData.socialSecurityNumber.trim() !== '') {
-      const ssnDigits = formData.socialSecurityNumber.replace(/\D/g, '');
-      if (ssnDigits.length !== 13) {
-        errors.socialSecurityNumber = 'Le numéro de sécurité sociale doit contenir exactement 13 chiffres';
+    // Section Informations Académiques (étudiant)
+    if (sectionKey === 'student') {
+      if (formData.socialSecurityNumber && formData.socialSecurityNumber.trim() !== '') {
+        const ssnDigits = formData.socialSecurityNumber.replace(/\D/g, '');
+        if (ssnDigits.length !== 15) {
+          errors.socialSecurityNumber = 'Le numéro de sécurité sociale doit contenir exactement 15 chiffres';
+        }
       }
     }
     
@@ -289,8 +311,8 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
   const handleSave = async (sectionKey: string) => {
     if (!currentUser) return;
     
-    // Valider les données avant de sauvegarder
-    const errors = validateFormData();
+    // Valider uniquement les champs de la section en cours
+    const errors = validateFormData(sectionKey);
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
       const firstError = Object.values(errors)[0];
@@ -385,10 +407,11 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
     { label: 'Prénom', value: userData.firstName || '-' },
     { label: 'Nom', value: userData.lastName || '-' },
     { label: 'Email', value: userData.email || '-' },
-    { label: 'Téléphone', value: formatDisplayValue(userData.phone) },
+    { label: 'Téléphone', value: !userData.phone || (typeof userData.phone === 'string' && userData.phone.startsWith('ENC:')) ? formatDisplayValue(userData.phone) : formatPhoneDisplay(userData.phone) || '-' },
     { label: 'Date de naissance', value: formatBirthDate(userData.birthDate) },
     { label: 'Genre', value: userData.gender === 'M' ? 'Homme' : userData.gender === 'F' ? 'Femme' : userData.gender || '-' },
     { label: 'Lieu de naissance', value: formatDisplayValue(userData.birthPlace) },
+    { label: 'Code postal de naissance', value: formatDisplayValue(userData.birthPostalCode) },
     { label: 'Nationalité', value: userData.nationality || '-' },
     { label: 'LinkedIn', value: userData.linkedinUrl ? <a href={userData.linkedinUrl} target="_blank" rel="noreferrer" style={{color: '#1976d2', textDecoration: 'none'}}>Voir le profil</a> : '-' },
   ];
@@ -396,12 +419,13 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
   const addressData = [
     { label: 'Adresse', value: formatDisplayValue(userData.address) },
     { label: 'Code Postal', value: formatDisplayValue(userData.postalCode) },
-    // On pourrait déduire la ville du code postal si on avait une API, ou ajouter un champ Ville
+    { label: 'Ville', value: formatDisplayValue(userData.city) },
   ];
 
   const studentData = [
     { label: 'École / Université', value: userData.ecole },
     { label: 'Programme / Formation', value: userData.program },
+    { label: 'Campus', value: userData.campus || 'Non renseigné' },
     { label: 'Année de promotion', value: userData.graduationYear },
     { label: 'Numéro Étudiant', value: userData.studentId },
     { label: 'Numéro de Sécurité Sociale', value: userData.socialSecurityNumber },
@@ -473,6 +497,19 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
            <TextField fullWidth label="Lieu de naissance" name="birthPlace" value={formData.birthPlace || ''} onChange={handleChange} sx={textFieldStyles} />
         </Grid>
         <Grid item xs={12} md={6}>
+          <TextField 
+            fullWidth 
+            label="Code postal de naissance" 
+            name="birthPostalCode" 
+            value={formData.birthPostalCode || ''} 
+            onChange={handleChange} 
+            inputProps={{ maxLength: 5 }}
+            error={!!fieldErrors.birthPostalCode}
+            helperText={fieldErrors.birthPostalCode || "5 chiffres requis"}
+            sx={textFieldStyles} 
+          />
+        </Grid>
+        <Grid item xs={12} md={6}>
            <TextField fullWidth label="Nationalité" name="nationality" value={formData.nationality || ''} onChange={handleChange} sx={textFieldStyles} />
         </Grid>
          <Grid item xs={12} md={6}>
@@ -491,7 +528,7 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
         displayData={addressData}
       >
         <Grid item xs={12}>
-          <TextField fullWidth label="Adresse complète" name="address" value={formData.address || ''} onChange={handleChange} multiline rows={2} sx={textFieldStyles} />
+          <TextField fullWidth label="Adresse" name="address" value={formData.address || ''} onChange={handleChange} sx={textFieldStyles} />
         </Grid>
         <Grid item xs={12} md={6}>
           <TextField 
@@ -505,6 +542,9 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
             helperText={fieldErrors.postalCode || "5 chiffres requis"}
             sx={textFieldStyles} 
           />
+        </Grid>
+        <Grid item xs={12} md={6}>
+          <TextField fullWidth label="Ville" name="city" value={formData.city || ''} onChange={handleChange} sx={textFieldStyles} />
         </Grid>
       </SectionCard>
 
@@ -526,6 +566,35 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
             <TextField fullWidth label="Programme / Formation" name="program" value={formData.program || ''} onChange={handleChange} sx={textFieldStyles} />
           </Grid>
           <Grid item xs={12} md={6}>
+            {structureCampuses.length > 0 ? (
+              <FormControl fullWidth sx={textFieldStyles}>
+                <InputLabel>Campus</InputLabel>
+                <Select
+                  name="campus"
+                  value={formData.campus || ''}
+                  label="Campus"
+                  onChange={handleSelectChange}
+                >
+                  {structureCampuses.map((campus) => (
+                    <MenuItem key={campus} value={campus}>
+                      {campus}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            ) : (
+              <TextField
+                fullWidth
+                label="Campus"
+                name="campus"
+                value={formData.campus || ''}
+                onChange={handleChange}
+                placeholder="Non configuré par l'organisation"
+                sx={textFieldStyles}
+              />
+            )}
+          </Grid>
+          <Grid item xs={12} md={6}>
             <TextField fullWidth label="Année de promotion" name="graduationYear" value={formData.graduationYear || ''} onChange={handleChange} sx={textFieldStyles} />
           </Grid>
           <Grid item xs={12} md={6}>
@@ -538,9 +607,9 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
               name="socialSecurityNumber" 
               value={formData.socialSecurityNumber || ''} 
               onChange={handleChange} 
-              inputProps={{ maxLength: 13 }}
+              inputProps={{ maxLength: 15 }}
               error={!!fieldErrors.socialSecurityNumber}
-              helperText={fieldErrors.socialSecurityNumber || "13 chiffres requis"}
+              helperText={fieldErrors.socialSecurityNumber || "15 chiffres requis"}
               sx={textFieldStyles} 
             />
           </Grid>
@@ -577,7 +646,7 @@ const ProfileInfoForm: React.FC<ProfileInfoFormProps> = ({ userData, onUpdate })
         <Typography variant="h6" fontWeight="bold" gutterBottom>
            Préférences de communication
         </Typography>
-        <Box sx={{ mt: 2, bgcolor: '#f8f9fa', p: 2, borderRadius: 1 }}>
+        <Box sx={{ mt: 2, bgcolor: tokens.colors.bgDefault, p: 2, borderRadius: 1 }}>
             <FormControlLabel
               control={
                 <Switch

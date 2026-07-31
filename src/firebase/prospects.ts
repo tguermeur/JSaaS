@@ -1,4 +1,4 @@
-import { collection, addDoc, getDocs, query, where, orderBy, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, getDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, where, orderBy, doc, updateDoc, deleteDoc, serverTimestamp, writeBatch, getDoc, limit } from 'firebase/firestore';
 import { db } from './config';
 import { consumeToken, restoreToken } from '../services/tokenService';
 
@@ -24,20 +24,27 @@ export interface Prospect {
   lastActivityAt?: any;
 }
 
-export const getProspects = async (structureId: string, userStatus?: string): Promise<Prospect[]> => {
+export const getProspects = async (
+  structureId: string,
+  userStatus?: string,
+  options?: { limitCount?: number }
+): Promise<Prospect[]> => {
   if (!structureId) {
     console.warn('getProspects appelé sans structureId');
     return [];
   }
 
+  const limitCount = options?.limitCount ?? 200;
+
   try {
     const prospectsRef = collection(db, 'prospects');
     
     // Requête simplifiée sans orderBy pour éviter le problème d'index
-    // On récupère tous les prospects de la structure et on les trie côté client
+    // On récupère les prospects de la structure (borné) et on les trie côté client
     const q = query(
       prospectsRef,
-      where('structureId', '==', structureId)
+      where('structureId', '==', structureId),
+      limit(limitCount)
     );
     
     const querySnapshot = await getDocs(q);

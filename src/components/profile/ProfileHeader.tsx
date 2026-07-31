@@ -129,7 +129,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({ userData, onUpdate }) => 
                 size="small" 
                 sx={{ borderRadius: 4, textTransform: 'none', color: 'text.secondary', borderColor: 'divider' }}
             >
-                Changer photo
+                Changer photo (recommandé)
             </Button>
           </label>
       </Box>

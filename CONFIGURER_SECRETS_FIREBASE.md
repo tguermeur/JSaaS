@@ -44,7 +44,7 @@ echo "votre_public_key" | firebase functions:secrets:set EMAILJS_USER_ID --data-
 echo "votre_private_key" | firebase functions:secrets:set EMAILJS_PRIVATE_KEY --data-file -
 
 # 2. Gemini AI
-echo "AIzaSyAif_pUauZ44QFtI7y3AhrDJUEwMwCAMAY" | firebase functions:secrets:set GEMINI_API_KEY --data-file -
+echo "VOTRE_CLE_GEMINI_ICI" | firebase functions:secrets:set GEMINI_API_KEY --data-file -
 
 # 3. FRONTEND_URL : ne pas utiliser secrets (évite l’erreur "overlaps non secret" au deploy).
 #    Définir en variable d’env. non secrète : Console Firebase → Functions → Configuration
@@ -70,7 +70,7 @@ EMAILJS_SERVICE_ID=service_wd96h7i
 EMAILJS_TEMPLATE_ID=template_bjcdscc
 EMAILJS_USER_ID=Hn6_ev50BvQzoNSS0
 EMAILJS_PRIVATE_KEY=20QKad4-0CztTbMAg3fEm
-GEMINI_API_KEY=AIzaSyAif_pUauZ44QFtI7y3AhrDJUEwMwCAMAY
+GEMINI_API_KEY=VOTRE_CLE_GEMINI_ICI
 FRONTEND_URL=http://js-connect.fr
 EOF
 

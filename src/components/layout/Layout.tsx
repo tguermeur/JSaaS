@@ -4,20 +4,21 @@ import Navbar from './Navbar';
 import Sidebar from './Sidebar';
 import { Outlet } from 'react-router-dom';
 import Footer from '../Footer';
+import { tokens } from '../../theme/tokens';
 
-const ICON_SIDEBAR_WIDTH = '64px'; // Seule la sidebar gauche est toujours visible
+const ICON_SIDEBAR_WIDTH = `${tokens.layout.sidebarIconW}px`;
 
 const LayoutRoot = styled(Box)({
   display: 'flex',
   minHeight: '100vh',
   height: '100vh',
-  backgroundColor: '#f8f8f8',
+  backgroundColor: tokens.colors.appBg,
   overflow: 'hidden',
 });
 
 const LayoutContent = styled(Box)(({ theme }) => ({
   flexGrow: 1,
-  paddingTop: '64px',
+  paddingTop: `${tokens.layout.navbarH}px`,
   marginLeft: ICON_SIDEBAR_WIDTH,
   marginRight: theme.spacing(1),
   marginTop: theme.spacing(1),
@@ -30,56 +31,50 @@ const LayoutContent = styled(Box)(({ theme }) => ({
   zIndex: 0,
 }));
 
-const MainContent = styled(Box)(({ theme }) => ({
-  backgroundColor: '#ffffff',
-  borderRadius: '12px',
+const MainContent = styled(Box)({
+  backgroundColor: tokens.colors.bgPaper,
+  borderRadius: tokens.radius.lg,
   margin: 0,
   padding: 0,
   width: '100%',
-  boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+  boxShadow: tokens.shadows.sm,
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
   minHeight: 0,
   overflow: 'hidden',
-}));
+});
 
 const ContentWrapper = styled(Box)(({ theme }) => ({
   padding: theme.spacing(3),
-  paddingBottom: 80,
   flex: 1,
   display: 'flex',
   flexDirection: 'column',
-  overflow: 'auto',
+  // Une seule zone de scroll : les pages (AppPageShell, etc.) gèrent leur overflow.
+  // Évite le « double slide » Layout + contenu.
+  overflow: 'hidden',
   minHeight: 0,
 }));
 
 const Layout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  const handleSidebarToggle = () => {
-    setSidebarOpen(!sidebarOpen);
-  };
-
   return (
     <LayoutRoot>
       <Navbar />
-      <Sidebar 
-        open={sidebarOpen} 
-        onClose={() => setSidebarOpen(false)}
-      />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <LayoutContent>
         <MainContent>
           <ContentWrapper>
-            <Box sx={{ flex: '0 0 auto', minHeight: 'fit-content' }}>
+            <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               <Outlet />
             </Box>
           </ContentWrapper>
         </MainContent>
-        <Footer />
+        <Footer variant="inset" />
       </LayoutContent>
     </LayoutRoot>
   );
 };
 
-export default Layout; 
+export default Layout;

@@ -84,7 +84,7 @@ Le build de l'extension fonctionne correctement:
 
 3. **Déployer les règles de sécurité:**
    ```bash
-   firebase deploy --only firestore:rules,storage:rules
+   firebase deploy --only firestore:rules,storage
    ```
 
 ## ✅ Conclusion

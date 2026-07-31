@@ -10,6 +10,32 @@ import {
 } from '@mui/material';
 import { verifyEmail } from '../firebase/auth';
 import { CheckCircle as CheckCircleIcon } from '@mui/icons-material';
+import { tokens } from '../theme/tokens';
+
+const authPaperSx = {
+  p: 4,
+  maxWidth: 400,
+  width: '100%',
+  textAlign: 'center' as const,
+  borderRadius: tokens.radius.xl,
+  boxShadow: tokens.shadows.lg,
+  bgcolor: tokens.colors.marketingWhite,
+};
+
+const authButtonSx = {
+  borderRadius: tokens.radius.xxl,
+  textTransform: 'none' as const,
+  fontWeight: 500,
+  bgcolor: tokens.colors.marketingBlack,
+  color: tokens.colors.marketingWhite,
+  boxShadow: 'none',
+  px: 3,
+  py: 1.25,
+  '&:hover': {
+    bgcolor: tokens.colors.marketingBlack,
+    opacity: 0.9,
+  },
+};
 
 const VerifyEmail: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -32,7 +58,6 @@ const VerifyEmail: React.FC = () => {
         setSuccess(true);
         setVerifying(false);
 
-        // Rediriger vers le dashboard après 3 secondes
         setTimeout(() => {
           navigate('/app/dashboard');
         }, 3000);
@@ -52,25 +77,16 @@ const VerifyEmail: React.FC = () => {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        minHeight: '100vh',
-        bgcolor: '#f5f5f7'
+        width: '100%',
+        maxWidth: 500,
+        p: 2,
       }}
     >
-      <Paper
-        elevation={0}
-        sx={{
-          p: 4,
-          maxWidth: 400,
-          width: '100%',
-          textAlign: 'center',
-          borderRadius: '16px',
-          boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)'
-        }}
-      >
+      <Paper elevation={0} sx={authPaperSx}>
         {verifying ? (
           <>
-            <CircularProgress size={48} sx={{ mb: 2 }} />
-            <Typography variant="h6">
+            <CircularProgress size={48} sx={{ mb: 2, color: tokens.colors.ink }} />
+            <Typography variant="h6" sx={{ color: tokens.colors.ink }}>
               Vérification de votre adresse email...
             </Typography>
           </>
@@ -79,24 +95,20 @@ const VerifyEmail: React.FC = () => {
             <CheckCircleIcon
               sx={{
                 fontSize: 48,
-                color: 'success.main',
+                color: tokens.colors.success,
                 mb: 2
               }}
             />
-            <Typography variant="h6" gutterBottom>
+            <Typography variant="h6" gutterBottom sx={{ color: tokens.colors.ink }}>
               Email vérifié avec succès !
             </Typography>
-            <Typography color="text.secondary" sx={{ mb: 3 }}>
+            <Typography sx={{ mb: 3, color: tokens.colors.inkMuted }}>
               Vous allez être redirigé vers votre tableau de bord...
             </Typography>
             <Button
               variant="contained"
               onClick={() => navigate('/app/dashboard')}
-              sx={{
-                borderRadius: '12px',
-                textTransform: 'none',
-                fontWeight: 500
-              }}
+              sx={authButtonSx}
             >
               Aller au tableau de bord
             </Button>
@@ -109,11 +121,7 @@ const VerifyEmail: React.FC = () => {
             <Button
               variant="contained"
               onClick={() => navigate('/login')}
-              sx={{
-                borderRadius: '12px',
-                textTransform: 'none',
-                fontWeight: 500
-              }}
+              sx={authButtonSx}
             >
               Retour à la connexion
             </Button>
@@ -124,4 +132,4 @@ const VerifyEmail: React.FC = () => {
   );
 };
 
-export default VerifyEmail; 
+export default VerifyEmail;

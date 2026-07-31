@@ -1,4 +1,4 @@
-import { onCall, onRequest } from 'firebase-functions/v2/https';
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import * as admin from 'firebase-admin';
 import Stripe from 'stripe';
 import * as functions from 'firebase-functions';
@@ -19,8 +19,8 @@ const functionConfig = {
   cors: true, // Nécessaire pour Firebase v2, mais CORS réellement géré par Express avec whitelist
   region: 'us-central1',
   minInstances: 0,
-  maxInstances: 1, // Réduit au minimum pour respecter le quota CPU
-  concurrency: 20, // Réduit au minimum
+  maxInstances: 1,
+  concurrency: 20,
   allowUnauthenticated: false, // Changer à false car nous vérifions l'auth
 };
 
@@ -29,6 +29,12 @@ const lowResourceConfig = {
   ...functionConfig,
   maxInstances: 1,
   concurrency: 20,
+};
+
+// Inscription Junior : session Stripe sans compte Firebase (création du compte après paiement)
+const signupConfig = {
+  ...functionConfig,
+  allowUnauthenticated: true,
 };
 
 // Configuration pour les webhooks (peuvent avoir besoin de plus de ressources mais on réduit quand même)
@@ -42,6 +48,45 @@ const webhookConfig = {
   concurrency: 10, // Réduit pour webhooks
   allowUnauthenticated: true, // Les webhooks Stripe n'ont pas d'auth Firebase
 };
+
+// Pages configurables dans Réglages > Accès (aligné avec le frontend)
+const DEFAULT_JE_PERMISSION_PAGE_IDS = [
+  'dashboard', 'organization', 'mission', 'entreprises', 'documents', 'commercial', 'audit',
+  'tresorerie', 'rh', 'ambassadors', 'users', 'permissions', 'encrypted-data',
+];
+
+/** Crée les permissions par défaut pour une structure Junior Entreprise (admin_structure = plein accès). */
+async function createDefaultStructurePermissions(structureId: string): Promise<void> {
+  const batch = admin.firestore().batch();
+  const rolesWrite: string[] = ['admin_structure', 'admin'];
+  const rolesRead: string[] = ['admin_structure', 'admin', 'membre'];
+  for (const pageId of DEFAULT_JE_PERMISSION_PAGE_IDS) {
+    const writeRef = admin.firestore().collection('structures').doc(structureId).collection('permissions').doc(pageId);
+    batch.set(writeRef, { allowedRoles: rolesWrite, allowedPoles: [], allowedMembers: [] });
+    const readRef = admin.firestore().collection('structures').doc(structureId).collection('permissions').doc(`${pageId}_read`);
+    batch.set(readRef, { allowedRoles: rolesRead, allowedPoles: [], allowedMembers: [] });
+  }
+  await batch.commit();
+  console.log('Stripe Functions - Permissions par défaut créées pour structure:', structureId);
+}
+
+/** Extrait le domaine email au format @domaine.com (minuscules). */
+function getEmailDomain(email: string): string {
+  const trimmed = (email || '').trim().toLowerCase();
+  if (!trimmed.includes('@')) return '@' + trimmed;
+  return '@' + trimmed.split('@')[1];
+}
+
+/** Vérifie si un domaine email est déjà utilisé par une structure. */
+async function isEmailDomainAlreadyUsed(emailDomain: string): Promise<boolean> {
+  const normalized = emailDomain.startsWith('@') ? emailDomain.toLowerCase() : '@' + emailDomain.toLowerCase();
+  const snap = await admin.firestore()
+    .collection('structures')
+    .where('emailDomains', 'array-contains', normalized)
+    .limit(1)
+    .get();
+  return !snap.empty;
+}
 
 // Helper pour les logs de debug (sécurisé pour Cloud Run)
 // SÉCURITÉ: Désactivé en production pour éviter l'exposition d'informations sensibles
@@ -102,29 +147,35 @@ let stripeSecretKey: string | undefined = process.env.STRIPE_SECRET_KEY;
 debugLog('stripe.ts:42', 'Stripe key check result', { hasStripeKey: !!stripeSecretKey, fromEnv: !!process.env.STRIPE_SECRET_KEY }, 'A');
 // #endregion
 
+/** Récupère la clé Stripe depuis toutes les sources possibles (env, config Firebase, variantes de noms). */
+function resolveStripeSecretKey(): string | undefined {
+  // 1) process.env (Cloud Run / .env local) — principal en Gen 2
+  let key = process.env.STRIPE_SECRET_KEY || process.env.stripe_secret_key;
+  if (key) return key;
+  // 2) Firebase config (legacy / 1st gen) — peut ne pas exister en Gen 2
+  try {
+    const config = functions.config();
+    key = config?.stripe?.secret_key || (config?.stripe as Record<string, string> | undefined)?.secret_key;
+    if (key) return key;
+  } catch {
+    // functions.config() déprécié / indisponible en Gen 2
+  }
+  return undefined;
+}
+
 // Fonction helper pour obtenir l'instance Stripe (lazy initialization)
 function getStripeInstance(): Stripe {
   if (!stripeSecretKey) {
-    // Essayer de récupérer la clé une dernière fois au moment de l'utilisation
-    // Essayer d'abord process.env, puis functions.config() si disponible
-    stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-    
+    stripeSecretKey = resolveStripeSecretKey();
     if (!stripeSecretKey) {
-      try {
-        // Dans Firebase Functions v2, functions.config() peut ne pas être disponible
-        // On essaie seulement si process.env n'a pas fonctionné
-        const config = functions.config();
-        stripeSecretKey = config?.stripe?.secret_key;
-      } catch (error) {
-        // functions.config() n'est pas disponible, ignorer
-      }
-    }
-    
-    if (!stripeSecretKey) {
-      throw new Error('STRIPE_SECRET_KEY n\'est pas configurée. Veuillez la définir dans les variables d\'environnement ou la configuration Firebase.');
+      throw new Error(
+        'STRIPE_SECRET_KEY n\'est pas configurée. ' +
+        'En local : définissez STRIPE_SECRET_KEY dans functions/.env. ' +
+        'En production (Gen 2) : Console Google Cloud → Cloud Run → service de la fonction → Modifier → Variables et secrets → STRIPE_SECRET_KEY = sk_... ' +
+        'Ou (1re gen) : firebase functions:config:set stripe.secret_key="sk_..." puis redéploiement.'
+      );
     }
   }
-  
   return new Stripe(stripeSecretKey, {
     apiVersion: '2023-10-16',
   });
@@ -134,7 +185,6 @@ function getStripeInstance(): Stripe {
 if (stripeSecretKey) {
   const isTestMode = stripeSecretKey.startsWith('sk_test_');
   console.log('Mode Stripe:', isTestMode ? 'TEST' : 'PRODUCTION');
-  console.log('Clé Stripe (début):', stripeSecretKey.substring(0, 10) + '...');
 } else {
   console.warn('STRIPE_SECRET_KEY non configurée au chargement du module. Elle sera vérifiée lors de l\'utilisation.');
 }
@@ -158,11 +208,22 @@ interface CreateCheckoutSessionData {
   priceId: string;
   userId: string;
   structureId: string;
+  success_url?: string;
+  cancel_url?: string;
 }
 
 interface CancelSubscriptionData {
   subscriptionId: string;
   userId: string;
+}
+
+interface CreateCheckoutSessionForSignupData {
+  priceId: string;
+  email: string;
+  structureName: string;
+  structureSchool: string;
+  success_url: string;
+  cancel_url: string;
 }
 
 // Fonction pour récupérer les produits Stripe
@@ -231,36 +292,41 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
   try {
     // Vérifier l'authentification
     if (!request.auth) {
-      throw new Error('Vous devez être connecté pour accéder à cette fonction.');
+      throw new HttpsError('unauthenticated', 'Vous devez être connecté pour accéder à cette fonction.');
     }
 
     const { priceId, userId, structureId } = request.data as CreateCheckoutSessionData;
 
     if (!priceId) {
-      throw new Error('L\'ID du prix est requis.');
+      throw new HttpsError('invalid-argument', 'L\'ID du prix est requis.');
     }
 
     if (!userId) {
-      throw new Error('L\'ID de l\'utilisateur est requis.');
+      throw new HttpsError('invalid-argument', 'L\'ID de l\'utilisateur est requis.');
     }
 
     if (!structureId) {
-      throw new Error('L\'ID de la structure est requis.');
+      throw new HttpsError('invalid-argument', 'L\'ID de la structure est requis.');
     }
 
-    // Vérifier que l'utilisateur est admin de la structure
+    // Vérifier que l'utilisateur est admin de la structure (ou qu'il vient de la créer à l'inscription)
     const userDoc = await admin.firestore().collection('users').doc(userId).get();
     const userData = userDoc.data();
+    const structureSnapshot = await admin.firestore().collection('structures').doc(structureId).get();
+    const structureData = structureSnapshot.data();
 
-    if (!userData || userData.status !== 'admin' || userData.structureId !== structureId) {
-      throw new Error('Vous n\'avez pas les permissions nécessaires pour gérer les abonnements de cette structure.');
+    const isAdminOrAdminStructure = (userData?.status === 'admin' || userData?.status === 'admin_structure') && userData?.structureId === structureId;
+    const isCreatorJustSignedUp = request.auth.uid === userId && structureData?.createdBy === userId;
+
+    if ((!userData || !isAdminOrAdminStructure) && !isCreatorJustSignedUp) {
+      throw new HttpsError('permission-denied', 'Vous n\'avez pas les permissions nécessaires pour gérer les abonnements de cette structure.');
     }
 
     // Créer ou récupérer le client Stripe pour la structure
-    const structureDoc = await admin.firestore().collection('stripeCustomers').doc(structureId);
-    const structureData = await structureDoc.get();
+    const structureDoc = admin.firestore().collection('stripeCustomers').doc(structureId);
+    const stripeCustomerSnapshot = await structureDoc.get();
 
-    let customerId = structureData.exists ? structureData.data()?.customerId : null;
+    let customerId = stripeCustomerSnapshot.exists ? stripeCustomerSnapshot.data()?.customerId : null;
 
     if (!customerId) {
       const customer = await getStripeInstance().customers.create({
@@ -279,7 +345,39 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
       });
     }
 
-    // Créer une session de paiement avec essai gratuit de 30 jours
+    const customerEmail = request.auth?.token?.email as string | undefined;
+    const { success_url: customSuccessUrl, cancel_url: customCancelUrl } = request.data as CreateCheckoutSessionData;
+    
+    // Vérifier si le client a déjà un abonnement actif
+    // Si oui, ne pas appliquer la période d'essai (pour les renouvellements/changements de plan)
+    let hasActiveSubscription = false;
+    try {
+      const subscriptions = await getStripeInstance().subscriptions.list({
+        customer: customerId,
+        status: 'active',
+        limit: 1
+      });
+      hasActiveSubscription = subscriptions.data.length > 0;
+    } catch (error) {
+      console.warn('Erreur lors de la vérification des abonnements existants:', error);
+      // En cas d'erreur, on considère qu'il n'y a pas d'abonnement actif (sécurité)
+    }
+    
+    // Préparer les données de l'abonnement
+    const subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData = {
+      metadata: {
+        userId,
+        structureId,
+        customerEmail: customerEmail || '',
+      },
+    };
+    
+    // Appliquer la période d'essai uniquement pour les nouveaux clients (pas d'abonnement actif)
+    if (!hasActiveSubscription) {
+      subscriptionData.trial_period_days = 60; // 2 mois gratuits pour les nouveaux clients
+    }
+    
+    // Créer une session de paiement
     const session = await getStripeInstance().checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
@@ -290,22 +388,212 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
         },
       ],
       mode: 'subscription',
-      subscription_data: {
-        trial_period_days: 30,
-      },
-      success_url: SUCCESS_URL,
-      cancel_url: CANCEL_URL,
+      subscription_data: subscriptionData,
+      success_url: customSuccessUrl || SUCCESS_URL,
+      cancel_url: customCancelUrl || CANCEL_URL,
       client_reference_id: structureId,
       metadata: {
-        userId: userId,
-        structureId: structureId,
+        userId,
+        structureId,
+        customerEmail: customerEmail || '',
       },
     });
 
     return { sessionId: session.id };
-  } catch (error) {
-    console.error('Erreur lors de la création de la session de paiement:', error);
-    throw new Error(`Erreur lors de la création de la session de paiement: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+  } catch (error: unknown) {
+    const err = error as { message?: string; code?: string; type?: string };
+    const message = err?.message ?? (typeof error === 'string' ? error : 'Erreur inconnue');
+    console.error('createCheckoutSession - Erreur:', message, error);
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+    throw new HttpsError('internal', `Session de paiement : ${message}`);
+  }
+});
+
+/** Inscription Junior : crée une session Stripe sans compte Firebase. Le compte est créé après paiement (page /register/complete). */
+export const createCheckoutSessionForSignup = onCall(signupConfig, async (request) => {
+  try {
+    const { priceId, email, structureName, structureSchool, success_url, cancel_url } = request.data as CreateCheckoutSessionForSignupData;
+    if (!priceId || !email || !structureName || !structureSchool || !success_url || !cancel_url) {
+      throw new HttpsError('invalid-argument', 'Tous les champs (priceId, email, structureName, structureSchool, success_url, cancel_url) sont requis.');
+    }
+    const emailDomain = getEmailDomain(email);
+    if (await isEmailDomainAlreadyUsed(emailDomain)) {
+      throw new HttpsError('already-exists', 'Ce domaine email est déjà utilisé par une autre structure. Utilisez une adresse avec un domaine professionnel ou d\'établissement non encore enregistré.');
+    }
+    const stripe = getStripeInstance();
+    const customer = await stripe.customers.create({
+      email: email.trim(),
+      metadata: { signupFlow: 'structure', structureName, structureSchool },
+    });
+    const session = await stripe.checkout.sessions.create({
+      customer: customer.id,
+      payment_method_types: ['card'],
+      line_items: [{ price: priceId, quantity: 1 }],
+      mode: 'subscription',
+      subscription_data: {
+        trial_period_days: 60,
+        metadata: {
+          signupEmail: email.trim(),
+          structureName: structureName.trim(),
+          structureSchool: structureSchool.trim(),
+        },
+      },
+      success_url,
+      cancel_url,
+      metadata: {
+        signupEmail: email.trim(),
+        structureName: structureName.trim(),
+        structureSchool: structureSchool.trim(),
+      },
+    });
+    return { sessionId: session.id };
+  } catch (error: unknown) {
+    const err = error as { message?: string };
+    const message = err?.message ?? (typeof error === 'string' ? error : 'Erreur inconnue');
+    console.error('createCheckoutSessionForSignup:', message, error);
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError('internal', `Session d'inscription : ${message}`);
+  }
+});
+
+/** Récupère les données pour compléter l’inscription après paiement (email, structureId, structureName). */
+/** Vérifie si le domaine d'un email est déjà utilisé par une structure (inscription sans Stripe). */
+export const checkEmailDomainAvailable = onCall(signupConfig, async (request) => {
+  const { email } = request.data as { email?: string };
+  if (!email || typeof email !== 'string' || !email.trim()) {
+    throw new HttpsError('invalid-argument', 'Email requis.');
+  }
+  const emailDomain = getEmailDomain(email);
+  const used = await isEmailDomainAlreadyUsed(emailDomain);
+  return { available: !used };
+});
+
+export const getSignupCompletionData = onCall(signupConfig, async (request) => {
+  try {
+    const { sessionId } = request.data as { sessionId: string };
+    if (!sessionId) throw new HttpsError('invalid-argument', 'sessionId requis.');
+    const stripe = getStripeInstance();
+    const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ['subscription'] });
+    if (session.status !== 'complete' || !session.subscription) {
+      throw new HttpsError('failed-precondition', 'Paiement non finalisé ou abonnement absent.');
+    }
+    const subscription = typeof session.subscription === 'object' ? session.subscription : await stripe.subscriptions.retrieve(session.subscription as string);
+    const subId = subscription.id;
+    const meta = subscription.metadata || {};
+    let snap = await admin.firestore().collection('signupCompletion').doc(subId).get();
+    if (!snap.exists && meta.signupEmail) {
+      const signupEmail = (meta.signupEmail as string).trim();
+      const structureName = (meta.structureName as string) || 'Structure';
+      const structureSchool = (meta.structureSchool as string) || '';
+      const emailDomain = getEmailDomain(signupEmail);
+      if (await isEmailDomainAlreadyUsed(emailDomain)) {
+        throw new HttpsError('already-exists', 'Ce domaine email est déjà utilisé par une autre structure. Utilisez une adresse avec un domaine professionnel ou d\'établissement non encore enregistré.');
+      }
+      const structureRef = admin.firestore().collection('structures').doc();
+      const structureId = structureRef.id;
+      await structureRef.set({
+        id: structureId,
+        name: structureName,
+        nom: structureName,
+        ecole: structureSchool,
+        email: signupEmail,
+        emailDomains: [emailDomain],
+        domaines: [emailDomain],
+        structureType: 'junior',
+        createdAt: new Date().toISOString(),
+      });
+      await createDefaultStructurePermissions(structureId);
+      await admin.firestore().collection('signupCompletion').doc(subId).set({
+        structureId,
+        email: signupEmail,
+        structureName,
+      });
+      console.log('Stripe Functions - getSignupCompletionData: structure + signupCompletion créés (webhook en retard)');
+      return { email: signupEmail, structureId, structureName };
+    }
+    if (!snap.exists) {
+      throw new HttpsError('not-found', 'Données de complétion pas encore disponibles. Réessayez dans quelques secondes.');
+    }
+    const data = snap.data()!;
+    return { email: data.email, structureId: data.structureId, structureName: data.structureName };
+  } catch (error: unknown) {
+    if (error instanceof HttpsError) throw error;
+    const err = error as { message?: string };
+    throw new HttpsError('internal', err?.message ?? 'Erreur inconnue');
+  }
+});
+
+/** Initialise les permissions par défaut d'une structure (appelé après création côté client, ex. inscription sans Stripe). */
+export const initStructurePermissions = onCall(functionConfig, async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError('unauthenticated', 'Authentification requise.');
+  }
+  const { structureId } = request.data as { structureId: string };
+  if (!structureId) throw new HttpsError('invalid-argument', 'structureId requis.');
+  const uid = request.auth.uid;
+  const structureSnap = await admin.firestore().collection('structures').doc(structureId).get();
+  if (!structureSnap.exists) throw new HttpsError('not-found', 'Structure introuvable.');
+  const createdBy = structureSnap.data()?.createdBy;
+  const userSnap = await admin.firestore().collection('users').doc(uid).get();
+  const userStatus = userSnap.data()?.status;
+  const userStructureId = userSnap.data()?.structureId;
+  const isCreator = createdBy === uid;
+  const isAdminStructure = userStatus === 'admin_structure' && userStructureId === structureId;
+  if (!isCreator && !isAdminStructure) {
+    throw new HttpsError('permission-denied', 'Seul le créateur ou l’admin de la structure peut initialiser les permissions.');
+  }
+  await createDefaultStructurePermissions(structureId);
+  return { ok: true };
+});
+
+/** Crée le compte Firebase (Auth + user doc + structure createdBy) après paiement réussi. */
+export const completeSignupAfterPayment = onCall(signupConfig, async (request) => {
+  try {
+    const { sessionId, password } = request.data as { sessionId: string; password: string };
+    if (!sessionId || !password) throw new HttpsError('invalid-argument', 'sessionId et password requis.');
+    const stripe = getStripeInstance();
+    const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ['subscription'] });
+    if (session.status !== 'complete' || !session.subscription) {
+      throw new HttpsError('failed-precondition', 'Paiement non finalisé.');
+    }
+    const subId = typeof session.subscription === 'object' ? session.subscription.id : session.subscription;
+    const snap = await admin.firestore().collection('signupCompletion').doc(subId).get();
+    if (!snap.exists) throw new HttpsError('not-found', 'Données de complétion introuvables.');
+    const data = snap.data()!;
+    const { email, structureId, structureName } = data as { email: string; structureId: string; structureName: string };
+    const userRecord = await admin.auth().createUser({
+      email,
+      password,
+      displayName: structureName,
+    });
+    const uid = userRecord.uid;
+    await admin.firestore().collection('users').doc(uid).set({
+      displayName: structureName,
+      email,
+      firstName: structureName,
+      lastName: '',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: 'admin',
+      structureId,
+      structureName,
+      trialStartDate: new Date(),
+      trialEndDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      hasActiveTrial: true,
+    });
+    await admin.firestore().collection('structures').doc(structureId).update({
+      createdBy: uid,
+    });
+    await admin.firestore().collection('signupCompletion').doc(subId).delete();
+    return { uid, email };
+  } catch (error: unknown) {
+    if (error instanceof HttpsError) throw error;
+    const err = error as { message?: string; code?: string };
+    if (err?.code === 'auth/email-already-in-use') {
+      throw new HttpsError('already-exists', 'Cette adresse email est déjà utilisée. Connectez-vous ou réinitialisez le mot de passe.');
+    }
+    throw new HttpsError('internal', err?.message ?? 'Erreur lors de la création du compte.');
   }
 });
 
@@ -384,7 +672,30 @@ export const createSubscription = onCall(lowResourceConfig, async (request) => {
       console.log('Stripe Functions - ID client sauvegardé dans Firestore');
     }
 
-    // Créer la session de paiement avec essai gratuit de 30 jours
+    // Vérifier si le client a déjà un abonnement actif
+    // Si oui, ne pas appliquer la période d'essai (pour les renouvellements/changements de plan)
+    let hasActiveSubscription = false;
+    try {
+      const subscriptions = await getStripeInstance().subscriptions.list({
+        customer: customerId,
+        status: 'active',
+        limit: 1
+      });
+      hasActiveSubscription = subscriptions.data.length > 0;
+    } catch (error) {
+      console.warn('Erreur lors de la vérification des abonnements existants:', error);
+      // En cas d'erreur, on considère qu'il n'y a pas d'abonnement actif (sécurité)
+    }
+    
+    // Préparer les données de l'abonnement
+    const subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData = {};
+    
+    // Appliquer la période d'essai uniquement pour les nouveaux clients (pas d'abonnement actif)
+    if (!hasActiveSubscription) {
+      subscriptionData.trial_period_days = 60; // 2 mois gratuits pour les nouveaux clients
+    }
+    
+    // Créer la session de paiement avec 2 mois gratuits (60 jours) pour les nouveaux clients
     console.log('Stripe Functions - Création de la session de paiement');
     const session = await getStripeInstance().checkout.sessions.create({
       customer: customerId,
@@ -396,9 +707,7 @@ export const createSubscription = onCall(lowResourceConfig, async (request) => {
         },
       ],
       mode: 'subscription',
-      subscription_data: {
-        trial_period_days: 30,
-      },
+      subscription_data: subscriptionData,
       success_url: `${process.env.FRONTEND_URL}/settings/billing?success=true`,
       cancel_url: `${process.env.FRONTEND_URL}/settings/billing?canceled=true`,
       metadata: {
@@ -459,36 +768,105 @@ stripeWebhookApp.post('*', async (req, res) => {
 
   // Gérer les événements Stripe
   switch (event.type) {
+    case 'invoice.payment_failed': {
+      const failedInvoice = event.data.object as Stripe.Invoice;
+      const failedStructureId =
+        (failedInvoice as any).subscription_details?.metadata?.structureId ||
+        (typeof failedInvoice.subscription === 'string' ? null : null);
+      // Resolve structure via customer subscription metadata when possible
+      let structureIdFromInvoice: string | undefined =
+        (failedInvoice.metadata?.structureId as string) || undefined;
+      if (!structureIdFromInvoice && failedInvoice.subscription) {
+        try {
+          const subId =
+            typeof failedInvoice.subscription === 'string'
+              ? failedInvoice.subscription
+              : failedInvoice.subscription.id;
+          const sub = await getStripeInstance().subscriptions.retrieve(subId);
+          structureIdFromInvoice = sub.metadata?.structureId;
+        } catch (e) {
+          console.warn('invoice.payment_failed: unable to resolve structureId', e);
+        }
+      }
+      if (structureIdFromInvoice) {
+        const { notifyPaymentFailed } = await import('./notifications/billingNotifications');
+        await notifyPaymentFailed(structureIdFromInvoice).catch((err) =>
+          console.error('notifyPaymentFailed', err)
+        );
+      } else {
+        console.warn('invoice.payment_failed: no structureId', failedStructureId);
+      }
+      break;
+    }
+
     case 'customer.subscription.created':
     case 'customer.subscription.updated':
       const subscription = event.data.object as Stripe.Subscription;
-      const structureId = subscription.metadata.structureId;
-      
-      // Récupérer l'email du client depuis les métadonnées
-      const customerEmail = subscription.metadata.customerEmail;
-      console.log('Stripe Functions - Mise à jour de l\'abonnement:', { 
-        structureId, 
-        status: subscription.status,
-        customerEmail 
-      });
+      const meta = subscription.metadata || {};
+      const customerEmail = meta.customerEmail || meta.signupEmail;
+      let structureId = meta.structureId as string | undefined;
 
-      // Mettre à jour le statut de l'abonnement dans Firestore
+      if (!structureId && meta.signupEmail) {
+        const existingCompletion = await admin.firestore().collection('signupCompletion').doc(subscription.id).get();
+        if (existingCompletion.exists) {
+          structureId = existingCompletion.data()?.structureId;
+          console.log('Stripe Functions - signupCompletion déjà créé (par getSignupCompletionData), structureId:', structureId);
+        } else {
+          const signupEmail = (meta.signupEmail as string).trim();
+          const structureName = (meta.structureName as string) || 'Structure';
+          const structureSchool = (meta.structureSchool as string) || '';
+          const emailDomain = getEmailDomain(signupEmail);
+          const domainUsed = await isEmailDomainAlreadyUsed(emailDomain);
+          if (domainUsed) {
+            console.warn('Stripe Functions - Domaine déjà utilisé (webhook), structure non créée:', emailDomain);
+          } else {
+          const structureRef = admin.firestore().collection('structures').doc();
+          structureId = structureRef.id;
+          await structureRef.set({
+            id: structureId,
+            name: structureName,
+            nom: structureName,
+            ecole: structureSchool,
+            email: signupEmail,
+            emailDomains: [emailDomain],
+            domaines: [emailDomain],
+            structureType: 'junior',
+            createdAt: new Date().toISOString(),
+          });
+          await createDefaultStructurePermissions(structureId);
+          await admin.firestore().collection('signupCompletion').doc(subscription.id).set({
+            structureId,
+            email: signupEmail,
+            structureName,
+          });
+          console.log('Stripe Functions - Structure créée (signup):', { structureId, signupEmail });
+          }
+        }
+      }
+
+      if (!structureId) {
+        console.warn('Stripe Functions - Abonnement sans structureId ni signupEmail, ignoré');
+        break;
+      }
+
+      console.log('Stripe Functions - Mise à jour de l\'abonnement:', { structureId, status: subscription.status, customerEmail });
+
       await admin.firestore().collection('subscriptions').doc(structureId).set({
-        structureId: structureId,
+        structureId,
         subscriptionId: subscription.id,
         status: subscription.status,
         currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+        trial_end: subscription.trial_end || null,
         planId: subscription.items.data[0].price.id,
-        customerEmail: customerEmail,
+        customerEmail: customerEmail ?? null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
 
-      // Mettre à jour le statut de la structure
       await admin.firestore().collection('structures').doc(structureId).update({
         subscriptionStatus: subscription.status,
         subscriptionId: subscription.id,
         currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-        subscriptionEmail: customerEmail
+        subscriptionEmail: customerEmail ?? null
       });
       console.log('Stripe Functions - Statut de l\'abonnement mis à jour dans Firestore');
       break;
@@ -784,28 +1162,40 @@ export const createCotisationSession = onCall(lowResourceConfig, async (request)
   try {
     // Vérifier l'authentification
     if (!request.auth) {
-      throw new Error('Vous devez être connecté pour accéder à cette fonction.');
+      throw new HttpsError('unauthenticated', 'Vous devez être connecté pour accéder à cette fonction.');
     }
 
     const { userId, structureId, amount, duration } = request.data as CreateCotisationSessionData;
 
     if (!userId || !structureId || !amount || !duration) {
-      throw new Error('Tous les paramètres sont requis (userId, structureId, amount, duration).');
+      throw new HttpsError('invalid-argument', 'Tous les paramètres sont requis (userId, structureId, amount, duration).');
+    }
+
+    if (userId !== request.auth.uid) {
+      throw new HttpsError('permission-denied', 'Vous ne pouvez créer une cotisation que pour votre propre compte.');
+    }
+
+    const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+    const callerData = callerDoc.data();
+    if (!callerData || callerData.structureId !== structureId) {
+      throw new HttpsError('permission-denied', 'Structure non autorisée.');
     }
 
     // Récupérer les données de la structure pour obtenir les clés Stripe
     const structureDoc = await admin.firestore().collection('structures').doc(structureId).get();
     if (!structureDoc.exists) {
-      throw new Error('Structure non trouvée.');
+      throw new HttpsError('not-found', 'Structure non trouvée.');
     }
 
-    const structureData = structureDoc.data();
-    if (!structureData?.stripeSecretKey) {
-      throw new Error('Les clés Stripe ne sont pas configurées pour cette structure.');
+    const structureData = structureDoc.data()!;
+    const { getStructureStripeSecretKey } = await import('./structureStripeSecrets');
+    const stripeSecret = await getStructureStripeSecretKey(structureId);
+    if (!stripeSecret) {
+      throw new HttpsError('failed-precondition', 'Les clés Stripe ne sont pas configurées pour cette structure.');
     }
 
     // Initialiser Stripe avec les clés de la structure
-    const structureStripe = new Stripe(structureData.stripeSecretKey, {
+    const structureStripe = new Stripe(stripeSecret, {
       apiVersion: '2023-10-16',
     });
 
@@ -1051,6 +1441,16 @@ cotisationWebhookApp.post('*', async (req, res) => {
           });
 
           console.log('Cotisation créée avec succès:', subscriptionRef.id);
+          try {
+            const { notifyCotisationPaid } = await import('./notifications/billingNotifications');
+            await notifyCotisationPaid({
+              userId,
+              amount: `${cotisationAmount.toFixed(2)} €`,
+              structureId,
+            });
+          } catch (notifErr) {
+            console.error('notifyCotisationPaid', notifErr);
+          }
         }
         break;
 
@@ -1062,6 +1462,25 @@ cotisationWebhookApp.post('*', async (req, res) => {
       case 'payment_intent.payment_failed':
         const failedPaymentIntent = event.data.object as Stripe.PaymentIntent;
         console.log('Payment Intent échoué:', failedPaymentIntent.id);
+        try {
+          const uid = failedPaymentIntent.metadata?.userId;
+          const sid = failedPaymentIntent.metadata?.structureId;
+          if (uid) {
+            const { notifyCotisationFailed } = await import('./notifications/billingNotifications');
+            await notifyCotisationFailed({
+              userId: uid,
+              structureId: sid,
+              amount: failedPaymentIntent.amount
+                ? `${(failedPaymentIntent.amount / 100).toFixed(2)} €`
+                : undefined,
+            });
+          } else if (sid) {
+            const { notifyPaymentFailed } = await import('./notifications/billingNotifications');
+            await notifyPaymentFailed(sid);
+          }
+        } catch (notifErr) {
+          console.error('payment_failed notif', notifErr);
+        }
         break;
 
       default:

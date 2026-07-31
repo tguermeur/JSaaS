@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Button,
@@ -11,9 +12,7 @@ import {
   Paper,
   Typography,
   Dialog,
-  DialogTitle,
   DialogContent,
-  DialogActions,
   Alert,
   Snackbar,
   TextField,
@@ -28,8 +27,7 @@ import {
   MenuItem,
   Grid,
   InputAdornment,
-  Divider,
-  keyframes
+  Divider
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -50,9 +48,13 @@ import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setD
 import { useNavigate } from 'react-router-dom';
 import MissionForm, { MissionFormData } from '../components/missions/MissionForm';
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
-import { decryptUsersList } from '../utils/decryptUserUtils';
+import { decryptUsersList, getDecryptedUserDisplayName, getSafeDisplayName } from '../utils/decryptUserUtils';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
+import { tokens } from '../theme/tokens';
+import LoadingState from '../components/common/LoadingState';
+import { fadeIn } from '../styles/animations';
+import MissionsListPage, { type MissionListRow } from './missions/MissionsListPage';
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -70,18 +72,6 @@ const generateMandats = (): string[] => {
 
 const AVAILABLE_MANDATS = generateMandats();
 
-// Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
 interface MissionData {
   id?: string;
   numeroMission: string;
@@ -90,6 +80,9 @@ interface MissionData {
   lieu?: string;
   entreprise?: string;
   prixHT?: number;
+  priceHT?: number;
+  totalHT?: number;
+  totalTTC?: number;
   status: string;
   structureId?: string;
   type?: string;
@@ -117,6 +110,18 @@ interface MissionData {
   isArchived?: boolean;
   mandat?: string; // Format: "2022-2023", "2023-2024", etc.
 }
+
+/** Total TTC = prix horaire HT × heures × 1,2 (TVA 20 %), hors notes de frais. */
+const getMissionTotalTTC = (m: MissionData): number | undefined => {
+  if (typeof m.totalTTC === 'number' && m.totalTTC > 0) return m.totalTTC;
+  const hourly = m.priceHT ?? m.prixHT;
+  const hours = m.hours;
+  if (typeof hourly !== 'number' || hourly <= 0 || typeof hours !== 'number' || hours <= 0) {
+    return undefined;
+  }
+  const totalHT = hourly * hours;
+  return Math.round(totalHT * 1.2 * 100) / 100;
+};
 
 interface FirestoreMissionData {
   numeroMission: string;
@@ -160,10 +165,12 @@ interface ChargeData {
 }
 
 const Mission: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, userData: authUserData, loading: authLoading } = useAuth();
   const { canRead, canWrite, loading: permissionLoading } = usePermission('mission');
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
+  // structureId effectif (state ou auth) pour créer des missions (admin doit toujours avoir structureId)
+  const effectiveStructureId = userStructureId ?? authUserData?.structureId ?? null;
   const [showNoStructureAlert, setShowNoStructureAlert] = useState(false);
   const [missions, setMissions] = useState<MissionData[]>([]);
   const [filteredMissions, setFilteredMissions] = useState<MissionData[]>([]);
@@ -179,7 +186,7 @@ const Mission: React.FC = () => {
   const [missionToEdit, setMissionToEdit] = useState<MissionData | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<string>('date');
+  const [sortBy, setSortBy] = useState<string>('numeroMission');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [archiveFilter, setArchiveFilter] = useState<'all' | 'active' | 'archived'>('active');
@@ -190,120 +197,175 @@ const Mission: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const fetchUserStructureAndMissions = async () => {
-      if (!currentUser) return;
+    const fetchMissions = async () => {
+      if (authLoading || !currentUser || !authUserData) return;
+
+      const userStatus = authUserData.status;
+      const structureId = authUserData.structureId as string | undefined;
+
+      setUserStructureId(structureId ?? null);
+
+      if (!structureId && userStatus !== 'superadmin') {
+        setShowNoStructureAlert(true);
+        setLoading(false);
+        return;
+      }
+
+      if (!structureId) {
+        setLoading(false);
+        return;
+      }
 
       try {
         setLoading(true);
 
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        if (!userDoc.exists()) {
-          setLoading(false);
-          return;
-        }
-
-        const userData = userDoc.data();
-        const userStatus = userData?.status;
-        const userStructureId = userData?.structureId;
-
-        setUserStructureId(userStructureId);
-
-        if (!userStructureId && userStatus !== 'superadmin') {
-          setShowNoStructureAlert(true);
-          setLoading(false);
-          return;
-        }
-
-        // Récupération des chargés de mission de la structure
-        const usersRef = collection(db, 'users');
-        let usersQuery;
-        
-        // Pour tous les utilisateurs, on récupère uniquement les utilisateurs de leur structure
-        // avec les rôles membres, admins et superadmins
-        usersQuery = query(
-          usersRef,
-          where('structureId', '==', userStructureId),
-          where('status', 'in', ['membre', 'admin', 'superadmin'])
-        );
-
-        const usersSnapshot = await getDocs(usersQuery);
-        const chargesListRaw = usersSnapshot.docs.map(doc => {
-          const userData = doc.data() as UserData;
-          return {
-            id: doc.id,
-            displayName: userData.displayName || 'Utilisateur sans nom',
-            firstName: userData.firstName,
-            lastName: userData.lastName,
-            photoURL: userData.photoURL
-          };
-        });
-        
-        // Décrypter les noms des chargés de mission
-        const decryptedCharges = await decryptUsersList(chargesListRaw);
-        setAvailableCharges(decryptedCharges);
-
-        const missionsRef = collection(db, 'missions');
         const missionsQuery = query(
-          missionsRef,
-          where('structureId', '==', userStructureId)
+          collection(db, 'missions'),
+          where('structureId', '==', structureId)
         );
 
-        const snapshot = await getDocs(missionsQuery);
-        const missionsData = snapshot.docs.map(doc => {
-          const data = doc.data() as FirestoreMissionData;
-          return {
-            id: doc.id,
-            ...data
-          } as MissionData;
-        });
+        const [missionsSnapshot, favoritesDoc] = await Promise.all([
+          getDocs(missionsQuery),
+          getDoc(doc(db, 'userFavorites', currentUser.uid)).catch(() => null),
+        ]);
 
-        missionsData.sort((a, b) => {
-          const dateA = a.createdAt?.toDate?.() || new Date(0);
-          const dateB = b.createdAt?.toDate?.() || new Date(0);
-          return dateB.getTime() - dateA.getTime();
-        });
+        const missionsData = missionsSnapshot.docs
+          .map((missionDoc) => {
+            const data = missionDoc.data() as FirestoreMissionData;
+            return { id: missionDoc.id, ...data } as MissionData;
+          })
+          .sort((a, b) =>
+            String(b.numeroMission || '').localeCompare(String(a.numeroMission || ''), 'fr', { numeric: true })
+          );
+
+        // Résoudre les noms d'entreprise manquants / "Organisation inconnue" via companyId
+        const companyIdsToResolve = Array.from(
+          new Set(
+            missionsData
+              .filter(
+                (m) =>
+                  m.companyId &&
+                  (!(m.company || '').trim() || m.company === 'Organisation inconnue')
+              )
+              .map((m) => m.companyId as string)
+          )
+        );
+        if (companyIdsToResolve.length > 0) {
+          const nameById = new Map<string, string>();
+          await Promise.all(
+            companyIdsToResolve.map(async (companyId) => {
+              try {
+                const snap = await getDoc(doc(db, 'companies', companyId));
+                if (snap.exists()) {
+                  const name = (snap.data()?.name as string | undefined)?.trim();
+                  if (name) nameById.set(companyId, name);
+                }
+              } catch {
+                // ignore
+              }
+            })
+          );
+          if (nameById.size > 0) {
+            for (const m of missionsData) {
+              if (!m.companyId) continue;
+              const resolved = nameById.get(m.companyId);
+              if (
+                resolved &&
+                (!(m.company || '').trim() || m.company === 'Organisation inconnue')
+              ) {
+                m.company = resolved;
+              }
+            }
+          }
+        }
 
         setMissions(missionsData);
-        setLoading(false);
+
+        if (favoritesDoc?.exists()) {
+          setFavoriteMissions(favoritesDoc.data().missionIds || []);
+        }
+
+        // Déchiffrement en arrière-plan (recherche/filtres + cache partagé avec UserNameText)
+        const encryptedCharges = Array.from(
+          new Map(
+            missionsData
+              .filter((m) => m.chargeId && m.chargeName?.startsWith?.('ENC:'))
+              .map((m) => [m.chargeId, { id: m.chargeId, displayName: m.chargeName }])
+          ).values()
+        );
+        if (encryptedCharges.length > 0) {
+          void decryptUsersList(encryptedCharges).then((decrypted) => {
+            const nameById = new Map(decrypted.map((u) => [u.id, u.displayName]));
+            setMissions((prev) =>
+              prev.map((m) => {
+                const name = nameById.get(m.chargeId);
+                return name ? { ...m, chargeName: name } : m;
+              })
+            );
+          });
+        }
       } catch (error) {
         console.error('Erreur lors de la récupération des missions:', error);
         setSnackbar({
           open: true,
           message: 'Erreur lors de la récupération des missions',
-          severity: 'error'
+          severity: 'error',
         });
+      } finally {
         setLoading(false);
       }
     };
 
-    fetchUserStructureAndMissions();
-  }, [currentUser]);
+    fetchMissions();
+  }, [currentUser, authLoading, authUserData]);
 
+  // Chargés de mission : chargés à la demande (création de mission uniquement)
   useEffect(() => {
-    const loadFavorites = async () => {
-      if (!currentUser) return;
-      
+    if (!createDialogOpen || !effectiveStructureId || availableCharges.length > 0) return;
+
+    let cancelled = false;
+    const loadCharges = async () => {
       try {
-        const favoritesDoc = await getDoc(doc(db, 'userFavorites', currentUser.uid));
-        if (favoritesDoc.exists()) {
-          const favoritesData = favoritesDoc.data();
-          setFavoriteMissions(favoritesData.missionIds || []);
-        }
-      } catch {
-        setFavoriteMissions([]);
+        const usersSnapshot = await getDocs(
+          query(
+            collection(db, 'users'),
+            where('structureId', '==', effectiveStructureId),
+            where('status', 'in', ['membre', 'admin', 'superadmin'])
+          )
+        );
+        if (cancelled) return;
+
+        const chargesListRaw = usersSnapshot.docs.map((userDoc) => {
+          const data = userDoc.data() as UserData;
+          return {
+            id: userDoc.id,
+            displayName: data.displayName || 'Utilisateur sans nom',
+            firstName: data.firstName,
+            lastName: data.lastName,
+            photoURL: data.photoURL,
+          };
+        });
+
+        const decryptedCharges = await decryptUsersList(chargesListRaw);
+        if (!cancelled) setAvailableCharges(decryptedCharges);
+      } catch (error) {
+        console.error('Erreur lors du chargement des chargés de mission:', error);
       }
     };
 
-    loadFavorites();
-  }, [currentUser]);
+    void loadCharges();
+    return () => {
+      cancelled = true;
+    };
+  }, [createDialogOpen, effectiveStructureId, availableCharges.length]);
 
   // Générer le numéro de mission si le dialogue est ouvert et que userStructureId est disponible
   useEffect(() => {
     const generateMissionNumber = async () => {
-      if (createDialogOpen && userStructureId && !generatedMissionNumber && !isGeneratingMissionNumber) {
+      if (createDialogOpen && effectiveStructureId && !generatedMissionNumber && !isGeneratingMissionNumber) {
         setIsGeneratingMissionNumber(true);
         try {
-          const missionNumber = await generateNextMissionNumber(userStructureId);
+          const missionNumber = await generateNextMissionNumber(effectiveStructureId);
           setGeneratedMissionNumber(missionNumber);
         } catch (error) {
           console.error('Erreur lors de la génération du numéro de mission:', error);
@@ -314,7 +376,7 @@ const Mission: React.FC = () => {
     };
 
     generateMissionNumber();
-  }, [createDialogOpen, userStructureId]);
+  }, [createDialogOpen, effectiveStructureId]);
 
   useEffect(() => {
     let result = [...missions];
@@ -354,6 +416,11 @@ const Mission: React.FC = () => {
           const dateA = a.startDate ? new Date(a.startDate) : new Date(0);
           const dateB = b.startDate ? new Date(b.startDate) : new Date(0);
           comparison = dateA.getTime() - dateB.getTime();
+          break;
+        case 'numeroMission':
+          comparison = String(a.numeroMission || '').localeCompare(String(b.numeroMission || ''), 'fr', {
+            numeric: true
+          });
           break;
         case 'company':
           comparison = (a.company || '').localeCompare(b.company || '');
@@ -476,7 +543,7 @@ const Mission: React.FC = () => {
         const userDoc = await getDoc(doc(db, 'users', updatedData.chargeId));
         if (userDoc.exists()) {
           const userData = userDoc.data();
-          updatedData.chargeName = userData.displayName || '';
+          updatedData.chargeName = await getDecryptedUserDisplayName(updatedData.chargeId, userData || null);
           updatedData.chargePhotoURL = userData.photoURL || null;
           // Récupérer le mandat du chargé de mission
           updatedData.mandat = userData.mandat || undefined;
@@ -537,8 +604,10 @@ const Mission: React.FC = () => {
   };
 
   const checkMissionNumberExists = async (numeroMission: string): Promise<boolean> => {
+    if (!effectiveStructureId) return false;
     const missionQuery = query(
       collection(db, 'missions'),
+      where('structureId', '==', effectiveStructureId),
       where('numeroMission', '==', numeroMission)
     );
     const missionSnapshot = await getDocs(missionQuery);
@@ -608,10 +677,10 @@ const Mission: React.FC = () => {
     try {
       if (!currentUser) return;
 
-      if (!userStructureId) {
+      if (!effectiveStructureId && authUserData?.status !== 'superadmin') {
         setSnackbar({
           open: true,
-          message: 'Erreur: Aucune structure associée',
+          message: 'Erreur: Aucune structure associée à votre compte',
           severity: 'error'
         });
         return;
@@ -662,15 +731,15 @@ const Mission: React.FC = () => {
         studentCount: formData.studentCount,
         hours: formData.hours || 0,
         status: 'En attente',
-        structureId: userStructureId,
+        structureId: effectiveStructureId ?? undefined,
         chargeId: formData.chargeId || currentUser.uid,
-        chargeName: selectedCharge.displayName,
+        chargeName: getSafeDisplayName(selectedCharge),
         chargePhotoURL: selectedCharge.photoURL || null,
         description: formData.description,
         prixHT: formData.priceHT,
         createdAt: new Date(),
         createdBy: currentUser.uid,
-        isPublic: true,
+        isPublic: false,
         etape: 'Négociation',
         isArchived: false,
         mandat: missionMandat
@@ -690,7 +759,7 @@ const Mission: React.FC = () => {
         message: 'Mission créée avec succès',
         severity: 'success'
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erreur lors de la création de la mission:', error);
       setSnackbar({
         open: true,
@@ -706,10 +775,10 @@ const Mission: React.FC = () => {
 
   const handleOpenCreateDialog = async () => {
     setCreateDialogOpen(true);
-    if (userStructureId) {
+    if (effectiveStructureId) {
       setIsGeneratingMissionNumber(true);
       try {
-        const missionNumber = await generateNextMissionNumber(userStructureId);
+        const missionNumber = await generateNextMissionNumber(effectiveStructureId);
         setGeneratedMissionNumber(missionNumber);
       } catch (error) {
         console.error('Erreur lors de la génération du numéro de mission:', error);
@@ -745,479 +814,107 @@ const Mission: React.FC = () => {
   }
 
   return (
-    <Box sx={{ p: 3, bgcolor: '#f5f5f7', minHeight: '100vh' }}>
-      <Box 
-        sx={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
-          mb: 4,
-          px: 2 
+    <>
+    {loading ? (
+      <LoadingState message="Chargement des missions…" />
+    ) : (
+      <MissionsListPage
+        title="Missions"
+        subtitle="Pipeline complet des missions de la structure."
+        newLabel="Nouvelle mission"
+        searchPlaceholder="Rechercher une mission…"
+        rows={filteredMissions.map((m): MissionListRow => ({
+          id: m.id || '',
+          numero: m.numeroMission,
+          title: m.description || m.company || m.numeroMission,
+          client: m.company || m.entreprise || '',
+          chargeId: m.chargeId,
+          chargeName: m.chargeName,
+          chargePhotoURL: m.chargePhotoURL,
+          status: m.isArchived ? 'Archivée' : (m.etape || m.status || 'En cours'),
+          amountHT: getMissionTotalTTC(m),
+          dueDate: formatDate(m.endDate),
+        }))}
+        canWrite={canWrite}
+        onNew={handleOpenCreateDialog}
+        onRowClick={(row) => {
+          const mission = filteredMissions.find((m) => m.id === row.id);
+          if (mission) handleCardClick(mission);
         }}
-      >
-        <Typography 
-          variant="h4" 
-          sx={{ 
-            fontWeight: 700,
-            mb: 4,
-            background: theme => `linear-gradient(90deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            animation: `${fadeIn} 0.5s ease-out`
-          }}
-        >
-          Missions
-        </Typography>
-        {canWrite && (
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={handleOpenCreateDialog}
-            sx={{
-              bgcolor: '#0066cc',
-              borderRadius: '0.8rem',
-              px: 3,
-              py: 1,
-              '&:hover': {
-                bgcolor: '#0077ed'
-              }
-            }}
-          >
-            Ajouter une mission
-          </Button>
-        )}
-      </Box>
-
-      <Box sx={{ 
-        mb: 3, 
-        px: 2,
-        display: 'flex',
-        gap: 1,
-        alignItems: 'center'
-      }}>
-        <Button
-          variant={archiveFilter === 'active' ? 'contained' : 'outlined'}
-          onClick={() => setArchiveFilter('active')}
-          sx={{
-            borderRadius: '20px',
-            textTransform: 'none',
-            px: 3,
-            py: 1,
-            bgcolor: archiveFilter === 'active' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'active' ? 'white' : '#1d1d1f',
-            borderColor: '#d2d2d7',
-            '&:hover': {
-              bgcolor: archiveFilter === 'active' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
-            }
-          }}
-        >
-          Missions en cours
-        </Button>
-        <Button
-          variant={archiveFilter === 'archived' ? 'contained' : 'outlined'}
-          onClick={() => setArchiveFilter('archived')}
-          sx={{
-            borderRadius: '20px',
-            textTransform: 'none',
-            px: 3,
-            py: 1,
-            bgcolor: archiveFilter === 'archived' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'archived' ? 'white' : '#1d1d1f',
-            borderColor: '#d2d2d7',
-            '&:hover': {
-              bgcolor: archiveFilter === 'archived' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
-            }
-          }}
-        >
-          Missions archivées
-        </Button>
-        <Button
-          variant={archiveFilter === 'all' ? 'contained' : 'outlined'}
-          onClick={() => setArchiveFilter('all')}
-          sx={{
-            borderRadius: '20px',
-            textTransform: 'none',
-            px: 3,
-            py: 1,
-            bgcolor: archiveFilter === 'all' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'all' ? 'white' : '#1d1d1f',
-            borderColor: '#d2d2d7',
-            '&:hover': {
-              bgcolor: archiveFilter === 'all' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
-            }
-          }}
-        >
-          Toutes les missions
-        </Button>
-        <FormControl 
-          size="small" 
-          sx={{ 
-            minWidth: 150,
-            ml: 2
-          }}
-        >
-          <InputLabel>Mandat</InputLabel>
-          <Select
-            value={mandatFilter}
-            label="Mandat"
-            onChange={(e) => setMandatFilter(e.target.value)}
-            sx={{
-              borderRadius: '20px',
-              '& .MuiOutlinedInput-notchedOutline': {
-                borderColor: '#d2d2d7',
-              },
-            }}
-          >
-            <MenuItem value="all">Tous les mandats</MenuItem>
-            {AVAILABLE_MANDATS.map(mandat => (
-              <MenuItem key={mandat} value={mandat}>
-                {mandat}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-      </Box>
-
-      {loading ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
-          <CircularProgress sx={{ color: '#0066cc' }} />
-        </Box>
-      ) : missions.length === 0 ? (
-        <Paper 
-          sx={{ 
-            p: 4, 
-            textAlign: 'center',
-            bgcolor: 'white',
-            borderRadius: '1.2rem',
-            border: '1px solid #e5e5e7',
-            mx: 2
-          }}
-        >
-          <WorkHistoryIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-          <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-            Aucune mission dans votre structure
-          </Typography>
-          <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-            {canWrite 
-              ? "Commencez par ajouter votre première mission en cliquant sur le bouton ci-dessous."
-              : "Aucune mission n'a encore été ajoutée à votre structure."
-            }
-          </Typography>
-          {canWrite && (
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={handleOpenCreateDialog}
-              sx={{
-                bgcolor: '#0066cc',
-                borderRadius: '0.8rem',
-                px: 3,
-                py: 1,
-                '&:hover': {
-                  bgcolor: '#0077ed'
-                }
-              }}
-            >
-              Ajouter une mission
+        toolbarExtra={
+          <>
+            <Button size="small" variant={archiveFilter === 'active' ? 'contained' : 'outlined'} onClick={() => setArchiveFilter('active')} sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}>
+              En cours
             </Button>
-          )}
-        </Paper>
-      ) : (
-        <TableContainer 
-          component={Paper} 
-          sx={{ 
-            borderRadius: '12px',
-            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-            overflow: 'hidden'
-          }}
-        >
-          <Table>
-            <TableHead>
-              <TableRow sx={{ backgroundColor: '#f5f5f7' }}>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Favori</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Numéro</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>CDM</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Entreprise</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Localisation</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Date de début</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Étudiants</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Heures</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Étape</TableCell>
-                <TableCell sx={{ 
-                  fontWeight: 500,
-                  color: '#1d1d1f',
-                  borderBottom: '1px solid #d2d2d7'
-                }}>Mandat</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {filteredMissions.map((mission) => (
-                <TableRow 
-                  key={mission.id}
-                  onClick={() => handleCardClick(mission)}
-                  sx={{ 
-                    cursor: 'pointer',
-                    '&:hover': {
-                      backgroundColor: 'rgba(0,0,0,0.02)'
-                    },
-                    '& td': {
-                      borderBottom: '1px solid #f5f5f7',
-                      color: '#1d1d1f'
-                    }
-                  }}
-                >
-                  <TableCell>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => handleToggleFavorite(mission.id || '', e)}
-                      sx={{ 
-                        color: favoriteMissions.includes(mission.id || '') ? '#0071e3' : '#86868b',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0,0,0,0.04)'
-                        }
-                      }}
-                    >
-                      {favoriteMissions.includes(mission.id || '') ? <StarIcon /> : <StarBorderIcon />}
-                    </IconButton>
-                  </TableCell>
-                  <TableCell>{mission.numeroMission}</TableCell>
-                  <TableCell>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Tooltip title={mission.chargeName || 'Non assigné'}>
-                        <Avatar
-                          src={mission.chargePhotoURL}
-                          sx={{ 
-                            width: 40, 
-                            height: 40,
-                            border: '2px solid #ffffff',
-                            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                            backgroundColor: '#0071e3'
-                          }}
-                        >
-                          {mission.chargeName?.charAt(0)}
-                        </Avatar>
-                      </Tooltip>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        {mission.chargeName || 'Non assigné'}
-                      </Typography>
-                    </Box>
-                  </TableCell>
-                  <TableCell>{mission.company}</TableCell>
-                  <TableCell>{mission.location}</TableCell>
-                  <TableCell>{formatDate(mission.startDate)}</TableCell>
-                  <TableCell>{mission.studentCount || 0}</TableCell>
-                  <TableCell>{mission.hours || 0}</TableCell>
-                  <TableCell>
-                    <Chip
-                      label={mission.isArchived ? 'Archivé' : (mission.etape || 'Négociation')}
-                      sx={{
-                        backgroundColor: 
-                          mission.isArchived ? 'rgba(142,142,147,0.1)' :
-                          mission.etape === 'Négociation' ? 'rgba(255,149,0,0.1)' :
-                          mission.etape === 'Recrutement' ? 'rgba(0,113,227,0.1)' :
-                          mission.etape === 'Date de mission' ? 'rgba(88,86,214,0.1)' :
-                          mission.etape === 'Facturation' ? 'rgba(255,204,0,0.1)' :
-                          mission.etape === 'Audit' ? 'rgba(52,199,89,0.1)' :
-                          'rgba(142,142,147,0.1)',
-                        color:
-                          mission.isArchived ? '#8E8E93' :
-                          mission.etape === 'Négociation' ? '#FF9500' :
-                          mission.etape === 'Recrutement' ? '#0071e3' :
-                          mission.etape === 'Date de mission' ? '#5856D6' :
-                          mission.etape === 'Facturation' ? '#FFCC00' :
-                          mission.etape === 'Audit' ? '#34C759' :
-                          '#8E8E93',
-                        fontWeight: 500,
-                        borderRadius: '6px'
-                      }}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    {mission.mandat ? (
-                      <Chip
-                        label={mission.mandat}
-                        size="small"
-                        sx={{
-                          backgroundColor: 'rgba(0, 102, 204, 0.1)',
-                          color: '#0066cc',
-                          fontWeight: 500,
-                          borderRadius: '6px'
-                        }}
-                      />
-                    ) : (
-                      <Typography variant="body2" color="text.secondary">
-                        Non défini
-                      </Typography>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      )}
-
-      <Dialog
-        open={editDialogOpen}
-        onClose={() => setEditDialogOpen(false)}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>Modifier la mission</DialogTitle>
-        <DialogContent>
-          {missionToEdit && (
-            <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <TextField
-                label="Numéro de mission"
-                value={missionToEdit.numeroMission}
-                onChange={(e) => setMissionToEdit({ ...missionToEdit, numeroMission: e.target.value })}
-                fullWidth
-                margin="normal"
-              />
-              <TextField
-                label="Nom du CDM"
-                value={missionToEdit.nomCDM}
-                onChange={(e) => setMissionToEdit({ ...missionToEdit, nomCDM: e.target.value })}
-                fullWidth
-                margin="normal"
-                helperText="Entrez le nom complet du CDM (prénom et nom)"
-              />
-              <TextField
-                label="Date"
-                type="date"
-                value={missionToEdit.date}
-                onChange={(e) => setMissionToEdit({ ...missionToEdit, date: e.target.value })}
-                fullWidth
-                margin="normal"
-                InputLabelProps={{ shrink: true }}
-              />
-              <TextField
-                label="Lieu"
-                value={missionToEdit.lieu}
-                onChange={(e) => setMissionToEdit({ ...missionToEdit, lieu: e.target.value })}
-                fullWidth
-                margin="normal"
-              />
-              <TextField
-                label="Entreprise"
-                value={missionToEdit.entreprise}
-                onChange={(e) => setMissionToEdit({ ...missionToEdit, entreprise: e.target.value })}
-                fullWidth
-                margin="normal"
-              />
-              <TextField
-                label="Prix HT"
-                type="number"
-                value={missionToEdit.prixHT}
-                onChange={(e) => setMissionToEdit({ ...missionToEdit, prixHT: parseFloat(e.target.value) || 0 })}
-                fullWidth
-                margin="normal"
-              />
-              <TextField
-                label="Statut"
-                select
-                value={missionToEdit.status}
-                onChange={(e) => setMissionToEdit({ ...missionToEdit, status: e.target.value })}
-                fullWidth
-                margin="normal"
-                SelectProps={{
-                  native: true,
-                }}
-              >
-                <option value="En attente">En attente</option>
-                <option value="En cours">En cours</option>
-                <option value="Terminée">Terminée</option>
-              </TextField>
-            </Box>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setEditDialogOpen(false)}>Annuler</Button>
-          <Button
-            onClick={handleSaveMissionEdit}
-            variant="contained"
-            color="primary"
-            disabled={!canWrite}
-          >
-            Enregistrer
-          </Button>
-        </DialogActions>
-      </Dialog>
+            <Button size="small" variant={archiveFilter === 'archived' ? 'contained' : 'outlined'} onClick={() => setArchiveFilter('archived')} sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}>
+              Archivées
+            </Button>
+            <Button size="small" variant={archiveFilter === 'all' ? 'contained' : 'outlined'} onClick={() => setArchiveFilter('all')} sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}>
+              Toutes
+            </Button>
+            <FormControl size="small" sx={{ minWidth: 140 }}>
+              <InputLabel>Mandat</InputLabel>
+              <Select value={mandatFilter} label="Mandat" onChange={(e) => setMandatFilter(e.target.value)} sx={{ borderRadius: tokens.radius.md }}>
+                <MenuItem value="all">Tous</MenuItem>
+                {AVAILABLE_MANDATS.map((mandat) => (
+                  <MenuItem key={mandat} value={mandat}>{mandat}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </>
+        }
+      />
+    )}
 
       <Dialog
         open={createDialogOpen}
         onClose={handleCloseCreateDialog}
-        maxWidth="md"
+        maxWidth="sm"
         fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: tokens.radius.xxl,
+            overflow: 'hidden',
+            boxShadow: tokens.shadows.pop,
+          },
+        }}
       >
-        <DialogTitle>Créer une nouvelle mission</DialogTitle>
-        <DialogContent>
-          <MissionForm 
-            onSubmit={handleCreateMission}
-            onCancel={handleCloseCreateDialog}
-            availableCharges={availableCharges}
-            initialData={{
-              number: generatedMissionNumber
-            }}
-          />
+        <DialogContent sx={{ p: 0, '&:first-of-type': { pt: 0 } }}>
+          {isGeneratingMissionNumber ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
+              <CircularProgress size={32} sx={{ color: tokens.colors.brandNavy }} />
+            </Box>
+          ) : (
+            <MissionForm
+              onSubmit={handleCreateMission}
+              onCancel={handleCloseCreateDialog}
+              availableCharges={availableCharges}
+              initialData={generatedMissionNumber ? { number: generatedMissionNumber } : undefined}
+            />
+          )}
         </DialogContent>
       </Dialog>
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert 
-          severity={snackbar.severity} 
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          variant="filled"
-          sx={{ width: '100%' }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
-    </Box>
+          <Alert 
+            severity={snackbar.severity} 
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            variant="filled"
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
+    </>
   );
 };
 

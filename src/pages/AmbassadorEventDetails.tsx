@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   doc,
@@ -10,12 +10,14 @@ import {
   orderBy,
   updateDoc,
   addDoc,
+  deleteDoc,
+  onSnapshot,
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { db, storage } from '../firebase/config';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { Mission } from '../types/mission';
 import { Document } from '../types/document';
 import {
-  ArrowBack as ArrowBackIcon,
   LocationOn as LocationIcon,
   CalendarToday as CalendarIcon,
   People as PeopleIcon,
@@ -27,23 +29,138 @@ import {
   CheckCircle as CheckCircleIcon,
   Cancel as CancelIcon,
   AccessTime as AccessTimeIcon,
-  CheckCircleOutline as CheckCircleOutlineIcon,
-  CancelOutlined as CancelOutlinedIcon,
   Transform as TransformIcon,
   Person as PersonIcon,
   Assignment as AssignmentIcon,
   Add as AddIcon,
+  CloudUpload as CloudUploadIcon,
+  Delete as DeleteIcon,
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon,
+  MoreVert as MoreVertIcon,
+  Close as CloseIcon,
 } from '@mui/icons-material';
-import { TextField, MenuItem, Box, Typography, InputAdornment, Dialog, DialogTitle, DialogContent, DialogActions, Button, Checkbox, FormControlLabel } from '@mui/material';
+import { TextField, MenuItem, Box, Typography, InputAdornment, Dialog, DialogTitle, DialogContent, DialogActions, Button, Checkbox, FormControlLabel, Tab, Tabs, CircularProgress, IconButton, Menu, ListItemIcon, ListItemText } from '@mui/material';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { AmbassadorEventForm } from '../components/missions/AmbassadorEventForm';
 import { useAuth } from '../contexts/AuthContext';
-import { getAmbassadorUsers } from '../services/ambassadorService';
-import { registerAmbassadorToSlot } from '../services/missionService';
-import { decryptUsersList } from '../utils/decryptUserUtils';
+import { getAmbassadorUsers, resolveAmbassadorEventCompanyName } from '../services/ambassadorService';
+import { decryptUsersList, getSafeDisplayName } from '../utils/decryptUserUtils';
+import UserNameText from '../components/common/UserNameText';
+import { tokens } from '../theme/tokens';
+import { PortalTopBar, CaeKpi, dsPageCanvasSx, dsTabsSx } from '../components/ds';
+import { Send as SendIcon, ChevronLeft as ChevronLeftIcon, Dashboard as DashboardIcon, Folder as FolderIcon } from '@mui/icons-material';
+import { sendStructureProposalRequestEmail } from '../services/emailjsStructureProposal';
+import { sendAmbassadorEventAnnouncementEmail } from '../services/emailjsAmbassadorAnnouncement';
+import { logEmailSend } from '../services/emailLogService';
 
 const appleFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+
+const toMissionDate = (v: unknown): Date => {
+  if (v == null) return new Date();
+  if (v instanceof Date) return v;
+  if (typeof (v as { toDate?: () => Date }).toDate === 'function') return (v as { toDate: () => Date }).toDate();
+  return new Date(v as string | number);
+};
+
+const getTotalPlannedHours = (mission: Mission | null): number => {
+  if (!mission?.slots?.length) return 0;
+  const total = mission.slots.reduce((acc, slot) => {
+    const start = toMissionDate(slot.startTime);
+    const end = toMissionDate(slot.endTime);
+    const durationHours = Math.max(0, (end.getTime() - start.getTime()) / 3_600_000);
+    const capacity = slot.capacity || 1;
+    return acc + durationHours * capacity;
+  }, 0);
+  return Math.round(total * 100) / 100;
+};
+
+const formatHours = (h: number) => {
+  if (!Number.isFinite(h)) return '0';
+  const rounded = Math.round(h * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace('.', ',');
+};
+
+const PROPOSAL_REQUEST_COOLDOWN_MS = 48 * 60 * 60 * 1000;
+
+const toOptionalDate = (v: unknown): Date | null => {
+  if (v == null) return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  if (typeof (v as { toDate?: () => Date }).toDate === 'function') {
+    const d = (v as { toDate: () => Date }).toDate();
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(v as string | number);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+const getProposalCooldownRemainingMs = (lastAt: Date | null, now = Date.now()): number => {
+  if (!lastAt) return 0;
+  return Math.max(0, PROPOSAL_REQUEST_COOLDOWN_MS - (now - lastAt.getTime()));
+};
+
+const formatProposalCooldownRemaining = (ms: number): string => {
+  if (ms <= 0) return '';
+  const totalMinutes = Math.ceil(ms / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return remHours > 0 ? `${days} j ${remHours} h` : `${days} j`;
+  }
+  if (hours > 0 && minutes > 0) return `${hours} h ${minutes} min`;
+  if (hours > 0) return `${hours} h`;
+  return `${minutes} min`;
+};
+
+interface EventDocument extends Document {
+  documentType?: string;
+  visibleToCompany?: boolean;
+  internalHidden?: boolean;
+}
+
+const extractStoragePathFromUrl = (url: string): string => {
+  if (!url || !url.startsWith('http')) return url;
+  try {
+    const match = url.match(/\/o\/(.+?)(\?|$)/);
+    if (match?.[1]) return decodeURIComponent(match[1]);
+  } catch {
+    // ignore
+  }
+  return '';
+};
+
+const mapGeneratedDocumentToEventDocument = (
+  docSnap: { id: string; data: () => Record<string, unknown> }
+): EventDocument => {
+  const data = docSnap.data();
+  return {
+    id: docSnap.id,
+    name: (data.fileName as string) || 'Sans nom',
+    size: (data.fileSize as number) || 0,
+    type: (data.fileName as string)?.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream',
+    url: (data.fileUrl as string) || '',
+    storagePath: (data.storagePath as string) || extractStoragePathFromUrl((data.fileUrl as string) || ''),
+    parentFolderId: null,
+    uploadedBy: (data.createdBy as string) || '',
+    uploadedByName: data.uploadedByName as string | undefined,
+    createdAt: data.createdAt,
+    updatedAt: data.updatedAt,
+    structureId: (data.structureId as string) || '',
+    isRestricted: false,
+    missionId: data.missionId as string,
+    missionNumber: data.missionNumber as string,
+    missionTitle: data.missionTitle as string,
+    isPinned: (data.isPinned as boolean) || false,
+    documentType: data.documentType as string | undefined,
+    internalHidden: data.internalHidden === true,
+    visibleToCompany: data.internalHidden === true
+      ? false
+      : data.documentType === 'autre' || data.visibleToCompany !== false,
+  };
+};
 
 interface StudentInfo {
   id: string;
@@ -55,18 +172,73 @@ interface StudentInfo {
   submittedAt?: Date;
   motivationLetter?: string;
   cvUrl?: string;
-  isFromApplication?: boolean; // Pour distinguer les candidatures des inscriptions directes
-  applicationId?: string; // ID de la candidature pour pouvoir la mettre à jour
-  isDossierValidated?: boolean; // Statut de validation du dossier
+  isFromApplication?: boolean;
+  applicationId?: string;
+  isDossierValidated?: boolean;
+  selectedSlotIds?: string[];
+  acceptedSlotIds?: string[];
 }
+
+const resolveSlotId = (slot: { id?: string }, index: number) => slot.id || `day-${index}`;
+
+const expandSlotId = (rawId: string, slots: Mission['slots'] | undefined): string[] => {
+  if (!rawId) return [];
+  if (!slots?.length) return [rawId];
+  const out = new Set<string>([rawId]);
+  slots.forEach((slot, index) => {
+    const resolved = resolveSlotId(slot, index);
+    if (resolved === rawId || slot.id === rawId) {
+      out.add(resolved);
+      if (slot.id) out.add(slot.id);
+    }
+  });
+  return Array.from(out);
+};
+
+const slotIdsMatch = (a: string, b: string, slots: Mission['slots'] | undefined): boolean =>
+  expandSlotId(a, slots).some((id) => expandSlotId(b, slots).includes(id));
+
+const getAssignedSlotIdsForStudent = (
+  slots: Mission['slots'] | undefined,
+  studentId: string,
+): string[] => {
+  if (!slots) return [];
+  return slots
+    .map((slot, index) => ({
+      slotId: resolveSlotId(slot, index),
+      assigned: slot.assignedStudentIds || [],
+    }))
+    .filter(({ assigned }) => assigned.includes(studentId))
+    .map(({ slotId }) => slotId);
+};
+
+const resolveDisplayStatus = (student: StudentInfo): 'En attente' | 'Acceptée' | 'Refusée' => {
+  if (student.status === 'Refusée') return 'Refusée';
+  if ((student.acceptedSlotIds?.length ?? 0) > 0) return 'Acceptée';
+  return 'En attente';
+};
+
+const formatSlotLabel = (slot: NonNullable<Mission['slots']>[number]): string => {
+  const startDate = slot.startTime instanceof Date
+    ? slot.startTime
+    : typeof (slot.startTime as { toDate?: () => Date })?.toDate === 'function'
+      ? (slot.startTime as { toDate: () => Date }).toDate()
+      : new Date(slot.startTime as string | number);
+  const endDate = slot.endTime instanceof Date
+    ? slot.endTime
+    : typeof (slot.endTime as { toDate?: () => Date })?.toDate === 'function'
+      ? (slot.endTime as { toDate: () => Date }).toDate()
+      : new Date(slot.endTime as string | number);
+  return `${format(startDate, 'EEE d MMM', { locale: fr })} · ${startDate.toTimeString().slice(0, 5)}–${endDate.toTimeString().slice(0, 5)}`;
+};
 
 export const AmbassadorEventDetails: React.FC = () => {
   const { eventId } = useParams<{ eventId: string }>();
   const navigate = useNavigate();
-  const { userData, isContactWithAccess, contactPermissions } = useAuth();
+  const { userData, isContactWithAccess, contactPermissions, currentUser } = useAuth();
   const [mission, setMission] = useState<Mission | null>(null);
   const [students, setStudents] = useState<StudentInfo[]>([]);
-  const [documents, setDocuments] = useState<Document[]>([]);
+  const [documents, setDocuments] = useState<EventDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -81,6 +253,46 @@ export const AmbassadorEventDetails: React.FC = () => {
   const [selectedAmbassadors, setSelectedAmbassadors] = useState<Set<string>>(new Set());
   const [selectedSlotId, setSelectedSlotId] = useState<string>('');
   const [addingAmbassadors, setAddingAmbassadors] = useState(false);
+  const [detailTab, setDetailTab] = useState<'overview' | 'documents'>('overview');
+  const [proposalSending, setProposalSending] = useState(false);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [proposalNow, setProposalNow] = useState(() => Date.now());
+
+  const [announceDialogOpen, setAnnounceDialogOpen] = useState(false);
+  const [announceLoading, setAnnounceLoading] = useState(false);
+  const [announceError, setAnnounceError] = useState<string | null>(null);
+  const [announceSuccess, setAnnounceSuccess] = useState<string | null>(null);
+  const [announceCampus, setAnnounceCampus] = useState<string>('__ALL__');
+  const [announceStart, setAnnounceStart] = useState<string>(''); // datetime-local string
+  const [announceEnd, setAnnounceEnd] = useState<string>(''); // datetime-local string
+  const [announceUseCustom, setAnnounceUseCustom] = useState<boolean>(false);
+  const [announceMessage, setAnnounceMessage] = useState<string>('');
+  const [announceRecipientsTotal, setAnnounceRecipientsTotal] = useState<number>(0);
+  const [announceRecipientsSent, setAnnounceRecipientsSent] = useState<number>(0);
+  const [announceSending, setAnnounceSending] = useState<boolean>(false);
+  const [announceCampusOptions, setAnnounceCampusOptions] = useState<string[]>([]);
+  const [announceAmbassadors, setAnnounceAmbassadors] = useState<Array<{ id: string; email?: string; campus?: string }>>([]);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
+  const [uploadingProposal, setUploadingProposal] = useState(false);
+  const [documentActionId, setDocumentActionId] = useState<string | null>(null);
+  const [proposalMenuAnchor, setProposalMenuAnchor] = useState<HTMLElement | null>(null);
+  const [proposalMenuDocId, setProposalMenuDocId] = useState<string | null>(null);
+  const [documentPreviewUrl, setDocumentPreviewUrl] = useState<string | null>(null);
+  const [documentPreviewTitle, setDocumentPreviewTitle] = useState('');
+  const [openDocumentPreview, setOpenDocumentPreview] = useState(false);
+  const [pendingSlotRemoval, setPendingSlotRemoval] = useState<{ slotId: string; studentId: string } | null>(null);
+  const [removingFromSlot, setRemovingFromSlot] = useState(false);
+  const [acceptDialogOpen, setAcceptDialogOpen] = useState(false);
+  const [acceptDialogStudent, setAcceptDialogStudent] = useState<StudentInfo | null>(null);
+  const [acceptDialogSelectedSlots, setAcceptDialogSelectedSlots] = useState<Set<string>>(new Set());
+  const [acceptingApplication, setAcceptingApplication] = useState(false);
+  const documentUploadInputRef = useRef<HTMLInputElement>(null);
+  const proposalUploadInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setProposalNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Scroll to top avec animation slide-up au chargement de la page
   useEffect(() => {
@@ -385,6 +597,8 @@ export const AmbassadorEventDetails: React.FC = () => {
             motivationLetter: appData.motivationLetter,
             cvUrl: appData.cvUrl,
             isDossierValidated: appData.isDossierValidated || false,
+            selectedSlotIds: Array.isArray(appData.selectedSlotIds) ? appData.selectedSlotIds : [],
+            acceptedSlotIds: Array.isArray(appData.acceptedSlotIds) ? appData.acceptedSlotIds : [],
           });
         }
         userIds.add(appData.userId);
@@ -429,6 +643,8 @@ export const AmbassadorEventDetails: React.FC = () => {
             isFromApplication: true,
             applicationId: application?.id,
             isDossierValidated: dossierValidated,
+            selectedSlotIds: application?.selectedSlotIds || [],
+            acceptedSlotIds: application?.acceptedSlotIds || [],
           });
         } catch (error) {
           // Si on ne peut pas lire les données utilisateur, utiliser les données de l'application uniquement
@@ -446,12 +662,15 @@ export const AmbassadorEventDetails: React.FC = () => {
               isFromApplication: true,
               applicationId: application?.id,
               isDossierValidated: application?.isDossierValidated || false,
+              selectedSlotIds: application?.selectedSlotIds || [],
+              acceptedSlotIds: application?.acceptedSlotIds || [],
             });
           }
         }
       }
-      studentList.sort((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || ''));
-      setStudents(studentList);
+      const decryptedStudents = await decryptUsersList(studentList);
+      decryptedStudents.sort((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || ''));
+      setStudents(decryptedStudents);
 
       const docsRef = collection(db, 'generatedDocuments');
       const structureIdForDocs = (missionData as any).structureId || userData?.structureId;
@@ -491,28 +710,7 @@ export const AmbassadorEventDetails: React.FC = () => {
           docsSnap = { docs: [] } as { docs: { id: string; data: () => any }[] };
         }
       }
-      const docs = docsSnap.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: d.id,
-          name: data.fileName || 'Sans nom',
-          size: data.fileSize || 0,
-          type: data.fileName?.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream',
-          url: data.fileUrl || '',
-          storagePath: data.fileUrl || '',
-          parentFolderId: null,
-          uploadedBy: data.createdBy || '',
-          uploadedByName: data.uploadedByName,
-          createdAt: data.createdAt,
-          updatedAt: data.updatedAt,
-          structureId: data.structureId || '',
-          isRestricted: false,
-          missionId: data.missionId,
-          missionNumber: data.missionNumber,
-          missionTitle: data.missionTitle,
-          isPinned: data.isPinned || false,
-        } as Document;
-      });
+      const docs = docsSnap.docs.map((d) => mapGeneratedDocumentToEventDocument(d));
       setDocuments(docs);
     } catch (e) {
       console.error('Erreur chargement détail événement ambassadeur:', e);
@@ -529,12 +727,308 @@ export const AmbassadorEventDetails: React.FC = () => {
     fetchData();
   }, [fetchData, isContactWithAccess, userData?.companyId]);
 
+  useEffect(() => {
+    if (!eventId || loading) return;
+
+    const structureIdForDocs = (mission as { structureId?: string } | null)?.structureId || userData?.structureId;
+    if (!structureIdForDocs && userData?.status !== 'superadmin') return;
+
+    const docsRef = collection(db, 'generatedDocuments');
+    const docsQuery = structureIdForDocs
+      ? query(
+          docsRef,
+          where('structureId', '==', structureIdForDocs),
+          where('missionId', '==', eventId)
+        )
+      : query(docsRef, where('missionId', '==', eventId));
+
+    const unsubscribe = onSnapshot(
+      docsQuery,
+      (docsSnap) => {
+        setDocuments(docsSnap.docs.map((d) => mapGeneratedDocumentToEventDocument(d)));
+      },
+      (err) => {
+        console.error('Erreur écoute documents événement ambassadeur:', err);
+      }
+    );
+
+    return unsubscribe;
+  }, [eventId, loading, mission, userData?.structureId, userData?.status]);
+
   const totalCapacity = mission ? getTotalCapacity(mission) : 0;
   const totalRegistered = mission ? getTotalRegistered(mission) : 0;
   const totalPending = students.filter(s => s.status === 'En attente').length;
   const acceptedRate = totalCapacity > 0 ? (totalRegistered / totalCapacity) * 100 : 0;
   const pendingRate = totalCapacity > 0 ? (totalPending / totalCapacity) * 100 : 0;
   const fillRate = Math.round(acceptedRate);
+  const totalPlannedHours = getTotalPlannedHours(mission);
+
+  const formatEventDates = (m: Mission): string => {
+    try {
+      const start = m.startDate ? toMissionDate(m.startDate) : null;
+      const end = m.endDate ? toMissionDate(m.endDate) : null;
+      if (start && end) {
+        return `${format(start, "EEEE d MMMM yyyy", { locale: fr })} – ${format(end, 'd MMM yyyy', { locale: fr })}`;
+      }
+      if (start) return format(start, "EEEE d MMMM yyyy", { locale: fr });
+      return '';
+    } catch {
+      return '';
+    }
+  };
+
+  const handleSendProposalRequest = async () => {
+    if (!mission) return;
+    setProposalError(null);
+
+    const lastProposalAt = toOptionalDate((mission as any).lastCommercialProposalRequestedAt);
+    const cooldownRemaining = getProposalCooldownRemainingMs(lastProposalAt);
+    if (cooldownRemaining > 0) {
+      setProposalError(
+        `Une demande a déjà été envoyée récemment. Prochaine demande possible dans ${formatProposalCooldownRemaining(cooldownRemaining)}.`
+      );
+      return;
+    }
+
+    setProposalSending(true);
+    try {
+      const structureId = (mission as any).structureId as string | undefined;
+      if (!structureId) throw new Error('Structure introuvable sur cet événement.');
+
+      const structureSnap = await getDoc(doc(db, 'structures', structureId));
+      const structureEmail = (structureSnap.exists() ? (structureSnap.data() as any)?.email : '') as string;
+      const toEmail = (structureEmail || '').trim();
+      if (!toEmail || !toEmail.includes('@')) {
+        throw new Error("Email structure non renseigné (Paramètres > Structure).");
+      }
+
+      const companyName = await resolveAmbassadorEventCompanyName(mission, userData ?? undefined);
+      const eventTitle = (mission.title || (mission as any).campaignName || 'Salon ambassadeur').toString();
+      const eventLocation = (mission.location || '').toString();
+      const eventDates = formatEventDates(mission);
+      const requestedByName = (userData?.displayName || userData?.email || 'Utilisateur').toString();
+
+      const baseUrl =
+        ((import.meta.env.VITE_APP_URL as string | undefined)?.trim() ||
+          (typeof window !== 'undefined' ? window.location.origin : '') ||
+          'https://js-connect.fr').replace(/\/$/, '');
+      const eventLink = `${baseUrl}/app/ambassadeur-event/${mission.id}`;
+
+      const res = await sendStructureProposalRequestEmail({
+        to_email: toEmail,
+        subject: `Demande de proposition commerciale – ${eventTitle}`,
+        company_name: companyName,
+        event_title: eventTitle,
+        event_location: eventLocation,
+        event_dates: eventDates,
+        event_link: eventLink,
+        requested_by_name: requestedByName,
+      });
+
+      if (!res.ok) throw new Error(res.error || 'Email non envoyé.');
+
+      const requestedAt = new Date();
+      await updateDoc(doc(db, 'missions', mission.id), {
+        lastCommercialProposalRequestedAt: requestedAt,
+        lastCommercialProposalRequestedBy: userData?.id || null,
+        updatedAt: requestedAt,
+      });
+      setMission((prev) =>
+        prev
+          ? ({
+              ...prev,
+              lastCommercialProposalRequestedAt: requestedAt,
+              lastCommercialProposalRequestedBy: userData?.id || null,
+            } as Mission)
+          : prev
+      );
+      setProposalNow(Date.now());
+
+      // best-effort log
+      void logEmailSend({
+        type: 'proposal_request',
+        eventId: mission.id,
+        structureId,
+        recipientsCount: 1,
+        sentAt: new Date(),
+        sentByUserId: userData?.id,
+        status: 'success',
+        errorSummary: null,
+      });
+    } catch (e: any) {
+      setProposalError(e?.message || 'Impossible d’envoyer la demande.');
+      const structureId = (mission as any).structureId as string | undefined;
+      void logEmailSend({
+        type: 'proposal_request',
+        eventId: mission.id,
+        structureId,
+        recipientsCount: 1,
+        sentAt: new Date(),
+        sentByUserId: userData?.id,
+        status: 'failure',
+        errorSummary: e?.message || 'Erreur',
+      });
+    } finally {
+      setProposalSending(false);
+    }
+  };
+
+  const getBaseUrl = (): string =>
+    ((import.meta.env.VITE_APP_URL as string | undefined)?.trim() ||
+      (typeof window !== 'undefined' ? window.location.origin : '') ||
+      'https://js-connect.fr').replace(/\/$/, '');
+
+  const toLocalInputValue = (d: Date): string => {
+    // yyyy-MM-ddTHH:mm pour <input type="datetime-local" />
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const openAnnouncementDialog = async () => {
+    if (!mission) return;
+    setAnnounceDialogOpen(true);
+    setAnnounceError(null);
+    setAnnounceSuccess(null);
+    setAnnounceRecipientsSent(0);
+    setAnnounceRecipientsTotal(0);
+    setAnnounceSending(false);
+
+    // Initialiser dates par défaut depuis mission
+    try {
+      if (!announceStart) {
+        const start = mission.startDate ? toMissionDate(mission.startDate) : null;
+        if (start && !isNaN(start.getTime())) setAnnounceStart(toLocalInputValue(start));
+      }
+      if (!announceEnd) {
+        const end = mission.endDate ? toMissionDate(mission.endDate) : null;
+        if (end && !isNaN(end.getTime())) setAnnounceEnd(toLocalInputValue(end));
+      }
+    } catch {
+      // ignore
+    }
+
+    setAnnounceLoading(true);
+    try {
+      const structureId = (mission as any).structureId as string | undefined;
+      if (!structureId) throw new Error('Structure introuvable sur cet événement.');
+
+      const ambassadors = await getAmbassadorUsers(structureId);
+      const minimal = (ambassadors || []).map((a: any) => ({
+        id: a.id,
+        email: a.email,
+        campus: a.campus,
+      }));
+      setAnnounceAmbassadors(minimal);
+
+      const campuses = Array.from(
+        new Set(
+          minimal
+            .map((a) => (a.campus || '').toString().trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      setAnnounceCampusOptions(campuses);
+      setAnnounceCampus('__ALL__');
+    } catch (e: any) {
+      setAnnounceError(e?.message || 'Impossible de charger la liste des ambassadeurs.');
+    } finally {
+      setAnnounceLoading(false);
+    }
+  };
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const handleSendAnnouncement = async () => {
+    if (!mission) return;
+    setAnnounceError(null);
+    setAnnounceSuccess(null);
+    setAnnounceSending(true);
+    setAnnounceRecipientsSent(0);
+
+    try {
+      const startLabel = announceStart ? format(new Date(announceStart), "EEEE d MMMM yyyy 'à' HH:mm", { locale: fr }) : '';
+      const endLabel = announceEnd ? format(new Date(announceEnd), "EEEE d MMMM yyyy 'à' HH:mm", { locale: fr }) : '';
+
+      const target = announceAmbassadors
+        .filter((a) => {
+          const email = (a.email || '').trim();
+          if (!email || !email.includes('@')) return false;
+          if (announceCampus === '__ALL__') return true;
+          return ((a.campus || '').toString().trim() || '') === announceCampus;
+        })
+        .map((a) => ({ ...a, email: (a.email || '').trim().toLowerCase() }));
+
+      if (target.length === 0) {
+        throw new Error("Aucun ambassadeur destinataire (vérifiez le filtre campus et les emails).");
+      }
+
+      setAnnounceRecipientsTotal(target.length);
+
+      const companyName = await resolveAmbassadorEventCompanyName(mission, userData ?? undefined);
+      const structureName = ((userData as any)?.structureName || (mission as any).structureName || '').toString();
+      const eventTitle = (mission.title || (mission as any).campaignName || 'Salon ambassadeur').toString();
+      const eventLocation = (mission.location || '').toString();
+      const ctaUrl = `${getBaseUrl()}/app/ambassadeur-event/${mission.id}`;
+
+      const customMessage = announceUseCustom ? (announceMessage || '').trim() : '';
+      const subject = `Nouveau salon ambassadeur – ${eventTitle}`;
+
+      let sent = 0;
+      for (const r of target) {
+        const res = await sendAmbassadorEventAnnouncementEmail({
+          to_email: r.email!,
+          subject,
+          event_title: eventTitle,
+          event_location: eventLocation,
+          event_start: startLabel,
+          event_end: endLabel,
+          cta_url: ctaUrl,
+          custom_message: customMessage,
+          company_name: companyName,
+          structure_name: structureName,
+        });
+
+        if (!res.ok) {
+          throw new Error(res.error || 'Email non envoyé.');
+        }
+
+        sent += 1;
+        setAnnounceRecipientsSent(sent);
+        // Throttle léger pour éviter de spammer EmailJS trop vite
+        await sleep(220);
+      }
+
+      setAnnounceSuccess(`Emails envoyés : ${sent}/${target.length}`);
+      const structureId = (mission as any).structureId as string | undefined;
+      void logEmailSend({
+        type: 'ambassador_announcement',
+        eventId: mission.id,
+        structureId,
+        campusFilter: announceCampus === '__ALL__' ? null : announceCampus,
+        recipientsCount: target.length,
+        sentAt: new Date(),
+        sentByUserId: userData?.id,
+        status: 'success',
+        errorSummary: null,
+      });
+    } catch (e: any) {
+      setAnnounceError(e?.message || 'Erreur lors de l’envoi des emails.');
+      const structureId = (mission as any).structureId as string | undefined;
+      void logEmailSend({
+        type: 'ambassador_announcement',
+        eventId: mission.id,
+        structureId,
+        campusFilter: announceCampus === '__ALL__' ? null : announceCampus,
+        recipientsCount: announceRecipientsTotal || 0,
+        sentAt: new Date(),
+        sentByUserId: userData?.id,
+        status: 'failure',
+        errorSummary: e?.message || 'Erreur',
+      });
+    } finally {
+      setAnnounceSending(false);
+    }
+  };
 
   // Vérifier si l'utilisateur peut modifier l'événement
   const isStructureAdmin = ['admin', 'admin_structure', 'membre', 'superadmin'].includes(userData?.status || '');
@@ -543,11 +1037,19 @@ export const AmbassadorEventDetails: React.FC = () => {
     contactPermissions?.canManageAmbassadors
   ) && mission?.companyId === userData?.companyId;
   const canEdit = !!userData?.companyName || isStructureAdmin || canEditAsContact;
+
+  // Vue structure (administration) vs vue entreprise (demande de proposition, lecture seule)
+  const isStructureView = isStructureAdmin;
   
-  // Vérifier spécifiquement si l'utilisateur peut ajouter des ambassadeurs
-  // Pour les contacts avec accès, il faut avoir canManageAmbassadors
-  const canAddAmbassadors = isStructureAdmin || 
-    (isContactWithAccess && contactPermissions?.canManageAmbassadors && mission?.companyId === userData?.companyId);
+  // Droits d'action (accepter/refuser, assigner créneaux, retirer) — réservés à la structure
+  const canManageAmbassadors = isStructureAdmin;
+
+  // Invitation d'ambassadeurs — structure ou contact entreprise avec canManageAmbassadors
+  const canAddAmbassadors =
+    isStructureAdmin ||
+    (isContactWithAccess &&
+      contactPermissions?.canManageAmbassadors &&
+      mission?.companyId === userData?.companyId);
 
   const handleEditSuccess = () => {
     setIsEditing(false);
@@ -643,6 +1145,8 @@ export const AmbassadorEventDetails: React.FC = () => {
                 motivationLetter: 'Ajouté manuellement',
                 submittedAt: new Date().toISOString(),
                 status: 'Acceptée',
+                selectedSlotIds: [selectedSlotId],
+                acceptedSlotIds: [selectedSlotId],
                 isFromManualAdd: true
               });
             } catch (createError) {
@@ -653,8 +1157,13 @@ export const AmbassadorEventDetails: React.FC = () => {
             // Mettre à jour la candidature existante
             const existingApp = existingAppSnapshot.docs[0];
             try {
+              const existingData = existingApp.data();
+              const prevAccepted = Array.isArray(existingData.acceptedSlotIds) ? existingData.acceptedSlotIds : [];
+              const prevSelected = Array.isArray(existingData.selectedSlotIds) ? existingData.selectedSlotIds : [];
               await updateDoc(doc(db, 'applications', existingApp.id), {
                 status: 'Acceptée',
+                acceptedSlotIds: Array.from(new Set([...prevAccepted, selectedSlotId])),
+                selectedSlotIds: Array.from(new Set([...prevSelected, selectedSlotId])),
                 isFromManualAdd: true
               });
             } catch (updateError) {
@@ -899,7 +1408,7 @@ export const AmbassadorEventDetails: React.FC = () => {
       }
 
       const chargeData = chargeDoc.data();
-      const chargeName = chargeData.displayName || [chargeData.firstName, chargeData.lastName].filter(Boolean).join(' ') || chargeData.email || 'Inconnu';
+      const chargeName = getSafeDisplayName(chargeData);
       const chargePhotoURL = chargeData.photoURL || null;
       const chargeMandat = chargeData.mandat || undefined;
 
@@ -959,7 +1468,7 @@ export const AmbassadorEventDetails: React.FC = () => {
         ? (totalHours / acceptedStudentIds.length).toFixed(2)
         : totalHours.toFixed(2);
 
-      // Récupérer l'entreprise sauvegardée depuis ambassadorSettings
+      // Récupérer l'entreprise sauvegardée depuis ambassadorSettings / mission
       let selectedCompanyId = '';
       let selectedCompanyName = '';
       let defaultContactId = '';
@@ -1007,11 +1516,21 @@ export const AmbassadorEventDetails: React.FC = () => {
         }
       }
 
+      const resolvedCompanyId = selectedCompanyId || mission.companyId || '';
+      const resolvedCompanyName = await resolveAmbassadorEventCompanyName(
+        {
+          company: selectedCompanyName || mission.company,
+          companyId: resolvedCompanyId,
+          structureId: mission.structureId || userData?.structureId,
+        },
+        userData ?? undefined
+      );
+
       // Créer la mission standard
       const missionData = {
         numeroMission: missionNumber.trim(),
-        company: selectedCompanyName || mission.company || userData?.companyName || 'Organisation inconnue',
-        companyId: selectedCompanyId || mission.companyId || '',
+        company: resolvedCompanyName,
+        companyId: resolvedCompanyId,
         contactId: defaultContactId ? defaultContactId : null,
         location: mission.location || '',
         locationCoordinates: (mission.locationCoordinates && typeof mission.locationCoordinates.lat === 'number' && typeof mission.locationCoordinates.lng === 'number') 
@@ -1099,778 +1618,1112 @@ export const AmbassadorEventDetails: React.FC = () => {
     }
   };
 
-  const handleUpdateApplicationStatus = async (applicationId: string, newStatus: 'Acceptée' | 'Refusée') => {
-    if (!applicationId) return;
-    
+  const getAllMissionSlots = () => {
+    if (!mission?.slots?.length) {
+      return [] as Array<{ slotId: string; slot: NonNullable<Mission['slots']>[number]; label: string }>;
+    }
+    return mission.slots.map((slot, index) => ({
+      slotId: resolveSlotId(slot, index),
+      slot,
+      label: formatSlotLabel(slot),
+    }));
+  };
+
+  const getApplicableSlotsForStudent = (student: StudentInfo) => {
+    const allSlots = getAllMissionSlots();
+    if (!allSlots.length) return allSlots;
+
+    const candidateRawIds = [
+      ...(student.selectedSlotIds || []),
+      ...(student.acceptedSlotIds || []),
+      ...getAssignedSlotIdsForStudent(mission?.slots, student.id),
+    ];
+
+    const matched = allSlots.filter(({ slotId }) =>
+      candidateRawIds.some((rawId) => slotIdsMatch(rawId, slotId, mission?.slots)),
+    );
+
+    return matched.length > 0 ? matched : allSlots;
+  };
+
+  const getCurrentAcceptedSlotIds = (student: StudentInfo) => {
+    const fromApplication = student.acceptedSlotIds || [];
+    const fromAssignment = getAssignedSlotIdsForStudent(mission?.slots, student.id);
+    const combined = [...fromApplication, ...fromAssignment];
+    const unique: string[] = [];
+    combined.forEach((rawId) => {
+      const match = getAllMissionSlots().find(({ slotId }) => slotIdsMatch(rawId, slotId, mission?.slots));
+      if (match && !unique.includes(match.slotId)) unique.push(match.slotId);
+    });
+    return unique;
+  };
+
+  const acceptStudentOnSlots = async (student: StudentInfo, slotIdsToAccept: string[]) => {
+    if (!mission || !student.applicationId) {
+      alert('Impossible d\'accepter cette candidature.');
+      return;
+    }
+    if (slotIdsToAccept.length === 0) {
+      alert('Sélectionnez au moins un créneau.');
+      return;
+    }
+
+    setAcceptingApplication(true);
     try {
-      const applicationRef = doc(db, 'applications', applicationId);
-      await updateDoc(applicationRef, {
-        status: newStatus,
-        updatedAt: new Date()
+      const allMissionSlotIds = getAllMissionSlots().map(({ slotId }) => slotId);
+      const slotsToAccept = slotIdsToAccept.filter((slotId) => allMissionSlotIds.includes(slotId));
+      if (slotsToAccept.length === 0) {
+        alert('Créneaux sélectionnés invalides.');
+        return;
+      }
+
+      const studentSlotScope = new Set<string>([
+        ...(student.selectedSlotIds || []),
+        ...(student.acceptedSlotIds || []),
+        ...getAssignedSlotIdsForStudent(mission.slots, student.id),
+        ...slotsToAccept,
+      ]);
+
+      const updatedSlots = mission.slots?.map((slot, slotIndex) => {
+        const slotId = resolveSlotId(slot, slotIndex);
+        const currentIds = slot.assignedStudentIds || [];
+        const shouldBeAssigned = slotsToAccept.includes(slotId);
+
+        if (shouldBeAssigned) {
+          return currentIds.includes(student.id)
+            ? slot
+            : { ...slot, assignedStudentIds: [...currentIds, student.id] };
+        }
+
+        if (studentSlotScope.has(slotId) && currentIds.includes(student.id)) {
+          return { ...slot, assignedStudentIds: currentIds.filter((id) => id !== student.id) };
+        }
+
+        return slot;
       });
 
-      // Mettre à jour l'état local
-      setStudents(prev => prev.map(student => 
-        student.applicationId === applicationId 
-          ? { ...student, status: newStatus }
-          : student
-      ));
+      await updateDoc(doc(db, 'missions', mission.id), {
+        slots: updatedSlots,
+        updatedAt: new Date(),
+      });
+
+      await updateDoc(doc(db, 'applications', student.applicationId), {
+        status: 'Acceptée',
+        acceptedSlotIds: slotsToAccept,
+        selectedSlotIds: Array.from(new Set([...(student.selectedSlotIds || []), ...slotsToAccept])),
+        updatedAt: new Date(),
+      });
+
+      setAcceptDialogOpen(false);
+      setAcceptDialogStudent(null);
+      setAcceptDialogSelectedSlots(new Set());
+      await fetchData();
     } catch (error) {
-      console.error("Erreur lors de la mise à jour du statut:", error);
-      alert("Erreur lors de la mise à jour du statut");
+      console.error('Erreur lors de l\'acceptation:', error);
+      alert('Erreur lors de l\'acceptation de la candidature.');
+    } finally {
+      setAcceptingApplication(false);
+    }
+  };
+
+  const openAcceptFlow = (student: StudentInfo) => {
+    const allSlots = getAllMissionSlots();
+    if (allSlots.length === 0) {
+      alert('Aucun créneau défini sur cet événement.');
+      return;
+    }
+
+    if (allSlots.length === 1) {
+      void acceptStudentOnSlots(student, [allSlots[0].slotId]);
+      return;
+    }
+
+    const currentAccepted = getCurrentAcceptedSlotIds(student);
+    const defaultSelected =
+      currentAccepted.length > 0
+        ? currentAccepted
+        : (student.selectedSlotIds?.length ? student.selectedSlotIds : allSlots.map(({ slotId }) => slotId));
+
+    setAcceptDialogStudent(student);
+    setAcceptDialogSelectedSlots(new Set(defaultSelected));
+    setAcceptDialogOpen(true);
+  };
+
+  const handleRefuseApplication = async (student: StudentInfo) => {
+    if (!mission || !student.applicationId) return;
+
+    try {
+      const updatedSlots = mission.slots?.map((slot) => ({
+        ...slot,
+        assignedStudentIds: (slot.assignedStudentIds || []).filter((id) => id !== student.id),
+      }));
+
+      await updateDoc(doc(db, 'missions', mission.id), {
+        slots: updatedSlots,
+        updatedAt: new Date(),
+      });
+
+      await updateDoc(doc(db, 'applications', student.applicationId), {
+        status: 'Refusée',
+        acceptedSlotIds: [],
+        updatedAt: new Date(),
+      });
+
+      await fetchData();
+    } catch (error) {
+      console.error('Erreur lors du refus:', error);
+      alert('Erreur lors du refus de la candidature.');
+    }
+  };
+
+  const handleRemoveStudentFromSlot = async (slotId: string, studentId: string) => {
+    if (!mission || !canManageAmbassadors) return;
+
+    setRemovingFromSlot(true);
+    try {
+      const updatedSlots = mission.slots?.map((s, slotIndex) => {
+        const currentSlotId = resolveSlotId(s, slotIndex);
+        if (currentSlotId !== slotId) return s;
+        return {
+          ...s,
+          assignedStudentIds: (s.assignedStudentIds || []).filter((id) => id !== studentId),
+        };
+      });
+
+      await updateDoc(doc(db, 'missions', mission.id), {
+        slots: updatedSlots,
+        updatedAt: new Date(),
+      });
+
+      const student = students.find((s) => s.id === studentId);
+      if (student?.applicationId) {
+        const nextAccepted = (student.acceptedSlotIds || []).filter(
+          (id) => !slotIdsMatch(id, slotId, mission.slots),
+        );
+
+        await updateDoc(doc(db, 'applications', student.applicationId), {
+          acceptedSlotIds: nextAccepted,
+          status: nextAccepted.length > 0 ? 'Acceptée' : 'En attente',
+          updatedAt: new Date(),
+        });
+      }
+
+      setPendingSlotRemoval(null);
+      await fetchData();
+    } catch (error) {
+      console.error('Erreur lors du retrait du créneau:', error);
+      alert('Erreur lors du retrait de l\'ambassadeur du créneau.');
+    } finally {
+      setRemovingFromSlot(false);
+    }
+  };
+
+  const handleSlotStudentClick = (slotId: string, studentId: string) => {
+    if (!canManageAmbassadors || removingFromSlot) return;
+
+    if (pendingSlotRemoval?.slotId === slotId && pendingSlotRemoval?.studentId === studentId) {
+      void handleRemoveStudentFromSlot(slotId, studentId);
+      return;
+    }
+
+    setPendingSlotRemoval({ slotId, studentId });
+  };
+
+  const uploadEventFile = async (
+    file: File,
+    documentType: 'proposition_commerciale' | 'autre',
+    category: 'facturation' | 'autres'
+  ) => {
+    if (!mission || !currentUser) {
+      throw new Error('Session ou événement introuvable.');
+    }
+
+    const timestamp = Date.now();
+    const cleanFileName = file.name
+      .replace(/[[\]]/g, '_')
+      .replace(/[<>:"/\\|?*]/g, '_');
+    const fileName = `${timestamp}_${cleanFileName}`;
+    const storagePath = `missions/${mission.id}/documents/${fileName}`;
+    const storageRef = ref(storage, storagePath);
+
+    await uploadBytes(storageRef, file);
+    const fileUrl = await getDownloadURL(storageRef);
+
+    const structureId = (mission as any).structureId || userData?.structureId || '';
+    await addDoc(collection(db, 'generatedDocuments'), {
+      missionId: mission.id,
+      missionNumber: mission.numeroMission || '',
+      missionTitle: mission.title || (mission as any).campaignName || '',
+      structureId,
+      documentType,
+      fileName: file.name,
+      fileUrl,
+      storagePath,
+      fileSize: file.size,
+      version: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: currentUser.uid,
+      createdByName: getSafeDisplayName(userData),
+      status: 'final',
+      isValid: true,
+      tags: documentType === 'proposition_commerciale' ? ['proposition_commerciale', 'ambassadeur_event'] : ['ambassadeur_event'],
+      category,
+      isUploaded: true,
+      visibleToCompany: true,
+      internalHidden: false,
+    });
+  };
+
+  const handleUploadDocument = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !isStructureView) return;
+
+    setUploadingDocument(true);
+    try {
+      await uploadEventFile(file, 'autre', 'autres');
+      await fetchData();
+    } catch (error) {
+      console.error('Erreur lors de l\'upload du document:', error);
+      alert('Erreur lors de l\'upload du document.');
+    } finally {
+      setUploadingDocument(false);
+    }
+  };
+
+  const handleUploadCommercialProposal = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !isStructureView) return;
+
+    setUploadingProposal(true);
+    try {
+      await uploadEventFile(file, 'proposition_commerciale', 'facturation');
+      await fetchData();
+    } catch (error) {
+      console.error('Erreur lors du dépôt de la proposition commerciale:', error);
+      alert('Erreur lors du dépôt de la proposition commerciale.');
+    } finally {
+      setUploadingProposal(false);
+    }
+  };
+
+  const handleToggleDocumentVisibility = async (documentId: string, nextVisible: boolean) => {
+    if (!isStructureView) return;
+
+    setDocumentActionId(documentId);
+    try {
+      await updateDoc(doc(db, 'generatedDocuments', documentId), {
+        visibleToCompany: nextVisible,
+        internalHidden: !nextVisible,
+        updatedAt: new Date(),
+      });
+      setDocuments((prev) =>
+        prev.map((d) => (d.id === documentId ? { ...d, visibleToCompany: nextVisible, internalHidden: !nextVisible } : d))
+      );
+    } catch (error) {
+      console.error('Erreur lors de la mise à jour de la visibilité:', error);
+      alert('Erreur lors de la mise à jour de la visibilité.');
+    } finally {
+      setDocumentActionId(null);
+    }
+  };
+
+  const openProposalMenu = (event: React.MouseEvent<HTMLElement>, docId: string) => {
+    event.stopPropagation();
+    setProposalMenuAnchor(event.currentTarget);
+    setProposalMenuDocId(docId);
+  };
+
+  const closeProposalMenu = () => {
+    setProposalMenuAnchor(null);
+    setProposalMenuDocId(null);
+  };
+
+  const handleOpenDocumentPreview = (url: string, name: string, mimeType?: string) => {
+    const isPdf = mimeType === 'application/pdf' || name.toLowerCase().endsWith('.pdf');
+    if (isPdf) {
+      setDocumentPreviewUrl(url);
+      setDocumentPreviewTitle(name);
+      setOpenDocumentPreview(true);
+      return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const closeDocumentPreview = () => {
+    setOpenDocumentPreview(false);
+    setDocumentPreviewUrl(null);
+    setDocumentPreviewTitle('');
+  };
+
+  const handleDeleteDocument = async (document: EventDocument) => {
+    if (!isStructureView) return;
+    if (!window.confirm(`Supprimer « ${document.name} » ?`)) return;
+
+    setDocumentActionId(document.id);
+    try {
+      await deleteDoc(doc(db, 'generatedDocuments', document.id));
+
+      const pathToDelete = document.storagePath || extractStoragePathFromUrl(document.url);
+      if (pathToDelete) {
+        try {
+          await deleteObject(ref(storage, pathToDelete));
+        } catch (storageError: unknown) {
+          const code = (storageError as { code?: string })?.code;
+          if (code !== 'storage/object-not-found') {
+            console.warn('Suppression Storage échouée:', storageError);
+          }
+        }
+      }
+
+      setDocuments((prev) => prev.filter((d) => d.id !== document.id));
+    } catch (error) {
+      console.error('Erreur lors de la suppression du document:', error);
+      alert('Erreur lors de la suppression du document.');
+    } finally {
+      setDocumentActionId(null);
     }
   };
 
 
   if (loading) {
     return (
-      <div
-        style={{
-          width: '100%',
-          minHeight: '100vh',
-          backgroundColor: '#fafafa',
-          padding: 40,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <div style={{ textAlign: 'center' }}>
-          <div
-            style={{
-              display: 'inline-block',
-              width: 48,
-              height: 48,
-              border: '4px solid #f3f4f6',
-              borderTopColor: '#2563eb',
-              borderRadius: '50%',
-              animation: 'spin 1s linear infinite',
-              marginBottom: 16,
-            }}
-          />
-          <p style={{ color: '#6b7280', fontSize: 16, fontFamily: appleFont, margin: 0 }}>
-            Chargement…
-          </p>
-        </div>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
+      <Box sx={{ ...dsPageCanvasSx, alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+        <CircularProgress sx={{ color: tokens.colors.brandTeal }} />
+      </Box>
     );
   }
 
   if (error || !mission) {
     return (
-      <div
-        style={{
-          width: '100%',
-          minHeight: '100vh',
-          backgroundColor: '#fafafa',
-          padding: 40,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <div style={{ textAlign: 'center', maxWidth: 400 }}>
-          <p style={{ color: '#dc2626', fontFamily: appleFont, marginBottom: 24 }}>
-            {error || 'Événement introuvable.'}
-          </p>
-          <button
-            type="button"
-            onClick={() => navigate('/app/ambassadeurs')}
-            style={{
-              padding: '12px 24px',
-              borderRadius: 12,
-              border: 'none',
-              backgroundColor: '#2563eb',
-              color: 'white',
-              fontWeight: 600,
-              fontSize: 15,
-              fontFamily: appleFont,
-              cursor: 'pointer',
-            }}
-          >
+      <Box sx={{ ...dsPageCanvasSx, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', p: 4 }}>
+        <Box sx={{ textAlign: 'center', maxWidth: 400 }}>
+          <Typography sx={{ color: tokens.colors.error, mb: 3 }}>{error || 'Événement introuvable.'}</Typography>
+          <Button variant="contained" onClick={() => navigate('/app/ambassadeurs')} sx={{ bgcolor: tokens.colors.brandTeal, textTransform: 'none' }}>
             Retour aux Ambassadeurs
-          </button>
-        </div>
-      </div>
+          </Button>
+        </Box>
+      </Box>
     );
   }
 
+  const lastProposalRequestAt = toOptionalDate((mission as any).lastCommercialProposalRequestedAt);
+  const proposalCooldownRemainingMs = getProposalCooldownRemainingMs(lastProposalRequestAt, proposalNow);
+  const isProposalOnCooldown = proposalCooldownRemainingMs > 0;
+  const commercialProposals = documents.filter((d) => d.documentType === 'proposition_commerciale');
+  const companyCommercialProposals = commercialProposals.filter((d) => d.visibleToCompany);
+  const proposalMenuDoc = proposalMenuDocId ? documents.find((d) => d.id === proposalMenuDocId) : undefined;
+  const displayedDocuments = isStructureView
+    ? documents
+    : documents.filter((d) => d.visibleToCompany);
+  const slotCount = mission.slots?.length || 0;
+  const uniqueAmbassadors = new Set(
+    mission.slots?.flatMap((s) => s.assignedStudentIds || []) || students.filter((s) => s.status === 'Acceptée').map((s) => s.id),
+  ).size;
+
+  const panelSx = {
+    bgcolor: tokens.colors.bgPaper,
+    border: `1px solid ${tokens.colors.divider}`,
+    borderRadius: tokens.radius.xl,
+    overflow: 'hidden',
+    boxShadow: tokens.shadows.sm,
+  };
+
   return (
-    <div
-      style={{
-        width: '100%',
-        minHeight: '100vh',
-        backgroundColor: '#fafafa',
-        padding: '40px 24px 80px',
-        boxSizing: 'border-box',
-      }}
-    >
-      <div style={{ maxWidth: 900, margin: '0 auto' }}>
-        <button
-          type="button"
-          onClick={() => navigate('/app/ambassadeurs')}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 8,
-            marginBottom: 24,
-            padding: '10px 16px',
-            borderRadius: 12,
-            border: 'none',
-            backgroundColor: '#f3f4f6',
-            color: '#374151',
-            fontSize: 15,
-            fontWeight: 500,
-            fontFamily: appleFont,
-            cursor: 'pointer',
-          }}
-        >
-          <ArrowBackIcon sx={{ fontSize: 20 }} /> Retour aux Ambassadeurs
-        </button>
-
-        <div
-          style={{
-            backgroundColor: '#fff',
-            borderRadius: 20,
-            padding: 32,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-            border: '1px solid #f3f4f6',
-            marginBottom: 24,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  padding: '4px 12px',
-                  borderRadius: 999,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  backgroundColor: '#dbeafe',
-                  color: '#1e40af',
-                  fontFamily: appleFont,
-                }}
-              >
-                {mission.campaignName || 'Salon'}
-              </span>
-            </div>
+    <Box sx={dsPageCanvasSx}>
+      <PortalTopBar
+        title={mission.title || mission.description || 'Sans titre'}
+        subtitle={mission.campaignName || mission.location}
+        actions={
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
             {canEdit && (
-              <div style={{ display: 'flex', gap: 12 }}>
-                {/* Bouton "Voir la mission" / "Convertir en mission" - seulement pour les admins, pas pour les contacts avec accès */}
-                {!canEditAsContact && (
-                  <button
-                    type="button"
-                    onClick={() => convertedMissionId ? navigate(`/app/mission/${convertedMissionId}`) : setConvertDialogOpen(true)}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '10px 20px',
-                      borderRadius: 12,
-                      border: '1px solid #10b981',
-                      backgroundColor: '#ecfdf5',
-                      color: '#059669',
-                      fontSize: 14,
-                      fontWeight: 600,
-                      fontFamily: appleFont,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = '#d1fae5';
-                      e.currentTarget.style.borderColor = '#047857';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = '#ecfdf5';
-                      e.currentTarget.style.borderColor = '#10b981';
-                    }}
-                  >
-                    <TransformIcon sx={{ fontSize: 18 }} />
-                    {convertedMissionId ? 'Voir la mission' : 'Convertir en mission'}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setIsEditing(true)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '10px 20px',
-                    borderRadius: 12,
-                    border: '1px solid #2563eb',
-                    backgroundColor: '#eff6ff',
-                    color: '#2563eb',
-                    fontSize: 14,
-                    fontWeight: 600,
-                    fontFamily: appleFont,
-                    cursor: 'pointer',
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#dbeafe';
-                    e.currentTarget.style.borderColor = '#1d4ed8';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = '#eff6ff';
-                    e.currentTarget.style.borderColor = '#2563eb';
-                  }}
-                >
-                  <EditIcon sx={{ fontSize: 18 }} />
-                  Modifier
-                </button>
-              </div>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<SendIcon />}
+                onClick={openAnnouncementDialog}
+                sx={{ textTransform: 'none', borderRadius: tokens.radius.lg, borderColor: tokens.colors.brandTeal, color: tokens.colors.brandTeal }}
+              >
+                Email ambassadeurs
+              </Button>
             )}
-          </div>
-          <h1
-            style={{
-              fontSize: 28,
-              fontWeight: 600,
-              color: '#111827',
-              margin: '0 0 16px 0',
-              fontFamily: appleFont,
-            }}
+            {canEdit && !canEditAsContact && (
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<TransformIcon />}
+                onClick={() => convertedMissionId ? navigate(`/app/mission/${convertedMissionId}`) : setConvertDialogOpen(true)}
+                sx={{ textTransform: 'none', borderRadius: tokens.radius.lg, borderColor: tokens.colors.success, color: tokens.colors.success }}
+              >
+                {convertedMissionId ? 'Voir la mission' : 'Convertir en mission'}
+              </Button>
+            )}
+            {canEdit && (
+              <Button variant="outlined" size="small" startIcon={<EditIcon />} onClick={() => setIsEditing(true)} sx={{ textTransform: 'none', borderRadius: tokens.radius.lg }}>
+                Modifier
+              </Button>
+            )}
+          </Box>
+        }
+      />
+
+      <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', bgcolor: tokens.colors.surfaceAlt }}>
+        <Box sx={{ px: 3, py: 3, maxWidth: 1100, mx: 'auto', width: '100%' }}>
+          <Button
+            startIcon={<ChevronLeftIcon />}
+            onClick={() => navigate('/app/ambassadeurs')}
+            sx={{ textTransform: 'none', color: tokens.colors.gray500, mb: 2, px: 0, '&:hover': { bgcolor: 'transparent', color: tokens.colors.gray700 } }}
           >
-            {mission.title || mission.description || 'Sans titre'}
-          </h1>
-          {mission.location && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, color: '#6b7280', fontSize: 15, fontFamily: appleFont }}>
-              <LocationIcon sx={{ fontSize: 20 }} /> {mission.location}
-            </div>
-          )}
-          {mission.startDate && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#6b7280', fontSize: 15, fontFamily: appleFont }}>
-              <CalendarIcon sx={{ fontSize: 20 }} />
-              {format(new Date(mission.startDate), "EEEE d MMMM yyyy 'à' HH:mm", { locale: fr })} –{' '}
-              {mission.endDate ? format(new Date(mission.endDate), 'HH:mm', { locale: fr }) : '—'}
-            </div>
-          )}
+            Retour aux événements
+          </Button>
 
-          {/* Horaires jour par jour */}
-          {mission.slots && mission.slots.length > 0 && (
-            <div style={{ marginTop: 24, paddingTop: 24, borderTop: '1px solid #f3f4f6' }}>
-              <h3 style={{ fontSize: 16, fontWeight: 600, color: '#111827', marginBottom: 16, fontFamily: appleFont }}>
-                Horaires détaillés
-              </h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {mission.slots.map((slot, index) => {
-                  const toDate = (v: unknown): Date => {
-                    if (v == null) return new Date();
-                    if (typeof (v as { toDate?: () => Date }).toDate === 'function') return (v as { toDate: () => Date }).toDate();
-                    return new Date(v as string | number);
-                  };
-                  
-                  const startDate = slot.startTime instanceof Date ? slot.startTime : toDate(slot.startTime);
-                  const endDate = slot.endTime instanceof Date ? slot.endTime : toDate(slot.endTime);
-                  const breaks = (slot as any).breaks || [];
-                  const dayHours = calculateWorkingHours(
-                    startDate.toTimeString().slice(0, 5),
-                    endDate.toTimeString().slice(0, 5),
-                    breaks
-                  );
-                  
-                  return (
-                    <div
-                      key={slot.id || index}
-                      style={{
-                        padding: '16px',
-                        backgroundColor: '#fafafa',
-                        borderRadius: '12px',
-                        border: '1px solid #e5e7eb'
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 600, color: '#111827', fontFamily: appleFont }}>
-                            Jour {index + 1} - {format(startDate, 'EEEE d MMMM yyyy', { locale: fr })}
-                          </div>
-                          <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4, fontFamily: appleFont }}>
-                            {startDate.toTimeString().slice(0, 5)} - {endDate.toTimeString().slice(0, 5)}
-                          </div>
-                        </div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: '#2563eb', fontFamily: appleFont }}>
-                          {dayHours.toFixed(2)}h
-                        </div>
-                      </div>
-                      {breaks.length > 0 && (
-                        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
-                          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4, fontFamily: appleFont }}>
-                            Pauses:
-                          </div>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                            {breaks.map((breakItem: any, breakIndex: number) => (
-                              <span
-                                key={breakIndex}
-                                style={{
-                                  fontSize: 12,
-                                  padding: '4px 8px',
-                                  backgroundColor: 'white',
-                                  borderRadius: '6px',
-                                  border: '1px solid #d1d5db',
-                                  color: '#374151',
-                                  fontFamily: appleFont
-                                }}
-                              >
-                                {breakItem.start} - {breakItem.end}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ marginTop: 16, padding: '12px 16px', backgroundColor: '#eff6ff', borderRadius: '12px' }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: '#1e40af', fontFamily: appleFont }}>
-                  Total: {mission.slots.reduce((total, slot) => {
-                    const toDate = (v: unknown): Date => {
-                      if (v == null) return new Date();
-                      if (typeof (v as { toDate?: () => Date }).toDate === 'function') return (v as { toDate: () => Date }).toDate();
-                      return new Date(v as string | number);
-                    };
-                    const startDate = slot.startTime instanceof Date ? slot.startTime : toDate(slot.startTime);
-                    const endDate = slot.endTime instanceof Date ? slot.endTime : toDate(slot.endTime);
-                    const breaks = (slot as any).breaks || [];
-                    return total + calculateWorkingHours(
-                      startDate.toTimeString().slice(0, 5),
-                      endDate.toTimeString().slice(0, 5),
-                      breaks
-                    );
-                  }, 0).toFixed(2)}h
-                </div>
-              </div>
-            </div>
-          )}
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5, alignItems: 'center' }}>
+            {mission.campaignName && (
+              <Box component="span" sx={{ fontSize: 12, fontWeight: 700, px: 1.5, py: 0.5, borderRadius: tokens.radius.pill, bgcolor: tokens.colors.infoLight, color: tokens.colors.brandNavy }}>
+                {mission.campaignName}
+              </Box>
+            )}
+            {mission.location && (
+              <Typography sx={{ fontSize: 13, color: tokens.colors.gray500, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <LocationIcon sx={{ fontSize: 16 }} />{mission.location}
+              </Typography>
+            )}
+            {mission.startDate && (
+              <Typography sx={{ fontSize: 13, color: tokens.colors.gray500, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <CalendarIcon sx={{ fontSize: 16 }} />
+                {format(toMissionDate(mission.startDate), "EEEE d MMMM yyyy", { locale: fr })}
+                {mission.endDate && ` – ${format(toMissionDate(mission.endDate), 'd MMM yyyy', { locale: fr })}`}
+              </Typography>
+            )}
+          </Box>
 
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-              gap: 24,
-              marginTop: 24,
-              paddingTop: 24,
-              borderTop: '1px solid #f3f4f6',
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4, fontFamily: appleFont }}>Capacité</div>
-              <div style={{ fontSize: 22, fontWeight: 600, color: '#111827', fontFamily: appleFont }}>{totalCapacity}</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4, fontFamily: appleFont }}>Acceptés</div>
-              <div style={{ fontSize: 22, fontWeight: 600, color: '#2563eb', fontFamily: appleFont }}>{totalRegistered}</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4, fontFamily: appleFont }}>Taux de remplissage</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div
-                  style={{
-                    flex: 1,
-                    height: 8,
-                    backgroundColor: '#f3f4f6',
-                    borderRadius: 999,
-                    overflow: 'hidden',
-                    display: 'flex',
-                  }}
-                >
-                  {/* Partie Validée (Verte) */}
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${acceptedRate}%`,
-                      backgroundColor: '#10b981',
-                      borderTopLeftRadius: 999,
-                      borderBottomLeftRadius: 999,
-                      borderTopRightRadius: pendingRate <= 0 ? 999 : 0,
-                      borderBottomRightRadius: pendingRate <= 0 ? 999 : 0,
-                      transition: 'width 0.3s ease-in-out',
-                    }}
-                  />
-                  {/* Partie En attente (Orange) */}
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${pendingRate}%`,
-                      backgroundColor: '#f59e0b',
-                      borderTopRightRadius: 999,
-                      borderBottomRightRadius: 999,
-                      borderTopLeftRadius: acceptedRate <= 0 ? 999 : 0,
-                      borderBottomLeftRadius: acceptedRate <= 0 ? 999 : 0,
-                      transition: 'width 0.3s ease-in-out',
-                    }}
-                  />
-                </div>
-                <span style={{ fontSize: 16, fontWeight: 600, color: '#111827', fontFamily: appleFont }}>{fillRate}%</span>
-              </div>
-            </div>
-          </div>
-        </div>
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 1.5, mb: 3 }}>
+            <CaeKpi label="Taux de remplissage" value={`${fillRate}%`} hint={`${totalRegistered} / ${totalCapacity}`} />
+            <CaeKpi label="Ambassadeurs inscrits" value={uniqueAmbassadors} hint="profils distincts" />
+            <CaeKpi label="Journées" value={slotCount} hint="créneaux planifiés" />
+            <CaeKpi label="Heures totales" value={`${formatHours(totalPlannedHours)} h`} hint="durée × capacité" />
+          </Box>
 
-        <div
-          style={{
-            backgroundColor: '#fff',
-            borderRadius: 20,
-            padding: 32,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-            border: '1px solid #f3f4f6',
-            marginBottom: 24,
-          }}
-        >
-          <h2
-            style={{
-              fontSize: 20,
-              fontWeight: 600,
-              color: '#111827',
-              margin: '0 0 20px 0',
-              fontFamily: appleFont,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-            }}
-          >
-            <PeopleIcon sx={{ fontSize: 24, color: '#2563eb' }} />
-            Candidatures et inscriptions ({students.length})
-          </h2>
-          {canAddAmbassadors && (
-            <button
-              onClick={() => {
-                setAddAmbassadorDialogOpen(true);
-                loadAvailableAmbassadors();
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '10px 16px',
-                backgroundColor: '#2563eb',
-                color: 'white',
-                border: 'none',
-                borderRadius: 12,
-                cursor: 'pointer',
-                fontSize: 14,
-                fontWeight: 600,
-                fontFamily: appleFont,
-                marginBottom: 16,
-              }}
-            >
-              <AddIcon sx={{ fontSize: 18 }} />
-              Ajouter un ambassadeur
-            </button>
-          )}
-          {students.length === 0 ? (
-            <p style={{ color: '#6b7280', fontSize: 15, fontFamily: appleFont, margin: 0 }}>
-              Aucune candidature pour le moment.
-            </p>
-          ) : (
-            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-              {students.map((s) => {
-                const getStatusColor = (status?: string) => {
-                  switch (status) {
-                    case 'Acceptée':
-                      return '#10b981';
-                    case 'Refusée':
-                      return '#ef4444';
-                    case 'En attente':
-                      return '#f59e0b';
-                    default:
-                      return '#6b7280';
-                  }
-                };
+          <Box sx={{ borderBottom: `1px solid ${tokens.colors.divider}`, mb: 3 }}>
+            <Tabs value={detailTab} onChange={(_, v) => setDetailTab(v)} sx={dsTabsSx}>
+              <Tab icon={<DashboardIcon sx={{ fontSize: 16 }} />} iconPosition="start" label="Vue d'ensemble" value="overview" />
+              <Tab icon={<FolderIcon sx={{ fontSize: 16 }} />} iconPosition="start" label={`Documents (${displayedDocuments.length})`} value="documents" />
+            </Tabs>
+          </Box>
 
-                return (
-                <li
-                  key={s.id}
-                  style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    padding: '16px',
-                    borderBottom: '1px solid #f3f4f6',
-                    gap: 12,
-                    backgroundColor: s.status === 'Acceptée' ? '#f0fdf4' : s.status === 'Refusée' ? '#fef2f2' : '#fffbeb',
-                    borderRadius: '8px',
-                    marginBottom: '8px'
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                      <div style={{ fontWeight: 600, color: '#111827', fontSize: 15, fontFamily: appleFont }}>
-                        {s.displayName || 'Sans nom'}
-                      </div>
-                      {s.status && (
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 600,
-                            padding: '4px 10px',
-                            borderRadius: 12,
-                            backgroundColor: getStatusColor(s.status) + '20',
-                            color: getStatusColor(s.status),
-                            fontFamily: appleFont,
-                          }}
-                        >
-                          {s.status}
-                        </span>
-                      )}
-                      {/* Statut du dossier */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {s.cvUrl && (
-                          <span
-                            style={{
-                              fontSize: 11,
-                              padding: '3px 8px',
-                              borderRadius: 8,
-                              backgroundColor: s.isDossierValidated ? '#d1fae5' : '#fef3c7',
-                              color: s.isDossierValidated ? '#065f46' : '#92400e',
-                              fontFamily: appleFont,
+          {detailTab === 'overview' && (
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1fr 320px' }, gap: 2, alignItems: 'start' }}>
+              <Box>
+                <Box sx={panelSx}>
+                  <Box sx={{ px: 2.25, py: 2, borderBottom: `1px solid ${tokens.colors.divider}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                    <Typography sx={{ fontSize: 14, fontWeight: 700, color: tokens.colors.gray900 }}>Récapitulatif par journée</Typography>
+                  </Box>
+                  <Box sx={{ p: 2.25, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                    {(mission.slots || []).length === 0 ? (
+                      <Typography sx={{ fontSize: 13, color: tokens.colors.gray500 }}>Aucun créneau défini.</Typography>
+                    ) : (
+                      mission.slots!.map((slot, index) => {
+                        const startDate = toMissionDate(slot.startTime);
+                        const endDate = toMissionDate(slot.endTime);
+                        const slotId = slot.id || `day-${index}`;
+                        const assignedIds = slot.assignedStudentIds || [];
+                        const people = assignedIds
+                          .map((id) => students.find((s) => s.id === id))
+                          .filter(Boolean) as StudentInfo[];
+                        const capacity = slot.capacity || 1;
+                        const pct = Math.min(100, Math.round((people.length / capacity) * 100));
+                        const full = people.length >= capacity;
+                        return (
+                          <Box
+                            key={slot.id || index}
+                            sx={{
                               display: 'flex',
-                              alignItems: 'center',
-                              gap: 4
+                              gap: 2,
+                              p: 1.75,
+                              borderRadius: tokens.radius.lg,
+                              border: `1px solid ${tokens.colors.divider}`,
+                              bgcolor: tokens.colors.gray50,
+                              flexDirection: { xs: 'column', sm: 'row' },
+                              alignItems: { xs: 'stretch', sm: 'flex-start' },
                             }}
                           >
-                            {s.isDossierValidated ? (
-                              <>
-                                <CheckCircleOutlineIcon sx={{ fontSize: 14 }} />
-                                Dossier validé
-                              </>
-                            ) : (
-                              <>
-                                <CancelOutlinedIcon sx={{ fontSize: 14 }} />
-                                Dossier en attente
-                              </>
-                            )}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {s.email && (
-                      <div style={{ fontSize: 13, color: '#6b7280', fontFamily: appleFont, marginBottom: 6 }}>
-                        {s.email}
-                      </div>
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                flexDirection: { xs: 'row', sm: 'column' },
+                                alignItems: 'center',
+                                justifyContent: { xs: 'flex-start', sm: 'center' },
+                                width: { xs: 'auto', sm: 44 },
+                                flexShrink: 0,
+                                gap: { xs: 1.25, sm: 0 },
+                              }}
+                            >
+                              <Typography sx={{ fontSize: 10, color: tokens.colors.gray400, fontWeight: 700, textTransform: 'uppercase' }}>
+                                {format(startDate, 'EEE', { locale: fr })}
+                              </Typography>
+                              <Typography sx={{ fontSize: 22, fontWeight: 800, color: tokens.colors.gray900, lineHeight: 1 }}>
+                                {format(startDate, 'd')}
+                              </Typography>
+                              <Typography sx={{ fontSize: 10, color: tokens.colors.gray500 }}>{format(startDate, 'MMM', { locale: fr })}</Typography>
+                            </Box>
+                            <Box
+                              aria-hidden
+                              sx={{
+                                flexShrink: 0,
+                                borderTop: { xs: `1px solid ${tokens.colors.divider}`, sm: 'none' },
+                                borderLeft: { xs: 'none', sm: `1px solid ${tokens.colors.divider}` },
+                                alignSelf: 'stretch',
+                                my: { xs: 0.5, sm: 0 },
+                              }}
+                            />
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                                <Box sx={{ fontSize: 10.5, px: 1, py: 0.25, borderRadius: tokens.radius.pill, bgcolor: tokens.colors.infoLight, color: tokens.colors.brandNavy, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                  <AccessTimeIcon sx={{ fontSize: 12 }} />
+                                  {startDate.toTimeString().slice(0, 5)} – {endDate.toTimeString().slice(0, 5)}
+                                </Box>
+                                <Typography sx={{ fontSize: 11, fontWeight: 600, color: full ? '#065f46' : '#92400e' }}>
+                                  {people.length} / {capacity} poste{capacity > 1 ? 's' : ''}
+                                </Typography>
+                                {people.length > capacity && (
+                                  <Box sx={{ fontSize: 10.5, px: 1, py: 0.25, borderRadius: tokens.radius.pill, bgcolor: tokens.colors.warningLight, color: '#92400e', fontWeight: 700 }}>
+                                    Surnombre +{people.length - capacity}
+                                  </Box>
+                                )}
+                              </Box>
+                              {people.length === 0 ? (
+                                <Typography sx={{ fontSize: 12, color: '#92400e', bgcolor: tokens.colors.warningLight, border: '1px dashed #fde68a', borderRadius: tokens.radius.md, px: 1.5, py: 1 }}>
+                                  Aucun ambassadeur positionné — places à pourvoir
+                                </Typography>
+                              ) : (
+                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                  {people.map((p) => {
+                                    const isPendingRemoval =
+                                      pendingSlotRemoval?.slotId === slotId && pendingSlotRemoval?.studentId === p.id;
+                                    const isClickable = canManageAmbassadors;
+                                    const isAcceptedOnSlot = (p.acceptedSlotIds || []).some((id) =>
+                                      slotIdsMatch(id, slotId, mission.slots),
+                                    );
+                                    return (
+                                      <Box
+                                        key={p.id}
+                                        role={isClickable ? 'button' : undefined}
+                                        tabIndex={isClickable ? 0 : undefined}
+                                        onClick={isClickable ? () => handleSlotStudentClick(slotId, p.id) : undefined}
+                                        onKeyDown={
+                                          isClickable
+                                            ? (e) => {
+                                                if (e.key === 'Enter' || e.key === ' ') {
+                                                  e.preventDefault();
+                                                  handleSlotStudentClick(slotId, p.id);
+                                                }
+                                              }
+                                            : undefined
+                                        }
+                                        title={
+                                          isClickable
+                                            ? isPendingRemoval
+                                              ? 'Cliquer à nouveau pour retirer du créneau'
+                                              : 'Cliquer pour retirer du créneau'
+                                            : undefined
+                                        }
+                                        sx={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 1,
+                                          px: 1.5,
+                                          py: 0.75,
+                                          borderRadius: tokens.radius.pill,
+                                          border: isPendingRemoval
+                                            ? `1px solid ${tokens.colors.error}`
+                                            : isAcceptedOnSlot
+                                              ? `1px solid ${tokens.colors.gray200}`
+                                              : `1px dashed ${tokens.colors.gray300}`,
+                                          bgcolor: isPendingRemoval
+                                            ? tokens.colors.errorLight
+                                            : isAcceptedOnSlot
+                                              ? tokens.colors.bgPaper
+                                              : tokens.colors.gray50,
+                                          minWidth: 0,
+                                          cursor: isClickable ? 'pointer' : 'default',
+                                          transition: 'background-color 0.15s ease, border-color 0.15s ease',
+                                          opacity: removingFromSlot && isPendingRemoval ? 0.7 : 1,
+                                          '&:hover': isClickable && !isPendingRemoval
+                                            ? { bgcolor: tokens.colors.gray100, borderColor: tokens.colors.gray400 }
+                                            : undefined,
+                                        }}
+                                      >
+                                        <Box
+                                          sx={{
+                                            width: 24,
+                                            height: 24,
+                                            borderRadius: tokens.radius.pill,
+                                            bgcolor: isPendingRemoval ? tokens.colors.error : tokens.colors.brandTeal,
+                                            color: '#fff',
+                                            fontSize: 11,
+                                            fontWeight: 700,
+                                            display: 'grid',
+                                            placeItems: 'center',
+                                            flexShrink: 0,
+                                          }}
+                                        >
+                                          {isPendingRemoval ? (
+                                            <CancelIcon sx={{ fontSize: 14 }} />
+                                          ) : (
+                                            (p.displayName || '?').charAt(0).toUpperCase()
+                                          )}
+                                        </Box>
+                                        <UserNameText
+                                          user={p}
+                                          component="span"
+                                          sx={{
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            color: isPendingRemoval ? tokens.colors.error : tokens.colors.gray900,
+                                            maxWidth: 200,
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        />
+                                      </Box>
+                                    );
+                                  })}
+                                  {Array.from({ length: Math.max(0, capacity - people.length) }).map((_, i) => (
+                                    <Box key={`empty-${i}`} sx={{ fontSize: 11.5, color: tokens.colors.gray400, px: 1.5, py: 0.75, borderRadius: tokens.radius.pill, border: `1px dashed ${tokens.colors.gray300}` }}>
+                                      Place libre
+                                    </Box>
+                                  ))}
+                                </Box>
+                              )}
+                              <Box sx={{ mt: 1, height: 4, bgcolor: tokens.colors.gray100, borderRadius: tokens.radius.pill, overflow: 'hidden' }}>
+                                <Box sx={{ width: `${pct}%`, height: '100%', bgcolor: full ? tokens.colors.success : tokens.colors.brandTeal, borderRadius: tokens.radius.pill }} />
+                              </Box>
+                            </Box>
+                          </Box>
+                        );
+                      })
                     )}
-                    {s.submittedAt && (
-                      <div style={{ fontSize: 12, color: '#9ca3af', fontFamily: appleFont, marginTop: 4 }}>
-                        Candidature envoyée le {format(s.submittedAt, 'dd MMM yyyy à HH:mm', { locale: fr })}
-                      </div>
-                    )}
-                    {/* Informations sur le dossier */}
-                    <div style={{ marginTop: 8, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                      {s.cvUrl && (
-                        <a
-                          href={s.cvUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{
-                            fontSize: 12,
-                            color: '#2563eb',
-                            textDecoration: 'none',
-                            fontFamily: appleFont,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 4
-                          }}
-                        >
-                          <PdfIcon sx={{ fontSize: 14 }} />
-                          Voir le CV
-                        </a>
-                      )}
-                      {s.motivationLetter && s.motivationLetter !== 'Ajouté manuellement' && (
-                        <span style={{ fontSize: 12, color: '#6b7280', fontFamily: appleFont }}>
-                          Lettre de motivation: {s.motivationLetter.length > 50 ? s.motivationLetter.substring(0, 50) + '...' : s.motivationLetter}
-                        </span>
-                      )}
-                      {s.motivationLetter === 'Ajouté manuellement' && (
-                        <span style={{ 
-                          fontSize: 11, 
-                          color: '#059669', 
-                          fontFamily: appleFont,
-                          backgroundColor: '#d1fae5',
-                          padding: '2px 8px',
-                          borderRadius: 6
-                        }}>
-                          Ajouté manuellement
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {/* Boutons d'action */}
-                  {canEdit && s.applicationId && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateApplicationStatus(s.applicationId!, 'Acceptée')}
-                          disabled={s.status === 'Acceptée'}
-                          style={{
-                            padding: '8px 16px',
-                            borderRadius: '8px',
-                            border: 'none',
-                            backgroundColor: s.status === 'Acceptée' ? '#d1fae5' : '#10b981',
-                            color: s.status === 'Acceptée' ? '#065f46' : 'white',
-                            fontSize: 13,
-                            fontWeight: 600,
-                            fontFamily: appleFont,
-                            cursor: s.status === 'Acceptée' ? 'not-allowed' : 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            transition: 'all 0.2s',
-                            opacity: s.status === 'Acceptée' ? 0.7 : 1
-                          }}
-                          onMouseEnter={(e) => {
-                            if (s.status !== 'Acceptée') {
-                              e.currentTarget.style.backgroundColor = '#059669';
-                            }
-                          }}
-                          onMouseLeave={(e) => {
-                            if (s.status !== 'Acceptée') {
-                              e.currentTarget.style.backgroundColor = '#10b981';
-                            }
-                          }}
-                        >
-                          <CheckCircleIcon sx={{ fontSize: 16 }} />
-                          Accepter
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateApplicationStatus(s.applicationId!, 'Refusée')}
-                          disabled={s.status === 'Refusée'}
-                          style={{
-                            padding: '8px 16px',
-                            borderRadius: '8px',
-                            border: 'none',
-                            backgroundColor: s.status === 'Refusée' ? '#fee2e2' : '#ef4444',
-                            color: s.status === 'Refusée' ? '#991b1b' : 'white',
-                            fontSize: 13,
-                            fontWeight: 600,
-                            fontFamily: appleFont,
-                            cursor: s.status === 'Refusée' ? 'not-allowed' : 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            transition: 'all 0.2s',
-                            opacity: s.status === 'Refusée' ? 0.7 : 1
-                          }}
-                          onMouseEnter={(e) => {
-                            if (s.status !== 'Refusée') {
-                              e.currentTarget.style.backgroundColor = '#dc2626';
-                            }
-                          }}
-                          onMouseLeave={(e) => {
-                            if (s.status !== 'Refusée') {
-                              e.currentTarget.style.backgroundColor = '#ef4444';
-                            }
-                          }}
-                        >
-                          <CancelIcon sx={{ fontSize: 16 }} />
-                          Refuser
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+                  </Box>
+                </Box>
 
-        <div
-          style={{
-            backgroundColor: '#fff',
-            borderRadius: 20,
-            padding: 32,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-            border: '1px solid #f3f4f6',
-          }}
-        >
-          <h2
-            style={{
-              fontSize: 20,
-              fontWeight: 600,
-              color: '#111827',
-              margin: '0 0 20px 0',
-              fontFamily: appleFont,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-            }}
-          >
-            <DescriptionIcon sx={{ fontSize: 24, color: '#2563eb' }} />
-            Documents de la mission ({documents.length})
-          </h2>
-          {documents.length === 0 ? (
-            <p style={{ color: '#6b7280', fontSize: 15, fontFamily: appleFont, margin: 0 }}>
-              Aucun document pour le moment.
-            </p>
-          ) : (
-            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-              {documents.map((d) => (
-                <li
-                  key={d.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '12px 0',
-                    borderBottom: '1px solid #f3f4f6',
-                    gap: 12,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                    {d.type === 'application/pdf' ? (
-                      <PdfIcon sx={{ fontSize: 28, color: '#dc2626' }} />
+                <Box sx={{ ...panelSx, mt: 2 }}>
+                  <Box sx={{ px: 2.25, py: 2, borderBottom: `1px solid ${tokens.colors.divider}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography sx={{ fontSize: 14, fontWeight: 700, color: tokens.colors.gray900, display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <PeopleIcon sx={{ fontSize: 18, color: tokens.colors.gray400 }} />
+                      Candidatures ({students.length})
+                    </Typography>
+                    {canAddAmbassadors && (
+                      <Button
+                        size="small"
+                        startIcon={<AddIcon />}
+                        onClick={() => { setAddAmbassadorDialogOpen(true); loadAvailableAmbassadors(); }}
+                        sx={{ textTransform: 'none', bgcolor: tokens.colors.brandTeal, '&:hover': { bgcolor: tokens.colors.brandTeal700 } }}
+                        variant="contained"
+                      >
+                        Ajouter
+                      </Button>
+                    )}
+                  </Box>
+                  <Box sx={{ p: 2.25 }}>
+                    {students.length === 0 ? (
+                      <Typography sx={{ fontSize: 13, color: tokens.colors.gray500 }}>Aucune candidature pour le moment.</Typography>
                     ) : (
-                      <FileIcon sx={{ fontSize: 28, color: '#6b7280' }} />
+                      students.map((s) => {
+                        const displayStatus = resolveDisplayStatus(s);
+                        const statusColor = displayStatus === 'Acceptée' ? tokens.colors.success : displayStatus === 'Refusée' ? tokens.colors.error : tokens.colors.warning;
+                        const applicableSlots = getApplicableSlotsForStudent(s);
+                        const acceptedSlots = applicableSlots.filter(({ slotId }) =>
+                          (s.acceptedSlotIds || []).some((id) => slotIdsMatch(id, slotId, mission.slots)),
+                        );
+                        return (
+                          <Box key={s.id} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 2, p: 1.5, mb: 1, borderRadius: tokens.radius.md, bgcolor: displayStatus === 'Acceptée' ? tokens.colors.successLight : displayStatus === 'Refusée' ? tokens.colors.errorLight : tokens.colors.warningLight, flexWrap: 'wrap' }}>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.5 }}>
+                                <UserNameText user={s} sx={{ fontSize: 14, fontWeight: 600 }} fallback="Sans nom" />
+                                <Box component="span" sx={{ fontSize: 11, fontWeight: 600, px: 1, py: 0.25, borderRadius: tokens.radius.pill, bgcolor: `${statusColor}22`, color: statusColor }}>
+                                  {displayStatus}
+                                </Box>
+                              </Box>
+                              {s.email && <Typography sx={{ fontSize: 12, color: tokens.colors.gray500 }}>{s.email}</Typography>}
+                              {applicableSlots.length > 0 && (
+                                <Typography sx={{ fontSize: 11.5, color: tokens.colors.gray600, mt: 0.5, lineHeight: 1.45 }}>
+                                  {displayStatus === 'Acceptée'
+                                    ? `Accepté sur ${acceptedSlots.length} créneau${acceptedSlots.length > 1 ? 'x' : ''} : ${acceptedSlots.map(({ label }) => label).join(' · ')}`
+                                    : `Créneaux demandés : ${applicableSlots.map(({ label }) => label).join(' · ')}`}
+                                </Typography>
+                              )}
+                              {s.cvUrl && (
+                                <Box component="a" href={s.cvUrl} target="_blank" rel="noopener noreferrer" sx={{ fontSize: 12, color: tokens.colors.brandTeal, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                                  <PdfIcon sx={{ fontSize: 14 }} /> Voir le CV
+                                </Box>
+                              )}
+                            </Box>
+                            {canManageAmbassadors && s.applicationId && (
+                              <Box sx={{ display: 'flex', gap: 1, flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
+                                {displayStatus !== 'Refusée' && (
+                                  <Button
+                                    size="small"
+                                    startIcon={<CancelIcon sx={{ fontSize: 16 }} />}
+                                    onClick={() => void handleRefuseApplication(s)}
+                                    sx={{ textTransform: 'none', fontSize: 12, color: tokens.colors.error, borderColor: tokens.colors.error }}
+                                    variant="outlined"
+                                  >
+                                    Refuser
+                                  </Button>
+                                )}
+                                {displayStatus !== 'Acceptée' && (
+                                  <Button
+                                    size="small"
+                                    variant="contained"
+                                    startIcon={<CheckCircleIcon sx={{ fontSize: 16 }} />}
+                                    onClick={() => openAcceptFlow(s)}
+                                    disabled={acceptingApplication}
+                                    sx={{ textTransform: 'none', fontSize: 12, bgcolor: tokens.colors.brandTeal, '&:hover': { bgcolor: tokens.colors.brandTeal700 } }}
+                                  >
+                                    {displayStatus === 'Refusée' ? 'Réaccepter' : 'Accepter'}
+                                  </Button>
+                                )}
+                                {displayStatus === 'Acceptée' && getAllMissionSlots().length > 1 && (
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    onClick={() => openAcceptFlow(s)}
+                                    disabled={acceptingApplication}
+                                    sx={{ textTransform: 'none', fontSize: 12, borderColor: tokens.colors.brandTeal, color: tokens.colors.brandTeal }}
+                                  >
+                                    Modifier créneaux
+                                  </Button>
+                                )}
+                              </Box>
+                            )}
+                          </Box>
+                        );
+                      })
                     )}
-                    <span
-                      style={{
-                        fontSize: 15,
-                        color: '#111827',
-                        fontFamily: appleFont,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {d.name}
-                    </span>
-                  </div>
-                  {d.url && (
-                    <a
-                      href={d.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        padding: '8px 14px',
-                        borderRadius: 10,
-                        backgroundColor: '#eff6ff',
-                        color: '#2563eb',
-                        fontSize: 14,
-                        fontWeight: 500,
-                        fontFamily: appleFont,
-                        textDecoration: 'none',
-                      }}
-                    >
-                      <DownloadIcon sx={{ fontSize: 18 }} /> Télécharger
-                    </a>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
+                  </Box>
+                </Box>
+              </Box>
 
-      {/* Dialog de modification */}
+              <Box sx={{ ...panelSx, position: { lg: 'sticky' }, top: 8 }}>
+                <Box sx={{ px: 2.25, py: 1.75, background: `linear-gradient(120deg, ${tokens.colors.brandNavy}, ${tokens.colors.brandTeal})` }}>
+                  <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <DescriptionIcon sx={{ fontSize: 18 }} /> Proposition commerciale
+                  </Typography>
+                </Box>
+                <Box sx={{ p: 2.25 }}>
+                  {isStructureView ? (
+                    <>
+                      <Typography sx={{ fontSize: 12, color: tokens.colors.gray500, lineHeight: 1.55, mb: 2 }}>
+                        Déposez ici la proposition commerciale à destination de l'entreprise.
+                      </Typography>
+                      {lastProposalRequestAt && (
+                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25, p: 1.5, mb: 2, borderRadius: tokens.radius.lg, bgcolor: tokens.colors.infoLight, border: `1px solid ${tokens.colors.brandNavy}33` }}>
+                          <AccessTimeIcon sx={{ fontSize: 20, color: tokens.colors.brandNavy, mt: 0.25 }} />
+                          <Typography sx={{ fontSize: 12.5, color: tokens.colors.brandNavy, fontWeight: 600, lineHeight: 1.5 }}>
+                            Demande reçue le {format(lastProposalRequestAt, "d MMMM yyyy 'à' HH:mm", { locale: fr })} — déposez la proposition ci-dessous.
+                          </Typography>
+                        </Box>
+                      )}
+                      {commercialProposals.length > 0 && (
+                        <Box sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                          {commercialProposals.map((d) => {
+                            const isActionLoading = documentActionId === d.id;
+                            return (
+                              <Box
+                                key={d.id}
+                                onClick={() => d.url && handleOpenDocumentPreview(d.url, d.name, d.type)}
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  gap: 1,
+                                  p: 1.25,
+                                  borderRadius: tokens.radius.md,
+                                  bgcolor: tokens.colors.gray50,
+                                  border: `1px solid ${tokens.colors.divider}`,
+                                  cursor: d.url ? 'pointer' : 'default',
+                                  transition: 'background-color 0.15s ease',
+                                  '&:hover': d.url ? { bgcolor: tokens.colors.gray100 } : undefined,
+                                }}
+                              >
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                                  <PdfIcon sx={{ fontSize: 18, color: tokens.colors.error, flexShrink: 0 }} />
+                                  <Typography sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</Typography>
+                                </Box>
+                                <IconButton
+                                  size="small"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openProposalMenu(e, d.id);
+                                  }}
+                                  disabled={isActionLoading}
+                                  sx={{ flexShrink: 0, color: tokens.colors.gray500 }}
+                                >
+                                  {isActionLoading ? <CircularProgress size={16} /> : <MoreVertIcon fontSize="small" />}
+                                </IconButton>
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      )}
+                      <Menu
+                        anchorEl={proposalMenuAnchor}
+                        open={Boolean(proposalMenuAnchor)}
+                        onClose={closeProposalMenu}
+                        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                      >
+                        {proposalMenuDoc?.url && (
+                          <MenuItem
+                            component="a"
+                            href={proposalMenuDoc.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={closeProposalMenu}
+                          >
+                            <ListItemIcon><DownloadIcon fontSize="small" /></ListItemIcon>
+                            <ListItemText>Télécharger</ListItemText>
+                          </MenuItem>
+                        )}
+                        <MenuItem
+                          onClick={() => {
+                            if (proposalMenuDoc) handleDeleteDocument(proposalMenuDoc);
+                            closeProposalMenu();
+                          }}
+                          sx={{ color: tokens.colors.error }}
+                        >
+                          <ListItemIcon><DeleteIcon fontSize="small" sx={{ color: tokens.colors.error }} /></ListItemIcon>
+                          <ListItemText>Supprimer</ListItemText>
+                        </MenuItem>
+                      </Menu>
+                      <input
+                        ref={proposalUploadInputRef}
+                        type="file"
+                        hidden
+                        accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        onChange={handleUploadCommercialProposal}
+                      />
+                      <Button
+                        fullWidth
+                        variant="contained"
+                        startIcon={uploadingProposal ? <CircularProgress size={18} color="inherit" /> : <CloudUploadIcon />}
+                        onClick={() => proposalUploadInputRef.current?.click()}
+                        disabled={uploadingProposal}
+                        sx={{ textTransform: 'none', bgcolor: tokens.colors.brandTeal, borderRadius: tokens.radius.lg, py: 1.25, '&:hover': { bgcolor: tokens.colors.brandTeal700 } }}
+                      >
+                        {uploadingProposal ? 'Dépôt en cours…' : commercialProposals.length > 0 ? 'Déposer une nouvelle proposition' : 'Déposer la proposition commerciale'}
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Typography sx={{ fontSize: 12, color: tokens.colors.gray500, lineHeight: 1.55, mb: 2 }}>
+                        {companyCommercialProposals.length > 0
+                          ? 'Votre proposition commerciale est disponible ci-dessous.'
+                          : 'Demandez une proposition commerciale détaillée : l\'équipe JS Connect vous l\'adresse sous 48 h.'}
+                      </Typography>
+                      {companyCommercialProposals.length > 0 && (
+                        <Box sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                          {companyCommercialProposals.map((d) => (
+                            <Box
+                              key={d.id}
+                              onClick={() => d.url && handleOpenDocumentPreview(d.url, d.name, d.type)}
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 1,
+                                p: 1.25,
+                                borderRadius: tokens.radius.md,
+                                bgcolor: tokens.colors.gray50,
+                                border: `1px solid ${tokens.colors.divider}`,
+                                cursor: d.url ? 'pointer' : 'default',
+                                transition: 'background-color 0.15s ease',
+                                '&:hover': d.url ? { bgcolor: tokens.colors.gray100 } : undefined,
+                              }}
+                            >
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                                <PdfIcon sx={{ fontSize: 18, color: tokens.colors.error, flexShrink: 0 }} />
+                                <Typography sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</Typography>
+                              </Box>
+                              {d.url && (
+                                <Button
+                                  component="a"
+                                  href={d.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  size="small"
+                                  startIcon={<DownloadIcon />}
+                                  onClick={(e) => e.stopPropagation()}
+                                  sx={{ textTransform: 'none', flexShrink: 0 }}
+                                >
+                                  Télécharger
+                                </Button>
+                              )}
+                            </Box>
+                          ))}
+                        </Box>
+                      )}
+                      {proposalError && (
+                        <Box sx={{ mb: 1.5, p: 1.25, borderRadius: tokens.radius.lg, bgcolor: tokens.colors.errorLight, border: `1px solid ${tokens.colors.error}` }}>
+                          <Typography sx={{ fontSize: 12.5, color: tokens.colors.error, fontWeight: 600 }}>
+                            {proposalError}
+                          </Typography>
+                        </Box>
+                      )}
+                      {!isProposalOnCooldown ? (
+                        <Button
+                          fullWidth
+                          variant="contained"
+                          startIcon={<SendIcon />}
+                          onClick={handleSendProposalRequest}
+                          disabled={proposalSending}
+                          sx={{ textTransform: 'none', bgcolor: tokens.colors.brandTeal, borderRadius: tokens.radius.lg, py: 1.25, '&:hover': { bgcolor: tokens.colors.brandTeal700 } }}
+                        >
+                          {proposalSending ? 'Envoi en cours…' : companyCommercialProposals.length > 0 ? 'Demander une nouvelle proposition' : 'Demander une proposition commerciale'}
+                        </Button>
+                      ) : companyCommercialProposals.length === 0 ? (
+                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25, p: 1.5, borderRadius: tokens.radius.lg, bgcolor: tokens.colors.successLight, border: `1px solid ${tokens.colors.success}` }}>
+                          <CheckCircleIcon sx={{ fontSize: 20, color: tokens.colors.success, flexShrink: 0, mt: 0.25 }} />
+                          <Typography sx={{ fontSize: 12.5, color: '#065f46', fontWeight: 600, lineHeight: 1.5 }}>
+                            Demande envoyée — réponse sous 48 h ouvrées.
+                          </Typography>
+                        </Box>
+                      ) : null}
+                    </>
+                  )}
+                </Box>
+              </Box>
+            </Box>
+          )}
+
+          {detailTab === 'documents' && (
+            <Box sx={panelSx}>
+              <Box sx={{ px: 2.25, py: 2, borderBottom: `1px solid ${tokens.colors.divider}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                <Typography sx={{ fontSize: 14, fontWeight: 700, color: tokens.colors.gray900, display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <DescriptionIcon sx={{ fontSize: 18, color: tokens.colors.gray400 }} />
+                  Documents de la mission ({displayedDocuments.length})
+                </Typography>
+                {isStructureView && (
+                  <>
+                    <input
+                      ref={documentUploadInputRef}
+                      type="file"
+                      hidden
+                      accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,application/pdf"
+                      onChange={handleUploadDocument}
+                    />
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={uploadingDocument ? <CircularProgress size={16} color="inherit" /> : <CloudUploadIcon />}
+                      onClick={() => documentUploadInputRef.current?.click()}
+                      disabled={uploadingDocument}
+                      sx={{ textTransform: 'none', bgcolor: tokens.colors.brandTeal, '&:hover': { bgcolor: tokens.colors.brandTeal700 } }}
+                    >
+                      {uploadingDocument ? 'Upload…' : 'Ajouter un document'}
+                    </Button>
+                  </>
+                )}
+              </Box>
+              <Box sx={{ p: 2.25 }}>
+                {displayedDocuments.length === 0 ? (
+                  <Typography sx={{ fontSize: 13, color: tokens.colors.gray500 }}>
+                    {isStructureView ? 'Aucun document pour le moment. Utilisez le bouton ci-dessus pour en déposer.' : 'Aucun document disponible pour le moment.'}
+                  </Typography>
+                ) : (
+                  displayedDocuments.map((d) => {
+                    const isActionLoading = documentActionId === d.id;
+                    return (
+                      <Box key={d.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, py: 1.5, borderBottom: `1px solid ${tokens.colors.divider}`, flexWrap: 'wrap' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0, flex: 1 }}>
+                          {d.type === 'application/pdf' ? <PdfIcon sx={{ color: tokens.colors.error, flexShrink: 0 }} /> : <FileIcon sx={{ color: tokens.colors.gray500, flexShrink: 0 }} />}
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography sx={{ fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</Typography>
+                            {isStructureView && (
+                              <Typography sx={{ fontSize: 11.5, color: d.visibleToCompany ? tokens.colors.success : tokens.colors.gray500, fontWeight: 600, mt: 0.25 }}>
+                                {d.visibleToCompany ? 'Visible par l\'entreprise' : 'Interne structure'}
+                              </Typography>
+                            )}
+                          </Box>
+                        </Box>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0, flexWrap: 'wrap' }}>
+                          {isStructureView && (
+                            <>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={isActionLoading ? <CircularProgress size={14} /> : d.visibleToCompany ? <VisibilityOffIcon sx={{ fontSize: 16 }} /> : <VisibilityIcon sx={{ fontSize: 16 }} />}
+                                onClick={() => handleToggleDocumentVisibility(d.id, !d.visibleToCompany)}
+                                disabled={isActionLoading}
+                                sx={{
+                                  textTransform: 'none',
+                                  fontSize: 12,
+                                  borderColor: d.visibleToCompany ? tokens.colors.gray300 : tokens.colors.brandTeal,
+                                  color: d.visibleToCompany ? tokens.colors.gray600 : tokens.colors.brandTeal,
+                                }}
+                              >
+                                {d.visibleToCompany ? 'Masquer' : 'Rendre visible'}
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="error"
+                                startIcon={<DeleteIcon sx={{ fontSize: 16 }} />}
+                                onClick={() => handleDeleteDocument(d)}
+                                disabled={isActionLoading}
+                                sx={{ textTransform: 'none', fontSize: 12 }}
+                              >
+                                Supprimer
+                              </Button>
+                            </>
+                          )}
+                          {d.url && (
+                            <Button component="a" href={d.url} target="_blank" rel="noopener noreferrer" size="small" startIcon={<DownloadIcon />} sx={{ textTransform: 'none', flexShrink: 0 }}>
+                              Télécharger
+                            </Button>
+                          )}
+                        </Box>
+                      </Box>
+                    );
+                  })
+                )}
+              </Box>
+            </Box>
+          )}
+        </Box>
+      </Box>
+
+      <Dialog
+        open={openDocumentPreview}
+        onClose={closeDocumentPreview}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{ sx: { height: '90vh', maxHeight: '90vh' } }}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, py: 1.5, px: 2 }}>
+          <Typography sx={{ fontSize: 15, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {documentPreviewTitle}
+          </Typography>
+          <IconButton size="small" onClick={closeDocumentPreview} aria-label="Fermer l'aperçu">
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0, height: 'calc(100% - 57px)' }}>
+          {documentPreviewUrl && (
+            <Box
+              component="iframe"
+              src={documentPreviewUrl}
+              title={documentPreviewTitle || 'Aperçu du document'}
+              sx={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de modification — conservé */}
       {isEditing && mission && (
         <div
           style={{
@@ -1889,7 +2742,7 @@ export const AmbassadorEventDetails: React.FC = () => {
           <div
             style={{
               backgroundColor: 'rgba(255, 255, 255, 0.98)',
-              borderRadius: '24px',
+              borderRadius: tokens.radius.xxl,
               boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
               maxWidth: '720px',
               width: '100%',
@@ -1929,7 +2782,7 @@ export const AmbassadorEventDetails: React.FC = () => {
           <div
             style={{
               backgroundColor: 'white',
-              borderRadius: '24px',
+              borderRadius: tokens.radius.xxl,
               boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
               maxWidth: '500px',
               width: '100%',
@@ -1961,13 +2814,13 @@ export const AmbassadorEventDetails: React.FC = () => {
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <AssignmentIcon sx={{ color: '#86868b' }} />
+                      <AssignmentIcon sx={{ color: tokens.colors.textSecondary }} />
                     </InputAdornment>
                   ),
                 }}
                 sx={{
                   '& .MuiOutlinedInput-root': {
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     fontFamily: appleFont,
                     '&:hover .MuiOutlinedInput-notchedOutline': {
                       borderColor: '#2563eb',
@@ -2003,19 +2856,19 @@ export const AmbassadorEventDetails: React.FC = () => {
                   native: false,
                   renderValue: (value) => {
                     const selectedUser = availableCharges.find(user => user.id === value);
-                    return selectedUser?.displayName || '';
+                    return getSafeDisplayName(selectedUser);
                   }
                 }}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <PersonIcon sx={{ color: '#86868b' }} />
+                      <PersonIcon sx={{ color: tokens.colors.textSecondary }} />
                     </InputAdornment>
                   ),
                 }}
                 sx={{
                   '& .MuiOutlinedInput-root': {
-                    borderRadius: '12px',
+                    borderRadius: tokens.radius.md,
                     fontFamily: appleFont,
                     '&:hover .MuiOutlinedInput-notchedOutline': {
                       borderColor: '#2563eb',
@@ -2059,7 +2912,7 @@ export const AmbassadorEventDetails: React.FC = () => {
                             width: 24,
                             height: 24,
                             borderRadius: '50%',
-                            backgroundColor: '#0071e3',
+                            backgroundColor: tokens.colors.brandTeal,
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
@@ -2071,7 +2924,7 @@ export const AmbassadorEventDetails: React.FC = () => {
                           {charge.displayName.charAt(0).toUpperCase()}
                         </Box>
                       )}
-                      <Typography sx={{ fontFamily: appleFont }}>{charge.displayName}</Typography>
+                      <UserNameText user={charge} sx={{ fontFamily: appleFont }} />
                     </Box>
                   </MenuItem>
                 ))}
@@ -2081,7 +2934,7 @@ export const AmbassadorEventDetails: React.FC = () => {
             <div style={{
               padding: '16px',
               backgroundColor: '#f0f9ff',
-              borderRadius: '12px',
+              borderRadius: tokens.radius.md,
               marginBottom: '24px'
             }}>
               <p style={{
@@ -2107,7 +2960,7 @@ export const AmbassadorEventDetails: React.FC = () => {
                 disabled={isConverting}
                 style={{
                   padding: '12px 24px',
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   border: '1px solid #d1d5db',
                   backgroundColor: 'transparent',
                   color: '#374151',
@@ -2126,7 +2979,7 @@ export const AmbassadorEventDetails: React.FC = () => {
                 disabled={isConverting || !missionNumber.trim() || !selectedChargeId}
                 style={{
                   padding: '12px 24px',
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   border: 'none',
                   backgroundColor: isConverting || !missionNumber.trim() || !selectedChargeId ? '#9ca3af' : '#10b981',
                   color: 'white',
@@ -2166,7 +3019,7 @@ export const AmbassadorEventDetails: React.FC = () => {
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             fontFamily: appleFont,
           }
         }}
@@ -2238,9 +3091,7 @@ export const AmbassadorEventDetails: React.FC = () => {
                     }
                     label={
                       <Box>
-                        <Typography sx={{ fontFamily: appleFont, fontSize: 14, fontWeight: 500 }}>
-                          {ambassador.displayName || 'Sans nom'}
-                        </Typography>
+                        <UserNameText user={ambassador} sx={{ fontFamily: appleFont, fontSize: 14, fontWeight: 500 }} fallback="Sans nom" />
                         <Typography sx={{ fontFamily: appleFont, fontSize: 12, color: '#6b7280' }}>
                           {ambassador.email || '—'}
                         </Typography>
@@ -2274,6 +3125,209 @@ export const AmbassadorEventDetails: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
-    </div>
+
+      <Dialog
+        open={acceptDialogOpen}
+        onClose={() => {
+          if (acceptingApplication) return;
+          setAcceptDialogOpen(false);
+          setAcceptDialogStudent(null);
+          setAcceptDialogSelectedSlots(new Set());
+        }}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: tokens.radius.xl, fontFamily: appleFont } }}
+      >
+        <DialogTitle sx={{ fontFamily: appleFont, fontSize: 20, fontWeight: 700 }}>
+          Choisir les créneaux à accepter
+        </DialogTitle>
+        <DialogContent>
+          {acceptDialogStudent && (
+            <Typography sx={{ fontFamily: appleFont, fontSize: 13, color: tokens.colors.gray600, mb: 2 }}>
+              Sélectionnez les créneaux sur lesquels{' '}
+              <UserNameText user={acceptDialogStudent} component="span" sx={{ fontWeight: 600 }} fallback="cet ambassadeur" />{' '}
+              sera accepté.
+            </Typography>
+          )}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {acceptDialogStudent && getAllMissionSlots().map(({ slotId, label }) => (
+              <FormControlLabel
+                key={slotId}
+                control={
+                  <Checkbox
+                    checked={acceptDialogSelectedSlots.has(slotId)}
+                    onChange={(e) => {
+                      const next = new Set(acceptDialogSelectedSlots);
+                      if (e.target.checked) next.add(slotId);
+                      else next.delete(slotId);
+                      setAcceptDialogSelectedSlots(next);
+                    }}
+                    disabled={acceptingApplication}
+                  />
+                }
+                label={<Typography sx={{ fontFamily: appleFont, fontSize: 13 }}>{label}</Typography>}
+              />
+            ))}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, gap: 1 }}>
+          <Button
+            onClick={() => {
+              setAcceptDialogOpen(false);
+              setAcceptDialogStudent(null);
+              setAcceptDialogSelectedSlots(new Set());
+            }}
+            disabled={acceptingApplication}
+            sx={{ fontFamily: appleFont, textTransform: 'none' }}
+          >
+            Annuler
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              if (!acceptDialogStudent) return;
+              void acceptStudentOnSlots(acceptDialogStudent, Array.from(acceptDialogSelectedSlots));
+            }}
+            disabled={acceptingApplication || acceptDialogSelectedSlots.size === 0}
+            sx={{ fontFamily: appleFont, textTransform: 'none', bgcolor: tokens.colors.brandTeal, '&:hover': { bgcolor: tokens.colors.brandTeal700 } }}
+          >
+            {acceptingApplication ? 'Validation…' : `Accepter (${acceptDialogSelectedSlots.size})`}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialogue pour envoyer un mail aux ambassadeurs (annonce salon) */}
+      <Dialog
+        open={announceDialogOpen}
+        onClose={() => {
+          if (announceSending) return;
+          setAnnounceDialogOpen(false);
+        }}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: tokens.radius.xl,
+            fontFamily: appleFont,
+          }
+        }}
+      >
+        <DialogTitle
+          dividers
+          sx={{ fontFamily: appleFont, fontSize: 20, fontWeight: 700, pb: 2 }}
+        >
+          Envoyer un email aux ambassadeurs
+        </DialogTitle>
+        <DialogContent
+          sx={{
+            px: 3,
+            pb: 2,
+            pt: '40px !important',
+          }}
+        >
+          {announceError && (
+            <Box sx={{ mb: 2, p: 1.25, borderRadius: tokens.radius.lg, bgcolor: tokens.colors.errorLight, border: `1px solid ${tokens.colors.error}` }}>
+              <Typography sx={{ fontFamily: appleFont, fontSize: 13, fontWeight: 600, color: tokens.colors.error }}>
+                {announceError}
+              </Typography>
+            </Box>
+          )}
+          {announceSuccess && (
+            <Box sx={{ mb: 2, p: 1.25, borderRadius: tokens.radius.lg, bgcolor: tokens.colors.successLight, border: `1px solid ${tokens.colors.success}` }}>
+              <Typography sx={{ fontFamily: appleFont, fontSize: 13, fontWeight: 600, color: '#065f46' }}>
+                {announceSuccess}
+              </Typography>
+            </Box>
+          )}
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+            <TextField
+              select
+              fullWidth
+              label="Campus"
+              value={announceCampus}
+              onChange={(e) => setAnnounceCampus(e.target.value)}
+              disabled={announceLoading || announceSending}
+              InputLabelProps={{ shrink: true }}
+            >
+              <MenuItem value="__ALL__">Tous les campus</MenuItem>
+              {announceCampusOptions.map((c) => (
+                <MenuItem key={c} value={c}>{c}</MenuItem>
+              ))}
+            </TextField>
+
+            <TextField
+              fullWidth
+              type="datetime-local"
+              label="Début (affiché dans l’email)"
+              value={announceStart}
+              onChange={(e) => setAnnounceStart(e.target.value)}
+              disabled={announceLoading || announceSending}
+              InputLabelProps={{ shrink: true }}
+            />
+
+            <TextField
+              fullWidth
+              type="datetime-local"
+              label="Fin (affiché dans l’email)"
+              value={announceEnd}
+              onChange={(e) => setAnnounceEnd(e.target.value)}
+              disabled={announceLoading || announceSending}
+              InputLabelProps={{ shrink: true }}
+            />
+
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={announceUseCustom}
+                  onChange={(e) => setAnnounceUseCustom(e.target.checked)}
+                  disabled={announceLoading || announceSending}
+                />
+              }
+              label={<Typography sx={{ fontFamily: appleFont, fontSize: 13, fontWeight: 600 }}>Ajouter un message personnalisé</Typography>}
+            />
+
+            {announceUseCustom && (
+              <TextField
+                fullWidth
+                multiline
+                minRows={4}
+                label="Message"
+                value={announceMessage}
+                onChange={(e) => setAnnounceMessage(e.target.value)}
+                disabled={announceLoading || announceSending}
+                placeholder="Ex: Bonjour, nous serons présents à ce salon et serions ravis de vous y retrouver…"
+              />
+            )}
+
+            {announceSending && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <CircularProgress size={18} sx={{ color: tokens.colors.brandTeal }} />
+                <Typography sx={{ fontFamily: appleFont, fontSize: 13, color: tokens.colors.gray700 }}>
+                  Envoi en cours… {announceRecipientsSent}/{announceRecipientsTotal}
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, gap: 1 }}>
+          <Button
+            onClick={() => setAnnounceDialogOpen(false)}
+            disabled={announceSending}
+            sx={{ fontFamily: appleFont }}
+          >
+            Fermer
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleSendAnnouncement}
+            disabled={announceLoading || announceSending}
+            sx={{ fontFamily: appleFont, textTransform: 'none', bgcolor: tokens.colors.brandTeal, '&:hover': { bgcolor: tokens.colors.brandTeal700 } }}
+          >
+            Envoyer
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
   );
 };

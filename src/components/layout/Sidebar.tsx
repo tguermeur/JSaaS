@@ -15,8 +15,9 @@ import {
   Menu,
   MenuItem,
 } from '@mui/material';
-import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase/config';
+import { useStructure } from '../../hooks/useStructure';
 import {
   Dashboard as DashboardIcon,
   Business as BusinessIcon,
@@ -50,13 +51,22 @@ import {
   Folder as FolderIcon,
   Campaign as CampaignIcon,
   Lock as LockIcon,
+  Gesture as GestureIcon,
 } from '@mui/icons-material';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useDecryptedUserName } from '../../hooks/useDecryptedUserName';
+import UserNameSkeleton from '../common/UserNameSkeleton';
+import { tokens } from '../../theme/tokens';
+import { useAmbassadorBranding } from '../../hooks/useAmbassadorBranding';
+import { isDefaultMemberReadPage } from '../../utils/defaultMemberPermissions';
 
 const ICON_SIDEBAR_WIDTH = '64px';
 const DETAIL_SIDEBAR_WIDTH = '240px';
 const TOTAL_SIDEBAR_WIDTH = '304px';
+
+// z-index en dessous des modals/popovers MUI (1300) pour que les popups passent au-dessus
+const SIDEBAR_Z_INDEX = 100;
 
 // Sidebar gauche avec icônes uniquement (blanc)
 const IconSidebar = styled(Box)(({ theme }) => ({
@@ -71,8 +81,8 @@ const IconSidebar = styled(Box)(({ theme }) => ({
   paddingBottom: '12px',
   position: 'fixed',
   left: 0,
-  zIndex: 1,
-    borderRight: '1px solid #f0f0f0',
+  zIndex: SIDEBAR_Z_INDEX,
+    borderRight: `1px solid ${tokens.colors.borderLight}`,
 }));
 
 // Sidebar droite avec liens détaillés (blanc)
@@ -86,8 +96,8 @@ const DetailSidebar = styled(Box, {
   marginLeft: ICON_SIDEBAR_WIDTH,
   position: 'fixed',
   left: 0,
-  zIndex: 2,
-  borderRight: '1px solid #f0f0f0',
+  zIndex: SIDEBAR_Z_INDEX + 1,
+  borderRight: `1px solid ${tokens.colors.borderLight}`,
   overflowY: 'auto',
   overflowX: 'hidden',
   transform: open ? 'translateX(0)' : 'translateX(-100%)',
@@ -179,17 +189,24 @@ interface PagePermission {
 const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentUser, userData, logoutUser, effectiveUserId, isImpersonating } = useAuth();
-  const [structureType, setStructureType] = useState<'jobservice' | 'junior'>('jobservice');
+  const { currentUser, userData, logoutUser, effectiveUserId, isImpersonating, contactPermissions, isContactWithAccess } = useAuth();
+  const { fullName, initials, loading: userNameLoading } = useDecryptedUserName(
+    currentUser?.uid
+      ? {
+          id: currentUser.uid,
+          displayName: userData?.displayName ?? currentUser.displayName ?? undefined,
+          firstName: userData?.firstName,
+          lastName: userData?.lastName,
+        }
+      : null,
+    currentUser?.email?.split('@')[0] ?? 'Utilisateur',
+  );
   const [selectedSection, setSelectedSection] = useState<string>('crm');
   const [detailSidebarOpen, setDetailSidebarOpen] = useState<boolean>(false);
-  const [structureLogo, setStructureLogo] = useState<string | null>(null);
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(null);
   const userMenuOpen = Boolean(userMenuAnchorEl);
   const [pagePermissions, setPagePermissions] = useState<Record<string, PagePermission>>({});
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
-  
-  const { contactPermissions, isContactWithAccess } = useAuth();
   
   const isSuperAdmin = userData?.status === "superadmin";
   const isAdmin = userData?.status === "admin";
@@ -197,6 +214,12 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   const isEtudiant = userData?.status === "etudiant";
   const isEntreprise = userData?.status === "entreprise";
   const isAdminStructure = userData?.status === "admin_structure";
+
+  const { structure: cachedStructure } = useStructure(
+    !isEntreprise ? userData?.structureId || null : null
+  );
+  const structureType = (cachedStructure?.structureType as 'jobservice' | 'junior') || 'jobservice';
+  const structureLogo = cachedStructure?.logo || null;
   
   // Déterminer si l'utilisateur est une Junior (accès complet)
   const isJuniorEntreprise = isAdminStructure || isAdmin || isMember || isSuperAdmin;
@@ -204,49 +227,21 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   // Vérifier les permissions spécifiques pour les contacts avec accès
   const canViewEvents = isContactWithAccess && contactPermissions?.canViewEvents;
   const canManageAmbassadors = isContactWithAccess && contactPermissions?.canManageAmbassadors;
+  const isContactAmbassadorNav =
+    isEntreprise && isContactWithAccess && (canViewEvents || canManageAmbassadors);
+  const structureLogoSize = isContactAmbassadorNav ? 55 : 48;
 
-  // Charger le type de structure et le logo
-  useEffect(() => {
-    const loadStructureData = async () => {
-      if (!currentUser) return;
-      
-      // Ne pas charger les données de structure pour les entreprises
-      if (isEntreprise) {
-        return;
-      }
-
-      try {
-        // Utiliser effectiveUserId pour l'impersonation, sinon currentUser.uid
-        const userIdToLoad = effectiveUserId || currentUser.uid;
-        
-        // Récupérer le structureId de l'utilisateur (effectif si en impersonation)
-        const userDoc = await getDoc(doc(db, 'users', userIdToLoad));
-        const structureId = userDoc.data()?.structureId;
-
-        if (structureId) {
-          // Récupérer les données de la structure
-          const structureDoc = await getDoc(doc(db, 'structures', structureId));
-          if (structureDoc.exists()) {
-            const data = structureDoc.data();
-            setStructureType(data.structureType || 'jobservice');
-            const logo = data?.logo;
-            if (logo) {
-              setStructureLogo(logo);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Erreur lors du chargement des données de la structure:', error);
-      }
-    };
-
-    loadStructureData();
-  }, [currentUser, isEntreprise, effectiveUserId]);
+  const { logoLargeUrl, logoUrl, loading: brandingLoading } = useAmbassadorBranding(
+    userData?.structureId,
+    isEntreprise ? userData?.companyId : undefined
+  );
+  const sidebarLogo = structureLogo || logoUrl || logoLargeUrl;
+  const showSidebarLogoFallback = !sidebarLogo && !(isEntreprise && brandingLoading);
 
   // Charger les permissions des pages depuis Firestore
   useEffect(() => {
     const loadPagePermissions = async () => {
-      if (!currentUser || !userData?.structureId) {
+      if (!currentUser || !userData?.structureId || isEtudiant || isEntreprise) {
         setPermissionsLoaded(true);
         return;
       }
@@ -276,9 +271,6 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     loadPagePermissions();
   }, [currentUser, userData?.structureId]);
 
-  // Pages CRM de base accessibles par défaut aux membres si pas de permission configurée
-  const defaultMemberAccessPages = ['dashboard', 'organization', 'mission', 'entreprises', 'documents'];
-  
   // Pages de paramètres accessibles uniquement aux admins par défaut
   const adminOnlyPages = ['settings_billing', 'settings_authorizations', 'settings_structure'];
   
@@ -290,11 +282,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     // Si pas de permissionPageId, accès autorisé par défaut
     if (!permissionPageId) return true;
     
-    // SuperAdmin a toujours accès
-    if (isSuperAdmin) return true;
-    
-    // Admin a toujours accès
-    if (isAdmin) return true;
+    // SuperAdmin / admin / admin_structure : accès total structure
+    if (isSuperAdmin || isAdmin || isAdminStructure) return true;
     
     // Vérifier les permissions _read pour la lecture
     const readPermission = pagePermissions[`${permissionPageId}_read`];
@@ -303,7 +292,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       // Si pas de permission définie, utiliser les règles par défaut
       
       // Pages CRM de base : accès par défaut aux membres
-      if (defaultMemberAccessPages.includes(permissionPageId) && isMember) {
+      if (isDefaultMemberReadPage(permissionPageId) && isMember) {
         return true;
       }
       
@@ -359,9 +348,11 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       setSelectedSection('personal');
     } else if (path.startsWith('/app/ambassadeurs')) {
       setSelectedSection('ambassadors');
+    } else if (path.startsWith('/app/ambassador-missions')) {
+      setSelectedSection('personal');
     } else if (path.startsWith('/app/available-missions')) {
       setSelectedSection('missions');
-    } else if (path.startsWith('/app/commercial') || path.startsWith('/app/audit') || path.startsWith('/prospect/') || path.startsWith('/app/tresorerie') || path.startsWith('/app/human-resources')) {
+    } else if (path.startsWith('/app/commercial') || path.startsWith('/app/audit') || path.startsWith('/prospect/') || path.startsWith('/app/prospect/') || path.startsWith('/app/tresorerie') || path.startsWith('/app/human-resources')) {
       setSelectedSection('poles');
     } else if (
       path.startsWith('/app/dashboard') || 
@@ -381,8 +372,10 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     } else if (path.startsWith('/app/settings')) {
       // Fermer la sidebar pour les paramètres
       setDetailSidebarOpen(false);
+    } else if (isContactAmbassadorNav) {
+      setDetailSidebarOpen(false);
     }
-  }, [location.pathname]);
+  }, [location.pathname, isContactAmbassadorNav]);
 
   // Fermer la sidebar droite quand on clique en dehors
   useEffect(() => {
@@ -430,7 +423,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       iconSidebarIcon: <AppsIcon />,
       path: structureType === 'junior' ? '/app/etude' : '/app/mission',
       section: 'crm',
-      permissionPageId: 'mission',
+      // JE junior : Études protégées par pageId audit (aligné App / Etude.tsx)
+      permissionPageId: structureType === 'junior' ? 'audit' : 'mission',
     },
     {
       text: 'Entreprises',
@@ -445,6 +439,14 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       icon: <FolderIcon />,
       iconSidebarIcon: <AppsIcon />,
       path: '/app/documents',
+      section: 'crm',
+      permissionPageId: 'documents',
+    },
+    {
+      text: 'Signatures',
+      icon: <GestureIcon />,
+      iconSidebarIcon: <AppsIcon />,
+      path: '/app/signatures',
       section: 'crm',
       permissionPageId: 'documents',
     },
@@ -548,29 +550,46 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   ];
 
   // Menu pour les Étudiants
-  const studentMenuItems: MenuItem[] = [
-    {
-      text: 'Espace Candidat',
-      icon: <WorkIcon />,
-      iconSidebarIcon: <WorkIcon />,
-      path: '/app/available-missions',
-      section: 'personal',
-    },
-    {
-      text: 'Mes Missions',
-      icon: <WorkHistoryIcon />,
-      iconSidebarIcon: <WorkIcon />,
-      path: '/app/profile?tab=missions',
-      section: 'personal',
-    },
-    {
-      text: 'Mon Profil',
-      icon: <PersonIcon />,
-      iconSidebarIcon: <PersonIcon />,
-      path: '/app/profile',
-      section: 'personal',
-    },
-  ];
+  const studentMenuItems: MenuItem[] = useMemo(() => {
+    const items: MenuItem[] = [
+      {
+        text: 'Espace Candidat',
+        icon: <WorkIcon />,
+        iconSidebarIcon: <WorkIcon />,
+        path: '/app/available-missions',
+        section: 'personal',
+      },
+    ];
+
+    if (userData?.isAmbassador) {
+      items.push({
+        text: 'Missions ambassadeurs',
+        icon: <CampaignIcon />,
+        iconSidebarIcon: <CampaignIcon />,
+        path: '/app/ambassador-missions',
+        section: 'personal',
+      });
+    }
+
+    items.push(
+      {
+        text: 'Mes Missions',
+        icon: <WorkHistoryIcon />,
+        iconSidebarIcon: <WorkIcon />,
+        path: '/app/profile?tab=missions',
+        section: 'personal',
+      },
+      {
+        text: 'Mon Profil',
+        icon: <PersonIcon />,
+        iconSidebarIcon: <PersonIcon />,
+        path: '/app/profile',
+        section: 'personal',
+      }
+    );
+
+    return items;
+  }, [userData?.isAmbassador]);
 
   // Menu pour les Entreprises
   const companyMenuItems: MenuItem[] = [
@@ -729,13 +748,10 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   ]);
 
   const getInitials = () => {
-    if (!currentUser?.displayName) return '?';
-    return currentUser.displayName
-      .split(' ')
-      .map(name => name[0])
-      .join('')
-      .toUpperCase()
-      .substring(0, 2);
+    if (userNameLoading) return '';
+    if (initials) return initials;
+    if (!currentUser?.email) return '?';
+    return currentUser.email.charAt(0).toUpperCase();
   };
 
   const getSectionTitle = (section: string) => {
@@ -756,18 +772,18 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       {/* Sidebar gauche avec icônes uniquement */}
       <IconSidebar data-icon-sidebar>
         {/* Logo de la structure en haut */}
-        {structureLogo ? (
+        {sidebarLogo ? (
           <Avatar
-            src={structureLogo}
-            alt="Logo structure"
+            src={sidebarLogo}
+            alt={isEntreprise ? 'Logo entreprise' : 'Logo structure'}
             variant="circular"
             sx={{
-              width: 48,
-              height: 48,
+              width: structureLogoSize,
+              height: structureLogoSize,
               backgroundColor: 'white',
               mb: 1.5,
               cursor: (isEtudiant || isEntreprise) ? 'default' : 'pointer',
-              opacity: (isEtudiant || isEntreprise) ? 0.6 : 1,
+              opacity: 1,
               '& img': {
                 objectFit: 'contain',
                 p: 0.5,
@@ -777,14 +793,14 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
             }}
             onClick={(isEtudiant || isEntreprise) ? undefined : () => navigate('/app/dashboard')}
           />
-        ) : (
+        ) : showSidebarLogoFallback ? (
           <Avatar
             sx={{
-              width: 48,
-              height: 48,
+              width: structureLogoSize,
+              height: structureLogoSize,
               bgcolor: '#10b981',
               color: '#ffffff',
-              fontSize: '1.125rem',
+              fontSize: isContactAmbassadorNav ? '1.29rem' : '1.125rem',
               fontWeight: 600,
               mb: 1.5,
               cursor: (isEtudiant || isEntreprise) ? 'default' : 'pointer',
@@ -794,19 +810,35 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
           >
             {getInitials().substring(0, 1)}
           </Avatar>
+        ) : (
+          <Avatar
+            variant="circular"
+            sx={{
+              width: structureLogoSize,
+              height: structureLogoSize,
+              bgcolor: 'white',
+              mb: 1.5,
+            }}
+          />
         )}
         <Divider sx={{ width: '80%', borderColor: '#e5e7eb', mb: 1.5 }} />
         
         {/* Icônes de sections */}
-        {iconSidebarIcons.map(({ section, icon }) => (
+        {iconSidebarIcons.map(({ section, icon, items }) => (
           <IconButton
             key={section}
             selected={selectedSection === section}
             onClick={() => {
-              // Pour les paramètres, naviguer directement sans ouvrir la sidebar
               if (section === 'settings') {
                 navigate('/app/settings/structure');
                 setDetailSidebarOpen(false);
+              } else if (isContactAmbassadorNav) {
+                const target = items[0];
+                if (target) {
+                  setSelectedSection(section);
+                  navigate(target.path);
+                  setDetailSidebarOpen(false);
+                }
               } else {
                 setSelectedSection(section);
                 setDetailSidebarOpen(true);
@@ -880,9 +912,13 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
           anchorOrigin={{ horizontal: 'left', vertical: 'top' }}
         >
           <Box sx={{ px: 2, py: 1 }}>
-            <Typography variant="subtitle1" fontWeight="bold">
-              {currentUser?.displayName}
-            </Typography>
+            {userNameLoading ? (
+              <UserNameSkeleton width={140} sx={{ fontSize: '1rem', mb: 0.5 }} />
+            ) : (
+              <Typography variant="subtitle1" fontWeight="bold">
+                {fullName}
+              </Typography>
+            )}
             <Typography variant="body2" color="text.secondary">
               {currentUser?.email}
             </Typography>
@@ -933,7 +969,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
         </Menu>
       </IconSidebar>
 
-      {/* Sidebar droite avec liens détaillés */}
+      {/* Sidebar droite avec liens détaillés (masquée pour les contacts ambassadeurs) */}
+      {!isContactAmbassadorNav && (
       <DetailSidebar open={detailSidebarOpen} data-detail-sidebar>
         <Box sx={{ pt: 2 }}>
           {/* Titre de la section active */}
@@ -956,7 +993,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
               (item.path !== '/app/dashboard' && 
                item.path !== '/app/organization' &&
                location.pathname.startsWith(item.path)) ||
-              (item.path === '/app/commercial' && location.pathname.startsWith('/prospect/'));
+              (item.path === '/app/commercial' && (location.pathname.startsWith('/prospect/') || location.pathname.startsWith('/app/prospect/')));
             
             // Vérifier si l'utilisateur a accès à cette page
             // Ne verrouiller que si les permissions ET les données utilisateur sont chargées
@@ -1019,6 +1056,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
           })}
         </Box>
       </DetailSidebar>
+      )}
           </>
   );
 };

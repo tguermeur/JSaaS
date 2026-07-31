@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
@@ -42,14 +43,38 @@ import {
   Close as CloseIcon,
   Delete as DeleteIcon,
   Lock as LockIcon,
+  CloudUpload as CloudUploadIcon,
 } from '@mui/icons-material';
+import { uploadCompanyLogo } from '../../firebase/storage';
 import { collection, getDocs, query, where, doc, getDoc, updateDoc, addDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { db } from '../../firebase/config';
+import { batchDecryptForStructure } from '../../utils/batchDecrypt';
+import { app, db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { Company, Contact } from '../../pages/Entreprises';
+import { tokens } from '../../theme/tokens';
 
 const appleFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+
+const isEncryptedValue = (v: unknown): boolean =>
+  typeof v === 'string' && v.startsWith('ENC:');
+
+/** Valeur affichable (évite ReactNode invalide si champ objet / chiffré). */
+const toDisplayString = (v: unknown): string => {
+  if (v == null) return '';
+  if (typeof v === 'string') return isEncryptedValue(v) ? '' : v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return '';
+};
+
+const safeContactField = (v: unknown): string => {
+  const displayed = toDisplayString(v);
+  if (displayed) return displayed;
+  return typeof v === 'string' ? v : '';
+};
+
+const getCallableFunctions = () =>
+  app ? getFunctions(app, 'us-central1') : getFunctions();
 
 interface AmbassadorSettings {
   companyId: string;
@@ -91,6 +116,9 @@ export const CompanyInfoTab: React.FC = () => {
   const [creatingAccess, setCreatingAccess] = useState(false);
   const [contactForAccess, setContactForAccess] = useState<ContactWithAccess | null>(null);
   const [isTrialVersion, setIsTrialVersion] = useState(false);
+  const [logoUploading, setLogoUploading] = useState<'square' | 'large' | null>(null);
+  const squareLogoInputRef = useRef<HTMLInputElement>(null);
+  const largeLogoInputRef = useRef<HTMLInputElement>(null);
 
   // Vérifier si l'utilisateur est superadmin
   const isSuperAdmin = userData?.status === 'superadmin';
@@ -118,7 +146,10 @@ export const CompanyInfoTab: React.FC = () => {
         const userStructureId = userDataDoc?.structureId;
         setStructureId(userStructureId || '');
         
-        if (!userStructureId) {
+        const isEnterpriseContact =
+          userDataDoc?.status === 'entreprise' && !!userDataDoc?.companyId;
+
+        if (!userStructureId && !isEnterpriseContact) {
           console.error("StructureId non trouvé pour l'utilisateur");
           setLoading(false);
           return;
@@ -155,6 +186,7 @@ export const CompanyInfoTab: React.FC = () => {
               email: data.email || '',
               website: data.website || '',
               logo: data.logo || '',
+              logoLarge: data.logoLarge || '',
               missionsCount: data.missionsCount || 0,
               totalRevenue: data.totalRevenue || 0,
               createdAt: data.createdAt?.toDate() || new Date(),
@@ -191,7 +223,7 @@ export const CompanyInfoTab: React.FC = () => {
     };
 
     fetchData();
-  }, [currentUser, isSuperAdmin]);
+  }, [currentUser, isSuperAdmin, userData?.companyId, userData?.status]);
 
   // Vérifier le statut d'abonnement pour détecter les versions d'essai
   useEffect(() => {
@@ -310,6 +342,7 @@ export const CompanyInfoTab: React.FC = () => {
             email: data.email || '',
             website: data.website || '',
             logo: data.logo || '',
+            logoLarge: data.logoLarge || '',
             missionsCount: data.missionsCount || 0,
             totalRevenue: data.totalRevenue || 0,
             createdAt: data.createdAt?.toDate() || new Date(),
@@ -323,8 +356,7 @@ export const CompanyInfoTab: React.FC = () => {
             const hasEncryptedData = [data.nSiret, data.siret, data.address, data.phone].some(isEncrypted);
             if (hasEncryptedData) {
               try {
-                const functions = getFunctions();
-                const decryptOwnCompanyData = httpsCallable(functions, 'decryptOwnCompanyData');
+                const decryptOwnCompanyData = httpsCallable(getCallableFunctions(), 'decryptOwnCompanyData');
                 const result = await decryptOwnCompanyData({ companyId: selectedCompanyId });
                 if (result.data && (result.data as any).success && (result.data as any).decryptedData) {
                   const dec = (result.data as any).decryptedData;
@@ -364,20 +396,51 @@ export const CompanyInfoTab: React.FC = () => {
           const contactsSnapshot = await getDocs(contactsQuery);
           console.log('📋 Contacts trouvés:', contactsSnapshot.docs.length);
           
-          const contactsData = await Promise.all(contactsSnapshot.docs.map(async (contactDoc) => {
+          const rawContacts = contactsSnapshot.docs.map((contactDoc) => {
             const contactData = contactDoc.data();
-            console.log('📝 Contact:', contactDoc.id, contactData);
-            // Récupérer les permissions depuis une sous-collection ou un champ
-            const accessDoc = await getDoc(doc(db, 'contactAccess', contactDoc.id));
-            const accessData = accessDoc.exists() ? accessDoc.data() : {};
-            
-            return {
-              id: contactDoc.id,
+            return { id: contactDoc.id, contactData };
+          });
+
+          const encryptedContactIds = rawContacts
+            .filter(
+              ({ contactData }) =>
+                isEncryptedValue(contactData.email) || isEncryptedValue(contactData.phone)
+            )
+            .map(({ id }) => id);
+          const decryptedById =
+            encryptedContactIds.length > 0
+              ? await batchDecryptForStructure<{ email?: string; phone?: string }>(
+                  'contact',
+                  encryptedContactIds,
+                  ['email', 'phone']
+                )
+              : {};
+
+          const contactsData = await Promise.all(
+            rawContacts.map(async ({ id: contactId, contactData }) => {
+            console.log('📝 Contact:', contactId, contactData);
+            let accessData: Record<string, unknown> = {};
+            try {
+              const accessDoc = await getDoc(doc(db, 'contactAccess', contactId));
+              accessData = accessDoc.exists() ? accessDoc.data() : {};
+            } catch (accessErr) {
+              console.warn('Permissions contact non lisibles:', contactId, accessErr);
+            }
+
+            const dec = decryptedById[contactId];
+            let contact: ContactWithAccess = {
+              id: contactId,
               ...contactData,
-              accessLevel: accessData.accessLevel || 'read',
-              canViewEvents: accessData.canViewEvents || false,
-              canManageAmbassadors: accessData.canManageAmbassadors || false,
+              firstName: safeContactField(contactData.firstName),
+              lastName: safeContactField(contactData.lastName),
+              email: toDisplayString(dec?.email) || safeContactField(contactData.email),
+              phone: toDisplayString(dec?.phone) || safeContactField(contactData.phone),
+              accessLevel: (accessData.accessLevel as ContactWithAccess['accessLevel']) || 'read',
+              canViewEvents: Boolean(accessData.canViewEvents),
+              canManageAmbassadors: Boolean(accessData.canManageAmbassadors),
             } as ContactWithAccess;
+
+            return contact;
           }));
           
           // Trier les contacts pour mettre le contact par défaut en premier
@@ -409,6 +472,39 @@ export const CompanyInfoTab: React.FC = () => {
   const handleEditClose = () => {
     setEditMode(false);
     setEditedCompany({});
+    setLogoUploading(null);
+  };
+
+  const handleLogoUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+    type: 'square' | 'large'
+  ) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !selectedCompanyId) return;
+
+    try {
+      setLogoUploading(type);
+      const logoUrl = await uploadCompanyLogo(file, selectedCompanyId);
+      setEditedCompany((prev) => ({
+        ...prev,
+        ...(type === 'square' ? { logo: logoUrl } : { logoLarge: logoUrl }),
+      }));
+      setSnackbar({
+        open: true,
+        message: type === 'square' ? 'Logo carré importé' : 'Logo grand format importé',
+        severity: 'success',
+      });
+    } catch (error) {
+      console.error('Erreur lors du téléchargement du logo:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de l\'import du logo',
+        severity: 'error',
+      });
+    } finally {
+      setLogoUploading(null);
+    }
   };
 
   const handleEditSave = async () => {
@@ -742,7 +838,7 @@ export const CompanyInfoTab: React.FC = () => {
               label="Sélectionner une entreprise"
               sx={{
                 fontFamily: appleFont,
-                borderRadius: '12px',
+                borderRadius: tokens.radius.md,
               }}
             >
               {companies.map((company) => (
@@ -759,7 +855,7 @@ export const CompanyInfoTab: React.FC = () => {
             startIcon={<SaveIcon />}
             sx={{
               fontFamily: appleFont,
-              borderRadius: '12px',
+              borderRadius: tokens.radius.md,
               textTransform: 'none',
               fontWeight: 600,
             }}
@@ -781,8 +877,8 @@ export const CompanyInfoTab: React.FC = () => {
             elevation={0}
             sx={{
               p: 4,
-              mb: 3,
-              borderRadius: '20px',
+              mb: 2,
+              borderRadius: tokens.radius.xl,
               backgroundColor: '#fff',
               border: '1px solid #f3f4f6',
             }}
@@ -796,7 +892,7 @@ export const CompanyInfoTab: React.FC = () => {
                     sx={{
                       width: 100,
                       height: 100,
-                      borderRadius: '16px',
+                      borderRadius: tokens.radius.lg,
                       objectFit: 'contain',
                     }}
                     variant="rounded"
@@ -808,7 +904,7 @@ export const CompanyInfoTab: React.FC = () => {
                     sx={{
                       width: 100,
                       height: 100,
-                      borderRadius: '16px',
+                      borderRadius: tokens.radius.lg,
                       backgroundColor: '#2563eb',
                     }}
                     variant="rounded"
@@ -847,7 +943,7 @@ export const CompanyInfoTab: React.FC = () => {
                 onClick={handleEditClick}
                 sx={{
                   fontFamily: appleFont,
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   textTransform: 'none',
                   fontWeight: 600,
                 }}
@@ -1070,13 +1166,13 @@ export const CompanyInfoTab: React.FC = () => {
           <Paper
             elevation={0}
             sx={{
-              p: 4,
-              borderRadius: '20px',
+              p: 2.5,
+              borderRadius: tokens.radius.xl,
               backgroundColor: '#fff',
               border: '1px solid #f3f4f6',
             }}
           >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
               <Typography
                 variant="h6"
                 sx={{
@@ -1093,7 +1189,7 @@ export const CompanyInfoTab: React.FC = () => {
                 onClick={() => setAddContactDialogOpen(true)}
                 sx={{
                   fontFamily: appleFont,
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   textTransform: 'none',
                   fontWeight: 600,
                 }}
@@ -1114,28 +1210,31 @@ export const CompanyInfoTab: React.FC = () => {
                 Aucun contact enregistré pour cette entreprise.
               </Typography>
             ) : (
-              <List>
-                {contacts.map((contact) => (
+              <List dense disablePadding>
+                {contacts.map((contact, index) => (
                   <React.Fragment key={contact.id}>
                     <ListItem
                       sx={{
                         px: 0,
-                        py: 2,
+                        py: 1,
+                        alignItems: 'flex-start',
                         '&:hover': {
                           backgroundColor: '#f9fafb',
-                          borderRadius: '12px',
+                          borderRadius: tokens.radius.md,
                         },
                       }}
                     >
-                      <ListItemAvatar>
+                      <ListItemAvatar sx={{ minWidth: 44, mt: 0.25 }}>
                         <Avatar
                           sx={{
                             backgroundColor: '#2563eb',
-                            width: 48,
-                            height: 48,
+                            width: 40,
+                            height: 40,
                           }}
                         >
-                          {contact.firstName?.[0]?.toUpperCase() || contact.lastName?.[0]?.toUpperCase() || '?'}
+                          {safeContactField(contact.firstName)?.[0]?.toUpperCase() ||
+                            safeContactField(contact.lastName)?.[0]?.toUpperCase() ||
+                            '?'}
                         </Avatar>
                       </ListItemAvatar>
                       <ListItemText
@@ -1150,7 +1249,9 @@ export const CompanyInfoTab: React.FC = () => {
                                 color: '#111827',
                               }}
                             >
-                              {[contact.firstName, contact.lastName].filter(Boolean).join(' ') || 'Sans nom'}
+                              {[safeContactField(contact.firstName), safeContactField(contact.lastName)]
+                                .filter(Boolean)
+                                .join(' ') || 'Sans nom'}
                             </Typography>
                             {contact.isDefault && (
                               <Chip
@@ -1182,7 +1283,7 @@ export const CompanyInfoTab: React.FC = () => {
                           </Box>
                         }
                         secondary={
-                          <Box component="span" sx={{ mt: 1, display: 'block' }}>
+                          <Box component="span" sx={{ mt: 0.25, display: 'block' }}>
                             {contact.position && (
                               <Typography
                                 component="span"
@@ -1190,14 +1291,14 @@ export const CompanyInfoTab: React.FC = () => {
                                 sx={{
                                   fontFamily: appleFont,
                                   color: '#6b7280',
-                                  mb: 0.5,
+                                  mb: 0.25,
                                   display: 'block',
                                 }}
                               >
                                 {contact.position}
                               </Typography>
                             )}
-                            <Box component="span" sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 0.5 }}>
+                            <Box component="span" sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 0.25 }}>
                               {contact.email && (
                                 <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                   <EmailIcon sx={{ fontSize: 14, color: '#6b7280' }} />
@@ -1214,17 +1315,17 @@ export const CompanyInfoTab: React.FC = () => {
                                       },
                                     }}
                                   >
-                                    {contact.email}
+                                    {safeContactField(contact.email)}
                                   </Typography>
                                 </Box>
                               )}
-                              {contact.phone && (
+                              {safeContactField(contact.phone) && (
                                 <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                   <PhoneIcon sx={{ fontSize: 14, color: '#6b7280' }} />
                                   <Typography
                                     variant="body2"
                                     component="a"
-                                    href={`tel:${contact.phone}`}
+                                    href={`tel:${safeContactField(contact.phone)}`}
                                     sx={{
                                       fontFamily: appleFont,
                                       color: '#2563eb',
@@ -1234,7 +1335,7 @@ export const CompanyInfoTab: React.FC = () => {
                                       },
                                     }}
                                   >
-                                    {contact.phone}
+                                    {safeContactField(contact.phone)}
                                   </Typography>
                                 </Box>
                               )}
@@ -1294,7 +1395,7 @@ export const CompanyInfoTab: React.FC = () => {
                         </IconButton>
                       </Box>
                     </ListItem>
-                    <Divider />
+                    {index < contacts.length - 1 && <Divider sx={{ my: 0.25 }} />}
                   </React.Fragment>
                 ))}
               </List>
@@ -1306,7 +1407,7 @@ export const CompanyInfoTab: React.FC = () => {
           elevation={0}
           sx={{
             p: 4,
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             backgroundColor: '#fff',
             border: '1px solid #f3f4f6',
             textAlign: 'center',
@@ -1351,17 +1452,6 @@ export const CompanyInfoTab: React.FC = () => {
                 fullWidth
                 value={editedCompany.nSiret || ''}
                 onChange={(e) => setEditedCompany(prev => ({ ...prev, nSiret: e.target.value }))}
-                sx={{ fontFamily: appleFont }}
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                label="Description"
-                fullWidth
-                multiline
-                rows={3}
-                value={editedCompany.description || ''}
-                onChange={(e) => setEditedCompany(prev => ({ ...prev, description: e.target.value }))}
                 sx={{ fontFamily: appleFont }}
               />
             </Grid>
@@ -1427,6 +1517,144 @@ export const CompanyInfoTab: React.FC = () => {
                 onChange={(e) => setEditedCompany(prev => ({ ...prev, website: e.target.value }))}
                 sx={{ fontFamily: appleFont }}
               />
+            </Grid>
+            <Grid item xs={12}>
+              <Divider sx={{ my: 0.5 }} />
+              <Typography
+                variant="subtitle2"
+                sx={{
+                  fontFamily: appleFont,
+                  fontWeight: 600,
+                  color: '#6b7280',
+                  mb: 2,
+                  textTransform: 'uppercase',
+                  fontSize: '12px',
+                  letterSpacing: '0.05em',
+                  textAlign: 'center',
+                }}
+              >
+                Logos
+              </Typography>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'flex-start', justifyContent: 'center' }}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <Typography sx={{ fontFamily: appleFont, fontSize: 13, color: '#374151', mb: 1, textAlign: 'center' }}>
+                    Logo carré
+                  </Typography>
+                  <Box sx={{ position: 'relative', width: 100, height: 100 }}>
+                    <Avatar
+                      src={editedCompany.logo || undefined}
+                      alt={editedCompany.name || 'Logo carré'}
+                      variant="rounded"
+                      sx={{
+                        width: 100,
+                        height: 100,
+                        borderRadius: tokens.radius.lg,
+                        bgcolor: '#2563eb',
+                        border: '1px solid #e5e7eb',
+                        '& img': { objectFit: 'contain' },
+                      }}
+                    >
+                      <BusinessIcon sx={{ fontSize: 40, color: 'white' }} />
+                    </Avatar>
+                    <Button
+                      component="label"
+                      size="small"
+                      disabled={logoUploading === 'square'}
+                      sx={{
+                        position: 'absolute',
+                        bottom: -8,
+                        right: -8,
+                        minWidth: 0,
+                        p: 0.75,
+                        borderRadius: '50%',
+                        bgcolor: '#fff',
+                        border: '1px solid #e5e7eb',
+                        boxShadow: tokens.shadows.sm,
+                      }}
+                    >
+                      {logoUploading === 'square' ? (
+                        <CircularProgress size={16} />
+                      ) : (
+                        <CloudUploadIcon sx={{ fontSize: 16 }} />
+                      )}
+                      <input
+                        type="file"
+                        hidden
+                        accept="image/*"
+                        ref={squareLogoInputRef}
+                        onChange={(e) => handleLogoUpload(e, 'square')}
+                      />
+                    </Button>
+                  </Box>
+                  <Typography sx={{ fontFamily: appleFont, fontSize: 11, color: '#9ca3af', mt: 1.5, textAlign: 'center' }}>
+                    100 × 100 px
+                  </Typography>
+                </Box>
+                <Box sx={{ flex: '0 1 320px', minWidth: 220, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <Typography sx={{ fontFamily: appleFont, fontSize: 13, color: '#374151', mb: 1, textAlign: 'center' }}>
+                    Logo grand format
+                  </Typography>
+                  <Box
+                    sx={{
+                      position: 'relative',
+                      width: '100%',
+                      maxWidth: 320,
+                      height: 120,
+                      borderRadius: tokens.radius.lg,
+                      border: '1px dashed #d1d5db',
+                      bgcolor: '#f9fafb',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {editedCompany.logoLarge ? (
+                      <Box
+                        component="img"
+                        src={editedCompany.logoLarge}
+                        alt={editedCompany.name ? `${editedCompany.name} logo` : 'Logo grand format'}
+                        sx={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', p: 1 }}
+                      />
+                    ) : (
+                      <BusinessIcon sx={{ fontSize: 48, color: '#d1d5db' }} />
+                    )}
+                    <Button
+                      component="label"
+                      variant="outlined"
+                      size="small"
+                      disabled={logoUploading === 'large'}
+                      startIcon={
+                        logoUploading === 'large' ? (
+                          <CircularProgress size={14} />
+                        ) : (
+                          <CloudUploadIcon sx={{ fontSize: 16 }} />
+                        )
+                      }
+                      sx={{
+                        position: 'absolute',
+                        bottom: 8,
+                        right: 8,
+                        fontFamily: appleFont,
+                        textTransform: 'none',
+                        bgcolor: '#fff',
+                      }}
+                    >
+                      Importer
+                      <input
+                        type="file"
+                        hidden
+                        accept="image/*"
+                        ref={largeLogoInputRef}
+                        onChange={(e) => handleLogoUpload(e, 'large')}
+                      />
+                    </Button>
+                  </Box>
+                  <Typography sx={{ fontFamily: appleFont, fontSize: 11, color: '#9ca3af', mt: 1, textAlign: 'center' }}>
+                    Format horizontal, affiché en plus grand
+                  </Typography>
+                </Box>
+              </Box>
             </Grid>
           </Grid>
         </DialogContent>
@@ -1799,20 +2027,24 @@ export const CompanyInfoTab: React.FC = () => {
       </Dialog>
 
       {/* Snackbar pour les notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          severity={snackbar.severity}
-          sx={{ fontFamily: appleFont }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            sx={{ fontFamily: appleFont }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

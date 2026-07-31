@@ -211,12 +211,16 @@ export async function encryptSensitiveFields<T extends Record<string, any>>(
       
       // Convertir les dates/Timestamps en string ISO si nécessaire
       if (field === 'birthDate' && (value instanceof Date || (value && typeof value.toDate === 'function'))) {
-        // Si c'est un Timestamp Firestore, convertir en Date puis en ISO string
-        if (value && typeof value.toDate === 'function') {
-          value = value.toDate().toISOString().split('T')[0]; // Format YYYY-MM-DD
-        } else if (value instanceof Date) {
-          value = value.toISOString().split('T')[0]; // Format YYYY-MM-DD
-        }
+        // Si c'est un Timestamp Firestore, convertir en Date puis en string locale YYYY-MM-DD (sans fuseau)
+        const dateObj: Date =
+          value && typeof value.toDate === 'function'
+            ? value.toDate()
+            : (value as Date);
+
+        const year = dateObj.getFullYear();
+        const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+        const day = String(dateObj.getDate()).padStart(2, '0');
+        value = `${year}-${month}-${day}`; // Format YYYY-MM-DD
       }
       
       // Ne chiffrer que les chaînes non vides et non déjà chiffrées

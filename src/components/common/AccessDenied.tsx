@@ -2,11 +2,17 @@ import React from 'react';
 import { Box, Typography, Button, Paper, alpha, useTheme } from '@mui/material';
 import { Lock as LockIcon, ArrowBack as ArrowBackIcon } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
+import { getSafeAppHomeLabel, getSafeAppHomePath } from '../../utils/safeAppHome';
 
 interface AccessDeniedProps {
+  /** Titre affiché (prioritaire sur `pageName`) */
   title?: string;
+  /** @deprecated Utilisez `title` — conservé pour compatibilité avec les anciennes pages */
+  pageName?: string;
   message?: string;
   showBackButton?: boolean;
+  /** Si omis, dérivé du rôle (évite la boucle dashboard pour étudiants / contacts) */
   backPath?: string;
 }
 
@@ -14,13 +20,26 @@ interface AccessDeniedProps {
  * Composant d'affichage quand l'accès à une page est refusé
  */
 const AccessDenied: React.FC<AccessDeniedProps> = ({
-  title = "Accès refusé",
+  title,
+  pageName,
   message = "Vous n'avez pas les permissions nécessaires pour accéder à cette page. Contactez votre administrateur si vous pensez qu'il s'agit d'une erreur.",
   showBackButton = true,
-  backPath = '/app/dashboard',
+  backPath: backPathProp,
 }) => {
+  const resolvedTitle = String(title ?? pageName ?? 'Accès refusé');
   const theme = useTheme();
   const navigate = useNavigate();
+  const { userData, isContactWithAccess, contactPermissions } = useAuth();
+
+  const resolvedBackPath =
+    backPathProp ??
+    getSafeAppHomePath({
+      status: userData?.status,
+      isContactWithAccess,
+      canViewEvents: !!contactPermissions?.canViewEvents,
+      canManageAmbassadors: !!contactPermissions?.canManageAmbassadors,
+    });
+  const backLabel = getSafeAppHomeLabel(resolvedBackPath);
 
   return (
     <Box
@@ -73,7 +92,7 @@ const AccessDenied: React.FC<AccessDeniedProps> = ({
             mb: 2,
           }}
         >
-          {title}
+          {resolvedTitle}
         </Typography>
 
         <Typography
@@ -84,14 +103,16 @@ const AccessDenied: React.FC<AccessDeniedProps> = ({
             lineHeight: 1.6,
           }}
         >
-          {message}
+          {typeof message === 'string' || typeof message === 'number'
+            ? String(message)
+            : String(message ?? '')}
         </Typography>
 
         {showBackButton && (
           <Button
             variant="outlined"
             startIcon={<ArrowBackIcon />}
-            onClick={() => navigate(backPath)}
+            onClick={() => navigate(resolvedBackPath)}
             sx={{
               borderRadius: 2,
               textTransform: 'none',
@@ -99,7 +120,7 @@ const AccessDenied: React.FC<AccessDeniedProps> = ({
               px: 3,
             }}
           >
-            Retour au tableau de bord
+            {backLabel}
           </Button>
         )}
       </Paper>

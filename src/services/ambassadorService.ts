@@ -1,7 +1,9 @@
 import { collection, query, where, getDocs, doc, updateDoc, getDoc, addDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import type { MissionSlot } from '../types/mission';
 
 const AMBASSADOR_INVITES = 'ambassadorInvites';
+const UNKNOWN_ORGANIZATION_LABEL = 'Organisation inconnue';
 import { httpsCallable } from 'firebase/functions';
 import { getFirebaseFunctions } from '../firebase/config';
 import { sendAmbassadorInviteEmail } from './emailjsAmbassador';
@@ -232,6 +234,106 @@ export const removeAmbassadorFromUser = async (userId: string) => {
     throw new Error(error.message || 'Impossible de retirer le statut ambassadeur.');
   }
 };
+
+/**
+ * Compte les journées positionnées (créneaux assignés) par ambassadeur sur les événements de la structure.
+ */
+export const getAmbassadorPositionedDays = async (
+  structureId: string | null | undefined,
+  userIds: string[]
+): Promise<Map<string, number>> => {
+  const counts = new Map<string, number>();
+  userIds.forEach((id) => counts.set(id, 0));
+  if (!structureId || userIds.length === 0) return counts;
+
+  try {
+    const eventsQuery = query(
+      collection(db, 'missions'),
+      where('type', '==', 'ambassadeur_event'),
+      where('structureId', '==', structureId)
+    );
+    const eventsSnap = await getDocs(eventsQuery);
+
+    for (const eventDoc of eventsSnap.docs) {
+      const slots = (eventDoc.data().slots || []) as MissionSlot[];
+      for (const slot of slots) {
+        for (const userId of slot.assignedStudentIds || []) {
+          if (counts.has(userId)) {
+            counts.set(userId, (counts.get(userId) || 0) + 1);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Erreur comptage journées ambassadeurs:', error);
+  }
+
+  return counts;
+};
+
+/**
+ * Résout le nom d'entreprise affiché pour un salon ambassadeur.
+ * Les événements créés par une structure peuvent avoir company="Organisation inconnue"
+ * alors qu'un companyId est renseigné via ambassadorSettings.
+ */
+export async function resolveAmbassadorEventCompanyName(
+  mission: { company?: string; companyId?: string; structureId?: string },
+  userData?: { companyName?: string; companyId?: string; structureName?: string; structureId?: string }
+): Promise<string> {
+  const readCompanyName = async (companyId?: string): Promise<string | null> => {
+    if (!companyId) return null;
+    try {
+      const snap = await getDoc(doc(db, 'companies', companyId));
+      if (!snap.exists()) return null;
+      const name = (snap.data()?.name as string | undefined)?.trim();
+      return name || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const fromMissionCompanyId = await readCompanyName(mission.companyId);
+  if (fromMissionCompanyId) return fromMissionCompanyId;
+
+  const structureId = mission.structureId || userData?.structureId;
+  if (structureId) {
+    try {
+      const settingsSnap = await getDoc(doc(db, 'ambassadorSettings', structureId));
+      const settingsCompanyId = settingsSnap.exists()
+        ? (settingsSnap.data()?.companyId as string | undefined)
+        : undefined;
+      const fromSettings = await readCompanyName(settingsCompanyId);
+      if (fromSettings) return fromSettings;
+    } catch {
+      // ignore
+    }
+  }
+
+  if (userData?.companyName?.trim()) return userData.companyName.trim();
+
+  const fromUserCompanyId = await readCompanyName(userData?.companyId);
+  if (fromUserCompanyId) return fromUserCompanyId;
+
+  const missionCompany = (mission.company || '').trim();
+  if (missionCompany && missionCompany !== UNKNOWN_ORGANIZATION_LABEL) return missionCompany;
+
+  if (userData?.structureName?.trim()) return userData.structureName.trim();
+
+  if (structureId) {
+    try {
+      const structureSnap = await getDoc(doc(db, 'structures', structureId));
+      if (structureSnap.exists()) {
+        const data = structureSnap.data();
+        const structureName = ((data.nom || data.name) as string | undefined)?.trim();
+        if (structureName) return structureName;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return missionCompany || 'Entreprise';
+}
 
 /**
  * Récupère les utilisateurs avec le tag ambassadeur (optionnellement filtrés par structure)

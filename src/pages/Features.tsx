@@ -12,8 +12,11 @@ import {
   Tab,
   Fade
 } from '@mui/material';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { getProfileFromSearchParams, getFeaturesPath } from '../utils/featuresLinks';
 import Footer from '../components/Footer';
+import PublicNav from '../components/layout/PublicNav';
+import PageMeta from '../components/common/PageMeta';
 
 // Type pour le profil
 type ProfileType = 'junior' | 'company' | 'student' | null;
@@ -55,39 +58,20 @@ import SupportAgentIcon from '@mui/icons-material/SupportAgent';
 import DomainIcon from '@mui/icons-material/Domain';
 import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
 import ReceiptIcon from '@mui/icons-material/Receipt';
+import { tokens } from '../theme/tokens';
+import { fadeIn, gradientFlow } from '../styles/animations';
 
 // Animations inspirées de Home.tsx
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
-
-const gradientFlow = keyframes`
-  0% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
-  100% {
-    background-position: 0% 50%;
-  }
-`;
 
 const features = [
   {
     title: "Gestion des Missions",
     description: [
       {
-        icon: <ReceiptIcon sx={{ color: '#34C759', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
+        icon: <ReceiptIcon sx={{ color: tokens.colors.success, fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
         title: "Devis gratuit par les Junior",
-        detail: "Recevez un devis personnalisé et gratuit de la part des Junior adaptées à votre besoin. Aucun engagement, aucune obligation."
+        detail: "Recevez un devis personnalisé et gratuit de la part des Junior adaptées à votre besoin. Aucun engagement, aucune obligation.",
+        onlyForProfiles: ['company'] as const
       },
       {
         icon: <AssignmentIcon sx={{ color: '#1976d2', fontSize: 28, mr: 1, transition: 'color 0.3s' }} />,
@@ -359,16 +343,23 @@ const features = [
 
 const Features: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [selectedTab, setSelectedTab] = React.useState(0);
   const [selectedProfile, setSelectedProfile] = useState<ProfileType>(null);
 
-  // Récupérer le profil depuis localStorage (comme dans Home.tsx)
+  // Priorité à l’URL (?profile=junior), puis localStorage (comme dans Home.tsx)
   useEffect(() => {
-    const savedProfile = localStorage.getItem('selectedProfile') as ProfileType;
-    if (savedProfile && ['junior', 'company', 'student'].includes(savedProfile)) {
-      setSelectedProfile(savedProfile);
+    const profileFromUrl = getProfileFromSearchParams(searchParams.toString());
+    if (profileFromUrl) {
+      setSelectedProfile(profileFromUrl);
+      localStorage.setItem('selectedProfile', profileFromUrl);
+    } else {
+      const savedProfile = localStorage.getItem('selectedProfile') as ProfileType;
+      if (savedProfile && ['junior', 'company', 'student'].includes(savedProfile)) {
+        setSelectedProfile(savedProfile);
+      }
     }
-  }, []);
+  }, [searchParams]);
 
   // Filtrer les fonctionnalités selon le profil
   const getFilteredFeatures = () => {
@@ -437,14 +428,14 @@ const Features: React.FC = () => {
           <Button
             onClick={() => handleNavigation('/')}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -453,16 +444,16 @@ const Features: React.FC = () => {
             Accueil
           </Button>
           <Button
-            onClick={() => handleNavigation('/features')}
+            onClick={() => handleNavigation(getFeaturesPath(selectedProfile))}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -473,14 +464,14 @@ const Features: React.FC = () => {
           <Button
             onClick={() => handleNavigation('/pricing')}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -491,14 +482,14 @@ const Features: React.FC = () => {
           <Button
             onClick={handleContactClick}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -517,14 +508,14 @@ const Features: React.FC = () => {
           <Button
             onClick={() => handleNavigation('/')}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -533,16 +524,16 @@ const Features: React.FC = () => {
             Accueil
           </Button>
           <Button
-            onClick={() => handleNavigation('/features')}
+            onClick={() => handleNavigation(getFeaturesPath(selectedProfile))}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -553,14 +544,14 @@ const Features: React.FC = () => {
           <Button
             onClick={() => handleNavigation('/pricing')}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -571,14 +562,14 @@ const Features: React.FC = () => {
           <Button
             onClick={handleContactClick}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -596,14 +587,14 @@ const Features: React.FC = () => {
           <Button
             onClick={() => handleNavigation('/')}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -612,16 +603,16 @@ const Features: React.FC = () => {
             Accueil
           </Button>
           <Button
-            onClick={() => handleNavigation('/features')}
+            onClick={() => handleNavigation(getFeaturesPath(selectedProfile))}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -632,14 +623,14 @@ const Features: React.FC = () => {
           <Button
             onClick={handleContactClick}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -657,14 +648,14 @@ const Features: React.FC = () => {
           <Button
             onClick={() => handleNavigation('/')}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -673,16 +664,16 @@ const Features: React.FC = () => {
             Accueil
           </Button>
           <Button
-            onClick={() => handleNavigation('/features')}
+            onClick={() => handleNavigation(getFeaturesPath(selectedProfile))}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -693,14 +684,14 @@ const Features: React.FC = () => {
           <Button
             onClick={handleContactClick}
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.textPrimary,
               fontWeight: 400,
               fontSize: '0.95rem',
               textTransform: 'none',
               px: 1.5,
               transition: 'font-weight 0.2s',
               '&:hover': {
-                color: '#1d1d1f',
+                color: tokens.colors.textPrimary,
                 fontWeight: 600,
                 opacity: 0.8
               }
@@ -728,7 +719,7 @@ const Features: React.FC = () => {
             fontWeight: 400,
             fontSize: '0.85rem',
             textTransform: 'none',
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             px: 3,
             '&:hover': {
               bgcolor: '#000',
@@ -752,7 +743,7 @@ const Features: React.FC = () => {
             fontWeight: 400,
             fontSize: '0.85rem',
             textTransform: 'none',
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             px: 3,
             '&:hover': {
               bgcolor: '#000',
@@ -760,7 +751,7 @@ const Features: React.FC = () => {
             }
           }}
         >
-          Essai gratuit
+          2 mois gratuits
         </Button>
       );
     }
@@ -776,7 +767,7 @@ const Features: React.FC = () => {
             fontWeight: 400,
             fontSize: '0.85rem',
             textTransform: 'none',
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             px: 3,
             '&:hover': {
               bgcolor: '#000',
@@ -800,7 +791,7 @@ const Features: React.FC = () => {
             fontWeight: 400,
             fontSize: '0.85rem',
             textTransform: 'none',
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             px: 3,
             '&:hover': {
               bgcolor: '#000',
@@ -817,65 +808,12 @@ const Features: React.FC = () => {
   };
 
   return (
-    <Box sx={{ minHeight: '100vh', bgcolor: '#fff', pt: { xs: 8, md: 12 }, pb: { xs: 8, md: 12 } }}>
-      <AppBar 
-        position="fixed" 
-        elevation={0} 
-        sx={{ 
-          bgcolor: 'rgba(255, 255, 255, 0.8)',
-          backdropFilter: 'blur(20px)',
-          borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
-          transition: 'all 0.3s ease-in-out',
-          '&:hover': {
-            bgcolor: 'rgba(255, 255, 255, 0.95)',
-          }
-        }}
-      >
-        <Toolbar sx={{ minHeight: '56px !important', py: 1.2, pl: 4 }}>
-          <Box
-            component="img"
-            src="/images/logo.png"
-            alt="JS Connect Logo"
-            sx={{
-              height: 40,
-              mr: 4,
-              transition: 'transform 0.3s ease',
-              '&:hover': {
-                transform: 'scale(1.05)'
-              }
-            }}
-          />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, ml: 8 }}>
-            {getNavLinks()}
-          </Box>
-          <Box sx={{ flexGrow: 1 }} />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Button
-              onClick={() => handleNavigation('/login')}
-              variant="outlined"
-              sx={{
-                color: '#000',
-                borderColor: '#000',
-                fontWeight: 400,
-                fontSize: '0.85rem',
-                textTransform: 'none',
-                borderRadius: '20px',
-                px: 3,
-                '&:hover': {
-                  borderColor: '#000',
-                  bgcolor: '#000',
-                  color: '#fff'
-                }
-              }}
-            >
-              Connexion
-            </Button>
-            {getCTAButton()}
-          </Box>
-        </Toolbar>
-      </AppBar>
-      {/* Décalage pour la navbar fixe */}
-      <Box sx={{ height: { xs: 72, md: 88 } }} />
+    <Box sx={{ minHeight: '100vh', bgcolor: tokens.colors.marketingWhite, pt: { xs: 8, md: 12 }, pb: { xs: 8, md: 12 } }}>
+      <PageMeta title="Fonctionnalités" description="Découvrez les fonctionnalités de JS Connect pour Junior-Entreprises, entreprises et étudiants." />
+      <PublicNav
+        selectedProfile={selectedProfile ?? 'junior'}
+        showPricing={selectedProfile === 'junior' || selectedProfile === null}
+      />
       <Container maxWidth="xl" sx={{ px: { xs: 2, md: 12 } }}>
         <Typography
           variant="h1"
@@ -884,14 +822,9 @@ const Features: React.FC = () => {
             fontWeight: 600,
             textAlign: 'center',
             mb: { xs: 2, md: 4 },
-            color: '#1d1d1f',
+            color: tokens.colors.ink,
             letterSpacing: '-0.02em',
             animation: `${fadeIn} 1s ease-out`,
-            background: 'linear-gradient(45deg, #000 30%, #333 90%)',
-            backgroundClip: 'text',
-            textFillColor: 'transparent',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent'
           }}
         >
           {selectedProfile === 'company' && 'Nos Solutions'}
@@ -899,7 +832,7 @@ const Features: React.FC = () => {
           {(!selectedProfile || selectedProfile === 'junior') && 'Fonctionnalités'}
         </Typography>
       </Container>
-      <Box sx={{ width: '100vw', position: 'relative', left: '50%', right: '50%', ml: '-50vw', mr: '-50vw', px: { xs: 2, md: 12 }, bgcolor: '#fff' }}>
+      <Box sx={{ width: '100vw', position: 'relative', left: '50%', right: '50%', ml: '-50vw', mr: '-50vw', px: { xs: 2, md: 12 }, bgcolor: tokens.colors.marketingWhite }}>
         <Tabs
           value={selectedTab}
           onChange={handleTabChange}
@@ -911,15 +844,15 @@ const Features: React.FC = () => {
               fontWeight: 500,
               fontSize: { xs: '1rem', md: '1.1rem' },
               textTransform: 'none',
-              color: '#86868b',
+              color: tokens.colors.inkMuted,
               minWidth: 120,
               px: 4
             },
             '.Mui-selected': {
-              color: '#1d1d1f',
+              color: tokens.colors.ink,
             },
             '.MuiTabs-indicator': {
-              bgcolor: '#000',
+              bgcolor: tokens.colors.marketingBlack,
               height: 3,
               borderRadius: 2
             }
@@ -948,21 +881,25 @@ const Features: React.FC = () => {
           >
             {filteredFeatures.length > 0 && Array.isArray(filteredFeatures[selectedTab]?.description) ? (
               <Grid container spacing={3} sx={{ maxWidth: 1200, mx: 'auto', mt: 2, px: { xs: 0, md: 2 } }}>
-                {filteredFeatures[selectedTab].description.map((item, subIndex) => (
+                {filteredFeatures[selectedTab].description
+                  .filter((item: { onlyForProfiles?: readonly ProfileType[] }) =>
+                    !item.onlyForProfiles || (selectedProfile && item.onlyForProfiles.includes(selectedProfile))
+                  )
+                  .map((item, subIndex) => (
                   <Grid item xs={12} md={6} key={subIndex}>
                     <Fade in={true} style={{ transitionDelay: `${subIndex * 100}ms` }}>
-                      <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 2, transition: 'box-shadow 0.3s', '&:hover .feature-icon': { color: '#111' } }}>
+                      <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 2, transition: 'box-shadow 0.3s', '&:hover .feature-icon': { color: tokens.colors.ink } }}>
                         <Box className="feature-icon" sx={{ display: 'flex', alignItems: 'center' }}>{item.icon}</Box>
                         <Box>
                           <Typography
                             variant="subtitle1"
-                            sx={{ fontWeight: 500, color: '#222', fontSize: '1.08rem' }}
+                            sx={{ fontWeight: 500, color: tokens.colors.ink, fontSize: '1.08rem' }}
                           >
                             {item.title}
                           </Typography>
                           <Typography
                             variant="body2"
-                            sx={{ color: '#86868b', fontSize: '1rem', mt: 0.5 }}
+                            sx={{ color: tokens.colors.inkMuted, fontSize: '1rem', mt: 0.5 }}
                           >
                             {item.detail}
                           </Typography>
@@ -978,7 +915,7 @@ const Features: React.FC = () => {
                 sx={{
                   fontSize: { xs: '1.1rem', md: '1.2rem' },
                   lineHeight: 1.6,
-                  color: '#86868b',
+                  color: tokens.colors.textSecondary,
                   mb: 3
                 }}
               >
@@ -990,7 +927,7 @@ const Features: React.FC = () => {
                 sx={{
                   fontSize: { xs: '1.1rem', md: '1.2rem' },
                   lineHeight: 1.6,
-                  color: '#86868b',
+                  color: tokens.colors.textSecondary,
                   mb: 3,
                   textAlign: 'center'
                 }}

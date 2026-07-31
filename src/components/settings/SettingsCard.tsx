@@ -1,5 +1,6 @@
 import React from 'react';
 import { Card, CardContent, Box, Typography, useTheme } from '@mui/material';
+import { tokens } from '../../theme/tokens';
 
 interface SettingsCardProps {
   icon?: React.ReactNode;
@@ -15,8 +16,8 @@ const SettingsCard: React.FC<SettingsCardProps> = ({
   title, 
   subtitle, 
   children,
-  iconColor = '#667eea',
-  gradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+  iconColor = tokens.colors.primary,
+  gradient = tokens.gradients.brand
 }) => {
   const theme = useTheme();
 
@@ -24,15 +25,15 @@ const SettingsCard: React.FC<SettingsCardProps> = ({
     <Card 
       elevation={0} 
       sx={{ 
-        borderRadius: '12px',
+        borderRadius: tokens.radius.md,
         background: '#ffffff',
-        border: '1px solid #e5e5ea',
-        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
-        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+        border: `1px solid ${tokens.colors.borderDefault}`,
+        boxShadow: tokens.shadows.sm,
+        transition: tokens.transitions.default,
         height: '100%',
         '&:hover': {
-          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
-          borderColor: '#d1d1d6'
+          boxShadow: tokens.shadows.md,
+          borderColor: tokens.colors.gray300
         }
       }}
     >

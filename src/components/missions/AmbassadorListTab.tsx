@@ -1,4 +1,17 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Typography,
+} from '@mui/material';
+import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   getAmbassadorUsers,
@@ -6,25 +19,40 @@ import {
   getExistingUserEmails,
   deleteAmbassadorInvite,
   removeAmbassadorFromUser,
+  getAmbassadorPositionedDays,
 } from '../../services/ambassadorService';
-import { decryptUsersList } from '../../utils/decryptUserUtils';
+import { decryptUsersList, isEncryptedField } from '../../utils/decryptUserUtils';
+import { useDecryptedUserName } from '../../hooks/useDecryptedUserName';
+import { useDecryptedUserContactFields } from '../../hooks/useDecryptedUserContactFields';
+import { formatPhoneDisplay } from '../../utils/formatPhone';
+import LoadingState from '../common/LoadingState';
+import EmptyState from '../common/EmptyState';
 import {
-  Person as PersonIcon,
-  Mail as MailIcon,
-  CheckCircle as CheckCircleIcon,
-  Schedule as ScheduleIcon,
-  Delete as DeleteIcon,
-} from '@mui/icons-material';
-
-const appleFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+  AmbassadorCampusFilterBar,
+  AmbassadorCardsGrid,
+  AmbassadorProfileCard,
+  ambassadorAvatarColor,
+} from '../ds';
+import { tokens } from '../../theme/tokens';
 
 interface AmbassadorUser {
   id: string;
   email?: string;
   displayName?: string;
+  firstName?: string;
+  lastName?: string;
   structureId?: string;
   isAmbassador?: boolean;
-  [k: string]: any;
+  program?: string;
+  campus?: string;
+  studyLevel?: string;
+  graduationYear?: string;
+  city?: string;
+  address?: string;
+  photoURL?: string;
+  phone?: string;
+  studentId?: string;
+  [k: string]: unknown;
 }
 
 interface AmbassadorInvite {
@@ -32,17 +60,88 @@ interface AmbassadorInvite {
   email: string;
   invitedBy: string;
   structureId?: string | null;
-  createdAt: any;
+  createdAt: unknown;
   status: string;
 }
 
-export const AmbassadorListTab: React.FC = () => {
-  const { userData, currentUser } = useAuth();
+const ALL_CAMPUS_ID = 'all';
+const UNSET_CAMPUS_KEY = 'non-renseigne';
+
+function getCampusKey(user: AmbassadorUser): string {
+  const campus = user.campus?.trim();
+  if (!campus) return UNSET_CAMPUS_KEY;
+  return campus.toLowerCase();
+}
+
+function getCampusLabel(key: string): string {
+  if (key === UNSET_CAMPUS_KEY) return 'Non renseigné';
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function getCampusDisplay(user: AmbassadorUser): string {
+  const campus = user.campus?.trim();
+  if (!campus) return 'Campus non renseigné';
+  return campus;
+}
+
+function getStudyYearLabel(user: AmbassadorUser): string {
+  if (user.studyLevel?.trim() && !isEncryptedField(user.studyLevel)) return user.studyLevel.trim();
+  if (user.graduationYear?.trim() && !isEncryptedField(user.graduationYear)) {
+    return `Promo ${user.graduationYear.trim()}`;
+  }
+  return 'Année non renseignée';
+}
+
+function getProgramLabel(user: AmbassadorUser): string {
+  const program = user.program?.trim();
+  if (program && !isEncryptedField(program)) return program;
+  return 'Programme non renseigné';
+}
+
+const AmbassadorUserCard: React.FC<{
+  user: AmbassadorUser;
+  positionedDays: number;
+  onRemove?: () => void;
+  removing: boolean;
+}> = ({ user, positionedDays, onRemove, removing }) => {
+  const { fullName, initials, loading: nameLoading } = useDecryptedUserName(user);
+  const { phone, loading: phoneLoading } = useDecryptedUserContactFields(user.id, user.phone, user.studentId);
+
+  return (
+    <AmbassadorProfileCard
+      initials={initials || '?'}
+      avatarColor={ambassadorAvatarColor(user.id)}
+      photoUrl={user.photoURL}
+      name={fullName || user.email || 'Sans nom'}
+      nameLoading={nameLoading}
+      program={getProgramLabel(user)}
+      studyYear={getStudyYearLabel(user)}
+      campus={getCampusDisplay(user)}
+      phone={formatPhoneDisplay(phone) || 'Non renseigné'}
+      phoneLoading={phoneLoading}
+      positionedDays={positionedDays}
+      onRemove={onRemove}
+      removing={removing}
+    />
+  );
+};
+
+export interface AmbassadorListTabProps {
+  onInvite?: () => void;
+  showInvite?: boolean;
+}
+
+export const AmbassadorListTab: React.FC<AmbassadorListTabProps> = ({
+  onInvite,
+  showInvite = true,
+}) => {
+  const { userData, currentUser, isContactWithAccess, contactPermissions } = useAuth();
   const [users, setUsers] = useState<AmbassadorUser[]>([]);
-  const [invites, setInvites] = useState<AmbassadorInvite[]>([]);
   const [pendingInvites, setPendingInvites] = useState<AmbassadorInvite[]>([]);
+  const [positionedDays, setPositionedDays] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [campusFilter, setCampusFilter] = useState(ALL_CAMPUS_ID);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [deletingInviteId, setDeletingInviteId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -54,35 +153,78 @@ export const AmbassadorListTab: React.FC = () => {
 
   const structureId = userData?.structureId ?? null;
   const invitedBy = currentUser?.uid ?? null;
+  const canManage =
+    !isContactWithAccess ||
+    Boolean(contactPermissions?.canManageAmbassadors);
 
   const load = useCallback(async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [usersList, invitesList] = await Promise.all([
-          getAmbassadorUsers(structureId),
-          getAmbassadorInvites(structureId, structureId ? undefined : invitedBy),
-        ]);
-        const usersDecrypted = await decryptUsersList(usersList as Array<{ id: string; displayName?: string; firstName?: string; lastName?: string }>);
-        setUsers(usersDecrypted as AmbassadorUser[]);
+    setLoading(true);
+    setError(null);
+    try {
+      const [usersList, invitesList] = await Promise.all([
+        getAmbassadorUsers(structureId),
+        getAmbassadorInvites(structureId, structureId ? undefined : invitedBy),
+      ]);
+      const usersDecrypted = await decryptUsersList(
+        usersList as Array<{
+          id: string;
+          displayName?: string;
+          firstName?: string;
+          lastName?: string;
+          graduationYear?: string;
+          program?: string;
+        }>
+      );
+      const ambassadorUsers = usersDecrypted as AmbassadorUser[];
+      setUsers(ambassadorUsers);
 
-        const emails = invitesList.map((i) => i.email);
-        const existing = await getExistingUserEmails(emails);
-        const pending = invitesList.filter((i) => !existing.has(i.email.toLowerCase().trim()));
-        setInvites(invitesList);
-        setPendingInvites(pending);
-        setDeleteError(null);
-      } catch (err) {
-        console.error('Erreur chargement ambassadeurs:', err);
-        setError('Impossible de charger les ambassadeurs.');
-      } finally {
-        setLoading(false);
-      }
+      const daysMap = await getAmbassadorPositionedDays(structureId, ambassadorUsers.map((u) => u.id));
+      setPositionedDays(daysMap);
+
+      const emails = invitesList.map((i) => i.email);
+      const existing = await getExistingUserEmails(emails);
+      const pending = invitesList.filter((i) => !existing.has(i.email.toLowerCase().trim()));
+      setPendingInvites(pending);
+      setDeleteError(null);
+    } catch (err) {
+      console.error('Erreur chargement ambassadeurs:', err);
+      setError('Impossible de charger les ambassadeurs.');
+    } finally {
+      setLoading(false);
+    }
   }, [structureId, invitedBy]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const campusOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    users.forEach((user) => {
+      const key = getCampusKey(user);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+
+    const sortedKeys = [...counts.keys()].sort((a, b) => {
+      if (a === UNSET_CAMPUS_KEY) return 1;
+      if (b === UNSET_CAMPUS_KEY) return -1;
+      return getCampusLabel(a).localeCompare(getCampusLabel(b), 'fr');
+    });
+
+    return [
+      { id: ALL_CAMPUS_ID, label: 'Tous les campus', count: users.length },
+      ...sortedKeys.map((key) => ({
+        id: key,
+        label: getCampusLabel(key),
+        count: counts.get(key) || 0,
+      })),
+    ];
+  }, [users]);
+
+  const filteredUsers = useMemo(() => {
+    if (campusFilter === ALL_CAMPUS_ID) return users;
+    return users.filter((user) => getCampusKey(user) === campusFilter);
+  }, [users, campusFilter]);
 
   const handleDeleteUser = async () => {
     if (!confirmDelete || confirmDelete.type !== 'user') return;
@@ -93,8 +235,8 @@ export const AmbassadorListTab: React.FC = () => {
     try {
       await removeAmbassadorFromUser(id);
       await load();
-    } catch (e: any) {
-      setDeleteError(e?.message || 'Erreur lors du retrait.');
+    } catch (e: unknown) {
+      setDeleteError(e instanceof Error ? e.message : 'Erreur lors du retrait.');
     } finally {
       setDeletingUserId(null);
     }
@@ -109,316 +251,153 @@ export const AmbassadorListTab: React.FC = () => {
     try {
       await deleteAmbassadorInvite(id);
       await load();
-    } catch (e: any) {
-      setDeleteError(e?.message || 'Erreur lors de la suppression.');
+    } catch (e: unknown) {
+      setDeleteError(e instanceof Error ? e.message : 'Erreur lors de la suppression.');
     } finally {
       setDeletingInviteId(null);
     }
   };
 
   if (loading) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '96px 0' }}>
-        <div style={{ textAlign: 'center' }}>
-          <div
-            style={{
-              display: 'inline-block',
-              width: 48,
-              height: 48,
-              border: '4px solid #f3f4f6',
-              borderTopColor: '#2563eb',
-              borderRadius: '50%',
-              animation: 'spin 1s linear infinite',
-              marginBottom: 16,
-            }}
-          />
-          <p style={{ color: '#6b7280', fontSize: 16, fontFamily: appleFont, margin: 0 }}>
-            Chargement des ambassadeurs...
-          </p>
-        </div>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
+    return <LoadingState message="Chargement des ambassadeurs..." />;
   }
 
   if (error) {
     return (
-      <div style={{ padding: 32, textAlign: 'center' }}>
-        <div
-          style={{
-            display: 'inline-block',
-            padding: 16,
-            backgroundColor: '#fef2f2',
-            borderRadius: 16,
-            border: '1px solid #fecaca',
-          }}
-        >
-          <p style={{ color: '#dc2626', margin: 0, fontFamily: appleFont }}>{error}</p>
-        </div>
-      </div>
+      <Box sx={{ py: 4 }}>
+        <Alert severity="error">{error}</Alert>
+      </Box>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+    <Box>
       {deleteError && (
-        <div
-          style={{
-            padding: '12px 16px',
-            background: '#fef2f2',
-            border: '1px solid #fecaca',
-            borderRadius: 12,
-            color: '#dc2626',
-            fontSize: 14,
-            fontFamily: appleFont,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-          }}
-        >
-          <span>{deleteError}</span>
-          <button
-            type="button"
-            onClick={() => setDeleteError(null)}
-            style={{
-              padding: '4px 8px',
-              border: 'none',
-              background: 'transparent',
-              color: '#dc2626',
-              cursor: 'pointer',
-              fontSize: 13,
-              fontFamily: appleFont,
-            }}
-          >
-            Fermer
-          </button>
-        </div>
+        <Alert severity="error" onClose={() => setDeleteError(null)} sx={{ mb: 2 }}>
+          {deleteError}
+        </Alert>
       )}
-      {/* Ambassadeurs (users avec tag) */}
-      <div
-        style={{
-          backgroundColor: 'white',
-          borderRadius: 20,
-          padding: 24,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-          border: '1px solid #f3f4f6',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-          <CheckCircleIcon sx={{ fontSize: 24, color: '#10b981' }} />
-          <h3 style={{ fontSize: 20, fontWeight: 600, color: '#111827', fontFamily: appleFont, margin: 0 }}>
-            Ambassadeurs ({users.length})
-          </h3>
-        </div>
-        <p style={{ fontSize: 14, color: '#6b7280', fontFamily: appleFont, margin: '0 0 20px 0' }}>
-          Utilisateurs avec le tag Ambassadeur.
-        </p>
-        {users.length === 0 ? (
-          <p style={{ color: '#9ca3af', fontSize: 14, fontFamily: appleFont, margin: 0 }}>
-            Aucun ambassadeur pour le moment.
-          </p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {users.map((u) => (
-              <div
-                key={u.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '14px 16px',
-                  backgroundColor: '#f9fafb',
-                  borderRadius: 12,
-                  border: '1px solid #f3f4f6',
-                }}
-              >
-                <PersonIcon sx={{ fontSize: 20, color: '#6b7280' }} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 15, fontWeight: 500, color: '#111827', fontFamily: appleFont }}>
-                    {u.displayName || 'Sans nom'}
-                  </div>
-                  <div style={{ fontSize: 13, color: '#6b7280', fontFamily: appleFont }}>
-                    {u.email || '—'}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setConfirmDelete({
-                      type: 'user',
-                      id: u.id,
-                      label: u.displayName || u.email || 'Cet ambassadeur',
-                    })
-                  }
-                  disabled={deletingUserId === u.id}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: 10,
-                    border: '1px solid #fecaca',
-                    background: deletingUserId === u.id ? '#fef2f2' : '#fff',
-                    color: '#dc2626',
-                    cursor: deletingUserId === u.id ? 'not-allowed' : 'pointer',
-                    fontSize: 13,
-                    fontFamily: appleFont,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                  }}
-                  title="Retirer le statut ambassadeur"
-                >
-                  <DeleteIcon sx={{ fontSize: 18 }} />
-                  Retirer
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
-      {/* Invités (emails sans compte) */}
-      <div
-        style={{
-          backgroundColor: 'white',
-          borderRadius: 20,
-          padding: 24,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-          border: '1px solid #f3f4f6',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-          <ScheduleIcon sx={{ fontSize: 24, color: '#f59e0b' }} />
-          <h3 style={{ fontSize: 20, fontWeight: 600, color: '#111827', fontFamily: appleFont, margin: 0 }}>
+      <AmbassadorCampusFilterBar
+        options={campusOptions}
+        value={campusFilter}
+        onChange={setCampusFilter}
+      />
+
+      {filteredUsers.length === 0 ? (
+        <EmptyState
+          icon={<GroupOutlinedIcon />}
+          title="Aucun ambassadeur"
+          description={
+            campusFilter === ALL_CAMPUS_ID
+              ? 'Invitez des membres à rejoindre le programme ambassadeur.'
+              : 'Aucun ambassadeur pour ce campus.'
+          }
+          action={
+            showInvite && canManage && onInvite
+              ? { label: 'Inviter un ambassadeur', onClick: onInvite }
+              : undefined
+          }
+        />
+      ) : (
+        <AmbassadorCardsGrid>
+          {filteredUsers.map((user) => (
+            <AmbassadorUserCard
+              key={user.id}
+              user={user}
+              positionedDays={positionedDays.get(user.id) || 0}
+              onRemove={
+                canManage
+                  ? () =>
+                      setConfirmDelete({
+                        type: 'user',
+                        id: user.id,
+                        label: user.displayName || user.email || 'Cet ambassadeur',
+                      })
+                  : undefined
+              }
+              removing={deletingUserId === user.id}
+            />
+          ))}
+        </AmbassadorCardsGrid>
+      )}
+
+      {pendingInvites.length > 0 && (
+        <Box sx={{ mt: 4 }}>
+          <Typography sx={{ fontSize: 15, fontWeight: 600, color: tokens.colors.gray900, mb: 0.5 }}>
             Invités en attente ({pendingInvites.length})
-          </h3>
-        </div>
-        <p style={{ fontSize: 14, color: '#6b7280', fontFamily: appleFont, margin: '0 0 20px 0' }}>
-          Personnes invitées par email qui n&apos;ont pas encore créé de compte.
-        </p>
-        {pendingInvites.length === 0 ? (
-          <p style={{ color: '#9ca3af', fontSize: 14, fontFamily: appleFont, margin: 0 }}>
-            Aucune invitation en attente.
-          </p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {pendingInvites.map((i) => (
-              <div
-                key={i.id}
-                style={{
+          </Typography>
+          <Typography sx={{ fontSize: 13, color: tokens.colors.gray500, mb: 1.5 }}>
+            Personnes invitées par email qui n&apos;ont pas encore créé de compte.
+          </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {pendingInvites.map((invite) => (
+              <Box
+                key={invite.id}
+                sx={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 12,
-                  padding: '14px 16px',
-                  backgroundColor: '#fffbeb',
-                  borderRadius: 12,
-                  border: '1px solid #fde68a',
+                  gap: 1.5,
+                  px: 2,
+                  py: 1.25,
+                  bgcolor: tokens.colors.warningLight,
+                  border: `1px solid ${tokens.colors.warning}44`,
+                  borderRadius: tokens.radius.lg,
                 }}
               >
-                <MailIcon sx={{ fontSize: 20, color: '#d97706' }} />
-                <div style={{ flex: 1, fontSize: 15, color: '#111827', fontFamily: appleFont }}>
-                  {i.email}
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setConfirmDelete({
-                      type: 'invite',
-                      id: i.id,
-                      label: i.email,
-                    })
-                  }
-                  disabled={deletingInviteId === i.id}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: 10,
-                    border: '1px solid #fecaca',
-                    background: deletingInviteId === i.id ? '#fef2f2' : '#fff',
-                    color: '#dc2626',
-                    cursor: deletingInviteId === i.id ? 'not-allowed' : 'pointer',
-                    fontSize: 13,
-                    fontFamily: appleFont,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                  }}
-                  title="Supprimer l'invitation"
-                >
-                  <DeleteIcon sx={{ fontSize: 18 }} />
-                  Supprimer
-                </button>
-              </div>
+                <MailOutlineIcon sx={{ fontSize: 18, color: tokens.colors.warning, flexShrink: 0 }} />
+                <Typography sx={{ flex: 1, fontSize: 14, color: tokens.colors.gray900 }}>
+                  {invite.email}
+                </Typography>
+                {canManage && (
+                  <Button
+                    size="small"
+                    color="error"
+                    startIcon={<DeleteOutlineIcon />}
+                    onClick={() =>
+                      setConfirmDelete({
+                        type: 'invite',
+                        id: invite.id,
+                        label: invite.email,
+                      })
+                    }
+                    disabled={deletingInviteId === invite.id}
+                    sx={{ textTransform: 'none', fontWeight: 500, fontSize: 13 }}
+                  >
+                    Supprimer
+                  </Button>
+                )}
+              </Box>
             ))}
-          </div>
-        )}
-      </div>
-
-      {/* Confirmation suppression */}
-      {confirmDelete && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.4)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-          }}
-          onClick={() => setConfirmDelete(null)}
-        >
-          <div
-            style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 24,
-              maxWidth: 400,
-              width: '90%',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.15)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <p style={{ fontFamily: appleFont, fontSize: 16, color: '#111827', margin: '0 0 20px 0' }}>
-              {confirmDelete.type === 'user'
-                ? `Retirer le statut ambassadeur de "${confirmDelete.label}" ?`
-                : `Supprimer l'invitation pour "${confirmDelete.label}" ?`}
-            </p>
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(null)}
-                style={{
-                  padding: '10px 18px',
-                  borderRadius: 10,
-                  border: '1px solid #e5e7eb',
-                  background: '#fff',
-                  color: '#374151',
-                  cursor: 'pointer',
-                  fontSize: 14,
-                  fontFamily: appleFont,
-                }}
-              >
-                Annuler
-              </button>
-              <button
-                type="button"
-                onClick={confirmDelete.type === 'user' ? handleDeleteUser : handleDeleteInvite}
-                style={{
-                  padding: '10px 18px',
-                  borderRadius: 10,
-                  border: 'none',
-                  background: '#dc2626',
-                  color: '#fff',
-                  cursor: 'pointer',
-                  fontSize: 14,
-                  fontFamily: appleFont,
-                }}
-              >
-                {confirmDelete.type === 'user' ? 'Retirer' : 'Supprimer'}
-              </button>
-            </div>
-          </div>
-        </div>
+          </Box>
+        </Box>
       )}
-    </div>
+
+      <Dialog open={Boolean(confirmDelete)} onClose={() => setConfirmDelete(null)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontSize: 16, fontWeight: 600 }}>
+          {confirmDelete?.type === 'user' ? 'Retirer l\'ambassadeur' : 'Supprimer l\'invitation'}
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 14, color: tokens.colors.gray600 }}>
+            {confirmDelete?.type === 'user'
+              ? `Retirer le statut ambassadeur de « ${confirmDelete.label} » ?`
+              : `Supprimer l'invitation pour « ${confirmDelete?.label} » ?`}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setConfirmDelete(null)} sx={{ textTransform: 'none' }}>
+            Annuler
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={confirmDelete?.type === 'user' ? handleDeleteUser : handleDeleteInvite}
+            sx={{ textTransform: 'none' }}
+          >
+            {confirmDelete?.type === 'user' ? 'Retirer' : 'Supprimer'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
   );
 };

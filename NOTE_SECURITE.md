@@ -1,8 +1,8 @@
 # 🔒 Note de Sécurité - JSaaS
 
-**Date d'audit:** $(date)  
-**Version analysée:** Production  
-**Note globale:** **72/100** ⚠️
+**Date d'audit:** Mai 2026 (v2)  
+**Version analysée:** Code actuel post-correctifs  
+**Note globale:** **~72/100** — failles critiques Stripe/structures corrigées dans le code ; protection effective après `npm run deploy:security`
 
 ---
 
@@ -17,13 +17,12 @@ L'application présente une sécurité **correcte mais perfectible**. Les mesure
 - Secrets gérés via Firebase Secrets Manager
 - Headers de sécurité HTTP configurés
 
-### Points Faibles ⚠️
-- Validation des entrées utilisateur insuffisante
-- Risques d'injection et de XSS
-- Gestion des secrets Stripe côté client
-- Logs de debug exposant des informations sensibles
-- Absence de rate limiting
-- Validation côté serveur incomplète
+### Points Faibles ⚠️ (résiduels)
+- RBAC prospects/templates : renforcé dans `firestore.rules` (écriture commercial, lecture par `structureId`)
+- Déchiffrement utilisateur : CF autorise mission/audit ; 2FA requise pour RH uniquement
+- Pages monolithiques (MissionDetails / EtudeDetails) — perf, pas sécurité directe
+- Superadmin / magic link : impact opérationnel élevé — MFA recommandé
+- Déploiement obligatoire : voir [`DEPLOY_SECURITY.md`](DEPLOY_SECURITY.md)
 
 ---
 
@@ -66,17 +65,10 @@ L'application présente une sécurité **correcte mais perfectible**. Les mesure
 
 #### ⚠️ Points d'Amélioration Critiques
 
-1. **Clés Stripe stockées dans Firestore** ⚠️ **CRITIQUE**
-   ```typescript
-   // src/pages/settings/StructureSettings.tsx
-   stripeSecretKey: string; // Stocké dans Firestore
-   ```
-   - Les clés secrètes Stripe sont stockées dans Firestore et accessibles via l'API
-   - **Risque:** Si les règles Firestore sont mal configurées, les clés secrètes peuvent être exposées
-   - **Recommandation:** 
-     - Ne JAMAIS stocker les clés secrètes Stripe dans Firestore
-     - Utiliser uniquement les clés publiques côté client
-     - Gérer les clés secrètes uniquement dans Firebase Secrets Manager
+1. **Clés Stripe** — **CORRIGÉ (code)** / migration prod requise
+   - Secrets dans `structures/{id}/private/stripe` (Admin SDK + CF `saveStructureStripeSecret`)
+   - Client : `fetchUserStripePaymentIntents` — plus d'appel direct `api.stripe.com`
+   - Purger `stripeSecretKey` legacy : `npm run migrate:stripe-secrets` après déploiement
 
 2. **Clé API Gemini dans l'extension Chrome**
    - La clé API Gemini est stockée dans `chrome.storage.local`

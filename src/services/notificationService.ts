@@ -1,10 +1,10 @@
-import { addDoc, collection, serverTimestamp, updateDoc, doc } from 'firebase/firestore';
-import { db } from '../firebase/config';
-import { NotificationType, NotificationPriority, PersistentNotification } from '../contexts/NotificationContext';
+import { httpsCallable } from 'firebase/functions';
+import { updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { db, getFirebaseFunctions } from '../firebase/config';
+import { NotificationType, NotificationPriority } from '../contexts/NotificationContext';
 
 export type NotificationCategory = 'engagement' | 'admin' | 'update';
 
-// Helper pour enrichir les métadonnées avec category et priority_label
 function enrichMetadata(
   metadata: Record<string, any> | undefined,
   category: NotificationCategory,
@@ -14,35 +14,51 @@ function enrichMetadata(
     low: 'normal',
     medium: 'important',
     high: 'prioritaire',
-    urgent: 'urgent'
+    urgent: 'urgent',
   };
   return {
     ...metadata,
     category,
-    priority_label: metadata?.priority_label ?? priorityLabels[priority]
+    priority_label: metadata?.priority_label ?? priorityLabels[priority],
   };
 }
 
-// Service pour gérer les notifications
+/**
+ * Service notifications — cross-user writes passent par la Cloud Function notifyUsersCallable
+ * (les rules Firestore bloquent create pour un autre userId).
+ */
 export class NotificationService {
-  /**
-   * Enregistrer la date de clic sur une notification (engagement)
-   */
   static async recordNotificationClick(notificationId: string): Promise<void> {
     try {
       const notificationRef = doc(db, 'notifications', notificationId);
       await updateDoc(notificationRef, {
-        clickedAt: serverTimestamp()
+        clickedAt: serverTimestamp(),
       });
     } catch (error) {
-      console.error('Erreur lors de l\'enregistrement du clic:', error);
+      console.error("Erreur lors de l'enregistrement du clic:", error);
       throw error;
     }
   }
 
-  /**
-   * Envoyer une notification à un utilisateur spécifique
-   */
+  private static async callNotify(payload: {
+    recipientIds?: string[];
+    recipientUserId?: string;
+    type: NotificationType;
+    title: string;
+    message: string;
+    priority?: NotificationPriority;
+    metadata?: Record<string, any>;
+    sendEmail?: boolean;
+    email?: Record<string, any>;
+  }): Promise<void> {
+    const functionsInstance = getFirebaseFunctions();
+    if (!functionsInstance) {
+      throw new Error("Le service Functions n'est pas disponible");
+    }
+    const notify = httpsCallable(functionsInstance, 'notifyUsersCallable');
+    await notify(payload);
+  }
+
   static async sendToUser(
     userId: string,
     type: NotificationType,
@@ -53,25 +69,44 @@ export class NotificationService {
     category: NotificationCategory = 'update'
   ): Promise<void> {
     try {
-      await addDoc(collection(db, 'notifications'), {
-        userId,
+      await this.callNotify({
+        recipientUserId: userId,
         type,
         title,
         message,
         priority,
         metadata: enrichMetadata(metadata, category, priority),
-        createdAt: serverTimestamp(),
-        read: false
       });
     } catch (error) {
-      console.error('Erreur lors de l\'envoi de la notification:', error);
+      console.error("Erreur lors de l'envoi de la notification:", error);
       throw error;
     }
   }
 
   /**
-   * Envoyer une notification à tous les utilisateurs d'une structure
+   * Fan-out via CF: envoie à une liste d'utilisateurs (max 50).
+   * Remplace l'ancien sendToStructure (listener structureId non supporté côté client).
    */
+  static async sendToUsers(
+    userIds: string[],
+    type: NotificationType,
+    title: string,
+    message: string,
+    priority: NotificationPriority = 'medium',
+    metadata?: Record<string, any>,
+    category: NotificationCategory = 'update'
+  ): Promise<void> {
+    await this.callNotify({
+      recipientIds: userIds,
+      type,
+      title,
+      message,
+      priority,
+      metadata: enrichMetadata(metadata, category, priority),
+    });
+  }
+
+  /** @deprecated Prefer sendToUsers with resolved member ids. Kept as alias. */
   static async sendToStructure(
     structureId: string,
     type: NotificationType,
@@ -81,26 +116,20 @@ export class NotificationService {
     metadata?: Record<string, any>,
     category: NotificationCategory = 'update'
   ): Promise<void> {
-    try {
-      await addDoc(collection(db, 'notifications'), {
-        structureId,
-        type,
-        title,
-        message,
-        priority,
-        metadata: enrichMetadata(metadata, category, priority),
-        createdAt: serverTimestamp(),
-        read: false
-      });
-    } catch (error) {
-      console.error('Erreur lors de l\'envoi de la notification:', error);
-      throw error;
-    }
+    console.warn(
+      'sendToStructure: passez par notifyUsersCallable avec recipientIds (fan-out). structureId=',
+      structureId
+    );
+    await this.callNotify({
+      recipientIds: [],
+      type,
+      title,
+      message,
+      priority,
+      metadata: enrichMetadata({ ...metadata, structureId }, category, priority),
+    });
   }
 
-  /**
-   * Envoyer une notification globale (admin)
-   */
   static async sendGlobal(
     type: NotificationType,
     title: string,
@@ -109,162 +138,90 @@ export class NotificationService {
     metadata?: Record<string, any>,
     category: NotificationCategory = 'admin'
   ): Promise<void> {
-    try {
-      await addDoc(collection(db, 'notifications'), {
-        type: 'admin_notification',
-        title,
-        message,
-        priority,
-        metadata: enrichMetadata(metadata, category, priority),
-        createdAt: serverTimestamp(),
-        read: false,
-        recipientType: 'all'
-      });
-    } catch (error) {
-      console.error('Erreur lors de l\'envoi de la notification globale:', error);
-      throw error;
-    }
+    // Global broadcast is admin_notification via SuperAdmin UI only
+    await this.callNotify({
+      type: type === 'admin_notification' ? type : 'admin_notification',
+      title,
+      message,
+      priority,
+      metadata: enrichMetadata(metadata, category, priority),
+      recipientIds: [],
+    });
   }
 
-  /**
-   * Notifier une mise à jour de mission
-   */
   static async notifyMissionUpdate(
     userId: string,
     missionId: string,
     missionNumber: string,
-    action: 'created' | 'updated' | 'deleted' | 'assigned'
+    action: 'created' | 'updated' | 'assigned'
   ): Promise<void> {
-    const redirectUrl = `/app/mission/${missionId}`;
-
-    const titles: Record<typeof action, string> = {
-      created: 'Nouvelle opportunité',
+    const titles = {
+      created: 'Mission créée',
       updated: 'Mission mise à jour',
-      deleted: 'Mission annulée',
-      assigned: 'Mission assignée'
+      assigned: 'Mission assignée',
     };
-    const messages: Record<typeof action, string> = {
-      created: `La mission ${missionNumber} vous attend ! Découvrez-la maintenant.`,
-      updated: `La mission ${missionNumber} a évolué. Consultez les détails.`,
-      deleted: `La mission ${missionNumber} n'est plus disponible.`,
-      assigned: `Vous avez été assigné à la mission ${missionNumber}. Allez voir !`
+    const messages = {
+      created: `La mission ${missionNumber} a été créée.`,
+      updated: `La mission ${missionNumber} a été mise à jour.`,
+      assigned: `Vous avez été assigné à la mission ${missionNumber}.`,
     };
-
-    const title = titles[action];
-    const message = messages[action];
-
     await this.sendToUser(
       userId,
       'mission_update',
-      title,
-      message,
-      'medium',
-      { missionId, action, redirectUrl },
-      'engagement'
+      titles[action],
+      messages[action],
+      action === 'assigned' ? 'high' : 'medium',
+      { missionId, missionNumber, action, redirectUrl: `/app/mission/${missionId}` }
     );
   }
 
-  /**
-   * Notifier une réponse à un rapport
-   */
   static async notifyReportResponse(
     userId: string,
     reportId: string,
     reportContent: string
   ): Promise<void> {
-    const title = 'Réponse reçue';
-    const message = `On a répondu à votre rapport. Ouvrez-le pour voir la réponse.`;
-    const redirectUrl = '/app/reports';
-
     await this.sendToUser(
       userId,
       'report_response',
-      title,
-      message,
+      'Réponse à votre signalement',
+      reportContent.slice(0, 200),
       'medium',
-      { reportId, redirectUrl },
-      'update'
+      { reportId }
     );
   }
 
-  /**
-   * Notifier une mise à jour de rapport
-   */
   static async notifyReportUpdate(
     userId: string,
     reportId: string,
-    status: 'pending' | 'in_progress' | 'resolved' | 'closed'
+    status: string
   ): Promise<void> {
-    const titles: Record<typeof status, string> = {
-      pending: 'Rapport en attente',
-      in_progress: 'Rapport en cours',
-      resolved: 'Rapport résolu',
-      closed: 'Rapport clôturé'
-    };
-    const messages: Record<typeof status, string> = {
-      pending: 'Votre rapport est en file. On s\'en occupe.',
-      in_progress: 'Votre rapport est en cours de traitement.',
-      resolved: 'Bonne nouvelle : votre rapport a été résolu.',
-      closed: 'Ce rapport a été clôturé. Consultez l\'historique.'
-    };
-    const redirectUrl = '/app/reports';
-
     await this.sendToUser(
       userId,
       'report_update',
-      titles[status],
-      messages[status],
+      'Mise à jour de votre signalement',
+      `Statut : ${status}`,
       'medium',
-      { reportId, status, redirectUrl },
-      'update'
+      { reportId, status }
     );
   }
 
-  /**
-   * Notifier une mise à jour de profil utilisateur
-   */
   static async notifyUserUpdate(
     userId: string,
-    action: 'profile_updated' | 'role_changed' | 'status_changed'
+    title: string,
+    message: string
   ): Promise<void> {
-    const titles = {
-      profile_updated: 'Profil à jour',
-      role_changed: 'Nouveau rôle',
-      status_changed: 'Statut modifié'
-    };
-    const messages = {
-      profile_updated: 'Vos infos ont bien été enregistrées. Tout est à jour !',
-      role_changed: 'Votre rôle a changé. Découvrez vos nouvelles permissions.',
-      status_changed: 'Votre statut a été mis à jour.'
-    };
-    const redirectUrl = '/app/profile';
-
-    await this.sendToUser(
-      userId,
-      'user_update',
-      titles[action],
-      messages[action],
-      'low',
-      { redirectUrl },
-      'update'
-    );
+    await this.sendToUser(userId, 'user_update', title, message, 'medium');
   }
 
-  /**
-   * Notifier un événement système
-   */
   static async notifySystemEvent(
     userId: string,
     event: string,
     message: string,
-    priority: NotificationPriority = 'low'
+    priority: NotificationPriority = 'medium'
   ): Promise<void> {
     await this.sendToUser(userId, 'system', event, message, priority, undefined, 'admin');
   }
 
-  /**
-   * Notifier plusieurs utilisateurs en une seule fois
-   */
   static async sendToMultipleUsers(
     userIds: string[],
     type: NotificationType,
@@ -274,15 +231,10 @@ export class NotificationService {
     metadata?: Record<string, any>,
     category: NotificationCategory = 'update'
   ): Promise<void> {
-    const promises = userIds.map(userId =>
-      this.sendToUser(userId, type, title, message, priority, metadata, category)
-    );
-
-    await Promise.all(promises);
+    await this.sendToUsers(userIds, type, title, message, priority, metadata, category);
   }
 }
 
-// Fonctions utilitaires pour les notifications courantes
 export const notifyMissionCreated = (userId: string, missionId: string, missionNumber: string) =>
   NotificationService.notifyMissionUpdate(userId, missionId, missionNumber, 'created');
 
@@ -295,5 +247,8 @@ export const notifyMissionAssigned = (userId: string, missionId: string, mission
 export const notifyReportResponse = (userId: string, reportId: string, reportContent: string) =>
   NotificationService.notifyReportResponse(userId, reportId, reportContent);
 
-export const notifyReportStatusChange = (userId: string, reportId: string, status: 'pending' | 'in_progress' | 'resolved' | 'closed') =>
-  NotificationService.notifyReportUpdate(userId, reportId, status); 
+export const notifyReportStatusChange = (
+  userId: string,
+  reportId: string,
+  status: 'pending' | 'in_progress' | 'resolved' | 'closed'
+) => NotificationService.notifyReportUpdate(userId, reportId, status);

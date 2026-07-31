@@ -28,6 +28,7 @@ import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import SettingsCard from '../../components/settings/SettingsCard';
+import { settingsPageStyles } from '../../components/ds';
 import {
   getScoringSettings,
   saveScoringSettings,
@@ -37,11 +38,8 @@ import {
 import type { ScoringSettings as ScoringSettingsType, ScoringWeights } from '../../types/scoring';
 import { DEFAULT_SCORING_WEIGHTS } from '../../types/scoring';
 import { useSnackbar } from 'notistack';
-
-const fadeIn = keyframes`
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
-`;
+import { tokens } from '../../theme/tokens';
+import { fadeIn } from '../../styles/animations';
 
 const ScoringSettings: React.FC = () => {
   const theme = useTheme();
@@ -214,13 +212,14 @@ const ScoringSettings: React.FC = () => {
 
   return (
     <Box sx={{ animation: `${fadeIn} 0.4s ease-out` }}>
-      <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f', mb: 0.5 }}>
-          IA Commercial
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Notation des prospects, analyse des clients passés et template de message de contact pour l&apos;IA.
-        </Typography>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3 }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>IA Commercial</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Notation des prospects, analyse des clients passés et template de message de contact pour l&apos;IA.
+          </Typography>
+        </Box>
       </Box>
 
       <Stack spacing={3}>
@@ -228,7 +227,7 @@ const ScoringSettings: React.FC = () => {
           icon={<PsychologyIcon />}
           title="Spécialisations"
           subtitle="Missions dans lesquelles votre structure se spécialise (pour le scoring)"
-          gradient="linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)"
+          gradient={tokens.gradients.brand}
         >
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
             {missionTypeTitles
@@ -286,7 +285,7 @@ const ScoringSettings: React.FC = () => {
           icon={<TrendingUpIcon />}
           title="Poids des critères"
           subtitle="Répartition du score (complétude, fraîcheur, statut, dernière activité)"
-          gradient="linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%)"
+          gradient={tokens.gradients.brand}
         >
           <Stack spacing={2.5} sx={{ pt: 0.5 }}>
             {[
@@ -306,11 +305,11 @@ const ScoringSettings: React.FC = () => {
                   min={0}
                   max={100}
                   valueLabelDisplay="auto"
-                  sx={{ color: theme.palette.primary.main }}
+                  sx={{ color: tokens.colors.brandTeal }}
                 />
               </Box>
             ))}
-            <Alert severity={totalWeight !== 100 ? 'info' : 'success'} sx={{ borderRadius: '12px' }}>
+            <Alert severity={totalWeight !== 100 ? 'info' : 'success'} sx={{ borderRadius: tokens.radius.md }}>
               Total : {totalWeight} % {totalWeight !== 100 && '(recommandé : 100 %)'}
             </Alert>
           </Stack>
@@ -329,7 +328,7 @@ const ScoringSettings: React.FC = () => {
               onClick={handleAnalyzePastClients}
               disabled={analyzing}
               sx={{
-                borderRadius: '12px',
+                borderRadius: tokens.radius.md,
                 textTransform: 'none',
                 fontWeight: 600,
                 alignSelf: 'flex-start',
@@ -343,7 +342,7 @@ const ScoringSettings: React.FC = () => {
                 variant="outlined"
                 sx={{
                   p: 2,
-                  borderRadius: '12px',
+                  borderRadius: tokens.radius.md,
                   bgcolor: alpha(theme.palette.success.main, 0.06),
                   borderColor: alpha(theme.palette.success.main, 0.3),
                 }}
@@ -365,13 +364,13 @@ const ScoringSettings: React.FC = () => {
                 )}
                 <Stack direction="row" flexWrap="wrap" gap={1}>
                   {settings.analyzedClientProfile.sectors?.length > 0 && (
-                    <Chip size="small" label={`Secteurs: ${settings.analyzedClientProfile.sectors.join(', ')}`} sx={{ borderRadius: '8px' }} />
+                    <Chip size="small" label={`Secteurs: ${settings.analyzedClientProfile.sectors.join(', ')}`} sx={{ borderRadius: tokens.radius.sm }} />
                   )}
                   {settings.analyzedClientProfile.companySizes?.length > 0 && (
-                    <Chip size="small" label={`Tailles: ${settings.analyzedClientProfile.companySizes.join(', ')}`} sx={{ borderRadius: '8px' }} />
+                    <Chip size="small" label={`Tailles: ${settings.analyzedClientProfile.companySizes.join(', ')}`} sx={{ borderRadius: tokens.radius.sm }} />
                   )}
                   {settings.analyzedClientProfile.missionTypes?.length > 0 && (
-                    <Chip size="small" label={`Types: ${settings.analyzedClientProfile.missionTypes.join(', ')}`} sx={{ borderRadius: '8px' }} />
+                    <Chip size="small" label={`Types: ${settings.analyzedClientProfile.missionTypes.join(', ')}`} sx={{ borderRadius: tokens.radius.sm }} />
                   )}
                 </Stack>
               </Paper>
@@ -383,7 +382,7 @@ const ScoringSettings: React.FC = () => {
           icon={<EmailIcon />}
           title="Template de message de contact"
           subtitle="Modèle utilisé par l'IA pour rédiger des messages personnalisés (email/LinkedIn). Variables : {{nom}}, {{entreprise}}, {{secteur}}, {{structure_nom}}. Signature remplacée auto : [Votre Nom], [Votre Poste], [Votre Poste - Nom structure]."
-          gradient="linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)"
+          gradient={tokens.gradients.brand}
         >
           <TextField
             fullWidth
@@ -394,7 +393,7 @@ const ScoringSettings: React.FC = () => {
             value={settings?.contactMessageTemplate ?? ''}
             onChange={(e) => setSettings((prev) => prev ? { ...prev, contactMessageTemplate: e.target.value } : createDefaultSettings({ contactMessageTemplate: e.target.value }))}
             sx={{
-              '& .MuiOutlinedInput-root': { borderRadius: '12px', bgcolor: alpha(theme.palette.primary.main, 0.02) },
+              '& .MuiOutlinedInput-root': { borderRadius: tokens.radius.md, bgcolor: alpha(theme.palette.primary.main, 0.02) },
             }}
           />
         </SettingsCard>
@@ -403,7 +402,7 @@ const ScoringSettings: React.FC = () => {
           variant="outlined"
           sx={{
             p: 2.5,
-            borderRadius: '16px',
+            borderRadius: tokens.radius.lg,
             border: '1px solid #e5e5ea',
             display: 'flex',
             alignItems: 'center',
@@ -423,7 +422,7 @@ const ScoringSettings: React.FC = () => {
             startIcon={recomputing ? <CircularProgress size={18} color="inherit" /> : <RefreshIcon />}
             onClick={handleRecomputeScores}
             disabled={recomputing}
-            sx={{ borderRadius: '12px', textTransform: 'none', fontWeight: 600 }}
+            sx={{ borderRadius: tokens.radius.md, textTransform: 'none', fontWeight: 600 }}
           >
             {recomputing ? 'Recalcul...' : 'Recalculer les scores'}
           </Button>
@@ -435,7 +434,7 @@ const ScoringSettings: React.FC = () => {
             onClick={handleSave}
             disabled={saving}
             startIcon={saving ? <CircularProgress size={18} color="inherit" /> : null}
-            sx={{ borderRadius: '12px', textTransform: 'none', fontWeight: 600, px: 3 }}
+            sx={{ borderRadius: tokens.radius.md, textTransform: 'none', fontWeight: 600, px: 3 }}
           >
             {saving ? 'Enregistrement...' : 'Enregistrer les paramètres'}
           </Button>

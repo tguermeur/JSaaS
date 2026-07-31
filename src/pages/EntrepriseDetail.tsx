@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -68,6 +69,32 @@ import { PDFDocument } from 'pdf-lib';
 import { formatDate } from '../utils/dateUtils';
 import TaggingInput from '../components/ui/TaggingInput';
 import { NotificationService } from '../services/notificationService';
+import { tokens } from '../theme/tokens';
+import {
+  AppPageShell,
+  CompaniesLayout,
+  CompanySwitcher,
+  ContactCard,
+  CompanyDetailSkeleton,
+  CompanyDetailContentSkeleton,
+  CompanyDetailRailSkeleton,
+  dsTabsSx,
+  DetailPanel,
+  DetailKpiCard,
+  SidebarBlock,
+} from '../components/ds';
+import type { CompanyListItem } from '../components/ds';
+import { getDecryptedUserDisplayName, getSafeDisplayName } from '../utils/decryptUserUtils';
+import { batchDecryptForStructure } from '../utils/batchDecrypt';
+import { decryptStructureForDocument } from '../utils/documentDecryptUtils';
+import UserReferenceText from '../components/common/UserReferenceText';
+
+type DetailTab = 'overview' | 'missions' | 'history';
+
+const formatEur = (n: number) =>
+  new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n || 0);
+
+const isEncryptedValue = (v: unknown): boolean => typeof v === 'string' && v.startsWith('ENC:');
 
 interface UserData {
   firstName: string;
@@ -138,12 +165,6 @@ interface TaggedUser {
   role?: string;
 }
 
-interface TabPanelProps {
-  children?: React.ReactNode;
-  index: number;
-  value: number;
-}
-
 interface FirestoreData {
   name?: string;
   nSiret?: string;
@@ -164,70 +185,109 @@ interface FirestoreData {
   structureId?: string;
 }
 
-const TabPanel: React.FC<TabPanelProps> = ({ children, value, index }) => (
-  <Box
-    role="tabpanel"
-    hidden={value !== index}
-    sx={{ py: 3 }}
-  >
-    {value === index && children}
-  </Box>
-);
-
 const LinkedIn: React.FC = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" className="bi bi-linkedin" viewBox="0 0 16 16">
     <path d="M0 1.146C0 .513.526 0 1.175 0h13.65C15.474 0 16 .513 16 1.146v13.708c0 .633-.526 1.146-1.175 1.146H1.175C.526 16 0 15.487 0 14.854V1.146zm4.943 12.248V6.169H2.542v7.225h2.401zm-1.2-8.28C3.3 3.34 4.42 4.46 5.54 5.58c1.12 1.12 2.24 2.24 3.36 3.36 1.12-1.12 2.24-2.24 3.36-3.36 4.48-1.12-1.12-2.24-2.24-3.36-3.36z"/>
   </svg>
 );
 
-const convertMissionData = async (data: any): Promise<Mission> => {
-  let contact = null;
-  if (data.contactId) {
-    console.log('contactId utilisé', data.contactId);
-    const contactDoc = await getDoc(doc(db, 'contacts', data.contactId));
-    if (contactDoc.exists()) {
-      const contactData = contactDoc.data();
-      contact = {
-        firstName: contactData.firstName,
-        lastName: contactData.lastName,
-        email: contactData.email,
-        phone: contactData.phone,
-        position: contactData.position
-      };
-    }
-    console.log('contact récupéré', contact);
-  }
-
+const mapMissionDoc = (
+  docId: string,
+  data: Record<string, unknown>,
+  contactMap: Map<string, Contact>,
+): Mission => {
+  const contactId = data.contactId as string | undefined;
+  const contact = contactId ? contactMap.get(contactId) : undefined;
   return {
-    id: data.id || '',
-    title: data.title || '',
-    numeroMission: data.numeroMission || '',
-    status: data.status || 'en_cours',
+    id: docId,
+    title: (data.title as string) || '',
+    numeroMission: Number(data.numeroMission) || 0,
+    status: (data.status as string) || 'en_cours',
     totalTTC: Number(data.totalTTC) || 0,
-    companyId: data.companyId || '',
-    startDate: data.startDate ? new Date(data.startDate) : new Date(),
-    endDate: data.endDate ? new Date(data.endDate) : null,
+    companyId: (data.companyId as string) || '',
+    startDate: data.startDate ? new Date(data.startDate as string | number | Date) : new Date(),
+    endDate: data.endDate ? new Date(data.endDate as string | number | Date) : undefined,
     hours: Number(data.hours) || 0,
     priceHT: Number(data.priceHT) || 0,
-    contactId: data.contactId,
+    contactId,
     contact: contact
+      ? {
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+          email: contact.email,
+          phone: contact.phone,
+          position: contact.position,
+        }
+      : undefined,
   };
+};
+
+const parseNSiret = (nSiret: unknown): string | undefined => {
+  if (!nSiret) return undefined;
+  if (typeof nSiret === 'string') return nSiret;
+  const nSiretNum = Number(nSiret);
+  if (!isNaN(nSiretNum) && isFinite(nSiretNum)) {
+    return nSiretNum.toLocaleString('fr-FR', { useGrouping: false, maximumFractionDigits: 0 });
+  }
+  return String(nSiret);
+};
+
+const resolveAuthorNameMap = async (userIds: string[]): Promise<Map<string, string>> => {
+  const unique = [...new Set(userIds.filter(Boolean))];
+  const entries = await Promise.all(
+    unique.map(async (uid) => {
+      try {
+        const userDoc = await getDoc(doc(db, 'users', uid));
+        const name = userDoc.exists()
+          ? await getDecryptedUserDisplayName(uid, userDoc.data() as UserData)
+          : 'Utilisateur inconnu';
+        return [uid, name] as const;
+      } catch {
+        return [uid, 'Utilisateur inconnu'] as const;
+      }
+    }),
+  );
+  return new Map(entries);
 };
 
 const isEncrypted = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
 
+/** Convertit une valeur (Firestore Timestamp, Date, number, string) en Date sans casser l'UI. */
+const toSafeDate = (value: unknown): Date | undefined => {
+  if (value == null) return undefined;
+  if (value instanceof Date) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return new Date(value);
+  if (typeof value === 'string') {
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? undefined : d;
+  }
+  const maybeToDate = (value as any)?.toDate;
+  if (typeof maybeToDate === 'function') {
+    try {
+      const d = maybeToDate.call(value);
+      return d instanceof Date ? d : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+};
+
 const EntrepriseDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
   const { canRead, canWrite, loading: permissionLoading } = usePermission('entreprises');
   const [company, setCompany] = useState<Company | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [decryptedCompany, setDecryptedCompany] = useState<Partial<Company> | null>(null);
   const [decryptedContacts, setDecryptedContacts] = useState<Record<string, { firstName?: string; lastName?: string; email?: string }>>({});
   const [missions, setMissions] = useState<Mission[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState<DetailTab>('overview');
+  const [directorySearch, setDirectorySearch] = useState('');
+  const [allCompanies, setAllCompanies] = useState<CompanyListItem[]>([]);
   const [newNote, setNewNote] = useState('');
   const [editMode, setEditMode] = useState(false);
   const [editedCompany, setEditedCompany] = useState<Partial<Company>>({});
@@ -255,186 +315,220 @@ const EntrepriseDetail: React.FC = () => {
   const [selectedContactForMenu, setSelectedContactForMenu] = useState<Contact | null>(null);
   const [availableUsers, setAvailableUsers] = useState<TaggedUser[]>([]);
   const [taggedUsers, setTaggedUsers] = useState<TaggedUser[]>([]);
+  const [detailLoading, setDetailLoading] = useState(true);
+  const [secondaryLoading, setSecondaryLoading] = useState(true);
 
   useEffect(() => {
+    if (!id) return;
+
+    let cancelled = false;
+
     const fetchCompanyData = async () => {
-      if (!id) return;
+      setLoadError(null);
+      setDetailLoading(true);
+      setSecondaryLoading(true);
+      setCompany(null);
+      setDecryptedCompany(null);
+      setDecryptedContacts({});
+      setMissions([]);
+      setNotes([]);
+      setHistory([]);
 
       try {
         const companyDoc = await getDoc(doc(db, 'companies', id));
-        if (companyDoc.exists()) {
-          const data = companyDoc.data() as FirestoreData;
+        if (cancelled) return;
 
-          // Charger les contacts depuis la collection contacts
-          const contactsQuery = query(
-            collection(db, 'contacts'),
-            where('companyId', '==', id)
-          );
-          const contactsSnapshot = await getDocs(contactsQuery);
-          const contacts = contactsSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
+        if (!companyDoc.exists()) {
+          setLoadError('Entreprise introuvable.');
+          setDetailLoading(false);
+          setSecondaryLoading(false);
+          return;
+        }
+
+        const data = companyDoc.data() as FirestoreData;
+        const companyData = {
+          id: companyDoc.id,
+          name: data.name || '',
+          nSiret: parseNSiret(data.nSiret),
+          description: data.description,
+          address: data.address,
+          city: data.city,
+          postalCode: data.postalCode,
+          country: data.country,
+          phone: data.phone,
+          email: data.email,
+          website: data.website,
+          logo: data.logo,
+          contacts: [],
+          missionsCount: data.missionsCount || 0,
+          totalRevenue: data.totalRevenue || 0,
+          createdAt: toSafeDate(data.createdAt) || new Date(),
+          updatedAt: toSafeDate(data.updatedAt),
+          structureId: data.structureId || '',
+        } as Company;
+
+        setCompany(companyData);
+        setDetailLoading(false);
+
+        const contactsQueryConstraints = [where('companyId', '==', id)];
+        if (data.structureId) {
+          contactsQueryConstraints.push(where('structureId', '==', data.structureId));
+        }
+        const missionsQueryConstraints = [where('companyId', '==', id)];
+        if (data.structureId) {
+          missionsQueryConstraints.push(where('structureId', '==', data.structureId));
+        }
+
+        const [contactsResult, missionsResult, notesResult, historyResult] = await Promise.allSettled([
+          getDocs(query(collection(db, 'contacts'), ...contactsQueryConstraints)),
+          getDocs(query(collection(db, 'missions'), ...missionsQueryConstraints)),
+          getDocs(query(collection(db, 'notes'), where('companyId', '==', id))),
+          getDocs(query(collection(db, 'history'), where('companyId', '==', id))),
+        ]);
+
+        if (cancelled) return;
+
+        let contacts: Contact[] = [];
+        if (contactsResult.status === 'fulfilled') {
+          contacts = contactsResult.value.docs.map((contactDoc) => ({
+            id: contactDoc.id,
+            ...contactDoc.data(),
           })) as Contact[];
+          setCompany((prev) => (prev ? { ...prev, contacts } : prev));
+        } else {
+          console.error('[EntrepriseDetail] Erreur chargement contacts:', contactsResult.reason);
+        }
 
-          // Convertir le nSiret en string pour éviter toute troncature si stocké comme nombre
-          // IMPORTANT: Si le nSiret est stocké comme nombre dans Firestore, il pourrait être tronqué
-          // lors de la conversion. On doit s'assurer de récupérer la valeur complète.
-          let nSiretValue: string | undefined = undefined;
-          if (data.nSiret) {
-            // Si c'est déjà une string, l'utiliser directement
-            if (typeof data.nSiret === 'string') {
-              nSiretValue = data.nSiret;
-            } else {
-              // Si c'est un nombre, le convertir en string en préservant tous les chiffres
-              // Utiliser toLocaleString pour éviter la notation scientifique pour les grands nombres
-              const nSiretNum = Number(data.nSiret);
-              if (!isNaN(nSiretNum) && isFinite(nSiretNum)) {
-                // Pour les grands nombres, utiliser toLocaleString puis retirer les séparateurs
-                nSiretValue = nSiretNum.toLocaleString('fr-FR', { useGrouping: false, maximumFractionDigits: 0 });
-              } else {
-                // Fallback: convertir directement en string
-                nSiretValue = String(data.nSiret);
-              }
-            }
-          }
-          
-          // Vérifier que le nSiret n'a pas été tronqué
-          if (nSiretValue && nSiretValue.length < 14 && /^\d+$/.test(nSiretValue)) {
-            console.warn(`[EntrepriseDetail] ⚠️ ATTENTION: nSiret potentiellement tronqué lors du chargement! Longueur: ${nSiretValue.length}, Valeur: "${nSiretValue}"`);
-            console.warn(`[EntrepriseDetail] ⚠️ nSiret original de Firestore (type ${typeof data.nSiret}): ${data.nSiret}`);
-          }
-          
-          console.log(`[EntrepriseDetail] nSiret récupéré de Firestore: ${data.nSiret}, type: ${typeof data.nSiret}, converti: ${nSiretValue}, longueur: ${nSiretValue?.length || 0}`);
-          
-          setCompany({
-            id: companyDoc.id,
-            name: data.name || '',
-            nSiret: nSiretValue,
-            description: data.description,
-            address: data.address,
-            city: data.city,
-            postalCode: data.postalCode,
-            country: data.country,
-            phone: data.phone,
-            email: data.email,
-            website: data.website,
-            logo: data.logo,
-            contacts: contacts,
-            missionsCount: data.missionsCount || 0,
-            totalRevenue: data.totalRevenue || 0,
-            createdAt: data.createdAt?.toDate() || new Date(),
-            updatedAt: data.updatedAt?.toDate(),
-            structureId: data.structureId || ''
-          } as Company);
+        const contactMap = new Map(contacts.map((contact) => [contact.id, contact]));
 
-          // Charger les missions
-          const missionsQuery = query(
-            collection(db, 'missions'),
-            where('companyId', '==', id)
+        if (missionsResult.status === 'fulfilled') {
+          setMissions(
+            missionsResult.value.docs.map((missionDoc) =>
+              mapMissionDoc(missionDoc.id, missionDoc.data() as Record<string, unknown>, contactMap),
+            ),
           );
-          const missionsSnapshot = await getDocs(missionsQuery);
-          const missionsPromises = missionsSnapshot.docs.map(doc => {
-            const data = { id: doc.id, ...doc.data() };
-            return convertMissionData(data);
+        } else {
+          console.error('[EntrepriseDetail] Erreur chargement missions:', missionsResult.reason);
+        }
+
+        const authorIds: string[] = [];
+        if (notesResult.status === 'fulfilled') {
+          notesResult.value.docs.forEach((noteDoc) => {
+            const createdBy = noteDoc.data().createdBy as string | undefined;
+            if (createdBy) authorIds.push(createdBy);
           });
-          const missionsData = await Promise.all(missionsPromises);
-          console.log('missionsData', missionsData);
-          setMissions(missionsData);
+        }
+        if (historyResult.status === 'fulfilled') {
+          historyResult.value.docs.forEach((historyDoc) => {
+            const createdBy = historyDoc.data().createdBy as string | undefined;
+            if (createdBy) authorIds.push(createdBy);
+          });
+        }
 
-          // Charger les notes avec les informations de l'auteur
-          const notesQuery = query(
-            collection(db, 'notes'),
-            where('companyId', '==', id)
+        const authorNameMap = await resolveAuthorNameMap(authorIds);
+        if (cancelled) return;
+
+        if (notesResult.status === 'fulfilled') {
+          setNotes(
+            notesResult.value.docs.map((noteDoc) => {
+              const noteData = noteDoc.data();
+              const createdBy = (noteData.createdBy as string) || '';
+              return {
+                id: noteDoc.id,
+                content: (noteData.content as string) || '',
+                createdBy,
+                authorName: createdBy ? authorNameMap.get(createdBy) || 'Utilisateur inconnu' : 'Utilisateur inconnu',
+                createdAt: toSafeDate(noteData.createdAt) || new Date(),
+              };
+            }),
           );
-          const notesSnapshot = await getDocs(notesQuery);
-          const notesData = await Promise.all(notesSnapshot.docs.map(async docSnapshot => {
-            const data = docSnapshot.data();
-            const userDoc = await getDoc(doc(db, 'users', data.createdBy));
-            const userData = userDoc.data() as UserData | null;
-            return {
-              id: docSnapshot.id,
-              content: data.content || '',
-              createdBy: data.createdBy || '',
-              authorName: userData ? `${userData.firstName} ${userData.lastName}` : 'Utilisateur inconnu',
-              createdAt: data.createdAt?.toDate() || new Date()
-            };
-          })) as Note[];
-          setNotes(notesData);
-          
-          // Charger l'historique avec les informations de l'auteur
-          const historyQuery = query(
-            collection(db, 'history'),
-            where('companyId', '==', id)
+        } else {
+          console.error('[EntrepriseDetail] Erreur chargement notes:', notesResult.reason);
+        }
+
+        if (historyResult.status === 'fulfilled') {
+          setHistory(
+            historyResult.value.docs.map((historyDoc) => {
+              const historyData = historyDoc.data();
+              const createdBy = (historyData.createdBy as string) || '';
+              return {
+                id: historyDoc.id,
+                type: (historyData.type as HistoryItem['type']) || 'modification',
+                description: (historyData.description as string) || '',
+                createdBy,
+                authorName: createdBy ? authorNameMap.get(createdBy) || 'Utilisateur inconnu' : 'Utilisateur inconnu',
+              };
+            }),
           );
-          const historySnapshot = await getDocs(historyQuery);
-          const historyData = await Promise.all(historySnapshot.docs.map(async docSnapshot => {
-            const data = docSnapshot.data();
-            const userDoc = await getDoc(doc(db, 'users', data.createdBy));
-            const userData = userDoc.data() as UserData | null;
-            
-            return {
-              id: docSnapshot.id,
-              type: data.type || 'modification',
-              description: data.description || '',
-              createdBy: data.createdBy || '',
-              authorName: userData ? `${userData.firstName} ${userData.lastName}` : 'Utilisateur inconnu'
-            };
-          })) as HistoryItem[];
-          setHistory(historyData);
-          
-          // Mettre à jour les statistiques
-          await updateCompanyStats();
-          
-          // Récupérer les utilisateurs disponibles pour le tagging
-          await fetchAvailableUsers();
+        } else {
+          console.error('[EntrepriseDetail] Erreur chargement historique:', historyResult.reason);
         }
       } catch (error) {
-        console.error('Erreur lors du chargement des données:', error);
+        if (!cancelled) {
+          console.error('Erreur lors du chargement des données:', error);
+          setLoadError("Impossible de charger le détail de l'entreprise.");
+        }
+      } finally {
+        if (!cancelled) {
+          setDetailLoading(false);
+          setSecondaryLoading(false);
+        }
       }
     };
 
     fetchCompanyData();
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
-  // Déchiffrer les infos entreprise et contacts pour l'affichage (tous champs sensibles backend)
+  // Déchiffrer entreprise + contacts (batch)
   useEffect(() => {
     if (!company || !canRead) return;
     const run = async () => {
       try {
-        const functions = getFunctions();
         const companyEncrypted =
           isEncrypted(company.name) || isEncrypted(company.email) || isEncrypted(company.phone) ||
           isEncrypted(company.address) || isEncrypted(company.nSiret) ||
           isEncrypted((company as any).companyAddress) || isEncrypted((company as any).siret) || isEncrypted((company as any).tvaIntra);
         if (companyEncrypted) {
-          const decryptCompany = httpsCallable(functions, 'decryptCompanyDataForStructure');
-          const res = await decryptCompany({ companyId: company.id });
-          const dec = (res.data as any)?.decryptedData;
+          const results = await batchDecryptForStructure('company', [company.id]);
+          const dec = results[company.id];
           if (dec) setDecryptedCompany(dec);
         }
         const contacts = company.contacts || [];
-        if (contacts.length > 0) {
-          const decryptContact = httpsCallable(functions, 'decryptContactDataForStructure');
+        const encryptedContacts = contacts.filter(
+          (c) =>
+            c.id &&
+            (isEncrypted(c.firstName) || isEncrypted(c.lastName) || isEncrypted(c.email) || isEncrypted(c.phone))
+        );
+        if (encryptedContacts.length > 0) {
+          const results = await batchDecryptForStructure<{
+            firstName?: string;
+            lastName?: string;
+            email?: string;
+            phone?: string;
+          }>(
+            'contact',
+            encryptedContacts.map((c) => c.id),
+            ['firstName', 'lastName', 'email', 'phone']
+          );
           const next: Record<string, { firstName?: string; lastName?: string; email?: string; phone?: string }> = {};
-          for (const c of contacts) {
-            const contactEncrypted = isEncrypted(c.firstName) || isEncrypted(c.lastName) || isEncrypted(c.email) || isEncrypted(c.phone);
-            if (contactEncrypted) {
-              try {
-                const res = await decryptContact({ contactId: c.id });
-                const dec = (res.data as any)?.decryptedData;
-                if (dec) next[c.id] = { firstName: dec.firstName, lastName: dec.lastName, email: dec.email, phone: dec.phone };
-              } catch {
-                // ignorer si déchiffrement échoue
-              }
-            }
+          for (const [id, dec] of Object.entries(results)) {
+            next[id] = {
+              firstName: dec.firstName,
+              lastName: dec.lastName,
+              email: dec.email,
+              phone: dec.phone,
+            };
           }
-          if (Object.keys(next).length) setDecryptedContacts(prev => ({ ...prev, ...next }));
+          if (Object.keys(next).length) setDecryptedContacts((prev) => ({ ...prev, ...next }));
         }
       } catch (e) {
         console.warn('Déchiffrement entreprise/contacts ignoré:', e);
       }
     };
-    run();
+    void run();
   }, [company?.id, canRead, company?.name, company?.email, company?.phone, company?.address, company?.nSiret, company?.contacts]);
 
   // Récupérer la structure de l'utilisateur et le template de convention
@@ -474,6 +568,39 @@ const EntrepriseDetail: React.FC = () => {
 
     fetchUserStructureAndTemplate();
   }, [currentUser]);
+
+  useEffect(() => {
+    const fetchAllCompanies = async () => {
+      if (!userStructureId) return;
+      try {
+        const companiesSnapshot = await getDocs(
+          query(collection(db, 'companies'), where('structureId', '==', userStructureId))
+        );
+        setAllCompanies(
+          companiesSnapshot.docs.map((d) => {
+            const data = d.data();
+            const name = data.name || '—';
+            return {
+              id: d.id,
+              name: isEncryptedValue(name) ? 'Entreprise' : name,
+              sector: data.city,
+              missionsCount: data.missionsCount,
+              revenue: formatEur(Number(data.totalRevenue) || 0),
+              initials: String(name).slice(0, 2).toUpperCase(),
+            };
+          })
+        );
+      } catch (error) {
+        console.error('Erreur chargement annuaire entreprises:', error);
+      }
+    };
+    fetchAllCompanies();
+  }, [userStructureId]);
+
+  useEffect(() => {
+    if (!canRead) return;
+    fetchAvailableUsers();
+  }, [canRead]);
 
   // Fonction pour récupérer les utilisateurs disponibles pour le tagging
   const fetchAvailableUsers = async () => {
@@ -611,11 +738,14 @@ const EntrepriseDetail: React.FC = () => {
         try {
           const structureDoc = await getDoc(doc(db, 'structures', userStructureId));
           if (structureDoc.exists()) {
-            structureInfo = structureDoc.data();
+            structureInfo = { id: userStructureId, ...structureDoc.data() };
           }
         } catch (error) {
           console.error('Erreur lors de la récupération de la structure:', error);
         }
+      }
+      if (structureInfo && userStructureId) {
+        structureInfo = await decryptStructureForDocument(userStructureId, structureInfo);
       }
 
       // Récupérer le président du mandat le plus récent
@@ -838,6 +968,7 @@ const EntrepriseDetail: React.FC = () => {
       const docRef = await addDoc(noteRef, {
         content: newNote,
         companyId: company.id,
+        structureId: company.structureId || '',
         createdAt: serverTimestamp(),
         createdBy: currentUser.uid
       });
@@ -888,12 +1019,15 @@ const EntrepriseDetail: React.FC = () => {
         const data = docSnapshot.data();
         const userDoc = await getDoc(doc(db, 'users', data.createdBy));
         const userData = userDoc.data() as UserData | null;
+        const authorName = data.createdBy
+          ? await getDecryptedUserDisplayName(data.createdBy, userData)
+          : 'Utilisateur inconnu';
         return {
           id: docSnapshot.id,
           content: data.content || '',
           createdBy: data.createdBy || '',
-          authorName: userData ? `${userData.firstName} ${userData.lastName}` : 'Utilisateur inconnu',
-          createdAt: data.createdAt?.toDate() || new Date()
+          authorName,
+          createdAt: toSafeDate(data.createdAt) || new Date()
         };
       })) as Note[];
       setNotes(notesData);
@@ -979,19 +1113,26 @@ const EntrepriseDetail: React.FC = () => {
     if (!id) return;
 
     try {
-      // Supprimer l'entreprise
-      await deleteDoc(doc(db, 'companies', id));
-      
-      // Supprimer les notes associées
-      const notesQuery = query(
-        collection(db, 'notes'),
-        where('companyId', '==', id)
-      );
+      const companyStructureId = company?.structureId;
+
+      const notesQueryConstraints = [where('companyId', '==', id)];
+      const notesQuery = query(collection(db, 'notes'), ...notesQueryConstraints);
       const notesSnapshot = await getDocs(notesQuery);
-      const deleteNotesPromises = notesSnapshot.docs.map(doc => 
-        deleteDoc(doc.ref)
-      );
-      await Promise.all(deleteNotesPromises);
+
+      const contactsQueryConstraints = [where('companyId', '==', id)];
+      if (companyStructureId) {
+        contactsQueryConstraints.push(where('structureId', '==', companyStructureId));
+      }
+      const contactsQuery = query(collection(db, 'contacts'), ...contactsQueryConstraints);
+      const contactsSnapshot = await getDocs(contactsQuery);
+
+      await deleteDoc(doc(db, 'companies', id));
+
+      const deletePromises = [
+        ...notesSnapshot.docs.map(d => deleteDoc(d.ref)),
+        ...contactsSnapshot.docs.map(d => deleteDoc(d.ref)),
+      ];
+      await Promise.all(deletePromises);
 
       setSnackbar({
         open: true,
@@ -999,7 +1140,6 @@ const EntrepriseDetail: React.FC = () => {
         severity: 'success'
       });
       
-      // Rediriger vers la liste des entreprises
       navigate('/app/entreprises');
     } catch (error) {
       console.error('Erreur lors de la suppression:', error);
@@ -1487,7 +1627,7 @@ const EntrepriseDetail: React.FC = () => {
         type,
         description,
         createdBy: currentUser.uid,
-        authorName: currentUser.displayName || 'Utilisateur inconnu'
+        authorName: getSafeDisplayName(userData, 'Utilisateur inconnu')
       };
       setHistory(prev => [newEntry, ...prev]);
     } catch (error) {
@@ -1499,9 +1639,14 @@ const EntrepriseDetail: React.FC = () => {
     if (!company) return;
 
     try {
-      // Récupérer toutes les missions de l'entreprise
       const missionsRef = collection(db, 'missions');
-      const missionsQuery = query(missionsRef, where('companyId', '==', company.id));
+      const missionsQueryConstraints = [where('companyId', '==', company.id)];
+      if (company.structureId) {
+        missionsQueryConstraints.push(where('structureId', '==', company.structureId));
+      } else if (userStructureId) {
+        missionsQueryConstraints.push(where('structureId', '==', userStructureId));
+      }
+      const missionsQuery = query(missionsRef, ...missionsQueryConstraints);
       const missionsSnapshot = await getDocs(missionsQuery);
       
       // Récupérer les missions
@@ -1704,22 +1849,35 @@ const EntrepriseDetail: React.FC = () => {
 
   if (permissionLoading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', bgcolor: '#f5f5f7' }}>
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', bgcolor: tokens.colors.bgSubtle }}>
         <CircularProgress />
       </Box>
     );
   }
 
-  if (!company) {
+  if (loadError) {
     return (
-      <Box sx={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh',
-        bgcolor: '#f5f5f7' 
-      }}>
-        <Typography>Chargement...</Typography>
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: '100vh',
+          bgcolor: tokens.colors.bgSubtle,
+          px: 2,
+          textAlign: 'center'
+        }}
+      >
+        <Typography variant="h6" color="error.main" sx={{ mb: 1, fontWeight: 700 }}>
+          Erreur de chargement
+        </Typography>
+        <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
+          {loadError}
+        </Typography>
+        <Button variant="contained" onClick={() => navigate('/app/entreprises')}>
+          Retour aux entreprises
+        </Button>
       </Box>
     );
   }
@@ -1733,20 +1891,33 @@ const EntrepriseDetail: React.FC = () => {
     );
   }
 
-  // Fusionner les données déchiffrées en mappant les clés backend (companyAddress -> address, siret -> nSiret)
+  const selectedListItem = allCompanies.find((c) => c.id === id);
+  const isDetailReady = !!company && !detailLoading;
+  const showSecondarySkeleton = isDetailReady && secondaryLoading;
+
   const dec = decryptedCompany || {};
-  const displayCompany = {
-    ...company,
-    ...dec,
-    address: (dec.address ?? (dec as any).companyAddress ?? company.address) as string | undefined,
-    phone: (dec.phone ?? company.phone) as string | undefined,
-    nSiret: (dec.nSiret ?? (dec as any).siret ?? company.nSiret) as string | undefined,
-  };
-  const displayContacts = (company.contacts || []).map(c => ({ ...c, ...decryptedContacts[c.id] }));
+  const displayCompany = company
+    ? {
+        ...company,
+        ...dec,
+        address: (dec.address ?? (dec as any).companyAddress ?? company.address) as string | undefined,
+        phone: (dec.phone ?? company.phone) as string | undefined,
+        nSiret: (dec.nSiret ?? (dec as any).siret ?? company.nSiret) as string | undefined,
+      }
+    : null;
+  const displayContacts = (company?.contacts || []).map((c) => ({ ...c, ...decryptedContacts[c.id] }));
+  const activeMissionsCount = missions.filter((m) => m.status === 'en_cours').length;
+  const totalCa = missions.reduce((total, mission) => total + (mission.totalTTC || 0), 0);
+  const avgBasket = missions.length ? totalCa / missions.length : 0;
+  const detailTabs: { id: DetailTab; label: string; count?: number }[] = [
+    { id: 'overview', label: "Vue d'ensemble" },
+    { id: 'missions', label: 'Missions', count: missions.length },
+    { id: 'history', label: 'Historique', count: history.length },
+  ];
+  const shellTitle = displayCompany?.name || selectedListItem?.name || 'Entreprise';
 
   return (
-    <Box sx={{ bgcolor: '#f5f5f7', minHeight: '100vh' }}>
-      {/* Barre de chargement pendant la génération de la convention */}
+    <>
       {generatingConvention && (
         <Box
           sx={{
@@ -1768,1011 +1939,360 @@ const EntrepriseDetail: React.FC = () => {
         </Box>
       )}
 
-      {/* Header */}
-      <Box 
-        sx={{ 
-          bgcolor: 'white', 
-          borderBottom: '1px solid #e5e5e7',
-          position: 'sticky',
-          top: 0,
-          zIndex: 1000
-        }}
-      >
-        <Box 
-          sx={{ 
-            maxWidth: 1200, 
-            mx: 'auto', 
-            px: 3,
-            py: 4,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 3
-          }}
-        >
-          <Box sx={{ position: 'relative' }}>
-            {displayCompany.logo ? (
-              <Box
-                component="img"
-                src={displayCompany.logo}
-                alt={displayCompany.name}
-                sx={{
-                  width: 100,
-                  height: 100,
-                  objectFit: 'contain',
-                  bgcolor: 'white'
-                }}
-              />
-            ) : (
-              <Avatar 
-                sx={{ 
-                  width: 100, 
-                  height: 100,
-                  bgcolor: '#f5f5f7',
-                  color: '#1d1d1f'
-                }}
-              >
-                <BusinessIcon sx={{ fontSize: 50 }} />
-              </Avatar>
-            )}
-            {canWrite && (
-              <Button
-                component="label"
-                variant="outlined"
-                size="small"
-                startIcon={<CloudUploadIcon />}
-                sx={{
-                  position: 'absolute',
-                  bottom: -10,
-                  right: -10,
-                  minWidth: 'auto',
-                  p: 1,
-                  borderRadius: '50%',
-                  bgcolor: 'white',
-                  borderColor: '#d2d2d7',
-                  '&:hover': {
-                    bgcolor: '#f5f5f7',
-                    borderColor: '#86868b'
-                  }
-                }}
-              >
-                <input
-                  type="file"
-                  hidden
-                  accept="image/*"
-                  ref={fileInputRef}
-                  onChange={handleLogoChange}
-                />
-              </Button>
-            )}
-          </Box>
-          
-          <Box sx={{ flex: 1 }}>
-            <Typography 
-              variant="h3" 
-              sx={{ 
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 1
-              }}
-            >
-              {displayCompany.name}
-            </Typography>
-            <Stack direction="row" spacing={2}>
-              {(displayCompany.nSiret && !String(displayCompany.nSiret).startsWith('ENC:')) && (
-                <Chip 
-                  label={`nSiret: ${displayCompany.nSiret}`}
-                  sx={{ 
-                    bgcolor: '#f5f5f7',
-                    color: '#1d1d1f',
-                    borderRadius: '0.8rem'
-                  }}
-                />
-              )}
-              <Chip 
-                label={`${missions.length} missions`}
-                sx={{ 
-                  bgcolor: '#f5f5f7',
-                  color: '#1d1d1f',
-                  borderRadius: '0.8rem'
-                }}
-              />
-            </Stack>
-          </Box>
-          
-          <Stack direction="row" spacing={2}>
-            {canWrite && (
-              <>
-                <Button
-                  startIcon={<EditIcon />}
-                  onClick={handleEditClick}
-                  sx={{
-                    color: '#0066cc',
-                    '&:hover': {
-                      bgcolor: 'transparent',
-                      color: '#0077ed'
-                    }
-                  }}
-                >
-                  Modifier
-                </Button>
-                <Button
-                  startIcon={<DeleteIcon />}
-                  onClick={handleDeleteClick}
-                  sx={{
-                    color: '#ff3b30',
-                    '&:hover': {
-                      bgcolor: 'transparent',
-                      color: '#ff453a'
-                    }
-                  }}
-                >
-                  Supprimer
-                </Button>
-                <Button
-                  variant="contained"
-                  startIcon={generatingConvention ? <CircularProgress size={20} /> : <AssignmentIcon />}
-                  onClick={handleGenerateConvention}
-                  disabled={generatingConvention || !conventionTemplate}
-                  sx={{
-                    bgcolor: '#0066cc',
-                    '&:hover': {
-                      bgcolor: '#0077ed'
-                    },
-                    '&.Mui-disabled': {
-                      bgcolor: '#86868b'
-                    }
-                  }}
-                >
-                  {generatingConvention ? 'Génération...' : 'Générer la convention'}
-                </Button>
-              </>
-            )}
-          </Stack>
-        </Box>
-
-        <Tabs 
-          value={activeTab} 
-          onChange={(_, newValue) => setActiveTab(newValue)}
-          sx={{ 
-            px: 3,
-            '& .MuiTab-root': {
-              textTransform: 'none',
-              fontSize: '1rem',
-              fontWeight: 500,
-              color: '#86868b',
-              '&.Mui-selected': {
-                color: '#1d1d1f'
+      <AppPageShell
+        eyebrow="CRM"
+        title={shellTitle}
+        status={
+          isDetailReady
+            ? {
+                label: activeMissionsCount > 0 ? 'Client actif' : 'Sans mission active',
+                color: activeMissionsCount > 0 ? tokens.colors.success : tokens.colors.gray500,
               }
-            },
-            '& .MuiTabs-indicator': {
-              bgcolor: '#0066cc'
-            }
-          }}
-        >
-          <Tab label="Aperçu" />
-          <Tab label="Missions" />
-          <Tab label="Contacts" />
-          <Tab label="Notes" />
-          <Tab label="Historique" />
-        </Tabs>
-      </Box>
-
-      {/* Content */}
-      <Box sx={{ maxWidth: 1200, mx: 'auto', px: 3, py: 4 }}>
-        <TabPanel value={activeTab} index={0}>
-          <Grid container spacing={4}>
-            <Grid item xs={12} md={8}>
-              <Paper 
-                sx={{ 
-                  p: 3, 
-                  borderRadius: '1.2rem',
-                  border: '1px solid #e5e5e7'
-                }}
+            : undefined
+        }
+        actions={
+          isDetailReady && canWrite ? (
+            <>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<EditIcon />}
+                onClick={handleEditClick}
+                sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}
               >
-                <Typography 
-                  variant="h6" 
-                  sx={{ 
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    mb: 3
-                  }}
-                >
-                  Informations
-                </Typography>
-                
-                <Grid container spacing={3}>
-                  {displayCompany.address && !String(displayCompany.address).startsWith('ENC:') && (
-                    <Grid item xs={12}>
-                      <Box sx={{ display: 'flex', gap: 2 }}>
-                        <LocationIcon sx={{ color: '#86868b' }} />
-                        <Typography>
-                          {displayCompany.address}
-                          {displayCompany.postalCode && displayCompany.city && `, ${displayCompany.postalCode} ${displayCompany.city}`}
-                          {displayCompany.city && !displayCompany.postalCode && `, ${displayCompany.city}`}
-                          {displayCompany.country && `, ${displayCompany.country}`}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                  )}
-                  
-                  {displayCompany.phone && !String(displayCompany.phone).startsWith('ENC:') && (
-                    <Grid item xs={12} sm={6}>
-                      <Box sx={{ display: 'flex', gap: 2 }}>
-                        <PhoneIcon sx={{ color: '#86868b' }} />
-                        <Typography>{displayCompany.phone}</Typography>
-                      </Box>
-                    </Grid>
-                  )}
-                  
-                  {displayCompany.email && (
-                    <Grid item xs={12} sm={6}>
-                      <Box sx={{ display: 'flex', gap: 2 }}>
-                        <EmailIcon sx={{ color: '#86868b' }} />
-                        <Typography>{displayCompany.email}</Typography>
-                      </Box>
-                    </Grid>
-                  )}
-                  
-                  {displayCompany.website && (
-                    <Grid item xs={12}>
-                      <Box sx={{ display: 'flex', gap: 2 }}>
-                        <LanguageIcon sx={{ color: '#86868b' }} />
-                        <Typography>{displayCompany.website}</Typography>
-                      </Box>
-                    </Grid>
-                  )}
-                </Grid>
-              </Paper>
-
-              {/* Section Notes dans Aperçu */}
-              <Paper 
-                sx={{ 
-                  p: 3, 
-                  borderRadius: '1.2rem',
-                  border: '1px solid #e5e5e7',
-                  mt: 3
-                }}
+                Modifier
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                color="error"
+                startIcon={<DeleteIcon />}
+                onClick={handleDeleteClick}
+                sx={{ textTransform: 'none', borderRadius: tokens.radius.md }}
               >
-                <Box sx={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  alignItems: 'center',
-                  mb: 3
-                }}>
-                  <Typography 
-                    variant="h6" 
-                    sx={{ 
-                      color: '#1d1d1f',
-                      fontWeight: 600
-                    }}
-                  >
-                    Notes récentes
-                  </Typography>
-                  <Button
-                    onClick={() => setActiveTab(3)}
-                    sx={{
-                      color: '#0066cc',
-                      '&:hover': {
-                        bgcolor: 'transparent',
-                        color: '#0077ed'
-                      }
-                    }}
-                  >
-                    Voir toutes
-                  </Button>
+                Supprimer
+              </Button>
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={generatingConvention ? <CircularProgress size={16} color="inherit" /> : <AssignmentIcon />}
+                onClick={handleGenerateConvention}
+                disabled={generatingConvention || !conventionTemplate}
+                sx={{ textTransform: 'none', borderRadius: tokens.radius.md, bgcolor: tokens.colors.brandNavy }}
+              >
+                {generatingConvention ? 'Génération...' : 'Générer la convention'}
+              </Button>
+            </>
+          ) : undefined
+        }
+      >
+        <CompaniesLayout
+          directory={
+            <CompanySwitcher
+              companies={allCompanies}
+              selectedId={id}
+              search={directorySearch}
+              onSearchChange={setDirectorySearch}
+              onSelect={(companyId) => navigate(`/app/entreprises/${companyId}`)}
+            />
+          }
+          detail={
+            detailLoading || !displayCompany ? (
+              <CompanyDetailSkeleton />
+            ) : (
+            <Box sx={{ minHeight: '100%', bgcolor: tokens.colors.bgPaper }}>
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2, p: 2.5, pb: 0 }}>
+                <Box sx={{ position: 'relative', flexShrink: 0 }}>
+                  {displayCompany.logo ? (
+                    <img
+                      src={displayCompany.logo}
+                      alt={displayCompany.name}
+                      style={{ width: 56, height: 56, objectFit: 'contain', borderRadius: 12, border: `1px solid ${tokens.colors.divider}`, background: '#fff', padding: 4 }}
+                    />
+                  ) : (
+                    <Avatar sx={{ width: 56, height: 56, borderRadius: tokens.radius.lg, bgcolor: tokens.colors.brandNavy }}>
+                      <BusinessIcon />
+                    </Avatar>
+                  )}
+                  {canWrite && (
+                    <Button
+                      component="label"
+                      size="small"
+                      sx={{ position: 'absolute', bottom: -6, right: -6, minWidth: 0, p: 0.5, borderRadius: '50%', bgcolor: '#fff', border: `1px solid ${tokens.colors.divider}` }}
+                    >
+                      <CloudUploadIcon sx={{ fontSize: 14 }} />
+                      <input type="file" hidden accept="image/*" ref={fileInputRef} onChange={handleLogoChange} />
+                    </Button>
+                  )}
                 </Box>
-                
-                {notes.length > 0 ? (
-                  <List sx={{ p: 0 }}>
-                    {notes.slice(0, 3).map((note, index) => (
-                      <React.Fragment key={note.id}>
-                        <ListItem 
-                          sx={{ 
-                            p: 2,
-                            '&:hover': {
-                              bgcolor: '#f9f9f9'
-                            }
-                          }}
-                        >
-                          <ListItemAvatar>
-                            <Avatar sx={{ bgcolor: '#f5f5f7', color: '#1d1d1f', width: 32, height: 32 }}>
-                              <NoteIcon sx={{ fontSize: 16 }} />
-                            </Avatar>
-                          </ListItemAvatar>
-                          <ListItemText
-                            primary={
-                              <Typography 
-                                component="span"
-                                sx={{ 
-                                  color: '#1d1d1f',
-                                  whiteSpace: 'pre-wrap',
-                                  fontSize: '0.875rem',
-                                  lineHeight: 1.4
-                                }}
-                              >
-                                {note.content.length > 150 
-                                  ? `${note.content.substring(0, 150)}...` 
-                                  : note.content
-                                }
-                              </Typography>
-                            }
-                            secondary={
-                              <Box component="span" sx={{ mt: 1 }}>
-                                <Typography 
-                                  component="span"
-                                  variant="caption" 
-                                  sx={{ 
-                                    color: '#86868b',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 1
-                                  }}
-                                >
-                                  <PersonIcon sx={{ fontSize: 14 }} />
-                                  {note.authorName} • {formatDate(note.createdAt)}
-                                </Typography>
-                              </Box>
-                            }
-                          />
-                          <IconButton
-                            onClick={() => handleDeleteNote(note.id)}
-                            size="small"
-                            sx={{
-                              color: '#86868b',
-                              '&:hover': {
-                                bgcolor: 'transparent',
-                                color: '#ff3b30'
-                              }
-                            }}
-                          >
-                            <DeleteIcon sx={{ fontSize: 18 }} />
-                          </IconButton>
-                        </ListItem>
-                        {index < Math.min(notes.length, 3) - 1 && (
-                          <Divider />
-                        )}
-                      </React.Fragment>
-                    ))}
-                  </List>
-                ) : (
-                  <Typography 
-                    align="center" 
-                    sx={{ 
-                      color: '#86868b',
-                      py: 3
-                    }}
-                  >
-                    Aucune note
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography sx={{ fontSize: 11, color: tokens.colors.gray500, mb: 0.5 }}>
+                    {displayCompany.city || 'Ville non renseignée'}
+                    {company?.createdAt ? ` · Ajoutée ${formatDate(company.createdAt)}` : ''}
                   </Typography>
-                )}
-              </Paper>
-            </Grid>
+                  {(displayCompany.nSiret && !String(displayCompany.nSiret).startsWith('ENC:')) && (
+                    <Typography sx={{ fontSize: 12, color: tokens.colors.gray500 }}>SIRET {displayCompany.nSiret}</Typography>
+                  )}
+                </Box>
+              </Box>
 
-            <Grid item xs={12} md={4}>
-              <Paper 
-                sx={{ 
-                  p: 3, 
-                  borderRadius: '1.2rem',
-                  border: '1px solid #e5e5e7'
-                }}
+              <Tabs
+                value={detailTabs.findIndex((t) => t.id === activeTab)}
+                onChange={(_, index) => setActiveTab(detailTabs[index].id)}
+                sx={{ ...dsTabsSx, px: 2.5, borderBottom: `1px solid ${tokens.colors.divider}` }}
               >
-                <Typography 
-                  variant="h6" 
-                  sx={{ 
-                    color: '#1d1d1f',
-                    fontWeight: 600,
-                    mb: 3
-                  }}
-                >
-                  Statistiques
-                </Typography>
-                
-                <Stack spacing={2}>
-                  <Box>
-                    <Typography variant="body2" color="#86868b">
-                      Missions totales
-                    </Typography>
-                    <Typography variant="h4" sx={{ color: '#1d1d1f', fontWeight: 600 }}>
-                      {missions.length}
-                    </Typography>
-                  </Box>
+                {detailTabs.map((tab) => (
+                  <Tab
+                    key={tab.id}
+                    label={
+                      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                        {tab.label}
+                        {tab.count != null && (
+                          <Box component="span" sx={{ fontSize: 10, px: 0.75, py: 0.125, borderRadius: tokens.radius.pill, bgcolor: tokens.colors.gray100, color: tokens.colors.gray600, fontWeight: 600 }}>
+                            {tab.count}
+                          </Box>
+                        )}
+                      </Box>
+                    }
+                  />
+                ))}
+              </Tabs>
 
-                  <Box>
-                    <Typography variant="body2" color="#86868b">
-                      Missions en cours
-                    </Typography>
-                    <Typography variant="h4" sx={{ color: '#1d1d1f', fontWeight: 600 }}>
-                      {missions.filter(m => m.status === 'en_cours').length}
-                    </Typography>
-                  </Box>
-                  
-                  <Box>
-                    <Typography variant="body2" color="#86868b">
-                      CA Total
-                    </Typography>
-                    <Typography variant="h4" sx={{ color: '#1d1d1f', fontWeight: 600 }}>
-                      {new Intl.NumberFormat('fr-FR', { 
-                        style: 'currency', 
-                        currency: 'EUR',
-                        maximumFractionDigits: 0
-                      }).format(missions.reduce((total, mission) => {
-                        return total + (mission.totalTTC || 0);
-                      }, 0))}
-                    </Typography>
-                  </Box>
-                </Stack>
-              </Paper>
-            </Grid>
-          </Grid>
-        </TabPanel>
-
-        <TabPanel value={activeTab} index={1}>
-          <Paper 
-            sx={{ 
-              borderRadius: '1.2rem',
-              border: '1px solid #e5e5e7',
-              overflow: 'hidden'
-            }}
-          >
-            <Box sx={{ p: 3, borderBottom: '1px solid #e5e5e7' }}>
-              <Typography variant="h6" sx={{ color: '#1d1d1f', fontWeight: 600 }}>
-                Missions
-              </Typography>
-            </Box>
-            
-            <List sx={{ p: 0 }}>
-              {missions.map((mission, index) => (
-                <React.Fragment key={mission.id}>
-                  <ListItem 
-                    sx={{ 
-                      p: 3,
-                      cursor: 'pointer',
-                      '&:hover': {
-                        bgcolor: '#f9f9f9'
-                      }
-                    }}
-                    onClick={() => navigate(`/app/mission/${mission.id}`)}
-                  >
-                    <ListItemAvatar>
-                      <Avatar sx={{ bgcolor: '#f5f5f7', color: '#1d1d1f' }}>
-                        <AssignmentIcon />
-                      </Avatar>
-                    </ListItemAvatar>
-                    <ListItemText
-                      primary={
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                          <Typography 
-                            component="span" 
-                            sx={{ color: '#1d1d1f', fontWeight: 500, flex: 1 }}
-                          >
-                            {mission.title || `Mission #${mission.numeroMission}`}
-                          </Typography>
-                          <Typography 
-                            sx={{ 
-                              color: '#1d1d1f',
-                              fontWeight: 600
-                            }}
-                          >
-                            {new Intl.NumberFormat('fr-FR', { 
-                              style: 'currency', 
-                              currency: 'EUR',
-                              maximumFractionDigits: 0
-                            }).format(mission.totalTTC)}
-                          </Typography>
+              <Box sx={{ p: 2.5 }}>
+                {showSecondarySkeleton ? (
+                  <CompanyDetailContentSkeleton />
+                ) : (
+                  <>
+                {activeTab === 'overview' && (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <DetailPanel title="Informations">
+                      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: 'repeat(3, 1fr)' }, gap: 2 }}>
+                        {[
+                          { label: 'Raison sociale', value: displayCompany.name },
+                          { label: 'SIRET', value: displayCompany.nSiret },
+                          { label: 'Adresse', value: displayCompany.address },
+                          { label: 'Code postal', value: displayCompany.postalCode },
+                          { label: 'Ville', value: displayCompany.city },
+                          { label: 'Pays', value: displayCompany.country },
+                          { label: 'Site web', value: displayCompany.website },
+                          { label: 'Email', value: displayCompany.email },
+                          { label: 'Téléphone', value: displayCompany.phone },
+                        ].map((field) => (
+                          <Box key={field.label}>
+                            <Typography sx={{ fontSize: 11, color: tokens.colors.gray400, mb: 0.5 }}>{field.label}</Typography>
+                            {field.value && !String(field.value).startsWith('ENC:') ? (
+                              <Typography sx={{ fontSize: 13, fontWeight: 500, color: tokens.colors.gray900 }}>{field.value}</Typography>
+                            ) : (
+                              <Typography sx={{ fontSize: 12, color: tokens.colors.gray300, fontStyle: 'italic' }}>Non renseigné</Typography>
+                            )}
+                          </Box>
+                        ))}
+                      </Box>
+                      {displayCompany.description && (
+                        <Box sx={{ mt: 2, pt: 2, borderTop: `1px solid ${tokens.colors.gray100}` }}>
+                          <Typography sx={{ fontSize: 11, color: tokens.colors.gray400, mb: 0.5 }}>Description</Typography>
+                          <Typography sx={{ fontSize: 13, color: tokens.colors.gray700, lineHeight: 1.6 }}>{displayCompany.description}</Typography>
                         </Box>
-                      }
-                      secondary={
-                        <Box sx={{ mt: 1 }}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1 }}>
-                            <Chip 
+                      )}
+                    </DetailPanel>
+                    <DetailPanel title="Indicateurs">
+                      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4, 1fr)' }, gap: 1.5 }}>
+                        <DetailKpiCard label="CA total" value={formatEur(totalCa)} />
+                        <DetailKpiCard label="Missions" value={missions.length} />
+                        <DetailKpiCard label="En cours" value={activeMissionsCount} />
+                        <DetailKpiCard label="Panier moyen" value={formatEur(avgBasket)} />
+                      </Box>
+                    </DetailPanel>
+                  </Box>
+                )}
+
+                {activeTab === 'missions' && (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                    {missions.length === 0 ? (
+                      <Box sx={{ p: 5, textAlign: 'center', border: `1px dashed ${tokens.colors.divider}`, borderRadius: tokens.radius.lg }}>
+                        <AssignmentIcon sx={{ color: tokens.colors.gray300, fontSize: 32, mb: 1 }} />
+                        <Typography sx={{ fontSize: 13, color: tokens.colors.gray500 }}>Aucune mission avec cette entreprise.</Typography>
+                      </Box>
+                    ) : (
+                      missions.map((mission) => (
+                        <Box
+                          key={mission.id}
+                          onClick={() => navigate(`/app/mission/${mission.id}`)}
+                          sx={{ p: 2, border: `1px solid ${tokens.colors.divider}`, borderRadius: tokens.radius.lg, bgcolor: tokens.colors.bgPaper, cursor: 'pointer', '&:hover': { borderColor: tokens.colors.brandTeal } }}
+                        >
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                            <Typography sx={{ fontFamily: 'monospace', fontSize: 11, color: tokens.colors.gray400 }}>M-{mission.numeroMission}</Typography>
+                            <Chip
                               label={mission.status}
                               size="small"
-                              sx={{ 
-                                bgcolor: mission.status === 'en_cours' ? '#e3f2fd' : '#f5f5f7',
-                                color: mission.status === 'en_cours' ? '#0066cc' : '#86868b',
-                                borderRadius: '0.6rem'
-                              }}
-                            />
-                            <span style={{ color: '#86868b', fontSize: '0.875rem' }}>
-                              {mission.hours} heures • {mission.priceHT}€/h
-                            </span>
-                          </Box>
-                          {(mission.contact && mission.contact.firstName && mission.contact.lastName) ? (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
-                              <PersonIcon sx={{ fontSize: 16, color: '#86868b' }} />
-                              <span style={{ color: '#86868b', fontSize: '0.875rem' }}>
-                                {mission.contact.firstName} {mission.contact.lastName}
-                                {mission.contact.position && ` • ${mission.contact.position}`}
-                              </span>
-                            </Box>
-                          ) : (
-                            <span style={{ color: '#86868b', fontSize: '0.875rem', display: 'block', marginTop: '8px' }}>
-                              Aucun contact associé
-                            </span>
-                          )}
-                        </Box>
-                      }
-                    />
-                  </ListItem>
-                  {index < missions.length - 1 && (
-                    <Divider />
-                  )}
-                </React.Fragment>
-              ))}
-              {missions.length === 0 && (
-                <ListItem sx={{ p: 4 }}>
-                  <ListItemText 
-                    primary={
-                      <Typography 
-                        align="center" 
-                        sx={{ color: '#86868b' }}
-                      >
-                        Aucune mission
-                      </Typography>
-                    }
-                  />
-                </ListItem>
-              )}
-            </List>
-          </Paper>
-        </TabPanel>
-
-        <TabPanel value={activeTab} index={2}>
-          <Paper 
-            sx={{ 
-              borderRadius: '1.2rem',
-              border: '1px solid #e5e5e7'
-            }}
-          >
-            <Box sx={{ 
-              p: 3, 
-              borderBottom: '1px solid #e5e5e7',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center'
-            }}>
-              <Typography variant="h6" sx={{ color: '#1d1d1f', fontWeight: 600 }}>
-                Contacts
-              </Typography>
-              <Button
-                startIcon={<AddIcon />}
-                onClick={() => setAddContactDialogOpen(true)}
-                sx={{
-                  color: '#0066cc',
-                  '&:hover': {
-                    bgcolor: 'transparent',
-                    color: '#0077ed'
-                  }
-                }}
-              >
-                Ajouter
-              </Button>
-            </Box>
-            
-            <List sx={{ p: 0 }}>
-              {displayContacts.map((contact, index) => (
-                <React.Fragment key={contact.id}>
-                  <ListItem 
-                    sx={{ 
-                      p: 3,
-                      '&:hover': {
-                        bgcolor: '#f9f9f9',
-                        borderRadius: index === 0 ? '1.2rem 1.2rem 0 0' : 
-                                     index === displayContacts.length - 1 ? '0 0 1.2rem 1.2rem' : 
-                                     '0'
-                      }
-                    }}
-                  >
-                    <ListItemAvatar>
-                      <Avatar sx={{ bgcolor: '#f5f5f7', color: '#1d1d1f' }}>
-                        <PersonIcon />
-                      </Avatar>
-                    </ListItemAvatar>
-                    <ListItemText
-                      primary={
-                        <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <Typography 
-                            component="span"
-                            sx={{ color: '#1d1d1f', fontWeight: 500 }}
-                          >
-                            {contact.firstName} {contact.lastName}
-                          </Typography>
-                          {contact.isDefault && (
-                            <Chip
-                              label="Contact principal"
-                              size="small"
                               sx={{
-                                bgcolor: '#e8f0fe',
-                                color: '#0066cc',
-                                fontSize: '0.75rem',
-                                height: '20px'
+                                bgcolor: mission.status === 'en_cours' ? tokens.colors.brandTeal100 : tokens.colors.gray100,
+                                color: mission.status === 'en_cours' ? tokens.colors.brandTeal700 : tokens.colors.gray600,
+                                fontSize: 10,
+                                fontWeight: 700,
                               }}
                             />
-                          )}
-                        </Box>
-                      }
-                      secondary={
-                        <Box component="span" sx={{ mt: 1 }}>
-                          <Typography 
-                            component="span"
-                            variant="body2" 
-                            sx={{ color: '#86868b' }}
-                          >
-                            {contact.position}
+                            <Typography sx={{ ml: 'auto', fontSize: 15, fontWeight: 700, color: tokens.colors.gray900 }}>{formatEur(mission.totalTTC)}</Typography>
+                          </Box>
+                          <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900, mb: 0.5 }}>
+                            {mission.title || `Mission #${mission.numeroMission}`}
                           </Typography>
-                          <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
-                            <Typography 
-                              component="span"
-                              variant="body2" 
-                              sx={{ 
-                                color: '#0066cc',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 0.5
-                              }}
-                            >
-                              <EmailIcon sx={{ fontSize: 16 }} />
-                              {contact.email}
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, flexWrap: 'wrap', pt: 1.25, borderTop: `1px solid ${tokens.colors.gray100}` }}>
+                            {mission.contact?.firstName && mission.contact?.lastName ? (
+                              <Typography sx={{ fontSize: 12, color: tokens.colors.gray600 }}>
+                                Chargé de mission · {mission.contact.firstName} {mission.contact.lastName}
+                              </Typography>
+                            ) : (
+                              <Typography sx={{ fontSize: 12, color: tokens.colors.gray400 }}>Chargé de mission non assigné</Typography>
+                            )}
+                            <Typography sx={{ fontSize: 12, color: tokens.colors.gray500 }}>
+                              {formatDate(mission.startDate)}{mission.endDate ? ` → ${formatDate(mission.endDate)}` : ''}
                             </Typography>
-                            {contact.phone && (
-                              <Typography 
-                                component="span"
-                                variant="body2" 
-                                sx={{ 
-                                  color: '#0066cc',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 0.5
-                                }}
-                              >
-                                <PhoneIcon sx={{ fontSize: 16 }} />
-                                {contact.phone}
-                              </Typography>
-                            )}
-                            {contact.linkedin && (
-                              <Link
-                                href={contact.linkedin}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                sx={{ 
-                                  color: '#0066cc',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 0.5,
-                                  textDecoration: 'none',
-                                  '&:hover': {
-                                    textDecoration: 'underline'
-                                  }
-                                }}
-                              >
-                                <LinkedInIcon sx={{ fontSize: 16 }} />
-                                LinkedIn
-                              </Link>
-                            )}
-                          </Stack>
-                          {contact.notes && contact.notes.length > 0 && (
-                            <Box component="span" sx={{ mt: 2 }}>
-                              <Typography 
-                                component="span"
-                                variant="body2" 
-                                sx={{ 
-                                  color: '#86868b',
-                                  fontWeight: 500,
-                                  mb: 1
-                                }}
-                              >
-                                Notes
-                              </Typography>
-                              {contact.notes.map((note, noteIndex) => (
-                                <Box 
-                                  key={note.id}
-                                  component="span"
-                                  sx={{ 
-                                    p: 2,
-                                    bgcolor: '#f5f5f7',
-                                    borderRadius: '0.8rem',
-                                    mb: noteIndex < contact.notes!.length - 1 ? 1 : 0
-                                  }}
-                                >
-                                  <Typography component="span" variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                                    {note.content}
-                                  </Typography>
-                                  <Typography 
-                                    component="span"
-                                    variant="caption" 
-                                    sx={{ 
-                                      color: '#86868b',
-                                      display: 'block',
-                                      mt: 1
-                                    }}
-                                  >
-                                    {note.authorName} • {formatDate(note.createdAt)}
-                                  </Typography>
-                                </Box>
-                              ))}
-                            </Box>
-                          )}
+                          </Box>
                         </Box>
-                      }
-                    />
-                    <IconButton
-                      onClick={(e) => handleContactMenuOpen(e, contact)}
-                      sx={{
-                        color: '#86868b',
-                        '&:hover': {
-                          bgcolor: 'transparent',
-                          color: '#1d1d1f'
-                        }
-                      }}
-                    >
-                      <MoreVertIcon />
-                    </IconButton>
-                  </ListItem>
-                  {index < (company.contacts?.length || 0) - 1 && (
-                    <Divider />
-                  )}
-                </React.Fragment>
-              ))}
-              {!company.contacts?.length && (
-                <ListItem sx={{ p: 4 }}>
-                  <ListItemText 
-                    primary={
-                      <Typography 
-                        align="center" 
-                        sx={{ color: '#86868b' }}
-                      >
-                        Aucun contact
-                      </Typography>
-                    }
-                  />
-                </ListItem>
-              )}
-            </List>
-          </Paper>
-        </TabPanel>
+                      ))
+                    )}
+                  </Box>
+                )}
 
-        <TabPanel value={activeTab} index={3}>
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={8}>
-              <Paper 
-                sx={{ 
-                  borderRadius: '1.2rem',
-                  border: '1px solid #e5e5e7'
-                }}
+                {activeTab === 'history' && (
+                  <DetailPanel title="Historique des modifications">
+                    {history.length === 0 ? (
+                      <Typography sx={{ textAlign: 'center', color: tokens.colors.gray500, py: 3 }}>Aucun historique disponible</Typography>
+                    ) : (
+                      <List sx={{ p: 0 }}>
+                        {history.map((item, index) => (
+                          <React.Fragment key={item.id}>
+                            <ListItem sx={{ px: 0, py: 1.5 }}>
+                              <ListItemAvatar>
+                                <Avatar sx={{ bgcolor: tokens.colors.gray100, color: tokens.colors.gray700, width: 32, height: 32 }}>
+                                  {item.type === 'creation' && <BusinessIcon sx={{ fontSize: 16 }} />}
+                                  {item.type === 'modification' && <EditIcon sx={{ fontSize: 16 }} />}
+                                  {item.type === 'mission' && <AssignmentIcon sx={{ fontSize: 16 }} />}
+                                  {item.type === 'contact' && <PersonIcon sx={{ fontSize: 16 }} />}
+                                  {item.type === 'note' && <NoteIcon sx={{ fontSize: 16 }} />}
+                                </Avatar>
+                              </ListItemAvatar>
+                              <ListItemText
+                                primary={<Typography sx={{ fontSize: 13, fontWeight: 600, color: tokens.colors.gray900 }}>{item.description}</Typography>}
+                                secondary={<UserReferenceText userId={item.createdBy} name={item.authorName} component="span" sx={{ fontSize: 11, color: tokens.colors.gray500, mt: 0.25 }} />}
+                              />
+                            </ListItem>
+                            {index < history.length - 1 && <Divider />}
+                          </React.Fragment>
+                        ))}
+                      </List>
+                    )}
+                  </DetailPanel>
+                )}
+                  </>
+                )}
+              </Box>
+            </Box>
+            )
+          }
+          rail={
+            detailLoading || !displayCompany || showSecondarySkeleton ? (
+              <CompanyDetailRailSkeleton />
+            ) : (
+            <Box>
+              <SidebarBlock
+                title="Contacts"
+                action={
+                  canWrite ? (
+                    <IconButton size="small" onClick={() => setAddContactDialogOpen(true)} sx={{ border: `1px solid ${tokens.colors.divider}`, borderRadius: tokens.radius.md }}>
+                      <AddIcon fontSize="small" />
+                    </IconButton>
+                  ) : undefined
+                }
               >
-                <Box sx={{ p: 3, borderBottom: '1px solid #e5e5e7' }}>
-                  <Typography variant="h6" sx={{ color: '#1d1d1f', fontWeight: 600 }}>
-                    Notes
-                  </Typography>
-                </Box>
-                
-                <List sx={{ p: 0 }}>
-                  {notes.map((note, index) => (
-                    <React.Fragment key={note.id}>
-                      <ListItem 
-                        sx={{ 
-                          p: 3,
-                          '&:hover': {
-                            bgcolor: '#f9f9f9'
-                          }
-                        }}
-                      >
-                        <ListItemAvatar>
-                          <Avatar sx={{ bgcolor: '#f5f5f7', color: '#1d1d1f' }}>
-                            <NoteIcon />
-                          </Avatar>
-                        </ListItemAvatar>
-                        <ListItemText
-                          primary={
-                            <Typography 
-                              component="span"
-                              sx={{ 
-                                color: '#1d1d1f',
-                                whiteSpace: 'pre-wrap'
-                              }}
-                            >
-                              {note.content}
-                            </Typography>
-                          }
-                          secondary={
-                            <Box component="span" sx={{ mt: 1 }}>
-                              <Typography 
-                                component="span"
-                                variant="body2" 
-                                sx={{ 
-                                  color: '#86868b',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 1
-                                }}
-                              >
-                                <PersonIcon sx={{ fontSize: 16 }} />
-                                {note.authorName}
-                              </Typography>
-                            </Box>
-                          }
+                {displayContacts.length === 0 ? (
+                  <Typography sx={{ fontSize: 12, color: tokens.colors.gray500, textAlign: 'center', py: 1 }}>Aucun contact</Typography>
+                ) : (
+                  [...displayContacts]
+                    .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0))
+                    .map((contact) => (
+                      <Box key={contact.id} sx={{ position: 'relative', mb: 1 }}>
+                        <ContactCard
+                          name={`${contact.firstName} ${contact.lastName}`}
+                          role={contact.position}
+                          email={contact.email}
+                          phone={contact.phone}
+                          primary={contact.isDefault}
                         />
                         {canWrite && (
                           <IconButton
-                            onClick={() => handleDeleteNote(note.id)}
-                            sx={{
-                              color: '#86868b',
-                              '&:hover': {
-                                bgcolor: 'transparent',
-                                color: '#ff3b30'
-                              }
-                            }}
+                            size="small"
+                            onClick={(e) => handleContactMenuOpen(e, contact)}
+                            sx={{ position: 'absolute', top: 8, right: 8 }}
                           >
-                            <DeleteIcon />
+                            <MoreVertIcon fontSize="small" />
                           </IconButton>
                         )}
-                      </ListItem>
-                      {index < notes.length - 1 && (
-                        <Divider />
-                      )}
-                    </React.Fragment>
-                  ))}
-                  {notes.length === 0 && (
-                    <ListItem sx={{ p: 4 }}>
-                      <ListItemText 
-                        primary={
-                          <Typography 
-                            align="center" 
-                            sx={{ color: '#86868b' }}
-                          >
-                            Aucune note
-                          </Typography>
-                        }
-                      />
-                    </ListItem>
-                  )}
-                </List>
-              </Paper>
-            </Grid>
+                      </Box>
+                    ))
+                )}
+              </SidebarBlock>
 
-            {canWrite && (
-              <Grid item xs={12} md={4}>
-                <Paper 
-                  sx={{ 
-                    p: 3, 
-                    borderRadius: '1.2rem',
-                    border: '1px solid #e5e5e7'
-                  }}
-                >
-                  <Typography 
-                    variant="h6" 
-                    sx={{ 
-                      color: '#1d1d1f',
-                      fontWeight: 600,
-                      mb: 2
-                    }}
-                  >
-                    Ajouter une note
-                  </Typography>
-                  
-                  <TaggingInput
-                    value={newNote}
-                    onChange={setNewNote}
-                    placeholder="Écrivez votre note ici..."
-                    multiline={true}
-                    rows={4}
-                    availableUsers={availableUsers}
-                    onTaggedUsersChange={setTaggedUsers}
-                  />
-                  
-                  <Box sx={{ mb: 2 }} />
-                  
-                  <Button
-                    fullWidth
-                    variant="contained"
-                    startIcon={<SaveIcon />}
-                    onClick={handleSaveNote}
-                    disabled={!newNote.trim()}
-                    sx={{
-                      bgcolor: '#0066cc',
-                      borderRadius: '0.8rem',
-                      py: 1,
-                      '&:hover': {
-                        bgcolor: '#0077ed'
-                      },
-                      '&.Mui-disabled': {
-                        bgcolor: '#86868b'
-                      }
-                    }}
-                  >
-                    Enregistrer
-                  </Button>
-                </Paper>
-              </Grid>
-            )}
-          </Grid>
-        </TabPanel>
+              <SidebarBlock title="Synthèse">
+                <Box sx={{ display: 'grid', gap: 1 }}>
+                  <DetailKpiCard label="Missions totales" value={missions.length} />
+                  <DetailKpiCard label="Missions en cours" value={activeMissionsCount} />
+                  <DetailKpiCard label="CA total" value={formatEur(totalCa)} />
+                </Box>
+              </SidebarBlock>
 
-        <TabPanel value={activeTab} index={4}>
-          <Paper 
-            sx={{ 
-              p: 3, 
-              borderRadius: '1.2rem',
-              border: '1px solid #e5e5e7'
-            }}
-          >
-            <Typography 
-              variant="h6" 
-              sx={{ 
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 3
-              }}
-            >
-              Historique des modifications
-            </Typography>
-            
-            {history.length === 0 ? (
-              <Typography color="text.secondary" sx={{ textAlign: 'center', py: 4 }}>
-                Aucun historique disponible
-              </Typography>
-            ) : (
-              <List sx={{ p: 0 }}>
-                {history.map((item, index) => (
-                  <React.Fragment key={item.id}>
-                    <ListItem 
-                      sx={{ 
-                        p: 3,
-                        '&:hover': {
-                          bgcolor: '#f9f9f9'
-                        }
-                      }}
+              <SidebarBlock title="Notes">
+                {canWrite && (
+                  <Box sx={{ mb: 1.5 }}>
+                    <TaggingInput
+                      value={newNote}
+                      onChange={setNewNote}
+                      placeholder="Écrire une note interne…"
+                      multiline
+                      rows={3}
+                      availableUsers={availableUsers}
+                      onTaggedUsersChange={setTaggedUsers}
+                    />
+                    <Button
+                      fullWidth
+                      size="small"
+                      variant="contained"
+                      startIcon={<SaveIcon />}
+                      onClick={handleSaveNote}
+                      disabled={!newNote.trim()}
+                      sx={{ mt: 1, textTransform: 'none', borderRadius: tokens.radius.md, bgcolor: tokens.colors.brandTeal }}
                     >
-                      <ListItemAvatar>
-                        <Avatar sx={{ bgcolor: '#f5f5f7', color: '#1d1d1f' }}>
-                          {item.type === 'creation' && <BusinessIcon />}
-                          {item.type === 'modification' && <EditIcon />}
-                          {item.type === 'mission' && <AssignmentIcon />}
-                          {item.type === 'contact' && <PersonIcon />}
-                          {item.type === 'note' && <NoteIcon />}
-                        </Avatar>
-                      </ListItemAvatar>
-                      <ListItemText
-                        primary={
-                          <Typography 
-                            component="span"
-                            sx={{ 
-                              color: '#1d1d1f',
-                              fontWeight: 500
-                            }}
-                          >
-                            {item.description}
-                          </Typography>
-                        }
-                        secondary={
-                          <Box component="span" sx={{ mt: 1 }}>
-                            <Typography 
-                              component="span"
-                              variant="body2" 
-                              sx={{ 
-                                color: '#86868b',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 1
-                              }}
-                            >
-                              <PersonIcon sx={{ fontSize: 16 }} />
-                              {item.authorName}
-                            </Typography>
-                          </Box>
-                        }
-                      />
-                    </ListItem>
-                    {index < history.length - 1 && (
-                      <Divider />
-                    )}
-                  </React.Fragment>
-                ))}
-              </List>
-            )}
-          </Paper>
-        </TabPanel>
-      </Box>
+                      Ajouter
+                    </Button>
+                  </Box>
+                )}
+                {notes.length === 0 ? (
+                  <Typography sx={{ fontSize: 12, color: tokens.colors.gray500, textAlign: 'center', py: 1 }}>Aucune note</Typography>
+                ) : (
+                  notes.map((note) => (
+                    <Box key={note.id} sx={{ p: 1.25, mb: 1, border: `1px solid ${tokens.colors.divider}`, borderRadius: tokens.radius.md, bgcolor: tokens.colors.bgPaper }}>
+                      <Typography sx={{ fontSize: 12, color: tokens.colors.gray700, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{note.content}</Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 1 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 10, color: tokens.colors.gray400 }}>
+                          <UserReferenceText userId={note.createdBy} name={note.authorName} component="span" sx={{ fontSize: 10, color: tokens.colors.gray400 }} />
+                          <span>· {formatDate(note.createdAt)}</span>
+                        </Box>
+                        {canWrite && (
+                          <IconButton size="small" onClick={() => handleDeleteNote(note.id)}>
+                            <DeleteIcon sx={{ fontSize: 14 }} />
+                          </IconButton>
+                        )}
+                      </Box>
+                    </Box>
+                  ))
+                )}
+              </SidebarBlock>
+            </Box>
+            )
+          }
+        />
+      </AppPageShell>
 
       {/* Dialog d'édition */}
       <Dialog 
@@ -2925,22 +2445,22 @@ const EntrepriseDetail: React.FC = () => {
       >
         <DialogTitle sx={{ 
           p: 3, 
-          borderBottom: '1px solid #e5e5e7',
+          borderBottom: `1px solid ${tokens.colors.borderDefault}`,
           display: 'flex', 
           justifyContent: 'space-between', 
           alignItems: 'center'
         }}>
-          <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+          <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
             Ajouter un contact
           </Typography>
           <IconButton 
             onClick={() => setAddContactDialogOpen(false)} 
             size="small"
             sx={{ 
-              color: '#86868b',
+              color: tokens.colors.textSecondary,
               '&:hover': {
                 bgcolor: 'transparent',
-                color: '#1d1d1f'
+                color: tokens.colors.textPrimary
               }
             }}
           >
@@ -2959,7 +2479,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -2976,7 +2496,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -2997,7 +2517,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3014,7 +2534,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3035,7 +2555,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3053,7 +2573,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3074,7 +2594,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3092,7 +2612,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3113,7 +2633,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3130,7 +2650,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3151,7 +2671,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3169,7 +2689,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3190,7 +2710,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3209,7 +2729,7 @@ const EntrepriseDetail: React.FC = () => {
                         borderRadius: '0.6rem',
                         transition: 'all 0.2s ease',
                         '&:hover': {
-                          bgcolor: '#f5f5f7'
+                          bgcolor: tokens.colors.bgSubtle
                         }
                       }}
                       onClick={() => setNewContact(prev => ({ ...prev, gender: 'homme' }))}
@@ -3240,7 +2760,7 @@ const EntrepriseDetail: React.FC = () => {
                       <Typography
                         sx={{
                           fontSize: '0.875rem',
-                          color: newContact.gender === 'homme' ? '#1d1d1f' : '#86868b',
+                          color: newContact.gender === 'homme' ? tokens.colors.textPrimary : tokens.colors.textSecondary,
                           fontWeight: newContact.gender === 'homme' ? 500 : 400,
                           transition: 'all 0.2s ease'
                         }}
@@ -3258,7 +2778,7 @@ const EntrepriseDetail: React.FC = () => {
                         borderRadius: '0.6rem',
                         transition: 'all 0.2s ease',
                         '&:hover': {
-                          bgcolor: '#f5f5f7'
+                          bgcolor: tokens.colors.bgSubtle
                         }
                       }}
                       onClick={() => setNewContact(prev => ({ ...prev, gender: 'femme' }))}
@@ -3289,7 +2809,7 @@ const EntrepriseDetail: React.FC = () => {
                       <Typography
                         sx={{
                           fontSize: '0.875rem',
-                          color: newContact.gender === 'femme' ? '#1d1d1f' : '#86868b',
+                          color: newContact.gender === 'femme' ? tokens.colors.textPrimary : tokens.colors.textSecondary,
                           fontWeight: newContact.gender === 'femme' ? 500 : 400,
                           transition: 'all 0.2s ease'
                         }}
@@ -3305,17 +2825,17 @@ const EntrepriseDetail: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ 
           p: 3, 
-          borderTop: '1px solid #e5e5e7',
+          borderTop: `1px solid ${tokens.colors.borderDefault}`,
           justifyContent: 'flex-end',
           gap: 1
         }}>
           <Button 
             onClick={() => setAddContactDialogOpen(false)}
             sx={{ 
-              color: '#86868b',
+              color: tokens.colors.textSecondary,
               '&:hover': {
                 bgcolor: 'transparent',
-                color: '#1d1d1f'
+                color: tokens.colors.textPrimary
               }
             }}
           >
@@ -3334,7 +2854,7 @@ const EntrepriseDetail: React.FC = () => {
                 bgcolor: '#0077ed'
               },
               '&.Mui-disabled': {
-                bgcolor: '#86868b'
+                bgcolor: tokens.colors.textSecondary
               }
             }}
           >
@@ -3358,22 +2878,22 @@ const EntrepriseDetail: React.FC = () => {
       >
         <DialogTitle sx={{ 
           p: 3, 
-          borderBottom: '1px solid #e5e5e7',
+          borderBottom: `1px solid ${tokens.colors.borderDefault}`,
           display: 'flex', 
           justifyContent: 'space-between', 
           alignItems: 'center'
         }}>
-          <Typography variant="h6" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+          <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
             Modifier le contact
           </Typography>
           <IconButton 
             onClick={() => setEditContactDialogOpen(false)} 
             size="small"
             sx={{ 
-              color: '#86868b',
+              color: tokens.colors.textSecondary,
               '&:hover': {
                 bgcolor: 'transparent',
-                color: '#1d1d1f'
+                color: tokens.colors.textPrimary
               }
             }}
           >
@@ -3392,7 +2912,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3409,7 +2929,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3430,7 +2950,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3447,7 +2967,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3468,7 +2988,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3486,7 +3006,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3507,7 +3027,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3525,7 +3045,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3546,7 +3066,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3563,7 +3083,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3584,7 +3104,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3602,7 +3122,7 @@ const EntrepriseDetail: React.FC = () => {
                     sx={{
                       '& .MuiOutlinedInput-root': {
                         borderRadius: '0.8rem',
-                        bgcolor: '#f5f5f7',
+                        bgcolor: tokens.colors.bgSubtle,
                         '& fieldset': {
                           borderColor: 'transparent'
                         },
@@ -3623,7 +3143,7 @@ const EntrepriseDetail: React.FC = () => {
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: '#86868b', 
+                      color: tokens.colors.textSecondary, 
                       mb: 1, 
                       display: 'block',
                       fontWeight: 500
@@ -3642,7 +3162,7 @@ const EntrepriseDetail: React.FC = () => {
                         borderRadius: '0.6rem',
                         transition: 'all 0.2s ease',
                         '&:hover': {
-                          bgcolor: '#f5f5f7'
+                          bgcolor: tokens.colors.bgSubtle
                         }
                       }}
                       onClick={() => setEditContact(prev => ({ ...prev, gender: 'homme' }))}
@@ -3673,7 +3193,7 @@ const EntrepriseDetail: React.FC = () => {
                       <Typography
                         sx={{
                           fontSize: '0.875rem',
-                          color: editContact.gender === 'homme' ? '#1d1d1f' : '#86868b',
+                          color: editContact.gender === 'homme' ? tokens.colors.textPrimary : tokens.colors.textSecondary,
                           fontWeight: editContact.gender === 'homme' ? 500 : 400,
                           transition: 'all 0.2s ease'
                         }}
@@ -3691,7 +3211,7 @@ const EntrepriseDetail: React.FC = () => {
                         borderRadius: '0.6rem',
                         transition: 'all 0.2s ease',
                         '&:hover': {
-                          bgcolor: '#f5f5f7'
+                          bgcolor: tokens.colors.bgSubtle
                         }
                       }}
                       onClick={() => setEditContact(prev => ({ ...prev, gender: 'femme' }))}
@@ -3722,7 +3242,7 @@ const EntrepriseDetail: React.FC = () => {
                       <Typography
                         sx={{
                           fontSize: '0.875rem',
-                          color: editContact.gender === 'femme' ? '#1d1d1f' : '#86868b',
+                          color: editContact.gender === 'femme' ? tokens.colors.textPrimary : tokens.colors.textSecondary,
                           fontWeight: editContact.gender === 'femme' ? 500 : 400,
                           transition: 'all 0.2s ease'
                         }}
@@ -3738,17 +3258,17 @@ const EntrepriseDetail: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ 
           p: 3, 
-          borderTop: '1px solid #e5e5e7',
+          borderTop: `1px solid ${tokens.colors.borderDefault}`,
           justifyContent: 'flex-end',
           gap: 1
         }}>
           <Button 
             onClick={() => setEditContactDialogOpen(false)}
             sx={{ 
-              color: '#86868b',
+              color: tokens.colors.textSecondary,
               '&:hover': {
                 bgcolor: 'transparent',
-                color: '#1d1d1f'
+                color: tokens.colors.textPrimary
               }
             }}
           >
@@ -3767,7 +3287,7 @@ const EntrepriseDetail: React.FC = () => {
                 bgcolor: '#0077ed'
               },
               '&.Mui-disabled': {
-                bgcolor: '#86868b'
+                bgcolor: tokens.colors.textSecondary
               }
             }}
           >
@@ -3800,19 +3320,24 @@ const EntrepriseDetail: React.FC = () => {
       </Dialog>
 
       {/* Snackbar pour les notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-      >
-        <Alert 
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          severity={snackbar.severity}
-          sx={{ width: '100%' }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert 
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
 
       {/* Menu d'actions du contact */}
       <Menu
@@ -3852,7 +3377,7 @@ const EntrepriseDetail: React.FC = () => {
           Supprimer
         </MenuItem>
       </Menu>
-    </Box>
+    </>
   );
 };
 

@@ -1,17 +1,16 @@
 import React from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
-import { CircularProgress } from '@mui/material';
 import { useAuth } from '../../contexts/AuthContext';
+import LoadingState from '../common/LoadingState';
 
-// Pas besoin de Props car nous utilisons Outlet
 const PrivateRoute = () => {
   const { currentUser, loading } = useAuth();
 
   if (loading) {
-    return <CircularProgress />;
+    return <LoadingState message="Connexion…" fullHeight />;
   }
 
-  return currentUser ? <Outlet /> : <Navigate to="/login" />;
+  return currentUser ? <Outlet /> : <Navigate to="/login" replace />;
 };
 
 export default PrivateRoute; 

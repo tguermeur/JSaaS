@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { 
-  Container, 
   Typography, 
   Box, 
   Alert,
@@ -11,7 +10,6 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Paper,
   Chip,
   CircularProgress,
   Link as MuiLink
@@ -21,6 +19,8 @@ import SubscriptionForm from '../components/SubscriptionForm';
 import { useAuth } from '../contexts/AuthContext';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import { tokens } from '../theme/tokens';
+import { SettingsPanel } from '../components/ds';
 
 interface Invoice {
   id: string;
@@ -132,42 +132,56 @@ const BillingPage: React.FC = () => {
   // Vue pour les entreprises
   if (isEntreprise) {
     return (
-      <Container maxWidth="lg">
-        <Box sx={{ py: 4 }}>
-          <Typography variant="h4" component="h1" gutterBottom sx={{ fontWeight: 600, mb: 4 }}>
+      <Box sx={{ p: 3, bgcolor: tokens.colors.appBg, minHeight: '100vh' }}>
+        <Box sx={{ maxWidth: 1200, mx: 'auto' }}>
+          <Typography
+            component="h1"
+            sx={{
+              ...tokens.typography.pageTitle,
+              color: tokens.colors.gray900,
+              mb: 4,
+            }}
+          >
             Mes factures
           </Typography>
 
           {message && (
-            <Alert severity={message.type} sx={{ mb: 3 }}>
+            <Alert severity={message.type} sx={{ mb: 3, borderRadius: tokens.radius.lg }}>
               {message.text}
             </Alert>
           )}
 
           {loading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
-              <CircularProgress />
+              <CircularProgress sx={{ color: tokens.colors.brandTeal }} />
             </Box>
           ) : invoices.length === 0 ? (
-            <Alert severity="info" sx={{ mt: 3 }}>
-              Aucune facture disponible pour le moment.
-            </Alert>
+            <SettingsPanel title="Factures" desc="Aucune facture disponible pour le moment.">
+              <Typography sx={{ fontSize: 14, color: tokens.colors.textSecondary }}>
+                Vos factures apparaîtront ici dès qu&apos;elles seront émises.
+              </Typography>
+            </SettingsPanel>
           ) : (
-            <TableContainer component={Paper} elevation={0} sx={{ borderRadius: '12px', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
+            <SettingsPanel title="Historique des factures" desc={`${invoices.length} facture${invoices.length > 1 ? 's' : ''}`}>
+            <TableContainer sx={{ mx: -2.25, mb: -2.25 }}>
               <Table>
                 <TableHead>
-                  <TableRow sx={{ bgcolor: '#f5f5f7' }}>
-                    <TableCell sx={{ fontWeight: 600 }}>Date</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Numéro de facture</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Mission</TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 600 }}>Montant TTC</TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 600 }}>Statut</TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 600 }}>Actions</TableCell>
+                  <TableRow sx={{ bgcolor: tokens.colors.gray50 }}>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Date</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Numéro de facture</TableCell>
+                    <TableCell sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Mission</TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Montant TTC</TableCell>
+                    <TableCell align="center" sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Statut</TableCell>
+                    <TableCell align="center" sx={{ fontWeight: 600, color: tokens.colors.textSecondary, fontSize: '0.75rem', textTransform: 'uppercase' }}>Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {invoices.map((invoice) => (
-                    <TableRow key={invoice.id} hover>
+                    <TableRow
+                      key={invoice.id}
+                      hover
+                      sx={{ '& td': { borderBottom: `1px solid ${tokens.colors.gray100}`, color: tokens.colors.gray900 } }}
+                    >
                       <TableCell>
                         {invoice.date.toLocaleDateString('fr-FR', {
                           day: '2-digit',
@@ -206,7 +220,7 @@ const BillingPage: React.FC = () => {
                             alignItems: 'center',
                             gap: 0.5,
                             cursor: 'pointer',
-                            color: '#0071e3',
+                            color: tokens.colors.brandTeal,
                             '&:hover': {
                               textDecoration: 'underline'
                             }
@@ -221,41 +235,44 @@ const BillingPage: React.FC = () => {
                 </TableBody>
               </Table>
             </TableContainer>
+            </SettingsPanel>
           )}
         </Box>
-      </Container>
+      </Box>
     );
   }
 
   // Vue par défaut pour les autres utilisateurs (abonnements)
   return (
-    <Container maxWidth="md">
-      <Box sx={{ py: 4 }}>
-        <Typography variant="h4" component="h1" gutterBottom>
-          Gestion de l'abonnement
+    <Box sx={{ p: 3, bgcolor: tokens.colors.appBg, minHeight: '100vh' }}>
+      <Box sx={{ maxWidth: 720, mx: 'auto' }}>
+        <Typography
+          component="h1"
+          sx={{ ...tokens.typography.pageTitle, color: tokens.colors.gray900, mb: 4 }}
+        >
+          Gestion de l&apos;abonnement
         </Typography>
 
         {message && (
-          <Alert severity={message.type} sx={{ mb: 3 }}>
+          <Alert severity={message.type} sx={{ mb: 3, borderRadius: tokens.radius.lg }}>
             {message.text}
           </Alert>
         )}
 
         {currentUser?.subscriptionStatus === 'active' ? (
-          <Box sx={{ mt: 3 }}>
-            <Typography variant="h6" gutterBottom>
-              Statut de votre abonnement
-            </Typography>
-            <Typography>
-              Votre abonnement est actif jusqu'au{' '}
+          <SettingsPanel title="Statut de votre abonnement">
+            <Typography sx={{ fontSize: 14, color: tokens.colors.textSecondary }}>
+              Votre abonnement est actif jusqu&apos;au{' '}
               {currentUser.currentPeriodEnd?.toLocaleDateString()}
             </Typography>
-          </Box>
+          </SettingsPanel>
         ) : (
-          <SubscriptionForm />
+          <SettingsPanel title="Abonnement" desc="Configurez votre formule JS Connect">
+            <SubscriptionForm />
+          </SettingsPanel>
         )}
       </Box>
-    </Container>
+    </Box>
   );
 };
 

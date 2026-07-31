@@ -12,6 +12,7 @@ import {
 } from 'firebase/auth';
 import { auth } from './config';
 import { getDoc, doc, setDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from './config';
 
 // Exporter auth pour qu'il soit disponible dans d'autres fichiers
@@ -45,24 +46,11 @@ interface Structure {
   createdAt: string;
 }
 
-const SUPER_ADMIN_EMAILS = ['teo.guermeur@gmail.com']; // Liste des emails super admin
-
-export const isSuperAdmin = (email: string) => {
-  return SUPER_ADMIN_EMAILS.includes(email);
-};
+/** Superadmin : uniquement via document Firestore / custom claims (pas de liste email côté client). */
+export const isSuperAdmin = (_email: string) => false;
 
 export const findStructureByEmail = async (email: string) => {
   try {
-    // Si c'est un super admin, on ne vérifie pas la structure
-    if (isSuperAdmin(email)) {
-      return {
-        id: 'superadmin',
-        name: 'SuperAdmin',
-        ecole: 'SuperAdmin',
-        // autres champs nécessaires...
-      };
-    }
-
     const domainStartIndex = email.indexOf('@');
     const fullDomain = email.slice(domainStartIndex);
     
@@ -80,30 +68,17 @@ export const findStructureByEmail = async (email: string) => {
       };
     }
     
-    const structuresRef = collection(db, 'structures');
-    const snapshot = await getDocs(structuresRef);
-    
-    for (const doc of snapshot.docs) {
-      const structure = { ...doc.data(), id: doc.id } as Structure;
-      
-      // Vérifier si emailDomains existe
-      if (!structure.emailDomains || !Array.isArray(structure.emailDomains)) {
-        console.warn("Structure sans emailDomains:", structure);
-        continue;
-      }
-      
-      const found = structure.emailDomains.some(domain => {
-        const domainWithAt = domain.startsWith('@') ? domain : '@' + domain;
-        return fullDomain === domainWithAt;
-      });
-
-      if (found) {
-        console.log("Structure trouvée:", structure);
-        return structure;
-      }
+    const resolveFn = httpsCallable<{ email: string }, { structure: Structure | null }>(
+      getFunctions(),
+      'resolveStructureByEmail'
+    );
+    const { data } = await resolveFn({ email });
+    if (data.structure) {
+      console.log('Structure trouvée:', data.structure);
+      return data.structure;
     }
-    
-    console.log("Aucune structure trouvée pour le domaine:", fullDomain);
+
+    console.log('Aucune structure trouvée pour le domaine:', fullDomain);
     
     // Si aucune structure n'est trouvée, on retourne une structure par défaut
     // pour éviter l'erreur "Structure non trouvée"
@@ -143,25 +118,16 @@ export const createUserDocument = async (user: User) => {
         lastActivity: serverTimestamp()
       };
 
-      // Ajouter le rôle super admin si l'email correspond
-      if (isSuperAdmin(user.email)) {
-        userData.role = 'superadmin';
-        userData.status = 'superadmin';
+      try {
+        const structure = await findStructureByEmail(user.email);
+        userData.role = 'user';
+        userData.status = 'etudiant';
+        userData.structureId = structure?.id || null;
+      } catch (structureError) {
+        console.error('Erreur lors de la recherche de structure:', structureError);
+        userData.role = 'user';
+        userData.status = 'etudiant';
         userData.structureId = null;
-      } else {
-        // Pour les utilisateurs normaux, chercher leur structure
-        try {
-          const structure = await findStructureByEmail(user.email);
-          userData.role = 'user';
-          userData.status = 'user';
-          userData.structureId = structure?.id || null;
-        } catch (structureError) {
-          console.error("Erreur lors de la recherche de structure:", structureError);
-          // Créer quand même le document avec des valeurs par défaut
-          userData.role = 'user';
-          userData.status = 'user';
-          userData.structureId = null;
-        }
       }
 
       await setDoc(userRef, userData);
@@ -221,7 +187,31 @@ export const registerUser = async (
     
     // Mettre à jour le profil avec le nom d'affichage
     await updateProfile(user, { displayName });
-    // (Suppression de l'envoi d'email de vérification)
+
+    // Envoyer l'email de vérification Firebase Auth
+    try {
+      const actionCodeSettings = {
+        url: `${window.location.origin}/verify-email-callback`,
+        handleCodeInApp: true,
+      };
+      await sendEmailVerification(user, actionCodeSettings);
+    } catch (verifyErr) {
+      console.warn('Envoi email de vérification échoué (non bloquant):', verifyErr);
+    }
+
+    // Email de bienvenue (template EmailJS via CF — skip si non configuré)
+    try {
+      const { getFirebaseFunctions } = await import('./config');
+      const { httpsCallable } = await import('firebase/functions');
+      const functionsInstance = getFirebaseFunctions();
+      if (functionsInstance) {
+        const sendWelcome = httpsCallable(functionsInstance, 'sendWelcomeEmailCallable');
+        await sendWelcome({ firstName: displayName?.split(' ')[0] || '' });
+      }
+    } catch (welcomeErr) {
+      console.warn('Email bienvenue skip:', welcomeErr);
+    }
+
     return user;
   } catch (error: any) {
     console.error("Erreur lors de l'inscription:", error);
@@ -385,31 +375,21 @@ export const addJsConnectDomainToAllStructures = async () => {
   }
 };
 
+const DEBUG_AUTH_CONFIG = import.meta.env.VITE_DEBUG_AUTH === 'true';
+
 // Fonction pour vérifier la configuration Firebase
 export const checkFirebaseConfig = () => {
-  console.log("Vérification de la configuration Firebase:");
-  console.log("- Domaine d'authentification:", auth.config.authDomain);
-  console.log("- API Key définie:", auth.config.apiKey ? "Oui" : "Non");
-  
-  // Vérifier si le domaine d'authentification correspond à celui attendu
+  if (DEBUG_AUTH_CONFIG) {
+    console.log("Vérification de la configuration Firebase:", { authDomain: auth.config.authDomain, apiKeyDefined: !!auth.config.apiKey });
+  }
   const expectedDomain = import.meta.env.VITE_FIREBASE_AUTH_DOMAIN;
-  
   if (auth.config.authDomain !== expectedDomain) {
-    console.error("ATTENTION: Le domaine d'authentification ne correspond pas à celui attendu!");
-    console.error("- Attendu:", expectedDomain);
-    console.error("- Actuel:", auth.config.authDomain);
-    console.error("Cela peut causer des problèmes d'authentification. Veuillez vérifier les variables d'environnement.");
-  } else {
+    console.error("ATTENTION: Le domaine d'authentification ne correspond pas à celui attendu!", { attendu: expectedDomain, actuel: auth.config.authDomain });
+  } else if (DEBUG_AUTH_CONFIG) {
     console.log("Le domaine d'authentification correspond à celui attendu.");
   }
-  
-  // Vérifier si nous sommes en production ou en développement
   const isProduction = import.meta.env.PROD;
-  console.log("- Environnement:", isProduction ? "Production" : "Développement");
-  
-  // Vérifier l'URL actuelle
-  console.log("- URL actuelle:", window.location.hostname);
-  
+  if (DEBUG_AUTH_CONFIG) console.log("- Environnement:", isProduction ? "Production" : "Développement", "URL:", window.location.hostname);
   return {
     authDomain: auth.config.authDomain,
     apiKeyDefined: !!auth.config.apiKey,

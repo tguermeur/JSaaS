@@ -3,10 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Typography,
-  Paper,
   CircularProgress,
   Alert,
-  Container,
   Button,
   Dialog,
   DialogTitle,
@@ -27,14 +25,9 @@ import {
   IconButton,
   Chip,
   Tooltip,
-  Breadcrumbs,
-  Link,
-  Divider,
   Avatar,
   InputAdornment,
-  alpha,
-  keyframes,
-  Autocomplete
+  Autocomplete,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -49,13 +42,18 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
+import EmptyState from '../components/common/EmptyState';
 import { auditService, Mission } from '../services/auditService';
-import { AuditDocument, AuditAssignment } from '../types/audit';
+import { AuditDocument } from '../types/audit';
 import { collection, query, where, getDocs, doc, getDoc, updateDoc } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { ETUDE_ETAPE_LABELS, ETUDE_ETAPE_COLORS, statusToEtape, EtudeEtape, ETUDE_ETAPE_ORDER } from '../types/etude';
 import { db } from '../firebase/config';
-
-const isEncrypted = (v: any): boolean => typeof v === 'string' && v.startsWith('ENC:');
+import { tokens } from '../theme/tokens';
+import UserNameText from '../components/common/UserNameText';
+import UserReferenceText from '../components/common/UserReferenceText';
+import ChargeNameText from '../components/common/ChargeNameText';
+import UserAvatarInitials from '../components/common/UserAvatarInitials';
+import { AppPageShell, SegmentedControl, DsPill, KpiCard } from '../components/ds';
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -74,16 +72,6 @@ const generateMandats = (): string[] => {
 const AVAILABLE_MANDATS = generateMandats();
 
 // Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
 
 interface StructureMember {
   id: string;
@@ -101,12 +89,13 @@ const Audit: React.FC = () => {
   const { canRead, canWrite, loading: permissionLoading } = usePermission('audit');
   const navigate = useNavigate();
   const [missions, setMissions] = useState<Mission[]>([]);
+  const [etudes, setEtudes] = useState<any[]>([]);
+  const [structureType, setStructureType] = useState<'junior' | 'jobservice' | null>(null);
   const [selectedMission, setSelectedMission] = useState<Mission | null>(null);
   const [documents, setDocuments] = useState<AuditDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [structureMembers, setStructureMembers] = useState<StructureMember[]>([]);
-  const [decryptedUserNames, setDecryptedUserNames] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [auditorFilter, setAuditorFilter] = useState<string>('all');
   const [mandatFilter, setMandatFilter] = useState<string>('all');
@@ -123,15 +112,20 @@ const Audit: React.FC = () => {
     type: 'audit'  // Valeur par défaut
   });
 
-  // Charger les missions au chargement de la page
+  // Charger les missions une seule fois par uid (éviter de relancer sur chaque
+  // nouvelle référence currentUser : decrypt / onSnapshot / lastLogin).
   useEffect(() => {
-    const fetchMissions = async () => {
-      if (!currentUser) return;
+    const uid = currentUser?.uid;
+    if (!uid) return;
 
+    let cancelled = false;
+
+    const fetchMissions = async () => {
       try {
         setLoading(true);
 
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        const userDoc = await getDoc(doc(db, 'users', uid));
+        if (cancelled) return;
         if (!userDoc.exists()) {
           setLoading(false);
           return;
@@ -139,150 +133,167 @@ const Audit: React.FC = () => {
 
         const userData = userDoc.data();
         const userStructureId = userData?.structureId;
+        if (!userStructureId) {
+          setMissions([]);
+          setEtudes([]);
+          setLoading(false);
+          return;
+        }
 
         const missionsRef = collection(db, 'missions');
         const missionsQuery = query(missionsRef, where('structureId', '==', userStructureId));
         const missionsSnapshot = await getDocs(missionsQuery);
+        if (cancelled) return;
 
-        const missionsData = await Promise.all(missionsSnapshot.docs.map(async (missionDoc) => {
-          const data = missionDoc.data();
-
-          let missionMandat: string | undefined;
-          if (data.chargeId) {
+        // Mandats : 1 getDoc par chargé unique (pas N+1 par mission)
+        const chargeIds = [
+          ...new Set(
+            missionsSnapshot.docs
+              .map((d) => d.data().chargeId as string | undefined)
+              .filter((id): id is string => Boolean(id))
+          ),
+        ];
+        const mandatByChargeId = new Map<string, string | undefined>();
+        await Promise.all(
+          chargeIds.map(async (chargeId) => {
             try {
-              const chargeDoc = await getDoc(doc(db, 'users', data.chargeId));
+              const chargeDoc = await getDoc(doc(db, 'users', chargeId));
               if (chargeDoc.exists()) {
-                const chargeData = chargeDoc.data();
-                missionMandat = chargeData.mandat || undefined;
+                mandatByChargeId.set(chargeId, chargeDoc.data().mandat || undefined);
               }
             } catch {
-              missionMandat = undefined;
+              /* ignore */
             }
-          }
-          
-          // Mapper isAuditComplete vers auditStatus si nécessaire
-          // Prioriser isAuditComplete s'il existe, sinon utiliser auditStatus
+          })
+        );
+        if (cancelled) return;
+
+        const missionsData = missionsSnapshot.docs.map((missionDoc) => {
+          const data = missionDoc.data();
           let auditStatus: 'audited' | 'not_audited';
           if (data.isAuditComplete !== undefined) {
-            // Si isAuditComplete existe, l'utiliser comme source de vérité
             auditStatus = data.isAuditComplete ? 'audited' : 'not_audited';
           } else if (data.auditStatus) {
-            // Sinon, utiliser auditStatus s'il existe
             auditStatus = data.auditStatus === 'audited' ? 'audited' : 'not_audited';
           } else {
-            // Par défaut
             auditStatus = 'not_audited';
           }
-          
+
           return {
             id: missionDoc.id,
             ...data,
-            mandat: data.mandat || missionMandat,
-            auditStatus: auditStatus as 'audited' | 'not_audited'
+            mandat: data.mandat || (data.chargeId ? mandatByChargeId.get(data.chargeId) : undefined),
+            auditStatus: auditStatus as 'audited' | 'not_audited',
           } as Mission & { mandat?: string };
-        }));
+        });
 
         setMissions(missionsData);
+
+        try {
+          const structureDoc = await getDoc(doc(db, 'structures', userStructureId));
+          if (!cancelled && structureDoc.exists()) {
+            setStructureType(structureDoc.data()?.structureType || null);
+          }
+        } catch {
+          /* ignore */
+        }
+
+        const etudesRef = collection(db, 'etudes');
+        const etudesQuery = query(etudesRef, where('structureId', '==', userStructureId));
+        const etudesSnapshot = await getDocs(etudesQuery);
+        if (cancelled) return;
+
+        setEtudes(
+          etudesSnapshot.docs.map((etudeDoc) => {
+            const data = etudeDoc.data();
+            const etape = data.etape && ETUDE_ETAPE_ORDER.includes(data.etape)
+              ? data.etape
+              : statusToEtape(data.status || 'Négociation');
+            return {
+              id: etudeDoc.id,
+              ...data,
+              etape,
+              auditStatus: data.isAuditComplete ? 'audited' : (data.auditStatus || 'not_audited'),
+            };
+          })
+        );
       } catch (err) {
-        setError('Erreur lors du chargement des missions');
-        console.error(err);
+        if (!cancelled) {
+          setError('Erreur lors du chargement');
+          console.error(err);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
-    fetchMissions();
-  }, [currentUser]);
+    void fetchMissions();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.uid]);
 
-  // Charger les documents lorsqu'une mission est sélectionnée
+  // Charger les documents lorsqu'une mission est sélectionnée (sans bloquer toute la page)
   useEffect(() => {
     const fetchDocuments = async () => {
       if (!selectedMission) return;
-      
+
       try {
-        setLoading(true);
         const docs = await auditService.getAuditDocuments(selectedMission.id);
         setDocuments(docs);
-        
-        // Vérifier et mettre à jour le statut d'audit de la mission après le chargement
         await checkAndUpdateMissionAuditStatus(selectedMission.id, docs);
       } catch (err) {
         setError('Erreur lors du chargement des documents');
         console.error(err);
-      } finally {
-        setLoading(false);
       }
     };
 
-    fetchDocuments();
-  }, [selectedMission]);
+    void fetchDocuments();
+  }, [selectedMission?.id]);
 
-  // Fonction pour récupérer les membres de la structure (pôle audit uniquement)
-  const fetchStructureMembers = async () => {
-    if (!currentUser) return;
+  // Membres pôle audit (filtre auditeur) — indépendant du spinner principal
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid) return;
 
-    try {
-      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-      const userData = userDoc.data();
-      
-      if (userData?.structureId) {
+    let cancelled = false;
+
+    const fetchStructureMembers = async () => {
+      try {
+        const userDoc = await getDoc(doc(db, 'users', uid));
+        if (cancelled) return;
+        const userData = userDoc.data();
+        if (!userData?.structureId) return;
+
         const usersRef = collection(db, 'users');
         const q = query(usersRef, where('structureId', '==', userData.structureId));
         const snapshot = await getDocs(q);
-        const membersList = snapshot.docs
-          .map(doc => ({
-            id: doc.id,
-            displayName: doc.data().displayName || '',
-            email: doc.data().email || '',
-            status: doc.data().status,
-            structureId: doc.data().structureId,
-            photoURL: doc.data().photoURL || '',
-            mandat: doc.data().mandat || '',
-            poles: doc.data().poles || []
-          }))
-          .filter(member => 
-            member.poles?.some(p => p.poleId === 'aq')
-          ) as StructureMember[];
-        setStructureMembers(membersList);
-      }
-    } catch (error) {
-      console.error("Erreur lors du chargement des membres:", error);
-    }
-  };
+        if (cancelled) return;
 
-  // Charger les membres de la structure au chargement de la page
-  useEffect(() => {
-    fetchStructureMembers();
-  }, [currentUser]);
-
-  // Déchiffrer les noms (auditeurs, chargés de mission) pour l'affichage
-  useEffect(() => {
-    if (!canRead || (!structureMembers.length && !missions.length)) return;
-    const userIds = new Set<string>();
-    structureMembers.forEach(m => userIds.add(m.id));
-    missions.forEach(m => {
-      if (m.chargeId) userIds.add(m.chargeId);
-    });
-    const run = async () => {
-      const functions = getFunctions();
-      const decryptUser = httpsCallable(functions, 'decryptUserDataForStructure');
-      const next: Record<string, string> = {};
-      for (const uid of userIds) {
-        try {
-          const res = await decryptUser({ userId: uid });
-          const dec = (res.data as { decryptedData?: { firstName?: string; lastName?: string; displayName?: string } })?.decryptedData;
-          if (dec) {
-            const name = dec.displayName || (dec.firstName && dec.lastName ? `${dec.firstName} ${dec.lastName}`.trim() : '') || '';
-            if (name) next[uid] = name;
-          }
-        } catch {
-          // ignorer
-        }
+        setStructureMembers(
+          snapshot.docs
+            .map((memberDoc) => ({
+              id: memberDoc.id,
+              displayName: memberDoc.data().displayName || '',
+              email: memberDoc.data().email || '',
+              status: memberDoc.data().status,
+              structureId: memberDoc.data().structureId,
+              photoURL: memberDoc.data().photoURL || '',
+              mandat: memberDoc.data().mandat || '',
+              poles: memberDoc.data().poles || [],
+            }))
+            .filter((member) => member.poles?.some((p: { poleId: string }) => p.poleId === 'aq')) as StructureMember[]
+        );
+      } catch (error) {
+        console.error('Erreur lors du chargement des membres:', error);
       }
-      if (Object.keys(next).length) setDecryptedUserNames(prev => ({ ...prev, ...next }));
     };
-    run();
-  }, [canRead, structureMembers, missions]);
+
+    void fetchStructureMembers();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.uid]);
 
   // Fonction pour mettre à jour l'auditeur d'une mission
   const handleAuditorChange = async (missionId: string, newAuditorId: string) => {
@@ -345,11 +356,6 @@ const Audit: React.FC = () => {
     } catch (error) {
       console.error('Erreur lors de la mise à jour du statut d\'audit de la mission:', error);
     }
-  };
-
-  const handleSelectMission = (mission: Mission) => {
-    setSelectedMission(mission);
-    setNewDocument(prev => ({ ...prev, missionId: mission.id }));
   };
 
   const handleBackToMissions = () => {
@@ -447,6 +453,11 @@ const Audit: React.FC = () => {
     navigate(`/app/audit/mission/${missionId}`);
   };
 
+  // Fonction pour naviguer vers la page de détails d'étude d'audit
+  const handleViewEtudeDetails = (etudeNumber: string) => {
+    navigate(`/app/audit/etude/${etudeNumber}`);
+  };
+
   // Effet pour filtrer les missions
   useEffect(() => {
     let result = [...missions];
@@ -484,10 +495,52 @@ const Audit: React.FC = () => {
     setFilteredMissions(result);
   }, [missions, searchTerm, auditorFilter, mandatFilter, auditStatusFilter]);
 
+  const auditedCount = missions.filter((m) => m.auditStatus === 'audited').length;
+  const pendingCount = missions.length - auditedCount;
+
+  const filterFieldSx = {
+    '& .MuiOutlinedInput-root': {
+      borderRadius: tokens.radius.md,
+      bgcolor: tokens.colors.bgPaper,
+      fontSize: 13,
+      '& fieldset': { borderColor: tokens.colors.gray200 },
+      '&:hover fieldset': { borderColor: tokens.colors.gray300 },
+      '&.Mui-focused fieldset': { borderColor: tokens.colors.brandTeal },
+    },
+  };
+
+  const thSx = {
+    fontWeight: 600,
+    fontSize: '0.6875rem',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+    color: tokens.colors.gray500,
+    borderBottom: `1px solid ${tokens.colors.divider}`,
+    bgcolor: tokens.colors.surfaceAlt,
+    py: 1.25,
+    whiteSpace: 'nowrap' as const,
+  };
+
+  const panelSx = {
+    bgcolor: tokens.colors.bgPaper,
+    border: `1px solid ${tokens.colors.divider}`,
+    borderRadius: tokens.radius.lg,
+    overflow: 'hidden',
+  };
+
   if (loading || permissionLoading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="80vh">
-        <CircularProgress />
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          flex: 1,
+          minHeight: 0,
+          bgcolor: tokens.colors.surfaceAlt,
+        }}
+      >
+        <CircularProgress sx={{ color: tokens.colors.brandTeal }} />
       </Box>
     );
   }
@@ -502,223 +555,143 @@ const Audit: React.FC = () => {
   }
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-      <Typography 
-        variant="h4" 
-        sx={{ 
-          mb: 3, 
-          fontWeight: 700,
-          fontSize: '2rem',
-          background: 'linear-gradient(45deg, #0071e3, #34c759)',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          animation: `${fadeIn} 0.5s ease-out`
-        }}
-      >
-        Audit
-      </Typography>
-
-      {error && (
-        <Alert 
-          severity="error" 
-          sx={{ 
-            mb: 3,
-            borderRadius: '12px',
-            backgroundColor: alpha('#ff3b30', 0.1),
-            '& .MuiAlert-icon': {
-              color: '#ff3b30'
-            }
-          }}
-        >
-          {error}
-        </Alert>
-      )}
-
-      <Breadcrumbs 
-        sx={{ 
-          mb: 2,
-          '& .MuiBreadcrumbs-separator': {
-            color: '#86868b'
-          }
-        }}
-      >
-        <Link 
-          component="button" 
-          variant="body1" 
-          onClick={handleBackToMissions}
-          sx={{ 
-            color: selectedMission ? '#0071e3' : '#1d1d1f',
-            textDecoration: 'none',
-            '&:hover': {
-              textDecoration: 'underline'
-            }
-          }}
-        >
-        </Link>
-        {selectedMission && (
-          <Typography color="text.primary" sx={{ color: '#1d1d1f' }}>
-            Mission {selectedMission.numeroMission}
-          </Typography>
-        )}
-      </Breadcrumbs>
-
-      {selectedMission ? (
-        <Paper 
-          sx={{ 
-            width: '100%', 
-            mb: 2,
-            borderRadius: '16px',
-            boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-            overflow: 'hidden'
-          }}
-        >
-          <Box 
-            sx={{ 
-              p: 3, 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              alignItems: 'center',
-              backgroundColor: '#f5f5f7'
+    <AppPageShell
+      eyebrow="Qualité"
+      title="Audit"
+      titleSuffix={String(missions.length)}
+      subtitle="Suivez et assignez les audits de missions"
+      kpiColumns={3}
+      kpiStrip={
+        <>
+          <KpiCard label="Total" value={missions.length} density="compact" />
+          <KpiCard label="À auditer" value={pendingCount} density="compact" sparkColor={tokens.colors.warning} />
+          <KpiCard label="Auditées" value={auditedCount} density="compact" sparkColor={tokens.colors.success} />
+        </>
+      }
+    >
+      <Box sx={{ px: 3, py: 2.5, pb: 4, width: '100%' }}>
+        {error && (
+          <Alert
+            severity="error"
+            sx={{
+              mb: 2,
+              borderRadius: tokens.radius.md,
+              border: `1px solid ${tokens.colors.error}33`,
             }}
+            onClose={() => setError(null)}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <IconButton 
-                onClick={handleBackToMissions} 
-                sx={{ 
-                  mr: 2,
-                  color: '#1d1d1f',
-                  '&:hover': {
-                    backgroundColor: 'rgba(0,0,0,0.04)'
-                  }
-                }}
-              >
-                <ArrowBackIcon />
-              </IconButton>
-              <Typography 
-                variant="h6" 
-                sx={{ 
-                  fontWeight: 600,
-                  color: '#1d1d1f',
-                  fontSize: '1.25rem'
-                }}
-              >
-                Mission {selectedMission.numeroMission}
-              </Typography>
-            </Box>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={handleOpenAddDialog}
+            {error}
+          </Alert>
+        )}
+
+        {selectedMission ? (
+          <Box sx={panelSx}>
+            <Box
               sx={{
-                backgroundColor: '#0071e3',
-                color: '#fff',
-                borderRadius: '20px',
-                px: 3,
-                py: 1,
-                textTransform: 'none',
-                fontWeight: 500,
-                '&:hover': {
-                  backgroundColor: '#0077ed'
-                }
+                px: 2.5,
+                py: 1.75,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 2,
+                borderBottom: `1px solid ${tokens.colors.divider}`,
+                bgcolor: tokens.colors.bgPaper,
               }}
             >
-              Ajouter un document
-            </Button>
-          </Box>
-          <Divider />
-          
-          <Box sx={{ p: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                <IconButton
+                  onClick={handleBackToMissions}
+                  size="small"
+                  sx={{
+                    mr: 1.5,
+                    color: tokens.colors.gray600,
+                    '&:hover': { bgcolor: tokens.colors.gray100 },
+                  }}
+                >
+                  <ArrowBackIcon fontSize="small" />
+                </IconButton>
+                <Typography sx={{ fontSize: 16, fontWeight: 600, color: tokens.colors.gray900 }}>
+                  Mission {selectedMission.numeroMission}
+                </Typography>
+              </Box>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={handleOpenAddDialog}
+                sx={{
+                  bgcolor: tokens.colors.brandTeal,
+                  color: '#fff',
+                  borderRadius: tokens.radius.md,
+                  px: 2,
+                  py: 0.875,
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  boxShadow: tokens.shadows.button,
+                  '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+                }}
+              >
+                Ajouter un document
+              </Button>
+            </Box>
+
             <TableContainer>
               <Table>
                 <TableHead>
                   <TableRow>
-                    <TableCell sx={{ 
-                      fontWeight: 600,
-                      color: '#1d1d1f',
-                      borderBottom: '1px solid #e5e5e7'
-                    }}>Type</TableCell>
-                    <TableCell sx={{ 
-                      fontWeight: 600,
-                      color: '#1d1d1f',
-                      borderBottom: '1px solid #e5e5e7'
-                    }}>Nom</TableCell>
-                    <TableCell sx={{ 
-                      fontWeight: 600,
-                      color: '#1d1d1f',
-                      borderBottom: '1px solid #e5e5e7'
-                    }}>Statut</TableCell>
-                    <TableCell sx={{ 
-                      fontWeight: 600,
-                      color: '#1d1d1f',
-                      borderBottom: '1px solid #e5e5e7'
-                    }}>Date de création</TableCell>
-                    <TableCell sx={{ 
-                      fontWeight: 600,
-                      color: '#1d1d1f',
-                      borderBottom: '1px solid #e5e5e7'
-                    }}>Actions</TableCell>
+                    <TableCell sx={thSx}>Type</TableCell>
+                    <TableCell sx={thSx}>Nom</TableCell>
+                    <TableCell sx={thSx}>Statut</TableCell>
+                    <TableCell sx={thSx}>Date de création</TableCell>
+                    <TableCell sx={thSx}>Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {documents.length > 0 ? (
                     documents.map((document) => (
-                      <TableRow 
+                      <TableRow
                         key={document.id}
                         sx={{
-                          '&:hover': {
-                            backgroundColor: 'rgba(0,0,0,0.02)'
-                          },
+                          '&:hover': { bgcolor: tokens.colors.gray50 },
                           '& td': {
-                            borderBottom: '1px solid #e5e5e7',
-                            color: '#1d1d1f'
-                          }
+                            borderBottom: `1px solid ${tokens.colors.divider}`,
+                            color: tokens.colors.gray900,
+                            fontSize: 13,
+                          },
                         }}
                       >
                         <TableCell>
-                          <Chip
-                            label={document.type === 'audit' ? 'Audit' : 'Document Mission'}
-                            size="small"
-                            sx={{
-                              backgroundColor: document.type === 'audit' ? '#0071e3' : '#f5f5f7',
-                              color: document.type === 'audit' ? '#fff' : '#1d1d1f',
-                              fontWeight: 500,
-                              borderRadius: '6px'
-                            }}
-                          />
+                          <DsPill
+                            bg={document.type === 'audit' ? tokens.colors.brandTeal100 : tokens.colors.gray100}
+                            fg={document.type === 'audit' ? tokens.colors.brandTeal700 : tokens.colors.gray700}
+                          >
+                            {document.type === 'audit' ? 'Audit' : 'Mission'}
+                          </DsPill>
                         </TableCell>
                         <TableCell>{document.name}</TableCell>
                         <TableCell>
                           <Chip
-                            label={document.status}
+                            label={
+                              document.status === 'approved'
+                                ? 'Approuvé'
+                                : document.status === 'rejected'
+                                  ? 'Rejeté'
+                                  : 'En attente'
+                            }
                             size="small"
-                            sx={{
-                              backgroundColor: 
-                                document.status === 'approved' ? '#34c759' :
-                                document.status === 'rejected' ? '#ff3b30' :
-                                '#ff9500',
-                              color: '#fff',
-                              fontWeight: 500,
-                              borderRadius: '6px'
-                            }}
+                            color={getStatusColor(document.status) as 'success' | 'error' | 'info' | 'warning'}
+                            sx={{ fontWeight: 500, borderRadius: tokens.radius.sm }}
                           />
                         </TableCell>
+                        <TableCell>{new Date(document.createdAt).toLocaleDateString()}</TableCell>
                         <TableCell>
-                          {new Date(document.createdAt).toLocaleDateString()}
-                        </TableCell>
-                        <TableCell>
-                          <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Box sx={{ display: 'flex', gap: 0.5 }}>
                             <Tooltip title="Modifier">
                               <IconButton
                                 size="small"
                                 onClick={() => handleEditDocument(document)}
-                                sx={{
-                                  color: '#1d1d1f',
-                                  '&:hover': {
-                                    backgroundColor: 'rgba(0,0,0,0.04)'
-                                  }
-                                }}
+                                sx={{ color: tokens.colors.gray600 }}
                               >
-                                <EditIcon />
+                                <EditIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
                             {document.type === 'audit' && (
@@ -728,17 +701,9 @@ const Audit: React.FC = () => {
                                     size="small"
                                     onClick={() => handleApproveDocument(document)}
                                     disabled={document.status === 'approved'}
-                                    sx={{
-                                      color: '#34c759',
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(52,199,89,0.1)'
-                                      },
-                                      '&.Mui-disabled': {
-                                        color: 'rgba(52,199,89,0.3)'
-                                      }
-                                    }}
+                                    sx={{ color: tokens.colors.success }}
                                   >
-                                    <ApproveIcon />
+                                    <ApproveIcon fontSize="small" />
                                   </IconButton>
                                 </Tooltip>
                                 <Tooltip title="Rejeter">
@@ -746,17 +711,9 @@ const Audit: React.FC = () => {
                                     size="small"
                                     onClick={() => handleRejectDocument(document)}
                                     disabled={document.status === 'rejected'}
-                                    sx={{
-                                      color: '#ff3b30',
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(255,59,48,0.1)'
-                                      },
-                                      '&.Mui-disabled': {
-                                        color: 'rgba(255,59,48,0.3)'
-                                      }
-                                    }}
+                                    sx={{ color: tokens.colors.error }}
                                   >
-                                    <RejectIcon />
+                                    <RejectIcon fontSize="small" />
                                   </IconButton>
                                 </Tooltip>
                               </>
@@ -767,15 +724,7 @@ const Audit: React.FC = () => {
                     ))
                   ) : (
                     <TableRow>
-                      <TableCell 
-                        colSpan={5} 
-                        align="center"
-                        sx={{ 
-                          py: 4,
-                          color: '#86868b',
-                          borderBottom: 'none'
-                        }}
-                      >
+                      <TableCell colSpan={5} align="center" sx={{ py: 4, color: tokens.colors.gray500, borderBottom: 'none' }}>
                         Aucun document pour cette mission
                       </TableCell>
                     </TableRow>
@@ -784,267 +733,75 @@ const Audit: React.FC = () => {
               </Table>
             </TableContainer>
           </Box>
-        </Paper>
-      ) : (
-        <Paper 
-          sx={{ 
-            width: '100%', 
-            mb: 2,
-            borderRadius: '16px',
-            boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-            overflow: 'hidden'
-          }}
-        >
-          <Box sx={{ p: 3 }}>
-            <Typography 
-              variant="h6" 
-              sx={{ 
-                mb: 3,
-                fontWeight: 600,
-                color: '#1d1d1f',
-                fontSize: '1.25rem'
-              }}
-            >
-              Missions à auditer
-            </Typography>
-            
-            <Paper 
-              elevation={0}
-              sx={{ 
-                p: 2, 
-                mb: 2, 
-                borderRadius: '12px',
-                backgroundColor: '#f8f9fa',
-                border: '1px solid #e5e5e7'
-              }}
-            >
-              <Box sx={{ 
-                display: 'flex', 
+        ) : (
+          <>
+            <Box
+              sx={{
+                display: 'flex',
                 flexWrap: 'wrap',
-                gap: 2,
-                alignItems: 'center'
-              }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
-                  <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
-                    Statut :
-                  </Typography>
-                  <Chip
-                    label="Tous les audits"
-                    onClick={() => setAuditStatusFilter('all')}
-                    color={auditStatusFilter === 'all' ? 'primary' : 'default'}
-                    variant={auditStatusFilter === 'all' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                  <Chip
-                    label="Non audité"
-                    onClick={() => setAuditStatusFilter('not_audited')}
-                    color={auditStatusFilter === 'not_audited' ? 'primary' : 'default'}
-                    variant={auditStatusFilter === 'not_audited' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                  <Chip
-                    label="Audité"
-                    onClick={() => setAuditStatusFilter('audited')}
-                    color={auditStatusFilter === 'audited' ? 'primary' : 'default'}
-                    variant={auditStatusFilter === 'audited' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                </Box>
-                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                  <FormControl 
-                    size="small" 
-                    sx={{ 
-                      minWidth: 150
-                    }}
-                  >
-                    <InputLabel>Mandat</InputLabel>
-                    <Select
-                      value={mandatFilter}
-                      label="Mandat"
-                      onChange={(e) => setMandatFilter(e.target.value)}
-                      sx={{
-                        borderRadius: '8px',
-                        backgroundColor: 'white',
-                        '& .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#d2d2d7',
-                        },
-                      }}
-                    >
-                      <MenuItem value="all">Tous les mandats</MenuItem>
-                      {AVAILABLE_MANDATS.map(mandat => (
-                        <MenuItem key={mandat} value={mandat}>
-                          {mandat}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Box>
-              </Box>
-            </Paper>
-            
-            <Box sx={{ 
-              mb: 4, 
-              display: 'flex', 
-              gap: 2, 
-              alignItems: 'center',
-              backgroundColor: '#f5f5f7',
-              p: 2,
-              borderRadius: '12px'
-            }}>
+                gap: 1.5,
+                alignItems: 'center',
+                mb: 2.5,
+                p: 1.5,
+                ...panelSx,
+              }}
+            >
+              <SegmentedControl
+                value={auditStatusFilter}
+                onChange={(v) => setAuditStatusFilter(v as 'all' | 'audited' | 'not_audited')}
+                options={[
+                  { value: 'all', label: 'Tous' },
+                  { value: 'not_audited', label: 'Non audité' },
+                  { value: 'audited', label: 'Audité' },
+                ]}
+              />
+
               <TextField
-                placeholder="Rechercher une mission..."
+                placeholder="Rechercher une mission…"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 size="small"
-                sx={{ 
-                  flexGrow: 1,
-                  '& .MuiOutlinedInput-root': {
-                    backgroundColor: '#ffffff',
-                    borderRadius: '8px',
-                    '& fieldset': {
-                      borderColor: 'transparent'
-                    },
-                    '&:hover fieldset': {
-                      borderColor: '#d2d2d7'
-                    },
-                    '&.Mui-focused fieldset': {
-                      borderColor: '#0071e3'
-                    }
-                  }
-                }}
+                sx={{ flex: '1 1 220px', minWidth: 180, ...filterFieldSx }}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <SearchIcon sx={{ color: '#86868b' }} />
+                      <SearchIcon sx={{ color: tokens.colors.gray400, fontSize: 18 }} />
                     </InputAdornment>
                   ),
                 }}
               />
+
               <Autocomplete
-                options={structureMembers
-                  .sort((a, b) => {
-                    const mandatA = a.mandat || '';
-                    const mandatB = b.mandat || '';
-                    if (mandatA !== mandatB) return mandatB.localeCompare(mandatA);
-                    return a.displayName.localeCompare(b.displayName);
-                  })
-                }
-                groupBy={(option) => option.mandat ? `Mandat ${option.mandat}` : 'Autres'}
+                options={[...structureMembers].sort((a, b) => {
+                  const mandatA = a.mandat || '';
+                  const mandatB = b.mandat || '';
+                  if (mandatA !== mandatB) return mandatB.localeCompare(mandatA);
+                  return a.displayName.localeCompare(b.displayName);
+                })}
+                groupBy={(option) => (option.mandat ? `Mandat ${option.mandat}` : 'Autres')}
                 getOptionLabel={(option) => option.displayName || option.email}
-                value={auditorFilter === 'all' ? null : structureMembers.find(m => m.id === auditorFilter) || null}
-                onChange={(_, newValue) => {
-                  setAuditorFilter(newValue?.id || 'all');
-                }}
+                value={auditorFilter === 'all' ? null : structureMembers.find((m) => m.id === auditorFilter) || null}
+                onChange={(_, newValue) => setAuditorFilter(newValue?.id || 'all')}
                 renderInput={(params) => (
-                  <TextField 
-                    {...params} 
-                    size="small" 
-                    label="Auditeur"
-                    placeholder="Tous les auditeurs"
-                    sx={{ 
-                      minWidth: 200,
-                      '& .MuiOutlinedInput-root': {
-                        backgroundColor: '#ffffff',
-                        borderRadius: '8px',
-                        '& fieldset': {
-                          borderColor: 'transparent'
-                        },
-                        '&:hover fieldset': {
-                          borderColor: '#d2d2d7'
-                        },
-                        '&.Mui-focused fieldset': {
-                          borderColor: '#0071e3'
-                        }
-                      }
-                    }}
-                    InputLabelProps={{
-                      sx: { color: '#86868b' }
-                    }}
-                  />
+                  <TextField {...params} size="small" label="Auditeur" placeholder="Tous" sx={{ minWidth: 200, ...filterFieldSx }} />
                 )}
                 renderOption={(props, option) => (
                   <Box component="li" {...props} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Avatar 
-                      src={option.photoURL} 
-                      sx={{ 
-                        width: 24, 
-                        height: 24,
-                        fontSize: '0.75rem'
-                      }}
-                    >
+                    <Avatar src={option.photoURL} sx={{ width: 24, height: 24, fontSize: '0.75rem' }}>
                       {option.displayName?.[0]}
                     </Avatar>
-                    <Typography variant="body2">
-                      {option.displayName || option.email}
-                    </Typography>
+                    <UserNameText user={option} variant="body2" component="span" fallback={option.email} />
                   </Box>
                 )}
                 size="small"
                 sx={{ minWidth: 200 }}
               />
-              <FormControl 
-                size="small" 
-                sx={{ 
-                  minWidth: 150,
-                  '& .MuiOutlinedInput-root': {
-                    backgroundColor: '#ffffff',
-                    borderRadius: '8px',
-                    '& fieldset': {
-                      borderColor: 'transparent'
-                    },
-                    '&:hover fieldset': {
-                      borderColor: '#d2d2d7'
-                    },
-                    '&.Mui-focused fieldset': {
-                      borderColor: '#0071e3'
-                    }
-                  }
-                }}
-              >
-                <InputLabel sx={{ color: '#86868b' }}>Mandat</InputLabel>
-                <Select
-                  value={mandatFilter}
-                  label="Mandat"
-                  onChange={(e) => setMandatFilter(e.target.value)}
-                >
+
+              <FormControl size="small" sx={{ minWidth: 150, ...filterFieldSx }}>
+                <InputLabel>Mandat</InputLabel>
+                <Select value={mandatFilter} label="Mandat" onChange={(e) => setMandatFilter(e.target.value)}>
                   <MenuItem value="all">Tous les mandats</MenuItem>
-                  {AVAILABLE_MANDATS.map(mandat => (
+                  {AVAILABLE_MANDATS.map((mandat) => (
                     <MenuItem key={mandat} value={mandat}>
                       {mandat}
                     </MenuItem>
@@ -1052,193 +809,247 @@ const Audit: React.FC = () => {
                 </Select>
               </FormControl>
             </Box>
-            
-            {filteredMissions.length === 0 ? (
-              <Paper 
-                sx={{ 
-                  p: 4, 
-                  textAlign: 'center',
-                  bgcolor: 'white',
-                  borderRadius: '16px',
-                  border: '1px solid #e5e5e7'
+
+            <Box sx={{ ...panelSx, mb: structureType === 'junior' && etudes.length > 0 ? 3 : 0 }}>
+              <Box
+                sx={{
+                  px: 2.5,
+                  py: 1.75,
+                  borderBottom: `1px solid ${tokens.colors.divider}`,
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  justifyContent: 'space-between',
+                  gap: 1,
                 }}
               >
-                <WorkHistoryIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-                <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-                  Aucune mission à auditer dans votre structure
+                <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+                  Missions à auditer
                 </Typography>
-                <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-                  Les missions à auditer apparaîtront ici lorsqu'elles seront créées.
+                <Typography sx={{ fontSize: 12, color: tokens.colors.gray500 }}>
+                  {filteredMissions.length} résultat{filteredMissions.length > 1 ? 's' : ''}
                 </Typography>
-              </Paper>
-            ) : (
-              <TableContainer>
-                <Table>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ 
-                        fontWeight: 600,
-                        color: '#1d1d1f',
-                        borderBottom: '1px solid #e5e5e7'
-                      }}>Numéro de mission</TableCell>
-                      <TableCell sx={{ 
-                        fontWeight: 600,
-                        color: '#1d1d1f',
-                        borderBottom: '1px solid #e5e5e7'
-                      }}>Statut de l'audit</TableCell>
-                      <TableCell sx={{ 
-                        fontWeight: 600,
-                        color: '#1d1d1f',
-                        borderBottom: '1px solid #e5e5e7'
-                      }}>Auditeur en charge</TableCell>
-                      <TableCell sx={{ 
-                        fontWeight: 600,
-                        color: '#1d1d1f',
-                        borderBottom: '1px solid #e5e5e7'
-                      }}>Chargé de mission</TableCell>
-                      <TableCell sx={{ 
-                        fontWeight: 600,
-                        color: '#1d1d1f',
-                        borderBottom: '1px solid #e5e5e7'
-                      }}>Entreprise</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {filteredMissions.map((mission) => (
-                      <TableRow 
-                        key={mission.id}
-                        onClick={() => handleViewMissionDetails(mission.id)}
-                        sx={{ 
-                          cursor: 'pointer',
-                          '&:hover': { 
-                            backgroundColor: 'rgba(0,0,0,0.02)'
-                          },
-                          '& td': {
-                            borderBottom: '1px solid #e5e5e7',
-                            color: '#1d1d1f'
-                          }
-                        }}
-                      >
-                        <TableCell>{mission.numeroMission}</TableCell>
-                        <TableCell>
-                          <Chip
-                            label={mission.auditStatus === 'audited' ? 'Audité' : 'Non audité'}
-                            size="small"
-                            sx={{
-                              backgroundColor: mission.auditStatus === 'audited' ? '#34c759' : '#ff9500',
-                              color: '#fff',
-                              fontWeight: 500,
-                              borderRadius: '6px'
-                            }}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <FormControl 
-                            fullWidth 
-                            size="small"
-                            onClick={(e) => e.stopPropagation()}
-                            sx={{ 
-                              minWidth: '180px',
-                              '& .MuiOutlinedInput-root': {
-                                borderRadius: '8px',
-                                backgroundColor: 'rgba(0,0,0,0.02)',
-                                '&:hover': {
-                                  backgroundColor: 'rgba(0,0,0,0.04)',
-                                },
-                                '&.Mui-focused': {
-                                  backgroundColor: 'rgba(0,0,0,0.04)',
-                                }
+              </Box>
+
+              {filteredMissions.length === 0 ? (
+                <EmptyState
+                  icon={<WorkHistoryIcon />}
+                  title="Aucune mission à auditer"
+                  description="Les missions à auditer apparaîtront ici lorsqu'elles seront créées, ou ajustez vos filtres."
+                />
+              ) : (
+                <TableContainer sx={{ overflowX: 'auto' }}>
+                  <Table sx={{ minWidth: 720 }}>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell sx={thSx}>Numéro de mission</TableCell>
+                        <TableCell sx={thSx}>Statut de l&apos;audit</TableCell>
+                        <TableCell sx={thSx}>Auditeur en charge</TableCell>
+                        <TableCell sx={thSx}>Chargé de mission</TableCell>
+                        <TableCell sx={thSx}>Entreprise</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {filteredMissions.map((mission) => (
+                        <TableRow
+                          key={mission.id}
+                          onClick={() => handleViewMissionDetails(mission.id)}
+                          sx={{
+                            cursor: 'pointer',
+                            '&:hover': { bgcolor: tokens.colors.gray50 },
+                            '& td': {
+                              borderBottom: `1px solid ${tokens.colors.divider}`,
+                              color: tokens.colors.gray900,
+                              fontSize: 13,
+                            },
+                          }}
+                        >
+                          <TableCell sx={{ fontWeight: 600 }}>{mission.numeroMission}</TableCell>
+                          <TableCell>
+                            <DsPill
+                              bg={
+                                mission.auditStatus === 'audited'
+                                  ? tokens.colors.successLight
+                                  : tokens.colors.warningLight
                               }
-                            }}
-                          >
-                            <Select
-                              value={mission.auditor || ''}
-                              onChange={(e) => handleAuditorChange(mission.id, e.target.value)}
-                              displayEmpty
-                              variant="outlined"
-                              disabled={!canWrite}
+                              fg={
+                                mission.auditStatus === 'audited'
+                                  ? tokens.colors.success
+                                  : tokens.colors.warning
+                              }
+                            >
+                              {mission.auditStatus === 'audited' ? 'Audité' : 'Non audité'}
+                            </DsPill>
+                          </TableCell>
+                          <TableCell>
+                            <FormControl
+                              fullWidth
+                              size="small"
+                              onClick={(e) => e.stopPropagation()}
                               sx={{
-                                fontSize: '0.875rem',
-                                '& .MuiSelect-select': {
-                                  py: 0.75,
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                }
+                                minWidth: 180,
+                                '& .MuiOutlinedInput-root': {
+                                  borderRadius: tokens.radius.md,
+                                  bgcolor: tokens.colors.gray50,
+                                  fontSize: 13,
+                                  '& fieldset': { borderColor: 'transparent' },
+                                  '&:hover': { bgcolor: tokens.colors.gray100 },
+                                  '&.Mui-focused fieldset': { borderColor: tokens.colors.brandTeal },
+                                },
                               }}
                             >
-                              <MenuItem value="" sx={{ py: 0.5 }}>
-                                <em>Non assigné</em>
-                              </MenuItem>
-                              {structureMembers.map((member) => (
-                                <MenuItem 
-                                  key={member.id} 
-                                  value={member.id}
-                                  sx={{ 
-                                    py: 0.5,
+                              <Select
+                                value={mission.auditor || ''}
+                                onChange={(e) => handleAuditorChange(mission.id, e.target.value)}
+                                displayEmpty
+                                variant="outlined"
+                                disabled={!canWrite}
+                                sx={{
+                                  '& .MuiSelect-select': {
+                                    py: 0.75,
                                     display: 'flex',
                                     alignItems: 'center',
-                                    gap: 1
-                                  }}
-                                >
-                                  <Avatar 
-                                    src={member.photoURL} 
-                                    sx={{ 
-                                      width: 20, 
-                                      height: 20,
-                                      fontSize: '0.75rem',
-                                      mr: 1.5
-                                    }}
-                                  >
-                                    {member.displayName?.[0]}
-                                  </Avatar>
-                                  <Typography 
-                                    variant="body2" 
-                                    sx={{ 
-                                      fontWeight: 400,
-                                      whiteSpace: 'nowrap',
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis',
-                                      maxWidth: '120px'
-                                    }}
-                                  >
-                                    {decryptedUserNames[member.id] || member.displayName || member.email}
-                                  </Typography>
+                                  },
+                                }}
+                              >
+                                <MenuItem value="" sx={{ py: 0.5 }}>
+                                  <em>Non assigné</em>
                                 </MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-                        </TableCell>
-                        <TableCell>{decryptedUserNames[mission.chargeId] || mission.missionManager || 'Non assigné'}</TableCell>
-                        <TableCell>{mission.company}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            )}
-          </Box>
-        </Paper>
-      )}
+                                {structureMembers.map((member) => (
+                                  <MenuItem
+                                    key={member.id}
+                                    value={member.id}
+                                    sx={{ py: 0.5, display: 'flex', alignItems: 'center', gap: 1 }}
+                                  >
+                                    <Avatar
+                                      src={member.photoURL}
+                                      sx={{ width: 20, height: 20, fontSize: '0.75rem', mr: 1.5 }}
+                                    >
+                                      <UserAvatarInitials user={member} fontSize="0.75rem" />
+                                    </Avatar>
+                                    <UserNameText
+                                      user={member}
+                                      fallback={member.email}
+                                      variant="body2"
+                                      sx={{
+                                        fontWeight: 400,
+                                        whiteSpace: 'nowrap',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        maxWidth: 120,
+                                      }}
+                                    />
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
+                          <TableCell>
+                            <UserReferenceText
+                              userId={mission.chargeId}
+                              name={mission.missionManager}
+                              fallback="Non assigné"
+                              variant="body2"
+                            />
+                          </TableCell>
+                          <TableCell>{mission.company}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+            </Box>
 
-      <Dialog 
-        open={openAddDialog} 
-        onClose={handleCloseAddDialog} 
-        maxWidth="sm" 
+            {structureType === 'junior' && etudes.length > 0 && (
+              <Box sx={panelSx}>
+                <Box sx={{ px: 2.5, py: 1.75, borderBottom: `1px solid ${tokens.colors.divider}` }}>
+                  <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+                    Études
+                  </Typography>
+                </Box>
+                <TableContainer sx={{ overflowX: 'auto' }}>
+                  <Table sx={{ minWidth: 640 }}>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell sx={thSx}>Numéro</TableCell>
+                        <TableCell sx={thSx}>Entreprise</TableCell>
+                        <TableCell sx={thSx}>Étape</TableCell>
+                        <TableCell sx={thSx}>Chargé d&apos;études</TableCell>
+                        <TableCell sx={thSx}>Actions</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {etudes.map((etude: any) => {
+                        const etape = etude.etape as EtudeEtape;
+                        return (
+                          <TableRow
+                            key={etude.id}
+                            hover
+                            sx={{
+                              '& td': {
+                                borderBottom: `1px solid ${tokens.colors.divider}`,
+                                fontSize: 13,
+                                color: tokens.colors.gray900,
+                              },
+                            }}
+                          >
+                            <TableCell sx={{ fontWeight: 600 }}>{etude.numeroEtude}</TableCell>
+                            <TableCell>{etude.company}</TableCell>
+                            <TableCell>
+                              <DsPill
+                                bg={`${ETUDE_ETAPE_COLORS[etape] || tokens.colors.gray400}22`}
+                                fg={ETUDE_ETAPE_COLORS[etape] || tokens.colors.gray600}
+                              >
+                                {ETUDE_ETAPE_LABELS[etape] || etude.status}
+                              </DsPill>
+                            </TableCell>
+                            <TableCell>
+                              <ChargeNameText chargeId={etude.chargeId} chargeName={etude.chargeName} variant="body2" />
+                            </TableCell>
+                            <TableCell>
+                              <Tooltip title="Voir l'audit">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleViewEtudeDetails(etude.numeroEtude)}
+                                  sx={{ color: tokens.colors.brandTeal }}
+                                >
+                                  <ViewIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
+            )}
+          </>
+        )}
+      </Box>
+
+      <Dialog
+        open={openAddDialog}
+        onClose={handleCloseAddDialog}
+        maxWidth="sm"
         fullWidth
         PaperProps={{
           sx: {
-            borderRadius: '16px',
-            boxShadow: '0 4px 24px rgba(0,0,0,0.1)'
-          }
+            borderRadius: tokens.radius.lg,
+            boxShadow: tokens.shadows.lg,
+          },
         }}
       >
-        <DialogTitle sx={{ 
-          fontWeight: 600,
-          color: '#1d1d1f',
-          borderBottom: '1px solid #e5e5e7',
-          pb: 2
-        }}>
-          Ajouter un document d'audit
+        <DialogTitle
+          sx={{
+            fontWeight: 600,
+            color: tokens.colors.gray900,
+            borderBottom: `1px solid ${tokens.colors.divider}`,
+            pb: 2,
+          }}
+        >
+          Ajouter un document d&apos;audit
         </DialogTitle>
         <DialogContent sx={{ pt: 3 }}>
           <Grid container spacing={2}>
@@ -1248,37 +1059,18 @@ const Audit: React.FC = () => {
                 label="Nom du document"
                 value={newDocument.name}
                 onChange={(e) => setNewDocument({ ...newDocument, name: e.target.value })}
-                sx={{
-                  '& .MuiOutlinedInput-root': {
-                    borderRadius: '8px',
-                    '& fieldset': {
-                      borderColor: '#d2d2d7'
-                    },
-                    '&:hover fieldset': {
-                      borderColor: '#0071e3'
-                    }
-                  }
-                }}
+                sx={filterFieldSx}
               />
             </Grid>
             <Grid item xs={12}>
-              <FormControl fullWidth>
+              <FormControl fullWidth sx={filterFieldSx}>
                 <InputLabel>Type de document</InputLabel>
                 <Select
                   value={newDocument.type}
                   label="Type de document"
                   onChange={(e) => setNewDocument({ ...newDocument, type: e.target.value as 'audit' | 'mission' })}
-                  sx={{
-                    borderRadius: '8px',
-                    '& .MuiOutlinedInput-notchedOutline': {
-                      borderColor: '#d2d2d7'
-                    },
-                    '&:hover .MuiOutlinedInput-notchedOutline': {
-                      borderColor: '#0071e3'
-                    }
-                  }}
                 >
-                  <MenuItem value="audit">Document d'audit</MenuItem>
+                  <MenuItem value="audit">Document d&apos;audit</MenuItem>
                   <MenuItem value="mission">Document de mission</MenuItem>
                 </Select>
               </FormControl>
@@ -1291,29 +1083,21 @@ const Audit: React.FC = () => {
                 disabled
                 helperText="ID de la mission sélectionnée"
                 sx={{
+                  ...filterFieldSx,
                   '& .MuiOutlinedInput-root': {
-                    borderRadius: '8px',
-                    backgroundColor: '#f5f5f7'
-                  }
+                    ...filterFieldSx['& .MuiOutlinedInput-root'],
+                    bgcolor: tokens.colors.gray50,
+                  },
                 }}
               />
             </Grid>
             <Grid item xs={12}>
-              <FormControl fullWidth>
+              <FormControl fullWidth sx={filterFieldSx}>
                 <InputLabel>Statut</InputLabel>
                 <Select
                   value={newDocument.status}
                   label="Statut"
                   onChange={(e) => setNewDocument({ ...newDocument, status: e.target.value as AuditDocument['status'] })}
-                  sx={{
-                    borderRadius: '8px',
-                    '& .MuiOutlinedInput-notchedOutline': {
-                      borderColor: '#d2d2d7'
-                    },
-                    '&:hover .MuiOutlinedInput-notchedOutline': {
-                      borderColor: '#0071e3'
-                    }
-                  }}
                 >
                   <MenuItem value="pending">En attente</MenuItem>
                   <MenuItem value="approved">Approuvé</MenuItem>
@@ -1329,52 +1113,38 @@ const Audit: React.FC = () => {
                 rows={4}
                 value={newDocument.description}
                 onChange={(e) => setNewDocument({ ...newDocument, description: e.target.value })}
-                sx={{
-                  '& .MuiOutlinedInput-root': {
-                    borderRadius: '8px',
-                    '& fieldset': {
-                      borderColor: '#d2d2d7'
-                    },
-                    '&:hover fieldset': {
-                      borderColor: '#0071e3'
-                    }
-                  }
-                }}
+                sx={filterFieldSx}
               />
             </Grid>
           </Grid>
         </DialogContent>
-        <DialogActions sx={{ p: 3, borderTop: '1px solid #e5e5e7' }}>
-          <Button 
+        <DialogActions sx={{ p: 2.5, borderTop: `1px solid ${tokens.colors.divider}` }}>
+          <Button
             onClick={handleCloseAddDialog}
-            sx={{
-              color: '#1d1d1f',
-              '&:hover': {
-                backgroundColor: 'rgba(0,0,0,0.04)'
-              }
-            }}
+            sx={{ textTransform: 'none', color: tokens.colors.gray700 }}
           >
             Annuler
           </Button>
-          <Button 
-            onClick={handleAddDocument} 
+          <Button
+            onClick={handleAddDocument}
             variant="contained"
             sx={{
-              backgroundColor: '#0071e3',
+              bgcolor: tokens.colors.brandTeal,
               color: '#fff',
-              borderRadius: '20px',
-              px: 3,
-              '&:hover': {
-                backgroundColor: '#0077ed'
-              }
+              borderRadius: tokens.radius.md,
+              px: 2.5,
+              textTransform: 'none',
+              fontWeight: 600,
+              boxShadow: tokens.shadows.button,
+              '&:hover': { bgcolor: tokens.colors.brandTeal700 },
             }}
           >
             Ajouter
           </Button>
         </DialogActions>
       </Dialog>
-    </Container>
+    </AppPageShell>
   );
 };
 
-export default Audit; 
+export default Audit;

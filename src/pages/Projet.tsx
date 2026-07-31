@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Button,
@@ -53,19 +54,12 @@ import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setD
 import { useNavigate } from 'react-router-dom';
 import MissionForm, { MissionFormData } from '../components/missions/MissionForm';
 import { canAccessStructureContent, canModifyStructureContent } from '../utils/permissions';
-import { decryptUsersList, getDecryptedUserDisplayName } from '../utils/decryptUserUtils';
+import { decryptUsersList, getDecryptedUserDisplayName, getSafeDisplayName } from '../utils/decryptUserUtils';
+import { tokens } from '../theme/tokens';
+import ChargeNameText from '../components/common/ChargeNameText';
+import UserAvatarInitials from '../components/common/UserAvatarInitials';
 
 // Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
 
 interface EtudeData {
   id?: string;
@@ -139,7 +133,7 @@ interface ChargeData {
 }
 
 const Etude: React.FC = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, userData } = useAuth();
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [showNoStructureAlert, setShowNoStructureAlert] = useState(false);
@@ -440,7 +434,7 @@ const Etude: React.FC = () => {
           status: row.status || 'En attente',
           structureId: userStructureId || '',
           chargeId: currentUser?.uid || '',
-          chargeName: currentUser?.displayName || '',
+          chargeName: getSafeDisplayName(userData),
           isPublic: true,
           etape: 'Négociation' as const
         }));
@@ -472,7 +466,9 @@ const Etude: React.FC = () => {
         if (etude.company) {
           try {
             const companiesRef = collection(db, 'companies');
-            const companyQuery = query(companiesRef, where('name', '==', etude.company));
+            const companyConstraints = [where('name', '==', etude.company)];
+            if (userStructureId) companyConstraints.push(where('structureId', '==', userStructureId));
+            const companyQuery = query(companiesRef, ...companyConstraints);
             const companySnapshot = await getDocs(companyQuery);
             
             if (!companySnapshot.empty) {
@@ -694,7 +690,9 @@ const Etude: React.FC = () => {
       if (formData.companyName) {
         try {
           const companiesRef = collection(db, 'companies');
-          const companyQuery = query(companiesRef, where('name', '==', formData.companyName));
+          const companyConstraints = [where('name', '==', formData.companyName)];
+          if (userStructureId) companyConstraints.push(where('structureId', '==', userStructureId));
+          const companyQuery = query(companiesRef, ...companyConstraints);
           const companySnapshot = await getDocs(companyQuery);
           
           if (!companySnapshot.empty) {
@@ -717,7 +715,7 @@ const Etude: React.FC = () => {
         status: 'En attente',
         structureId: userStructureId,
         chargeId: formData.chargeId || currentUser.uid,
-        chargeName: selectedCharge.displayName,
+        chargeName: getSafeDisplayName(selectedCharge),
         chargePhotoURL: selectedCharge.photoURL || null,
         description: formData.description,
         prixHT: formData.priceHT,
@@ -767,7 +765,7 @@ const Etude: React.FC = () => {
   };
 
   return (
-    <Box sx={{ p: 3, bgcolor: '#f5f5f7', minHeight: '100vh' }}>
+    <Box sx={{ p: 3, bgcolor: tokens.colors.bgSubtle, minHeight: '100vh' }}>
       <Box 
         sx={{ 
           display: 'flex', 
@@ -819,16 +817,16 @@ const Etude: React.FC = () => {
           variant={archiveFilter === 'active' ? 'contained' : 'outlined'}
           onClick={() => setArchiveFilter('active')}
           sx={{
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             textTransform: 'none',
             px: 3,
             py: 1,
             bgcolor: archiveFilter === 'active' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'active' ? 'white' : '#1d1d1f',
+            color: archiveFilter === 'active' ? 'white' : tokens.colors.textPrimary,
             borderColor: '#d2d2d7',
             '&:hover': {
               bgcolor: archiveFilter === 'active' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
+              borderColor: tokens.colors.textPrimary
             }
           }}
         >
@@ -838,16 +836,16 @@ const Etude: React.FC = () => {
           variant={archiveFilter === 'archived' ? 'contained' : 'outlined'}
           onClick={() => setArchiveFilter('archived')}
           sx={{
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             textTransform: 'none',
             px: 3,
             py: 1,
             bgcolor: archiveFilter === 'archived' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'archived' ? 'white' : '#1d1d1f',
+            color: archiveFilter === 'archived' ? 'white' : tokens.colors.textPrimary,
             borderColor: '#d2d2d7',
             '&:hover': {
               bgcolor: archiveFilter === 'archived' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
+              borderColor: tokens.colors.textPrimary
             }
           }}
         >
@@ -857,16 +855,16 @@ const Etude: React.FC = () => {
           variant={archiveFilter === 'all' ? 'contained' : 'outlined'}
           onClick={() => setArchiveFilter('all')}
           sx={{
-            borderRadius: '20px',
+            borderRadius: tokens.radius.xl,
             textTransform: 'none',
             px: 3,
             py: 1,
             bgcolor: archiveFilter === 'all' ? '#0066cc' : 'transparent',
-            color: archiveFilter === 'all' ? 'white' : '#1d1d1f',
+            color: archiveFilter === 'all' ? 'white' : tokens.colors.textPrimary,
             borderColor: '#d2d2d7',
             '&:hover': {
               bgcolor: archiveFilter === 'all' ? '#0077ed' : 'rgba(0,0,0,0.04)',
-              borderColor: '#1d1d1f'
+              borderColor: tokens.colors.textPrimary
             }
           }}
         >
@@ -885,15 +883,15 @@ const Etude: React.FC = () => {
             textAlign: 'center',
             bgcolor: 'white',
             borderRadius: '1.2rem',
-            border: '1px solid #e5e5e7',
+            border: `1px solid ${tokens.colors.borderDefault}`,
             mx: 2
           }}
         >
-          <WorkHistoryIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-          <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
+          <WorkHistoryIcon sx={{ fontSize: 48, color: tokens.colors.textSecondary, mb: 2 }} />
+          <Typography variant="h6" sx={{ color: tokens.colors.textPrimary, mb: 1 }}>
             Aucune étude dans votre structure
           </Typography>
-          <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
+          <Typography variant="body1" sx={{ color: tokens.colors.textSecondary, mb: 3 }}>
             Commencez par ajouter votre première étude en cliquant sur le bouton ci-dessus.
           </Typography>
           <Button
@@ -917,57 +915,57 @@ const Etude: React.FC = () => {
         <TableContainer 
           component={Paper} 
           sx={{ 
-            borderRadius: '12px',
+            borderRadius: tokens.radius.md,
             boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
             overflow: 'hidden'
           }}
         >
           <Table>
             <TableHead>
-              <TableRow sx={{ backgroundColor: '#f5f5f7' }}>
+              <TableRow sx={{ backgroundColor: tokens.colors.bgSubtle }}>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Favori</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Numéro</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>CP</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Entreprise</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Localisation</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Date de début</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Consultants</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Heures</TableCell>
                 <TableCell sx={{ 
                   fontWeight: 500,
-                  color: '#1d1d1f',
+                  color: tokens.colors.textPrimary,
                   borderBottom: '1px solid #d2d2d7'
                 }}>Statut</TableCell>
               </TableRow>
@@ -983,8 +981,8 @@ const Etude: React.FC = () => {
                       backgroundColor: 'rgba(0,0,0,0.02)'
                     },
                     '& td': {
-                      borderBottom: '1px solid #f5f5f7',
-                      color: '#1d1d1f'
+                      borderBottom: `1px solid ${tokens.colors.bgSubtle}`,
+                      color: tokens.colors.textPrimary
                     }
                   }}
                 >
@@ -993,7 +991,7 @@ const Etude: React.FC = () => {
                       size="small"
                       onClick={(e) => handleToggleFavorite(etude.id || '', e)}
                       sx={{ 
-                        color: favoriteEtudes.includes(etude.id || '') ? '#0071e3' : '#86868b',
+                        color: favoriteEtudes.includes(etude.id || '') ? '#0071e3' : tokens.colors.textSecondary,
                         '&:hover': {
                           backgroundColor: 'rgba(0,0,0,0.04)'
                         }
@@ -1016,12 +1014,16 @@ const Etude: React.FC = () => {
                               backgroundColor: '#0071e3'
                             }}
                           >
-                            {etude.chargeName?.charAt(0)}
+                            <UserAvatarInitials user={{ id: etude.chargeId, displayName: etude.chargeName }} />
                           </Avatar>
                         </Tooltip>
-                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                          {etude.chargeName || 'Non assigné'}
-                        </Typography>
+                        <ChargeNameText
+                          chargeId={etude.chargeId}
+                          chargeName={etude.chargeName}
+                          component="span"
+                          variant="body2"
+                          sx={{ fontWeight: 500 }}
+                        />
                       </Box>
                     </TableCell>
                     <TableCell>{etude.company}</TableCell>
@@ -1039,8 +1041,8 @@ const Etude: React.FC = () => {
                             'rgba(255,149,0,0.1)',
                           color:
                             etude.status === 'En cours' ? '#0071e3' :
-                            etude.status === 'Terminé' ? '#34C759' :
-                            '#FF9500',
+                            etude.status === 'Terminé' ? tokens.colors.success :
+                            tokens.colors.warning,
                           fontWeight: 500,
                           borderRadius: '6px'
                         }}
@@ -1305,12 +1307,21 @@ const Etude: React.FC = () => {
       <Dialog
         open={createDialogOpen}
         onClose={() => setCreateDialogOpen(false)}
-        maxWidth="md"
+        maxWidth="sm"
         fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: tokens.radius.xxl,
+            overflow: 'hidden',
+            boxShadow: tokens.shadows.pop,
+          },
+        }}
       >
-        <DialogTitle>Créer une nouvelle étude</DialogTitle>
-        <DialogContent>
-          <MissionForm 
+        <DialogContent sx={{ p: 0, '&:first-of-type': { pt: 0 } }}>
+          <MissionForm
+            title="Nouvelle étude"
+            subtitle="Renseignez les informations pour ouvrir une nouvelle étude."
+            submitLabel="Créer l'étude"
             onSubmit={handleCreateEtude}
             onCancel={() => setCreateDialogOpen(false)}
             availableCharges={availableCharges}
@@ -1318,21 +1329,25 @@ const Etude: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert 
-          severity={snackbar.severity} 
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          variant="filled"
-          sx={{ width: '100%' }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert 
+            severity={snackbar.severity} 
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            variant="filled"
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

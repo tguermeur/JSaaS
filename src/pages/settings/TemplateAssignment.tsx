@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
-  Card,
-  CardContent,
   Typography,
   FormControl,
   InputLabel,
@@ -22,6 +21,8 @@ import { collection, query, where, getDocs, doc, setDoc, updateDoc, getDoc, dele
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { DocumentType, DOCUMENT_TYPES, TemplateAssignment } from '../../types/templates';
+import { tokens } from '../../theme/tokens';
+import { settingsPageStyles, SettingsPanel, SegmentedControl } from '../../components/ds';
 
 interface Template {
   id: string;
@@ -396,20 +397,15 @@ const TemplateAssignmentComponent: React.FC = () => {
   }
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography 
-          variant="h4" 
-          gutterBottom 
-          sx={{ 
-            fontWeight: 600,
-            color: theme.palette.text.primary,
-            mb: 4,
-            letterSpacing: '-0.5px'
-          }}
-        >
-          Assignation des Templates
-        </Typography>
+    <Box>
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3 }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Assignation des templates</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Associez un modèle PDF à chaque type de document
+          </Typography>
+        </Box>
       </Box>
       
       {loading ? (
@@ -446,88 +442,32 @@ const TemplateAssignmentComponent: React.FC = () => {
             })
             .map(([type, label]) => (
             <Grid item xs={12} md={6} key={type}>
-              <Card 
-                elevation={0}
-                sx={{ 
-                  borderRadius: '16px',
-                  backgroundColor: theme.palette.background.paper,
-                  border: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
-                  transition: 'transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
-                  height: '100%',
-                  '&:hover': {
-                    transform: 'translateY(-2px)',
-                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)'
-                  }
-                }}
-              >
-                <CardContent sx={{ p: 2.5 }}>
-                  <Box sx={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    mb: 2,
-                    borderBottom: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
-                    pb: 1.5
-                  }}>
-                    <Typography 
-                      variant="h6" 
-                      sx={{ 
-                        flexGrow: 1,
-                        fontWeight: 500,
-                        color: theme.palette.text.primary,
-                        fontSize: '1rem'
+              <SettingsPanel
+                title={label}
+                action={isSuperAdmin ? (
+                  <Tooltip title="Template par défaut">
+                    <StarIcon
+                      color={defaultTemplates.some((dt) => dt.documentType === type) ? 'primary' : 'disabled'}
+                      sx={{
+                        opacity: defaultTemplates.some((dt) => dt.documentType === type) ? 1 : 0.5,
+                        fontSize: '1.2rem',
                       }}
-                    >
-                      {label}
-                    </Typography>
-                    {isSuperAdmin && (
-                      <Tooltip title="Template par défaut">
-                        <StarIcon 
-                          color={defaultTemplates.some(dt => dt.documentType === type) ? "primary" : "disabled"}
-                          sx={{ 
-                            mr: 1,
-                            opacity: defaultTemplates.some(dt => dt.documentType === type) ? 1 : 0.5,
-                            fontSize: '1.2rem'
-                          }}
-                        />
-                      </Tooltip>
-                    )}
-                  </Box>
-                  
+                    />
+                  </Tooltip>
+                ) : undefined}
+              >
                   {type === 'proposition_commerciale' && (
                     <Box sx={{ mb: 2 }}>
-                      <FormControl fullWidth>
-                        <InputLabel 
-                          sx={{ 
-                            color: theme.palette.text.secondary,
-                            '&.Mui-focused': {
-                              color: theme.palette.primary.main
-                            }
-                          }}
-                        >
-                          Type de génération
-                        </InputLabel>
-                        <Select
-                          value={generationTypes[type as DocumentType] || 'template'}
-                          onChange={(e) => handleGenerationTypeChange(type as DocumentType, e.target.value as 'template' | 'editor')}
-                          label="Type de génération"
-                          sx={{
-                            borderRadius: '12px',
-                            '& .MuiOutlinedInput-notchedOutline': {
-                              borderColor: alpha(theme.palette.divider, 0.2)
-                            },
-                            '&:hover .MuiOutlinedInput-notchedOutline': {
-                              borderColor: alpha(theme.palette.primary.main, 0.5)
-                            },
-                            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                              borderColor: theme.palette.primary.main,
-                              borderWidth: '1px'
-                            }
-                          }}
-                        >
-                          <MenuItem value="template">Template PDF</MenuItem>
-                          <MenuItem value="editor">Éditeur</MenuItem>
-                        </Select>
-                      </FormControl>
+                      <SegmentedControl
+                        value={generationTypes[type as DocumentType] || 'template'}
+                        onChange={(v) =>
+                          handleGenerationTypeChange(type as DocumentType, v as 'template' | 'editor')
+                        }
+                        options={[
+                          { value: 'template', label: 'Template PDF' },
+                          { value: 'editor', label: 'Éditeur' },
+                        ]}
+                      />
                     </Box>
                   )}
 
@@ -548,7 +488,7 @@ const TemplateAssignmentComponent: React.FC = () => {
                       label="Template"
                       disabled={type === 'proposition_commerciale' && generationTypes[type as DocumentType] === 'editor'}
                       sx={{
-                        borderRadius: '12px',
+                        borderRadius: tokens.radius.md,
                         '& .MuiOutlinedInput-notchedOutline': {
                           borderColor: alpha(theme.palette.divider, 0.2)
                         },
@@ -580,7 +520,7 @@ const TemplateAssignmentComponent: React.FC = () => {
                             key={`${type}-${template.id}`}
                             value={template.id}
                             sx={{
-                              borderRadius: '8px',
+                              borderRadius: tokens.radius.sm,
                               margin: '4px',
                               '&:hover': {
                                 backgroundColor: alpha(theme.palette.primary.main, 0.08)
@@ -621,7 +561,7 @@ const TemplateAssignmentComponent: React.FC = () => {
                       gap: 2,
                       backgroundColor: alpha(theme.palette.background.default, 0.3),
                       p: 1.5,
-                      borderRadius: '12px'
+                      borderRadius: tokens.radius.md
                     }}>
                       <FormControl>
                         <InputLabel 
@@ -644,7 +584,7 @@ const TemplateAssignmentComponent: React.FC = () => {
                           label="Statut Universel"
                           sx={{
                             minWidth: '200px',
-                            borderRadius: '12px',
+                            borderRadius: tokens.radius.md,
                             '& .MuiOutlinedInput-notchedOutline': {
                               borderColor: alpha(theme.palette.divider, 0.2)
                             },
@@ -663,8 +603,7 @@ const TemplateAssignmentComponent: React.FC = () => {
                       </FormControl>
                     </Box>
                   )}
-                </CardContent>
-              </Card>
+              </SettingsPanel>
             </Grid>
           ))}
         </Grid>
@@ -675,7 +614,7 @@ const TemplateAssignmentComponent: React.FC = () => {
           severity="info" 
           sx={{ 
             mb: 3,
-            borderRadius: '12px',
+            borderRadius: tokens.radius.md,
             '& .MuiAlert-icon': {
               alignItems: 'center'
             }
@@ -701,14 +640,16 @@ const TemplateAssignmentComponent: React.FC = () => {
           disabled={saving || !canSave}
           startIcon={saving ? <CircularProgress size={20} /> : <SaveIcon />}
           sx={{
-            borderRadius: '12px',
+            borderRadius: tokens.radius.md,
             textTransform: 'none',
             fontWeight: 500,
             px: 4,
             py: 1.5,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+            bgcolor: tokens.colors.brandTeal,
+            boxShadow: tokens.shadows.button,
             '&:hover': {
-              boxShadow: canSave ? '0 6px 16px rgba(0,0,0,0.15)' : 'none'
+              bgcolor: tokens.colors.brandTeal700,
+              boxShadow: canSave ? tokens.shadows.md : 'none',
             },
             '&:disabled': {
               opacity: 0.6
@@ -719,37 +660,33 @@ const TemplateAssignmentComponent: React.FC = () => {
         </Button>
       </Box>
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        sx={{
-          zIndex: 10000,
-          position: 'fixed !important',
-          '& .MuiSnackbar-root': {
-            zIndex: 10000
-          }
-        }}
-      >
-        <Alert 
-          severity={snackbar.severity} 
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          variant="filled"
-          sx={{
-            width: '100%',
-            borderRadius: '12px',
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
-            minWidth: '300px',
-            zIndex: 10000,
-            '& .MuiAlert-icon': {
-              alignItems: 'center'
-            }
-          }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert 
+            severity={snackbar.severity} 
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            variant="filled"
+            sx={{
+              width: '100%',
+              borderRadius: tokens.radius.md,
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+              minWidth: '300px',
+              '& .MuiAlert-icon': {
+                alignItems: 'center'
+              }
+            }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

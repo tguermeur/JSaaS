@@ -30,4 +30,15 @@ export const formatDate = (date: Date | string): string => {
     hour: '2-digit',
     minute: '2-digit'
   }).format(d);
-}; 
+};
+
+/** Formate une date Firestore / string / Date en libellé court FR. */
+export function formatShortDate(
+  raw: unknown,
+  options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }
+): string {
+  if (raw == null) return '—';
+  const d = toDateFromFirestore(raw);
+  if (d.getTime() === 0) return '—';
+  return d.toLocaleDateString('fr-FR', options);
+} 

@@ -1,14 +1,13 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Typography,
-  Card,
-  CardContent,
   Button,
   Alert,
   Snackbar,
   Paper,
-  Divider
+  Grid,
 } from '@mui/material';
 import {
   ContentCopy as CopyIcon,
@@ -16,6 +15,8 @@ import {
   Info as InfoIcon
 } from '@mui/icons-material';
 import BackButton from '../components/ui/BackButton';
+import { tokens } from '../theme/tokens';
+import { settingsPageStyles, SettingsPanel } from '../components/ds';
 import TagLibraryDisplay from '../components/TagLibraryDisplay';
 import { COMPLETE_TAG_LIBRARY } from './DocumentGenerator';
 
@@ -79,52 +80,45 @@ const TagLibrary: React.FC = () => {
   };
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box>
       <BackButton />
-      
-      {/* En-tête */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" gutterBottom sx={{ fontWeight: 700 }}>
-          Bibliothèque des balises
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Consultez toutes les balises disponibles pour vos documents
-        </Typography>
+
+      <Box component="header" sx={{ ...settingsPageStyles.header, px: 0, py: 0, bgcolor: 'transparent', borderBottom: 'none', mb: 3 }}>
+        <Box>
+          <Typography sx={settingsPageStyles.eyebrow}>Paramètres</Typography>
+          <Typography component="h1" sx={settingsPageStyles.title}>Bibliothèque des balises</Typography>
+          <Typography sx={settingsPageStyles.sub}>
+            Consultez toutes les balises disponibles pour vos documents
+          </Typography>
+        </Box>
       </Box>
 
-      {/* Actions rapides */}
-      <Card sx={{ mb: 3 }}>
-        <CardContent>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Box>
-              <Typography variant="h6" gutterBottom>
-                Actions rapides
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Téléchargez la documentation complète ou consultez les exemples
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <Button
-                variant="outlined"
-                startIcon={<DownloadIcon />}
-                onClick={generateTagDocumentation}
-              >
-                Télécharger la documentation
-              </Button>
-            </Box>
-          </Box>
-        </CardContent>
-      </Card>
+      <SettingsPanel
+        title="Actions rapides"
+        desc="Téléchargez la documentation complète ou consultez les exemples"
+        action={
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={generateTagDocumentation}
+            sx={{
+              borderColor: tokens.colors.brandTeal,
+              color: tokens.colors.brandTeal,
+              textTransform: 'none',
+              '&:hover': { borderColor: tokens.colors.brandTeal700, bgcolor: tokens.colors.primaryAlpha10 },
+            }}
+          >
+            Télécharger la documentation
+          </Button>
+        }
+      >
+        <Typography variant="body2" color="text.secondary">
+          Exportez la liste complète des balises au format Markdown.
+        </Typography>
+      </SettingsPanel>
 
-      {/* Guide d'utilisation */}
-      <Card sx={{ mb: 3 }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <InfoIcon color="primary" />
-            Guide d'utilisation
-          </Typography>
-          
+      <Box sx={{ mt: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <SettingsPanel title="Guide d'utilisation" icon={<InfoIcon sx={{ fontSize: 16 }} />}>
           <Grid container spacing={3}>
             <Grid item xs={12} md={4}>
               <Alert severity="info">
@@ -132,88 +126,88 @@ const TagLibrary: React.FC = () => {
                   Comment utiliser les balises
                 </Typography>
                 <Typography variant="body2">
-                  Placez les balises directement dans vos documents Word, PDF ou PowerPoint à l'endroit où vous voulez que les données apparaissent.
+                  Placez les balises directement dans vos documents Word, PDF ou PowerPoint à l&apos;endroit où vous voulez que les données apparaissent.
                 </Typography>
               </Alert>
             </Grid>
-            
+
             <Grid item xs={12} md={4}>
               <Alert severity="success">
                 <Typography variant="subtitle2" gutterBottom>
                   Exemple pratique
                 </Typography>
                 <Typography variant="body2">
-                  "Étude &lt;etude_numero&gt; pour &lt;entreprise_nom&gt;" devient "Étude E2024-001 pour TechCorp SARL"
+                  &quot;Étude &lt;etude_numero&gt; pour &lt;entreprise_nom&gt;&quot; devient &quot;Étude E2024-001 pour TechCorp SARL&quot;
                 </Typography>
               </Alert>
             </Grid>
-            
+
             <Grid item xs={12} md={4}>
               <Alert severity="warning">
                 <Typography variant="subtitle2" gutterBottom>
                   Syntaxe importante
                 </Typography>
                 <Typography variant="body2">
-                  Respectez exactement la syntaxe avec les crochets &lt; &gt; et l'orthographe des balises.
+                  Respectez exactement la syntaxe avec les crochets &lt; &gt; et l&apos;orthographe des balises.
                 </Typography>
               </Alert>
             </Grid>
           </Grid>
-        </CardContent>
-      </Card>
+        </SettingsPanel>
 
-      {/* Statistiques */}
-      <Grid container spacing={3} sx={{ mb: 3 }}>
-        {categories.filter(c => c.id !== 'all').map(category => {
-          const count = COMPLETE_TAG_LIBRARY.filter(tag => tag.category === category.label.split('/')[0]).length;
-          if (count === 0) return null;
-          
-          return (
-            <Grid item xs={6} sm={4} md={3} key={category.id}>
-              <Paper sx={{ p: 2, textAlign: 'center', borderRadius: 2 }}>
-                <Box sx={{ color: 'primary.main', mb: 1 }}>
-                  {category.icon}
-                </Box>
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                  {count}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {category.label}
-                </Typography>
-              </Paper>
-            </Grid>
-          );
-        })}
-      </Grid>
+        <Grid container spacing={2}>
+          {[...new Set(COMPLETE_TAG_LIBRARY.map((tag) => tag.category))].map((category) => {
+            const count = COMPLETE_TAG_LIBRARY.filter((tag) => tag.category === category).length;
+            return (
+              <Grid item xs={6} sm={4} md={3} key={category}>
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 2,
+                    textAlign: 'center',
+                    borderRadius: tokens.radius.md,
+                    border: `1px solid ${tokens.colors.divider}`,
+                  }}
+                >
+                  <Typography variant="h6" sx={{ fontWeight: 600, color: tokens.colors.brandTeal }}>
+                    {count}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {category}
+                  </Typography>
+                </Paper>
+              </Grid>
+            );
+          })}
+        </Grid>
 
-      {/* Bibliothèque des balises */}
-      <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Toutes les balises disponibles
-          </Typography>
-          <TagLibraryDisplay 
-            onTagCopy={handleTagCopy}
-            detectedTags={detectedTags}
-            showDetectedOnly={false}
-          />
-        </CardContent>
-      </Card>
+        <SettingsPanel
+          title="Toutes les balises disponibles"
+          desc={`${COMPLETE_TAG_LIBRARY.length} balises référencées`}
+        >
+          <TagLibraryDisplay onTagCopy={handleTagCopy} showDetectedOnly={false} />
+        </SettingsPanel>
+      </Box>
 
       {/* Snackbar pour les notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={3000}
-        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-      >
-        <Alert
+      {createPortal(
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={3000}
           onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
-          severity={snackbar.severity}
-          variant="filled"
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+          sx={{ zIndex: 10000 }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            severity={snackbar.severity}
+            variant="filled"
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </Box>
   );
 };

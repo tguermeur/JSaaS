@@ -14,6 +14,7 @@ import {
   Notifications as NotificationsIcon,
   Report as ReportIcon,
   Business as BusinessIcon,
+  Campaign as CampaignIcon,
   Person as PersonIcon,
   Settings as SettingsIcon,
   Info as InfoIcon,
@@ -47,7 +48,16 @@ const NotificationList: React.FC<NotificationListProps> = ({
       case 'report_response':
         return <ReportIcon fontSize="small" />;
       case 'mission_update':
+      case 'mission_note':
+      case 'expense_status':
         return <BusinessIcon fontSize="small" />;
+      case 'ambassador_update':
+        return <CampaignIcon fontSize="small" />;
+      case 'etude_update':
+      case 'commercial_update':
+      case 'billing':
+      case 'signature':
+        return <InfoIcon fontSize="small" />;
       case 'user_update':
         return <PersonIcon fontSize="small" />;
       case 'admin_notification':
@@ -63,8 +73,15 @@ const NotificationList: React.FC<NotificationListProps> = ({
       case 'report_response':
         return 'warning';
       case 'mission_update':
+      case 'mission_note':
+      case 'expense_status':
         return 'info';
+      case 'ambassador_update':
+        return 'secondary';
+      case 'billing':
+        return 'error';
       case 'user_update':
+      case 'etude_update':
         return 'success';
       case 'admin_notification':
         return 'primary';
@@ -116,7 +133,9 @@ const NotificationList: React.FC<NotificationListProps> = ({
 
     // 5. Redirection par défaut selon métadonnées / type
     if (notification.metadata) {
-      if (notification.metadata.source === 'audit') {
+      if (notification.metadata.source === 'ambassador' && notification.metadata.eventId) {
+        navigate(`/app/ambassadeurs/event/${notification.metadata.eventId}`);
+      } else if (notification.metadata.source === 'audit') {
         if (notification.metadata.missionId) {
           navigate(`/app/audit/mission/${notification.metadata.missionId}`);
         } else {
@@ -156,11 +175,18 @@ const NotificationList: React.FC<NotificationListProps> = ({
 
   const formatDate = (date: Date) => {
     const now = new Date();
-    const diffInHours = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60));
-    
-    if (diffInHours < 1) {
+    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+
+    if (diffInMinutes < 1) {
       return 'À l\'instant';
-    } else if (diffInHours < 24) {
+    }
+    if (diffInMinutes < 60) {
+      return `Il y a ${diffInMinutes} min`;
+    }
+
+    const diffInHours = Math.floor(diffInMinutes / 60);
+    
+    if (diffInHours < 24) {
       return `Il y a ${diffInHours}h`;
     } else if (diffInHours < 48) {
       return 'Hier';
@@ -171,6 +197,21 @@ const NotificationList: React.FC<NotificationListProps> = ({
         year: 'numeric'
       });
     }
+  };
+
+  const getDisplayDate = (notification: PersistentNotification) => {
+    const lastEventAt = notification.metadata?.lastEventAt;
+    if (lastEventAt) {
+      const parsed = lastEventAt instanceof Date ? lastEventAt : new Date(lastEventAt);
+      if (!Number.isNaN(parsed.getTime())) {
+        return formatDate(parsed);
+      }
+    }
+    return formatDate(notification.createdAt);
+  };
+
+  const getGroupedCount = (notification: PersistentNotification) => {
+    return notification.metadata?.count ?? (notification as PersistentNotification & { count?: number }).count;
   };
 
   if (notifications.length === 0 && showEmptyState) {
@@ -247,6 +288,14 @@ const NotificationList: React.FC<NotificationListProps> = ({
                   >
                     {notification.title}
                   </Typography>
+                  {getGroupedCount(notification) > 1 && (
+                    <Chip
+                      label={getGroupedCount(notification)}
+                      size="small"
+                      color="primary"
+                      sx={{ height: 20, fontSize: '0.7rem', ml: 0.5 }}
+                    />
+                  )}
                   {/* Icône lien de redirection */}
                   {notification.metadata?.redirectUrl && (
                     <Tooltip title="Ouvrir">
@@ -284,7 +333,7 @@ const NotificationList: React.FC<NotificationListProps> = ({
 
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <Typography variant="caption" color="text.secondary">
-                    {formatDate(notification.createdAt)}
+                    {getDisplayDate(notification)}
                   </Typography>
 
                   {/* Métadonnées optionnelles */}

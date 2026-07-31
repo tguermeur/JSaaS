@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="x-apple-disable-message-reformatting" />
+    <meta name="color-scheme" content="light" />
+    <meta name="supported-color-schemes" content="light" />
+    <title>{{subject}}</title>
+    <!--[if mso]>
+    <noscript>
+      <xml>
+        <o:OfficeDocumentSettings>
+          <o:PixelsPerInch>96</o:PixelsPerInch>
+        </o:OfficeDocumentSettings>
+      </xml>
+    </noscript>
+    <![endif]-->
+    <style type="text/css">
+      .email-header-gradient {
+        background-color: #173B6C;
+        background-image: linear-gradient(120deg, #173B6C 0%, #21BDA3 100%);
+      }
+      .email-btn {
+        background-color: #21BDA3;
+      }
+      @media only screen and (max-width: 640px) {
+        .email-card { width: 100% !important; }
+      }
+    </style>
+  </head>
+  <body style="margin:0;padding:0;background:#f4f6f8;">
+    <!--
+      IMPORTANT EmailJS : utiliser {{{body_html}}} (3 accolades) pour rendre le HTML.
+      Avec {{body_html}} (2 accolades), les balises <br> / <strong> s'affichent en clair.
+      Variables : to_email, subject, header_title, header_subtitle, body_html, cta_label, cta_link, logo_url
+    -->
+    <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">
+      Demande de signature électronique JS Connect — lien personnel sécurisé.
+    </div>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f4f6f8;">
+      <tr>
+        <td align="center" style="padding:28px 12px;">
+          <table role="presentation" class="email-card" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+            <tr>
+              <td align="center" bgcolor="#173B6C" style="padding:0;background-color:#173B6C;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                  <tr>
+                    <td class="email-header-gradient" align="center" bgcolor="#173B6C" style="padding:28px 24px;text-align:center;background-color:#173B6C;background-image:linear-gradient(120deg,#173B6C 0%,#21BDA3 100%);">
+                      <img src="https://js-connect.fr/images/logo.png?v=2" alt="JS Connect" width="50" height="50" style="display:block;margin:0 auto 12px;border:0;outline:none;text-decoration:none;" />
+                      <div style="font-family:Arial,'Segoe UI',Helvetica,sans-serif;font-size:22px;font-weight:700;line-height:1.3;color:#ffffff;">{{header_title}}</div>
+                      <div style="font-family:Arial,'Segoe UI',Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#dbeafe;margin-top:8px;">{{header_subtitle}}</div>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px 24px 8px;">
+                <div style="font-family:Arial,'Segoe UI',Helvetica,sans-serif;color:#111827;font-size:15px;line-height:1.65;">
+                  {{{body_html}}}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td align="center" style="padding:8px 24px 24px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td align="center" bgcolor="#21BDA3" style="border-radius:10px;background-color:#21BDA3;">
+                      <!--[if mso]>
+                      <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="{{cta_link}}" style="height:48px;v-text-anchor:middle;width:240px;" arcsize="16%" stroke="false" fillcolor="#21BDA3">
+                        <w:anchorlock/>
+                        <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:bold;">{{cta_label}}</center>
+                      </v:roundrect>
+                      <![endif]-->
+                      <!--[if !mso]><!-->
+                      <a href="{{cta_link}}" class="email-btn" style="display:inline-block;padding:14px 28px;font-family:Arial,'Segoe UI',Helvetica,sans-serif;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;background-color:#21BDA3;">{{cta_label}}</a>
+                      <!--<![endif]-->
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 24px 24px;">
+                <div style="font-family:Arial,'Segoe UI',Helvetica,sans-serif;font-size:12px;line-height:1.6;color:#64748b;">
+                  Si le bouton ne fonctionne pas, copiez ce lien dans votre navigateur :<br />
+                  <a href="{{cta_link}}" style="color:#178873;text-decoration:underline;word-break:break-all;">{{cta_link}}</a>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:18px 24px;background:#f8fafc;border-top:1px solid #e5e7eb;">
+                <div style="font-family:Arial,'Segoe UI',Helvetica,sans-serif;font-size:12px;color:#94a3b8;line-height:1.6;text-align:center;">
+                  E-mail transactionnel envoyé par <strong style="color:#64748b;">JS Connect</strong> (js-connect.fr).<br />
+                  Ne répondez pas à cet e-mail automatique.
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

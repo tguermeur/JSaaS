@@ -11,6 +11,36 @@ import {
 } from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 import { resetPassword } from '../firebase/auth';
+import { tokens } from '../theme/tokens';
+
+const authPaperSx = {
+  p: { xs: 2.5, sm: 4 },
+  width: '100%',
+  borderRadius: tokens.radius.md,
+  boxShadow: tokens.shadows.lg,
+  bgcolor: tokens.colors.marketingWhite,
+};
+
+const authButtonSx = {
+  py: 1.5,
+  borderRadius: tokens.radius.xxl,
+  textTransform: 'none' as const,
+  fontWeight: 500,
+  fontSize: '1rem',
+  bgcolor: tokens.colors.marketingBlack,
+  color: tokens.colors.marketingWhite,
+  boxShadow: 'none',
+  '&:hover': {
+    bgcolor: tokens.colors.marketingBlack,
+    opacity: 0.9,
+  },
+};
+
+const linkSx = {
+  color: tokens.colors.ink,
+  textDecoration: 'none',
+  '&:hover': { textDecoration: 'underline' },
+};
 
 export default function ForgotPassword(): JSX.Element {
   const [email, setEmail] = useState<string>('');
@@ -60,15 +90,7 @@ export default function ForgotPassword(): JSX.Element {
         p: 2
       }}
     >
-      <Paper
-        elevation={0}
-        sx={{
-          p: 4,
-          width: '100%',
-          borderRadius: '12px',
-          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)'
-        }}
-      >
+      <Paper elevation={0} sx={authPaperSx}>
         <Typography 
           variant="h4" 
           component="h1" 
@@ -77,7 +99,8 @@ export default function ForgotPassword(): JSX.Element {
           sx={{ 
             fontWeight: 600, 
             fontSize: { xs: '1.5rem', sm: '2rem' },
-            mb: 3
+            mb: 3,
+            color: tokens.colors.ink,
           }}
         >
           Réinitialisation du mot de passe
@@ -95,24 +118,14 @@ export default function ForgotPassword(): JSX.Element {
               Un email de réinitialisation a été envoyé à votre adresse.
             </Alert>
             <Box sx={{ textAlign: 'center', mt: 2 }}>
-              <Link 
-                component={RouterLink} 
-                to="/login"
-                sx={{ 
-                  color: '#0071e3',
-                  textDecoration: 'none',
-                  '&:hover': {
-                    textDecoration: 'underline'
-                  }
-                }}
-              >
+              <Link component={RouterLink} to="/login" sx={linkSx}>
                 Retour à la connexion
               </Link>
             </Box>
           </>
         ) : (
           <Box component="form" onSubmit={handleSubmit} noValidate>
-            <Typography variant="body1" sx={{ mb: 3 }}>
+            <Typography variant="body1" sx={{ mb: 3, color: tokens.colors.inkMuted }}>
               Entrez votre adresse email pour recevoir un lien de réinitialisation.
             </Typography>
             
@@ -128,7 +141,7 @@ export default function ForgotPassword(): JSX.Element {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={loading}
-              sx={{ mb: 3 }}
+              sx={{ mb: 3, '& .MuiOutlinedInput-root': { borderRadius: tokens.radius.sm } }}
             />
 
             <Button
@@ -139,15 +152,7 @@ export default function ForgotPassword(): JSX.Element {
               sx={{ 
                 mt: 2,
                 mb: 3,
-                py: 1.5,
-                borderRadius: '20px',
-                textTransform: 'none',
-                fontWeight: 500,
-                fontSize: '1rem',
-                bgcolor: '#0071e3',
-                '&:hover': {
-                  bgcolor: '#0062c3'
-                }
+                ...authButtonSx,
               }}
             >
               {loading ? (
@@ -158,17 +163,7 @@ export default function ForgotPassword(): JSX.Element {
             </Button>
 
             <Box sx={{ textAlign: 'center' }}>
-              <Link 
-                component={RouterLink} 
-                to="/login"
-                sx={{ 
-                  color: '#0071e3',
-                  textDecoration: 'none',
-                  '&:hover': {
-                    textDecoration: 'underline'
-                  }
-                }}
-              >
+              <Link component={RouterLink} to="/login" sx={linkSx}>
                 Retour à la connexion
               </Link>
             </Box>
@@ -177,4 +172,4 @@ export default function ForgotPassword(): JSX.Element {
       </Paper>
     </Box>
   );
-} 
+}

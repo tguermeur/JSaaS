@@ -1,131 +1,19 @@
 import React from 'react';
-import { Box, Container, Typography, Paper, Divider, AppBar, Toolbar, Button } from '@mui/material';
-import { Link } from 'react-router-dom';
+import { Box, Container, Typography, Paper, Divider } from '@mui/material';
 import Footer from '../components/Footer';
+import PublicNav from '../components/layout/PublicNav';
+import { tokens } from '../theme/tokens';
 
 const MentionsLegales: React.FC = () => {
   return (
-    <Box sx={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', bgcolor: '#fff' }}>
-      {/* Navigation Bar */}
-      <AppBar 
-        position="fixed" 
-        elevation={0} 
-        sx={{ 
-          bgcolor: 'rgba(255, 255, 255, 0.8)',
-          backdropFilter: 'blur(20px)',
-          borderBottom: '1px solid rgba(0, 0, 0, 0.1)',
-          transition: 'all 0.3s ease-in-out',
-          '&:hover': {
-            bgcolor: 'rgba(255, 255, 255, 0.95)',
-          }
-        }}
-      >
-        <Toolbar sx={{ minHeight: '56px !important', py: 1.2, pl: 4 }}>
-          <Box
-            component="img"
-            src="/images/logo.png"
-            alt="JS Connect Logo"
-            sx={{
-              height: 40,
-              mr: 4,
-              transition: 'transform 0.3s ease',
-              '&:hover': {
-                transform: 'scale(1.05)'
-              }
-            }}
-          />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, ml: 8 }}>
-            <Button
-              component={Link}
-              to="/"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Accueil
-            </Button>
-            <Button
-              component={Link}
-              to="/features"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 400,
-                fontSize: '0.95rem',
-                textTransform: 'none',
-                px: 1.5,
-                transition: 'font-weight 0.2s',
-                '&:hover': {
-                  color: '#1d1d1f',
-                  fontWeight: 600,
-                  opacity: 0.8
-                }
-              }}
-            >
-              Fonctionnalités
-            </Button>
-          </Box>
-          <Box sx={{ flexGrow: 1 }} />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Button
-              component={Link}
-              to="/login"
-              variant="outlined"
-              sx={{
-                color: '#000',
-                borderColor: '#000',
-                fontWeight: 400,
-                fontSize: '0.85rem',
-                textTransform: 'none',
-                borderRadius: '20px',
-                px: 3,
-                '&:hover': {
-                  borderColor: '#000',
-                  bgcolor: '#000',
-                  color: '#fff'
-                }
-              }}
-            >
-              Connexion
-            </Button>
-            <Button
-              component={Link}
-              to="/register"
-              variant="contained"
-              sx={{
-                bgcolor: '#000',
-                color: '#fff',
-                fontWeight: 400,
-                fontSize: '0.85rem',
-                textTransform: 'none',
-                borderRadius: '20px',
-                px: 3,
-                '&:hover': {
-                  bgcolor: '#000',
-                  opacity: 0.9
-                }
-              }}
-            >
-              Inscription
-            </Button>
-          </Box>
-        </Toolbar>
-      </AppBar>
+    <Box sx={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', bgcolor: tokens.colors.marketingWhite }}>
+      <PublicNav selectedProfile="junior" showPricing />
 
-      <Container maxWidth="lg" sx={{ py: 8, flex: 1, mt: 8 }}>
+      <Container maxWidth="lg" sx={{ py: 8, flex: 1 }}>
         <Typography
           variant="h3"
           sx={{
-            color: '#1d1d1f',
+            color: tokens.colors.ink,
             fontWeight: 600,
             mb: 6,
             textAlign: 'center'
@@ -138,15 +26,15 @@ const MentionsLegales: React.FC = () => {
           elevation={0}
           sx={{
             p: 4,
-            borderRadius: '1.2rem',
-            border: '1px solid #e5e5e7',
-            bgcolor: '#ffffff'
+            borderRadius: tokens.radius.xl,
+            border: `1px solid ${tokens.colors.borderSoft}`,
+            bgcolor: tokens.colors.marketingWhite
           }}
         >
           <Typography
             variant="h5"
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.ink,
               fontWeight: 600,
               mb: 4
             }}
@@ -158,7 +46,7 @@ const MentionsLegales: React.FC = () => {
             <Typography
               variant="h6"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.ink,
                 fontWeight: 600,
                 mb: 2
               }}
@@ -168,7 +56,7 @@ const MentionsLegales: React.FC = () => {
             <Typography
               variant="body1"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.ink,
                 mb: 1
               }}
             >
@@ -177,7 +65,7 @@ const MentionsLegales: React.FC = () => {
             <Typography
               variant="body1"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.ink,
                 mb: 1
               }}
             >
@@ -198,7 +86,7 @@ const MentionsLegales: React.FC = () => {
             <Typography
               variant="h6"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.ink,
                 fontWeight: 600,
                 mb: 2
               }}
@@ -208,7 +96,7 @@ const MentionsLegales: React.FC = () => {
             <Typography
               variant="body1"
               sx={{
-                color: '#1d1d1f',
+                color: tokens.colors.ink,
                 mb: 1
               }}
             >
@@ -228,12 +116,12 @@ const MentionsLegales: React.FC = () => {
             </Typography>
           </Box>
 
-          <Divider sx={{ my: 6, borderColor: '#e5e5e7' }} />
+          <Divider sx={{ my: 6, borderColor: tokens.colors.divider }} />
 
           <Typography
             variant="h5"
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.ink,
               fontWeight: 600,
               mb: 4
             }}
@@ -242,67 +130,28 @@ const MentionsLegales: React.FC = () => {
           </Typography>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Article 1 – Objet
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               Les présentes Conditions Générales d'Utilisation ont pour objet de définir les modalités d'accès et d'utilisation de la plateforme JS Connect. Toute navigation ou inscription sur le site implique l'acceptation sans réserve des présentes CGU.
             </Typography>
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Article 2 – Accès au service
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               JS Connect permet à des étudiants de s'inscrire et de postuler à des missions ponctuelles rémunérées proposées par une Junior-Entreprise ou une Junior. L'accès est réservé aux personnes majeures et inscrites dans un établissement d'enseignement supérieur.
             </Typography>
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Article 3 – Inscription
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               L'inscription nécessite la création d'un compte personnel avec les informations suivantes :
               <br />
               • Nom, prénom
@@ -322,23 +171,10 @@ const MentionsLegales: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Article 4 – Engagements de l'utilisateur
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               L'utilisateur s'engage à :
               <br />
               • Ne pas usurper l'identité d'un tiers
@@ -350,77 +186,38 @@ const MentionsLegales: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Article 5 – Responsabilités
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               JS Connect ne saurait être tenu responsable en cas d'inexactitude des informations fournies par les utilisateurs ou d'interruption de service liée à des incidents techniques indépendants de sa volonté.
             </Typography>
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Article 6 – Suspension ou suppression de compte
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               JS Connect se réserve le droit de suspendre ou de supprimer un compte utilisateur en cas de non-respect des présentes CGU ou de comportement inapproprié.
             </Typography>
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Article 7 – Propriété intellectuelle
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               L'ensemble des éléments de la plateforme (textes, graphismes, logo, code, bases de données) est protégé par les lois en vigueur sur la propriété intellectuelle. Toute reproduction non autorisée est interdite.
             </Typography>
           </Box>
 
-          <Divider sx={{ my: 6, borderColor: '#e5e5e7' }} />
+          <Divider sx={{ my: 6, borderColor: tokens.colors.divider }} />
 
           <Typography
             variant="h5"
             sx={{
-              color: '#1d1d1f',
+              color: tokens.colors.ink,
               fontWeight: 600,
               mb: 4
             }}
@@ -429,23 +226,10 @@ const MentionsLegales: React.FC = () => {
           </Typography>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Données collectées
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               JS Connect collecte les données suivantes :
               <br />
               • Identité : nom, prénom, adresse e-mail, téléphone, adresse postale
@@ -457,23 +241,10 @@ const MentionsLegales: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Finalités
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               Les données sont utilisées pour :
               <br />
               • Permettre l'inscription et la mise en relation avec des missions étudiantes
@@ -489,23 +260,10 @@ const MentionsLegales: React.FC = () => {
           </Box>
 
           <Box sx={{ mb: 4 }}>
-            <Typography
-              variant="h6"
-              sx={{
-                color: '#1d1d1f',
-                fontWeight: 600,
-                mb: 2
-              }}
-            >
+            <Typography variant="h6" sx={{ color: tokens.colors.ink, fontWeight: 600, mb: 2 }}>
               Droits des utilisateurs
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{
-                color: '#1d1d1f',
-                mb: 1
-              }}
-            >
+            <Typography variant="body1" sx={{ color: tokens.colors.ink, mb: 1 }}>
               Conformément au RGPD, vous disposez :
               <br />
               • D'un droit d'accès, de rectification, de suppression et d'opposition
@@ -524,4 +282,4 @@ const MentionsLegales: React.FC = () => {
   );
 };
 
-export default MentionsLegales; 
+export default MentionsLegales;

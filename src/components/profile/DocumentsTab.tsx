@@ -42,6 +42,7 @@ import { getAuth } from 'firebase/auth';
 import axios from 'axios';
 import TwoFactorDialog from '../common/TwoFactorDialog';
 import { fetchDecryptFile, is2FARequiredError } from '../../utils/decryptFileUtils';
+import { tokens } from '../../theme/tokens';
 
 interface DocumentsTabProps {
   userData: UserData;
@@ -1176,8 +1177,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                 width: '100%',
                 height: '100%',
                 background: 'linear-gradient(90deg, transparent, rgba(0, 113, 227, 0.1), transparent)',
-                transition: 'left 0.5s ease',
-                left: '100%'
+                transition: 'left 0.5s ease'
               } : {}
             }}
             onDragEnter={(e) => {
@@ -1221,7 +1221,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                   flexDirection: 'column', 
                   justifyContent: 'center',
                   alignItems: 'center',
-                  bgcolor: '#f8f9fa',
+                  bgcolor: tokens.colors.bgDefault,
                   border: 'none'
                 }}
               >
@@ -1229,7 +1229,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                   sx={{
                     width: 80,
                     height: 80,
-                    borderRadius: '20px',
+                    borderRadius: tokens.radius.xl,
                     bgcolor: '#e3f2fd',
                     display: 'flex',
                     alignItems: 'center',
@@ -1261,7 +1261,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                     onClick={handleViewCV}
                     disabled={uploading}
                     sx={{
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       px: 3,
                       py: 1,
                       textTransform: 'none',
@@ -1278,7 +1278,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                     startIcon={<DeleteIcon />}
                     onClick={() => setDeleteDialogOpen(true)}
                     sx={{
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       px: 3,
                       py: 1,
                       textTransform: 'none',
@@ -1406,8 +1406,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                 width: '100%',
                 height: '100%',
                 background: 'linear-gradient(90deg, transparent, rgba(0, 113, 227, 0.1), transparent)',
-                transition: 'left 0.5s ease',
-                left: '100%'
+                transition: 'left 0.5s ease'
               } : {}
             }}
             onDragEnter={(e) => {
@@ -1450,7 +1449,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                   flexDirection: 'column', 
                   justifyContent: 'center',
                   alignItems: 'center',
-                  bgcolor: '#f8f9fa',
+                  bgcolor: tokens.colors.bgDefault,
                   border: 'none'
                 }}
               >
@@ -1458,7 +1457,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                   sx={{
                     width: 80,
                     height: 80,
-                    borderRadius: '20px',
+                    borderRadius: tokens.radius.xl,
                     bgcolor: (userData.identityCardUrl || (userData.identityCardRectoUrl && userData.identityCardVersoUrl))
                       ? '#e8f5e9' 
                       : '#fff3e0',
@@ -1516,7 +1515,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                         if (docType) handleDocumentView(docType);
                       }}
                       sx={{
-                        borderRadius: '12px',
+                        borderRadius: tokens.radius.md,
                         px: 2.5,
                         py: 0.75,
                         textTransform: 'none',
@@ -1538,7 +1537,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                           startIcon={<VisibilityIcon />}
                           onClick={() => handleViewIdentityCardPart('recto')}
                           sx={{
-                            borderRadius: '12px',
+                            borderRadius: tokens.radius.md,
                             px: 2.5,
                             py: 0.75,
                             textTransform: 'none',
@@ -1558,7 +1557,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                           startIcon={<VisibilityIcon />}
                           onClick={() => handleViewIdentityCardPart('verso')}
                           sx={{
-                            borderRadius: '12px',
+                            borderRadius: tokens.radius.md,
                             px: 2.5,
                             py: 0.75,
                             textTransform: 'none',
@@ -1583,7 +1582,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                     }}
                     disabled={deletingDocument === 'identityCard'}
                     sx={{
-                      borderRadius: '12px',
+                      borderRadius: tokens.radius.md,
                       px: 2.5,
                       py: 0.75,
                       textTransform: 'none',
@@ -1717,8 +1716,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                     width: '100%',
                     height: '100%',
                     background: 'linear-gradient(90deg, transparent, rgba(0, 113, 227, 0.1), transparent)',
-                    transition: 'left 0.5s ease',
-                    left: '100%'
+                    transition: 'left 0.5s ease'
                   } : {}
                 }}
                 onDragEnter={(e) => {
@@ -1762,7 +1760,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                       flexDirection: 'column', 
                       justifyContent: 'center',
                       alignItems: 'center',
-                      bgcolor: '#f8f9fa',
+                      bgcolor: tokens.colors.bgDefault,
                       border: 'none'
                     }}
                   >
@@ -1770,7 +1768,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                       sx={{
                         width: 80,
                         height: 80,
-                        borderRadius: '20px',
+                        borderRadius: tokens.radius.xl,
                         bgcolor: '#e3f2fd',
                         display: 'flex',
                         alignItems: 'center',
@@ -1806,7 +1804,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                         onClick={() => handleDocumentView(docType)}
                         disabled={isDeleting || isUploading}
                         sx={{
-                          borderRadius: '12px',
+                          borderRadius: tokens.radius.md,
                           px: 3,
                           py: 1,
                           textTransform: 'none',
@@ -1824,7 +1822,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                         onClick={() => handleDocumentDelete(docType)}
                         disabled={isDeleting}
                         sx={{
-                          borderRadius: '12px',
+                          borderRadius: tokens.radius.md,
                           px: 3,
                           py: 1,
                           textTransform: 'none',
@@ -1950,8 +1948,7 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                 width: '100%',
                 height: '100%',
                 background: 'linear-gradient(90deg, transparent, rgba(0, 113, 227, 0.1), transparent)',
-                transition: 'left 0.5s ease',
-                left: '100%'
+                transition: 'left 0.5s ease'
               } : {}
             }}
             onDragEnter={(e) => {

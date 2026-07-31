@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Typography,
-  Paper,
   Table,
   TableBody,
   TableCell,
@@ -15,19 +14,17 @@ import {
   Chip,
   Tooltip,
   styled,
-  Tabs,
-  Tab,
   Button,
   Alert,
   Menu,
   TextField,
-  keyframes,
-  Checkbox
+  Checkbox,
+  Pagination,
+  InputAdornment,
 } from '@mui/material';
 import {
   KeyboardArrowDown as KeyboardArrowDownIcon,
   KeyboardArrowUp as KeyboardArrowUpIcon,
-  AccessTime as AccessTimeIcon,
   ContentCopy as ContentCopyIcon,
   Check as CheckIcon,
   CheckCircle as CheckCircleIcon,
@@ -39,7 +36,8 @@ import {
   Clear as ClearIcon,
   ArrowUpward as ArrowUpwardIcon,
   ArrowDownward as ArrowDownwardIcon,
-  ImportExport as ImportExportIcon
+  ImportExport as ImportExportIcon,
+  Search as SearchIcon,
 } from '@mui/icons-material';
 import { collection, query, where, getDocs, getDoc, doc, updateDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
@@ -48,7 +46,26 @@ import { useSnackbar } from 'notistack';
 import { FormControl, InputLabel, Select, MenuItem } from '@mui/material';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
-import { decryptUserDisplayData } from '../utils/decryptUserUtils';
+import EmptyState from '../components/common/EmptyState';
+import { getSafeDisplayName, isEncryptedField } from '../utils/decryptUserUtils';
+import UserReferenceText from '../components/common/UserReferenceText';
+import { tokens } from '../theme/tokens';
+import { AppPageShell, SegmentedControl, DsPill, KpiCard, CommercialViewTabs } from '../components/ds';
+
+const FIRESTORE_IN_LIMIT = 30;
+
+function chunkArray<T>(items: T[], size = FIRESTORE_IN_LIMIT): T[][] {
+  if (items.length === 0) return [];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function plainText(value: unknown): string {
+  return typeof value === 'string' && !isEncryptedField(value) ? value : '';
+}
 
 // Fonction pour générer les mandats disponibles (2022-2023 jusqu'à l'année en cours)
 const generateMandats = (): string[] => {
@@ -65,18 +82,6 @@ const generateMandats = (): string[] => {
 };
 
 const AVAILABLE_MANDATS = generateMandats();
-
-// Animations
-const fadeIn = keyframes`
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-`;
 
 interface Mission {
   id: string;
@@ -145,6 +150,60 @@ interface InvoiceDocument {
   isInvoice: boolean;
 }
 
+type WorkingHourLine = {
+  startDate: string;
+  startTime: string;
+  endDate: string;
+  endTime: string;
+  breaks: Array<{ start: string; end: string }>;
+};
+
+function parseWorkingHourLines(docs: { data: () => Record<string, unknown> }[]): WorkingHourLine[] {
+  return docs.flatMap((whDoc) => {
+    const data = whDoc.data();
+    if (!Array.isArray(data.hours)) return [];
+    return (data.hours as Array<{ date?: string; startTime?: string; endTime?: string; breaks?: Array<{ start: string; end: string }> }>).map((h) => ({
+      startDate: h.date || '',
+      startTime: h.startTime || '',
+      endDate: h.date || '',
+      endTime: h.endTime || '',
+      breaks: h.breaks || [],
+    }));
+  });
+}
+
+function sumWorkingHours(workingHours: WorkingHourLine[]): number {
+  return workingHours.reduce((total, wh) => {
+    if (!wh.startTime || !wh.endTime) return total;
+    const start = new Date(`1970-01-01T${wh.startTime}`);
+    const end = new Date(`1970-01-01T${wh.endTime}`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return total;
+    let hours = (end.getTime() - start.getTime()) / 1000 / 3600;
+    wh.breaks?.forEach((breakTime) => {
+      if (!breakTime.start || !breakTime.end) return;
+      const breakStart = new Date(`1970-01-01T${breakTime.start}`);
+      const breakEnd = new Date(`1970-01-01T${breakTime.end}`);
+      if (Number.isNaN(breakStart.getTime()) || Number.isNaN(breakEnd.getTime())) return;
+      hours -= (breakEnd.getTime() - breakStart.getTime()) / 1000 / 3600;
+    });
+    return total + hours;
+  }, 0);
+}
+
+function toInvoiceDocument(id: string, data: Record<string, any>): InvoiceDocument {
+  return {
+    id,
+    fileName: data.fileName,
+    fileUrl: data.fileUrl,
+    invoiceSentDate: data.invoiceSentDate?.toDate?.(),
+    invoiceDueDate: data.invoiceDueDate?.toDate?.(),
+    invoiceAmount: data.invoiceAmount,
+    createdAt: data.createdAt?.toDate?.() || new Date(),
+    createdByName: data.createdByName,
+    isInvoice: data.isInvoice ?? true,
+  };
+}
+
 interface Contract {
   mission: Mission;
   application: {
@@ -206,7 +265,7 @@ function TabPanel(props: TabPanelProps) {
       {...other}
     >
       {value === index && (
-        <Box sx={{ py: 3 }}>
+        <Box sx={{ pt: 0, pb: 0 }}>
           {children}
         </Box>
       )}
@@ -217,11 +276,11 @@ function TabPanel(props: TabPanelProps) {
 const StyledTooltip = styled(Tooltip)(({ theme }) => ({
   '& .MuiTooltip-tooltip': {
     backgroundColor: '#FFFFFF',
-    color: '#1d1d1f',
+    color: tokens.colors.textPrimary,
     maxWidth: 650,
     fontSize: '0.875rem',
     border: 'none',
-    borderRadius: '20px',
+    borderRadius: tokens.radius.xl,
     boxShadow: '0 12px 48px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.08)',
     padding: 0,
     margin: '8px',
@@ -271,7 +330,7 @@ const InfoRow: React.FC<{
       backgroundColor: '#FFFFFF',
       transition: 'background-color 0.2s ease',
       '&:hover': {
-        backgroundColor: '#f8f9fa',
+        backgroundColor: tokens.colors.bgDefault,
         '& .copy-button': {
           opacity: 1,
           transform: 'translateX(0)'
@@ -286,7 +345,7 @@ const InfoRow: React.FC<{
       }}>
         <Typography sx={{ 
           fontSize: '0.7rem',
-          color: '#86868b',
+          color: tokens.colors.textSecondary,
           mb: 0.25,
           letterSpacing: '0.02em',
           fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
@@ -297,14 +356,14 @@ const InfoRow: React.FC<{
         </Typography>
         <Typography sx={{ 
           fontSize: '0.875rem',
-          color: '#1d1d1f',
+          color: tokens.colors.textPrimary,
           fontWeight: 500,
           letterSpacing: '-0.01em',
           fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
           lineHeight: 1.3,
           wordBreak: 'break-word'
         }}>
-          {value || <Box component="span" sx={{ color: '#86868b', fontStyle: 'italic' }}>Non renseigné</Box>}
+          {value || <Box component="span" sx={{ color: tokens.colors.textSecondary, fontStyle: 'italic' }}>Non renseigné</Box>}
         </Typography>
       </Box>
       {value && value !== 'Non renseigné' && (
@@ -321,11 +380,11 @@ const InfoRow: React.FC<{
               opacity: 0,
               transform: 'translateX(10px)',
               transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-              color: copied ? '#34C759' : '#007AFF',
+              color: copied ? tokens.colors.success : tokens.colors.info,
               p: 1,
               ml: 1,
               backgroundColor: 'transparent',
-              borderRadius: '8px',
+              borderRadius: tokens.radius.sm,
               '&:hover': {
                 backgroundColor: copied ? 'rgba(52, 199, 89, 0.1)' : 'rgba(0, 122, 255, 0.1)',
                 transform: 'scale(1.1)'
@@ -358,7 +417,7 @@ const UserInfoTooltip: React.FC<{ userData: ExtendedUserData }> = ({ userData })
       <Typography sx={{ 
         fontSize: '0.875rem',
         fontWeight: 600,
-        color: '#1d1d1f',
+        color: tokens.colors.textPrimary,
         letterSpacing: '-0.01em',
         fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
       }}>
@@ -375,7 +434,7 @@ const UserInfoTooltip: React.FC<{ userData: ExtendedUserData }> = ({ userData })
     }}>
       <InfoRow 
         label="Nom complet"
-        value={`${userData.firstName} ${userData.lastName}`.trim()}
+        value={getSafeDisplayName(userData) || userData.displayName || ''}
       />
       
       <InfoRow 
@@ -493,14 +552,15 @@ const Row: React.FC<Row> = ({
             placement="right"
             arrow
           >
-            <Typography sx={{ 
-              cursor: 'pointer',
-              '&:hover': {
-                color: '#007AFF'
-              }
-            }}>
-              {contract.application.userDisplayName}
-            </Typography>
+            <UserReferenceText
+              userId={contract.application.userId}
+              name={contract.application.userDisplayName}
+              fallback={contract.application.userEmail?.split('@')[0] || 'Étudiant'}
+              sx={{
+                cursor: 'pointer',
+                '&:hover': { color: tokens.colors.info },
+              }}
+            />
           </StyledTooltip>
         </TableCell>
         {currentTab === 0 && (
@@ -521,10 +581,10 @@ const Row: React.FC<Row> = ({
                   size="small"
                   onClick={() => onTogglePaymentStatus(contract.mission.id, true)}
                   sx={{
-                    borderRadius: '8px',
+                    borderRadius: tokens.radius.sm,
                     fontWeight: 500,
                     backgroundColor: 'rgba(52, 199, 89, 0.1)',
-                    color: '#34C759',
+                    color: tokens.colors.success,
                     border: 'none',
                     cursor: 'pointer',
                     '&:hover': {
@@ -543,10 +603,10 @@ const Row: React.FC<Row> = ({
                   size="small"
                   onClick={() => onTogglePaymentStatus(contract.mission.id, false)}
                   sx={{
-                    borderRadius: '8px',
+                    borderRadius: tokens.radius.sm,
                     fontWeight: 500,
                     backgroundColor: 'rgba(255, 204, 0, 0.1)',
-                    color: '#FF9500',
+                    color: tokens.colors.warning,
                     border: 'none',
                     cursor: 'pointer',
                     '&:hover': {
@@ -566,7 +626,7 @@ const Row: React.FC<Row> = ({
                 startIcon={<CheckCircleIcon />}
                 onClick={() => onContractValidate?.(contract.mission.id)}
                 sx={{
-                  borderRadius: '8px',
+                  borderRadius: tokens.radius.sm,
                   textTransform: 'none',
                   boxShadow: 'none'
                 }}
@@ -719,17 +779,17 @@ const Row: React.FC<Row> = ({
               <Box sx={{ 
                 mt: 2, 
                 p: 2, 
-                bgcolor: '#f8f9fa', 
-                borderRadius: '8px',
+                bgcolor: tokens.colors.bgDefault, 
+                borderRadius: tokens.radius.sm,
                 display: 'flex',
                 justifyContent: 'flex-end',
                 alignItems: 'center',
                 gap: 2
               }}>
-                <Typography variant="h6" sx={{ color: '#1d1d1f' }}>
+                <Typography variant="h6" sx={{ color: tokens.colors.textPrimary }}>
                   {currentTab === 0 ? "Total heures :" : "Total à payer :"}
                 </Typography>
-                <Typography variant="h6" sx={{ color: '#34C759', fontWeight: 600 }}>
+                <Typography variant="h6" sx={{ color: tokens.colors.success, fontWeight: 600 }}>
                   {currentTab === 0 
                     ? `${contract.totalHoursAssigned.toFixed(2)}h`
                     : `${((contract.totalHoursAssigned * (parseFloat(contract.mission.salary || '0'))) + 
@@ -783,10 +843,13 @@ const Tresorerie: React.FC = () => {
   const [tabValue, setTabValue] = useState(0);
   const [processingContract, setProcessingContract] = useState<string | null>(null);
   const { enqueueSnackbar } = useSnackbar();
-  const [contractFilter, setContractFilter] = useState<ContractFilter>('all');
-  const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
+  const [contractFilter, setContractFilter] = useState<ContractFilter>('pending');
+  const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('pending');
   const [invoiceTrackingFilter, setInvoiceTrackingFilter] = useState<InvoiceTrackingFilter>('all');
   const [mandatFilter, setMandatFilter] = useState<string>('all');
+  const [contractsSearch, setContractsSearch] = useState('');
+  const [contractsPage, setContractsPage] = useState(1);
+  const CONTRACTS_PAGE_SIZE = 25;
   const [filters, setFilters] = useState<TableFilters>({
     numeroMission: '',
     student: '',
@@ -800,6 +863,10 @@ const Tresorerie: React.FC = () => {
   const [openRows, setOpenRows] = useState<{ [key: string]: boolean }>({});
   const [selectedInvoices, setSelectedInvoices] = useState<Set<string>>(new Set());
   const [invoiceTrackingSort, setInvoiceTrackingSort] = useState<InvoiceTrackingSortConfig>({ column: null, direction: null });
+
+  useEffect(() => {
+    setContractsPage(1);
+  }, [contractFilter, mandatFilter, contractsSearch, filters, sort.column, sort.direction]);
 
   const handleTogglePaymentStatus = async (contractId: string, currentStatus: boolean) => {
     if (!currentUser) return;
@@ -825,7 +892,7 @@ const Tresorerie: React.FC = () => {
         await updateDoc(contractDocRef, {
           isPaymentProcessed: !currentStatus,
           paymentProcessedAt: !currentStatus ? new Date() : null,
-          paymentProcessedBy: !currentStatus ? userData?.displayName || 'Utilisateur inconnu' : null,
+          paymentProcessedBy: !currentStatus ? getSafeDisplayName(userData, 'Utilisateur inconnu') : null,
           updatedAt: new Date()
         });
       }
@@ -837,7 +904,7 @@ const Tresorerie: React.FC = () => {
               ...c, 
               isPaymentProcessed: !currentStatus,
               paymentProcessedAt: !currentStatus ? new Date() : null,
-              paymentProcessedBy: !currentStatus ? userData?.displayName || 'Utilisateur inconnu' : null
+              paymentProcessedBy: !currentStatus ? getSafeDisplayName(userData, 'Utilisateur inconnu') : null
             }
           : c
       ));
@@ -889,7 +956,7 @@ const Tresorerie: React.FC = () => {
           updatedAt: new Date(),
           createdBy: currentUser.uid,
           structureId: contract.mission.structureId,
-          createdByName: userData?.displayName || 'Utilisateur inconnu',
+          createdByName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
           isPaymentProcessed: false,
           paymentProcessedAt: null,
           paymentProcessedBy: null
@@ -914,7 +981,7 @@ const Tresorerie: React.FC = () => {
                 isContractGenerated: !currentStatus,
                 contractGeneratedAt: !currentStatus ? new Date() : null
               },
-              createdByName: userData?.displayName || 'Utilisateur inconnu'
+              createdByName: getSafeDisplayName(userData, 'Utilisateur inconnu')
             }
           : c
       ));
@@ -924,10 +991,6 @@ const Tresorerie: React.FC = () => {
       console.error('Erreur lors du changement de statut:', error);
       enqueueSnackbar('Erreur lors du changement de statut', { variant: 'error' });
     }
-  };
-
-  const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
-    setTabValue(newValue);
   };
 
   const handleContractValidate = async (contractId: string) => {
@@ -972,7 +1035,7 @@ const Tresorerie: React.FC = () => {
           updatedAt: new Date(),
           createdBy: currentUser.uid,
           structureId: contract.mission.structureId,
-          createdByName: userData?.displayName || 'Utilisateur inconnu',
+          createdByName: getSafeDisplayName(userData, 'Utilisateur inconnu'),
           isPaymentProcessed: false,
           paymentProcessedAt: null,
           paymentProcessedBy: null
@@ -997,7 +1060,7 @@ const Tresorerie: React.FC = () => {
                 isContractGenerated: true,
                 contractGeneratedAt: new Date()
               },
-              createdByName: userData?.displayName || 'Utilisateur inconnu'
+              createdByName: getSafeDisplayName(userData, 'Utilisateur inconnu')
             }
           : c
       ));
@@ -1146,7 +1209,7 @@ const Tresorerie: React.FC = () => {
             alignItems: 'center',
             opacity: sort.column === column ? 1 : 0,
             transition: 'opacity 0.2s',
-            color: '#007AFF'
+            color: tokens.colors.info
           }} className="sort-icon">
             {sort.column === column && (
               sort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -1161,7 +1224,7 @@ const Tresorerie: React.FC = () => {
           size="small"
           onClick={(e) => handleFilterClick(e, column)}
           sx={{
-            color: filters[column] ? '#007AFF' : '#86868b',
+            color: filters[column] ? tokens.colors.info : tokens.colors.textSecondary,
             padding: '4px',
             '&:hover': {
               backgroundColor: 'rgba(0, 122, 255, 0.08)'
@@ -1185,8 +1248,8 @@ const Tresorerie: React.FC = () => {
           PaperProps={{
             sx: {
               mt: 0.5,
-              boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)',
-              borderRadius: '12px'
+              boxShadow: tokens.shadows.md,
+              borderRadius: tokens.radius.md
             }
           }}
         >
@@ -1203,7 +1266,7 @@ const Tresorerie: React.FC = () => {
               variant="outlined"
               sx={{
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: '8px'
+                  borderRadius: tokens.radius.sm
                 }
               }}
             />
@@ -1220,7 +1283,7 @@ const Tresorerie: React.FC = () => {
       await updateDoc(missionRef, {
         isPaymentProcessed: true,
         paymentProcessedAt: new Date(),
-        paymentProcessedBy: userData?.displayName || 'Utilisateur inconnu'
+        paymentProcessedBy: getSafeDisplayName(userData, 'Utilisateur inconnu')
       });
       
       // Mettre à jour l'état local
@@ -1230,7 +1293,7 @@ const Tresorerie: React.FC = () => {
               ...contract,
               isPaymentProcessed: true,
               paymentProcessedAt: new Date(),
-              paymentProcessedBy: userData?.displayName || 'Utilisateur inconnu'
+              paymentProcessedBy: getSafeDisplayName(userData, 'Utilisateur inconnu')
             }
           : contract
       ));
@@ -1341,311 +1404,291 @@ const Tresorerie: React.FC = () => {
   };
 
   useEffect(() => {
-    const fetchContracts = async () => {
-      if (!currentUser) return;
+    const uid = currentUser?.uid;
+    const structureIdFromAuth = userData?.structureId as string | undefined;
+    if (!uid) return;
 
+    let cancelled = false;
+
+    const fetchContracts = async () => {
       try {
         setLoading(true);
         setError(null);
-        console.log("Début de la récupération des contrats");
-        console.log("UID de l'utilisateur:", currentUser.uid);
 
-        // Récupérer d'abord les données de l'utilisateur
-        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-        if (!userDoc.exists()) {
-          console.error("Document utilisateur non trouvé");
-          setLoading(false);
+        let userStructureId = structureIdFromAuth;
+        let viewerUserData: Record<string, unknown> | null = userData as Record<string, unknown> | null;
+
+        if (!userStructureId) {
+          const userDoc = await getDoc(doc(db, 'users', uid));
+          if (!userDoc.exists()) {
+            if (!cancelled) setLoading(false);
+            return;
+          }
+          viewerUserData = userDoc.data();
+          userStructureId = viewerUserData?.structureId as string | undefined;
+        }
+
+        if (!userStructureId) {
+          if (!cancelled) {
+            setContracts([]);
+            setLoading(false);
+          }
           return;
         }
 
-        const userData = userDoc.data();
-        console.log("Données utilisateur récupérées:", userData);
-
-        const userStructureId = userData?.structureId;
-        console.log("StructureId de l'utilisateur:", userStructureId);
-
-        // 1. Récupérer toutes les missions de la structure
-        const missionsRef = collection(db, 'missions');
-        const missionsQuery = query(
-          missionsRef,
-          where('structureId', '==', userStructureId)
+        const missionsSnapshot = await getDocs(
+          query(collection(db, 'missions'), where('structureId', '==', userStructureId))
         );
-        const missionsSnapshot = await getDocs(missionsQuery);
-        
-        console.log("Nombre total de missions trouvées:", missionsSnapshot.docs.length);
-        
+        if (cancelled) return;
+
         if (missionsSnapshot.empty) {
           setContracts([]);
           return;
         }
 
-        const missions = missionsSnapshot.docs.map(doc => {
-          const data = doc.data();
-          console.log("Mission trouvée:", {
-            id: doc.id,
-            structureId: data.structureId,
-            userStructureId,
-            match: data.structureId === userStructureId
-          });
-          return {
-            id: doc.id,
-            ...data
-          };
-        }) as Mission[];
+        const missions = missionsSnapshot.docs.map((missionDoc) => ({
+          id: missionDoc.id,
+          ...missionDoc.data(),
+        })) as Mission[];
+        const missionIds = missions.map((m) => m.id);
+        const missionById = new Map(missions.map((m) => [m.id, m]));
+
+        // Parallel: mandats CDM uniques + contrats structure + factures structure
+        const chargeIds = [
+          ...new Set(missions.map((m) => m.chargeId).filter((id): id is string => Boolean(id))),
+        ];
+
+        const [mandatByChargeId, contractsByKey, invoiceByMissionId] = await Promise.all([
+          (async () => {
+            const map = new Map<string, string | undefined>();
+            await Promise.all(
+              chargeIds.map(async (chargeId) => {
+                try {
+                  const chargeDoc = await getDoc(doc(db, 'users', chargeId));
+                  if (chargeDoc.exists()) {
+                    map.set(chargeId, chargeDoc.data().mandat || undefined);
+                  }
+                } catch {
+                  /* ignore */
+                }
+              })
+            );
+            return map;
+          })(),
+          (async () => {
+            const map = new Map<string, { status: ContractStatus; isPaymentProcessed: boolean; paymentProcessedAt: Date | null; paymentProcessedBy: string | null }>();
+            const snap = await getDocs(
+              query(collection(db, 'contracts'), where('structureId', '==', userStructureId))
+            );
+            snap.docs.forEach((cDoc) => {
+              const data = cDoc.data();
+              const key = `${data.missionId}:${data.applicationId}`;
+              const statusData = data.status || {};
+              map.set(key, {
+                status: {
+                  isContractGenerated: !!statusData.isContractGenerated,
+                  contractGeneratedAt: statusData.contractGeneratedAt?.toDate?.() || undefined,
+                },
+                isPaymentProcessed: !!data.isPaymentProcessed,
+                paymentProcessedAt: data.paymentProcessedAt?.toDate?.() || data.paymentProcessedAt || null,
+                paymentProcessedBy: data.paymentProcessedBy || null,
+              });
+            });
+            return map;
+          })(),
+          (async () => {
+            const map = new Map<string, InvoiceDocument>();
+            const snap = await getDocs(
+              query(
+                collection(db, 'generatedDocuments'),
+                where('structureId', '==', userStructureId),
+                where('category', '==', 'facturation')
+              )
+            );
+            snap.docs.forEach((d) => {
+              const data = d.data();
+              if (data.missionId && !map.has(data.missionId)) {
+                map.set(data.missionId, toInvoiceDocument(d.id, data));
+              }
+            });
+            return map;
+          })(),
+        ]);
+
+        if (cancelled) return;
+
+        missions.forEach((mission) => {
+          const cdmMandat = mission.chargeId ? mandatByChargeId.get(mission.chargeId) : undefined;
+          if (!mission.mandat && cdmMandat) mission.mandat = cdmMandat;
+        });
+
+        // Applications acceptées — batch missionId IN (30)
+        const acceptedApps: Array<{ id: string; data: Record<string, any>; missionId: string }> = [];
+        await Promise.all(
+          chunkArray(missionIds).map(async (chunk) => {
+            const snap = await getDocs(
+              query(collection(db, 'applications'), where('missionId', 'in', chunk))
+            );
+            snap.docs.forEach((appDoc) => {
+              const data = appDoc.data();
+              if (data.status === 'Acceptée') {
+                acceptedApps.push({ id: appDoc.id, data, missionId: data.missionId });
+              }
+            });
+          })
+        );
+        if (cancelled) return;
+
+        const applicationIds = acceptedApps.map((a) => a.id);
+        const userIds = [
+          ...new Set(acceptedApps.map((a) => a.data.userId as string).filter(Boolean)),
+        ];
+
+        // Parallel: heures, notes de frais, profils étudiants (sans decrypt callable)
+        const [hoursByAppId, expensesByKey, userById] = await Promise.all([
+          (async () => {
+            const map = new Map<string, WorkingHourLine[]>();
+            await Promise.all(
+              chunkArray(applicationIds).map(async (chunk) => {
+                const snap = await getDocs(
+                  query(collection(db, 'workingHours'), where('applicationId', 'in', chunk))
+                );
+                const byApp = new Map<string, typeof snap.docs>();
+                snap.docs.forEach((whDoc) => {
+                  const appId = whDoc.data().applicationId as string;
+                  if (!byApp.has(appId)) byApp.set(appId, []);
+                  byApp.get(appId)!.push(whDoc);
+                });
+                byApp.forEach((docs, appId) => {
+                  map.set(appId, parseWorkingHourLines(docs));
+                });
+              })
+            );
+            return map;
+          })(),
+          (async () => {
+            const map = new Map<string, ExpenseNote[]>();
+            await Promise.all(
+              chunkArray(missionIds).map(async (chunk) => {
+                const snap = await getDocs(
+                  query(collection(db, 'expenseNotes'), where('missionId', 'in', chunk))
+                );
+                snap.docs.forEach((noteDoc) => {
+                  const data = noteDoc.data();
+                  const key = `${data.missionId}:${data.userId}`;
+                  const note: ExpenseNote = {
+                    id: noteDoc.id,
+                    description: data.description || '',
+                    amount: data.amount || 0,
+                    status: data.status || 'En attente',
+                    date: data.date?.toDate?.() || new Date(),
+                  };
+                  if (!map.has(key)) map.set(key, []);
+                  map.get(key)!.push(note);
+                });
+              })
+            );
+            return map;
+          })(),
+          (async () => {
+            const map = new Map<string, Record<string, any>>();
+            await Promise.all(
+              userIds.map(async (userId) => {
+                try {
+                  const uDoc = await getDoc(doc(db, 'users', userId));
+                  if (uDoc.exists()) map.set(userId, uDoc.data());
+                } catch {
+                  /* ignore */
+                }
+              })
+            );
+            return map;
+          })(),
+        ]);
+
+        if (cancelled) return;
 
         const contractsData: Contract[] = [];
+        const missionsWithAcceptedApp = new Set<string>();
 
-        // 2. Pour chaque mission, récupérer les applications et les contrats associés
-        for (const mission of missions) {
-          // Récupérer le mandat du chargé de mission si la mission a un chargeId
-          let cdmMandat: string | undefined;
-          if (mission.chargeId) {
-            try {
-              const chargeDoc = await getDoc(doc(db, 'users', mission.chargeId));
-              if (chargeDoc.exists()) {
-                const chargeData = chargeDoc.data();
-                cdmMandat = chargeData.mandat || undefined;
-              }
-            } catch (error) {
-              console.error('Erreur lors de la récupération du mandat du chargé de mission:', error);
-            }
-          }
-          
-          // Si la mission a déjà un mandat, l'utiliser, sinon utiliser celui du CDM
-          if (!mission.mandat && cdmMandat) {
-            mission.mandat = cdmMandat;
-          }
-          const applicationsRef = collection(db, 'applications');
-          const applicationsQuery = query(
-            applicationsRef,
-            where('missionId', '==', mission.id),
-            where('status', '==', 'Acceptée')
-          );
+        for (const app of acceptedApps) {
+          const mission = missionById.get(app.missionId);
+          if (!mission) continue;
+          missionsWithAcceptedApp.add(mission.id);
 
-          const applicationsSnapshot = await getDocs(applicationsQuery);
-          
-          // Si pas d'application acceptée, vérifier s'il y a une facture pour cette mission
-          if (applicationsSnapshot.empty) {
-            // Vérifier s'il y a une facture uploadée pour cette mission
-            // Filtrer par structureId pour respecter les règles de sécurité Firestore
-            const documentsRef = collection(db, 'generatedDocuments');
-            const documentsQuery = query(
-              documentsRef,
-              where('missionId', '==', mission.id),
-              where('category', '==', 'facturation'),
-              where('structureId', '==', userStructureId)
-            );
-            const documentsSnapshot = await getDocs(documentsQuery);
-            
-            if (!documentsSnapshot.empty) {
-              // Il y a une facture, ajouter la mission sans application
-              const doc = documentsSnapshot.docs[0].data();
-              const invoiceDocument: InvoiceDocument = {
-                id: documentsSnapshot.docs[0].id,
-                fileName: doc.fileName,
-                fileUrl: doc.fileUrl,
-                invoiceSentDate: doc.invoiceSentDate?.toDate(),
-                invoiceDueDate: doc.invoiceDueDate?.toDate(),
-                invoiceAmount: doc.invoiceAmount,
-                createdAt: doc.createdAt?.toDate() || new Date(),
-                createdByName: doc.createdByName,
-                isInvoice: doc.isInvoice || true
-              };
+          const userId = app.data.userId as string;
+          const userFromDb = userById.get(userId);
+          const displayName =
+            plainText(userFromDb?.displayName) ||
+            [plainText(userFromDb?.firstName), plainText(userFromDb?.lastName)].filter(Boolean).join(' ') ||
+            plainText(app.data.userDisplayName) ||
+            'Utilisateur inconnu';
+          const email = plainText(userFromDb?.email) || plainText(app.data.userEmail) || '';
 
-              contractsData.push({
-                mission,
-                application: {
-                  id: 'no-application',
-                  userEmail: 'N/A',
-                  userDisplayName: 'Pas d\'étudiant assigné',
-                  workingHours: []
-                },
-                totalHoursAssigned: 0,
-                status: { isContractGenerated: false },
-                createdByName: userData?.displayName || 'Utilisateur inconnu',
-                expenseNotes: [],
-                isPaymentProcessed: false,
-                paymentProcessedAt: null,
-                paymentProcessedBy: null,
-                cdmMandat: cdmMandat || mission.mandat,
-                invoiceDocument
-              });
-            }
-            continue; // Passer à la mission suivante
-          }
-          
-          for (const appDoc of applicationsSnapshot.docs) {
-            const applicationData = appDoc.data();
-            
-            // 3. Vérifier si un contrat existe pour cette application
-            // Filtrer par structureId pour respecter les règles de sécurité Firestore
-            const contractsRef = collection(db, 'contracts');
-            const contractQuery = query(
-              contractsRef,
-              where('missionId', '==', mission.id),
-              where('applicationId', '==', appDoc.id),
-              where('structureId', '==', userStructureId)
-            );
-            const contractSnapshot = await getDocs(contractQuery);
-            
-            // Récupérer le statut du contrat s'il existe
-            const statusData = contractSnapshot.empty ? {} : contractSnapshot.docs[0].data().status || {};
-            const contractStatus = {
-              isContractGenerated: !!statusData.isContractGenerated,
-              contractGeneratedAt: statusData.contractGeneratedAt?.toDate?.() || null
-            };
+          const extendedUserData: ExtendedUserData = {
+            firstName: plainText(userFromDb?.firstName),
+            lastName: plainText(userFromDb?.lastName),
+            socialSecurityNumber: plainText(userFromDb?.socialSecurityNumber),
+            birthPlace: plainText(userFromDb?.birthPlace),
+            birthPostalCode: plainText(userFromDb?.birthPostalCode),
+            nationality: plainText(userFromDb?.nationality),
+            address: plainText(userFromDb?.address),
+            email,
+            displayName,
+          };
 
-            // Récupérer les informations de l'utilisateur
-            const userDoc = await getDoc(doc(db, 'users', applicationData.userId));
-            const userDataFromDB = userDoc.data();
-            const decryptedDisplay = await decryptUserDisplayData(applicationData.userId, {
-              displayName: userDataFromDB?.displayName,
-              firstName: userDataFromDB?.firstName,
-              lastName: userDataFromDB?.lastName
-            });
-            const extendedUserData: ExtendedUserData = {
-              firstName: decryptedDisplay.firstName || '',
-              lastName: decryptedDisplay.lastName || '',
-              socialSecurityNumber: userDataFromDB?.socialSecurityNumber || '',
-              birthPlace: userDataFromDB?.birthPlace || '',
-              birthPostalCode: userDataFromDB?.birthPostalCode || '',
-              nationality: userDataFromDB?.nationality || '',
-              address: userDataFromDB?.address || '',
-              email: userDataFromDB?.email || '',
-              displayName: decryptedDisplay.displayName || 'Utilisateur inconnu'
-            };
+          const workingHours = hoursByAppId.get(app.id) || [];
+          const totalHoursAssigned = sumWorkingHours(workingHours);
+          const expenseNotes = expensesByKey.get(`${mission.id}:${userId}`) || [];
+          const contractMeta = contractsByKey.get(`${mission.id}:${app.id}`);
+          const cdmMandat = mission.chargeId ? mandatByChargeId.get(mission.chargeId) : undefined;
 
-            // Récupérer les heures de travail
-            const workingHoursRef = collection(db, 'workingHours');
-            const workingHoursQuery = query(
-              workingHoursRef,
-              where('applicationId', '==', appDoc.id)
-            );
-            const workingHoursSnapshot = await getDocs(workingHoursQuery);
-
-            console.log('[DEBUG] workingHours docs récupérés pour application', appDoc.id, ':', workingHoursSnapshot.docs.length);
-
-            const workingHours = workingHoursSnapshot.docs.flatMap((whDoc, idx) => {
-              const data = whDoc.data();
-              console.log(`[DEBUG] Données workingHour #${idx} pour application ${appDoc.id}:`, data);
-              if (Array.isArray(data.hours)) {
-                return data.hours.map((h, hIdx) => {
-                  console.log(`[DEBUG] Ligne extraite du tableau hours, index ${hIdx}:`, h);
-                  return {
-                    startDate: h.date,
-                    startTime: h.startTime,
-                    endDate: h.date,
-                    endTime: h.endTime,
-                    breaks: h.breaks || []
-                  };
-                });
-              } else {
-                return [];
-              }
-            });
-
-            const application: Application = {
-              id: appDoc.id,
-              userId: applicationData.userId,
-              missionId: applicationData.missionId,
-              status: applicationData.status,
-              userDisplayName: extendedUserData.displayName,
-              userEmail: extendedUserData.email,
+          contractsData.push({
+            mission,
+            application: {
+              id: app.id,
+              userId,
+              userDisplayName: displayName,
+              userEmail: email,
               userData: extendedUserData,
-              workingHours: workingHours
-            };
+              workingHours,
+            },
+            totalHoursAssigned,
+            status: contractMeta?.status || { isContractGenerated: false },
+            createdByName: getSafeDisplayName(viewerUserData, 'Utilisateur inconnu'),
+            expenseNotes,
+            isPaymentProcessed: contractMeta?.isPaymentProcessed || false,
+            paymentProcessedAt: contractMeta?.paymentProcessedAt || undefined,
+            paymentProcessedBy: contractMeta?.paymentProcessedBy || undefined,
+            cdmMandat: cdmMandat || mission.mandat,
+            invoiceDocument: invoiceByMissionId.get(mission.id),
+          });
+        }
 
-            const totalHoursAssigned = workingHours.reduce((total, wh, idx) => {
-              if (!wh.startTime || !wh.endTime) {
-                console.warn(`[DEBUG] Ligne workingHour ignorée (startTime ou endTime manquant) pour application ${appDoc.id}, index ${idx}:`, wh);
-                return total;
-              }
-              const start = new Date(`1970-01-01T${wh.startTime}`);
-              const end = new Date(`1970-01-01T${wh.endTime}`);
-              if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-                console.warn(`[DEBUG] Ligne workingHour ignorée (date invalide) pour application ${appDoc.id}, index ${idx}:`, wh);
-                return total;
-              }
-              let hours = (end.getTime() - start.getTime()) / 1000 / 3600;
-
-              wh.breaks?.forEach((breakTime, bidx) => {
-                if (!breakTime.start || !breakTime.end) {
-                  console.warn(`[DEBUG] Pause ignorée (start ou end manquant) pour application ${appDoc.id}, index ${idx}, break ${bidx}:`, breakTime);
-                  return;
-                }
-                const breakStart = new Date(`1970-01-01T${breakTime.start}`);
-                const breakEnd = new Date(`1970-01-01T${breakTime.end}`);
-                if (isNaN(breakStart.getTime()) || isNaN(breakEnd.getTime())) {
-                  console.warn(`[DEBUG] Pause ignorée (date invalide) pour application ${appDoc.id}, index ${idx}, break ${bidx}:`, breakTime);
-                  return;
-                }
-                const breakHours = (breakEnd.getTime() - breakStart.getTime()) / 1000 / 3600;
-                hours -= breakHours;
-              });
-
-              console.log(`[DEBUG] Heures calculées pour application ${appDoc.id}, index ${idx}:`, hours, 'données:', wh);
-              return total + hours;
-            }, 0);
-
-            // Récupérer les notes de frais
-            const expenseNotesRef = collection(db, 'expenseNotes');
-            const expenseNotesQuery = query(
-              expenseNotesRef,
-              where('missionId', '==', mission.id),
-              where('userId', '==', applicationData.userId)
-            );
-            const expenseNotesSnapshot = await getDocs(expenseNotesQuery);
-
-            const expenseNotes = expenseNotesSnapshot.docs.map(noteDoc => {
-              const data = noteDoc.data();
-              return {
-                id: noteDoc.id,
-                ...data,
-                date: data.date?.toDate() || new Date()
-              };
-            }) as ExpenseNote[];
-
-            // Récupérer la facture associée à cette mission
-            // Filtrer par structureId pour respecter les règles de sécurité Firestore
-            const documentsRef = collection(db, 'generatedDocuments');
-            const documentsQuery = query(
-              documentsRef,
-              where('missionId', '==', mission.id),
-              where('category', '==', 'facturation'),
-              where('structureId', '==', userStructureId)
-            );
-            const documentsSnapshot = await getDocs(documentsQuery);
-            
-            let invoiceDocument: InvoiceDocument | undefined;
-            if (!documentsSnapshot.empty) {
-              const doc = documentsSnapshot.docs[0].data();
-              invoiceDocument = {
-                id: documentsSnapshot.docs[0].id,
-                fileName: doc.fileName,
-                fileUrl: doc.fileUrl,
-                invoiceSentDate: doc.invoiceSentDate?.toDate(),
-                invoiceDueDate: doc.invoiceDueDate?.toDate(),
-                invoiceAmount: doc.invoiceAmount,
-                createdAt: doc.createdAt?.toDate() || new Date(),
-                createdByName: doc.createdByName,
-                isInvoice: doc.isInvoice
-              };
-            }
-
-            contractsData.push({
-              mission,
-              application,
-              totalHoursAssigned,
-              status: contractStatus,
-              createdByName: userData?.displayName || 'Utilisateur inconnu',
-              expenseNotes,
-              isPaymentProcessed: contractSnapshot.empty ? false : contractSnapshot.docs[0].data().isPaymentProcessed || false,
-              paymentProcessedAt: contractSnapshot.empty ? null : contractSnapshot.docs[0].data().paymentProcessedAt || null,
-              paymentProcessedBy: contractSnapshot.empty ? null : contractSnapshot.docs[0].data().paymentProcessedBy || null,
-              cdmMandat: cdmMandat || mission.mandat,
-              invoiceDocument
-            });
-          }
+        // Missions sans étudiant mais avec facture (suivi facturation)
+        for (const mission of missions) {
+          if (missionsWithAcceptedApp.has(mission.id)) continue;
+          const invoiceDocument = invoiceByMissionId.get(mission.id);
+          if (!invoiceDocument) continue;
+          const cdmMandat = mission.chargeId ? mandatByChargeId.get(mission.chargeId) : undefined;
+          contractsData.push({
+            mission,
+            application: {
+              id: 'no-application',
+              userEmail: 'N/A',
+              userDisplayName: "Pas d'étudiant assigné",
+              workingHours: [],
+            },
+            totalHoursAssigned: 0,
+            status: { isContractGenerated: false },
+            createdByName: getSafeDisplayName(viewerUserData, 'Utilisateur inconnu'),
+            expenseNotes: [],
+            isPaymentProcessed: false,
+            paymentProcessedAt: undefined,
+            paymentProcessedBy: undefined,
+            cdmMandat: cdmMandat || mission.mandat,
+            invoiceDocument,
+          });
         }
 
         contractsData.sort((a, b) => {
@@ -1654,303 +1697,394 @@ const Tresorerie: React.FC = () => {
           return paymentDateA.getTime() - paymentDateB.getTime();
         });
 
-        setContracts(contractsData);
+        if (!cancelled) setContracts(contractsData);
       } catch (err) {
         console.error('Erreur lors de la récupération des contrats:', err);
-        setError('Erreur lors de la récupération des contrats');
+        if (!cancelled) setError('Erreur lors de la récupération des contrats');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
-    fetchContracts();
-  }, [currentUser?.uid]);
+    void fetchContracts();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.uid, userData?.structureId]);
+
+  const isUnknownStudentName = (name?: string) => {
+    const n = (name || '').trim().toLowerCase();
+    return !n || n === 'utilisateur inconnu' || n === 'inconnu' || n === 'n/a';
+  };
+
+  const studentContracts = contracts.filter(
+    (c) =>
+      c.application.id !== 'no-application' &&
+      !isUnknownStudentName(c.application.userDisplayName)
+  );
+
+  const contractsPending = studentContracts.filter((c) => !c.status?.isContractGenerated).length;
+  const paymentsPending = studentContracts.filter((c) => !c.isPaymentProcessed).length;
+  const invoicesPending = contracts.filter(
+    (c) => (c.mission.invoiceStatus || 'to_send') === 'to_send'
+  ).length;
+  const invoicesTracked = contracts.filter((c) => c.invoiceDocument?.fileName).length;
+
+  const filterFieldSx = {
+    '& .MuiOutlinedInput-root': {
+      borderRadius: tokens.radius.md,
+      bgcolor: tokens.colors.bgPaper,
+      fontSize: 13,
+      '& fieldset': { borderColor: tokens.colors.gray200 },
+      '&:hover fieldset': { borderColor: tokens.colors.gray300 },
+      '&.Mui-focused fieldset': { borderColor: tokens.colors.brandTeal },
+    },
+  };
+
+  const thSx = {
+    fontWeight: 600,
+    fontSize: '0.6875rem',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.04em',
+    color: tokens.colors.gray500,
+    borderBottom: `1px solid ${tokens.colors.divider}`,
+    bgcolor: tokens.colors.surfaceAlt,
+    py: 1.25,
+    whiteSpace: 'nowrap' as const,
+  };
+
+  const panelSx = {
+    bgcolor: tokens.colors.bgPaper,
+    border: `1px solid ${tokens.colors.divider}`,
+    borderRadius: tokens.radius.lg,
+    overflow: 'hidden',
+  };
+
+  const filterBarSx = {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: 1.5,
+    alignItems: 'center',
+    mb: 2.5,
+    p: 1.5,
+    ...panelSx,
+  };
+
+  const contractsTabFiltered = getSortedContracts(
+    getFilteredContracts(
+      studentContracts.filter((contract) => {
+        if (mandatFilter !== 'all') {
+          const contractMandat = contract.cdmMandat || contract.mission.mandat;
+          if (contractMandat !== mandatFilter) return false;
+        }
+        if (contractsSearch.trim()) {
+          const q = contractsSearch.trim().toLowerCase();
+          const hay = [
+            contract.mission.numeroMission,
+            contract.application.userDisplayName,
+            contract.application.userEmail,
+            (contract.mission as { company?: string }).company,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        if (filters.numeroMission && !contract.mission.numeroMission.toLowerCase().includes(filters.numeroMission.toLowerCase())) {
+          return false;
+        }
+        if (filters.student && !contract.application.userDisplayName.toLowerCase().includes(filters.student.toLowerCase())) {
+          return false;
+        }
+        if (filters.status === 'generated' && !contract.status?.isContractGenerated) return false;
+        if (filters.status === 'pending' && contract.status?.isContractGenerated) return false;
+        return true;
+      })
+    )
+  );
+  const contractsTabPageCount = Math.max(1, Math.ceil(contractsTabFiltered.length / CONTRACTS_PAGE_SIZE));
+  const contractsTabPageRows = contractsTabFiltered.slice(
+    (contractsPage - 1) * CONTRACTS_PAGE_SIZE,
+    contractsPage * CONTRACTS_PAGE_SIZE
+  );
 
   if (loading || permissionLoading) {
     return (
-      <Box sx={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh' 
-      }}>
-        <CircularProgress />
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          flex: 1,
+          minHeight: 0,
+          bgcolor: tokens.colors.surfaceAlt,
+        }}
+      >
+        <CircularProgress sx={{ color: tokens.colors.brandTeal }} />
       </Box>
     );
   }
 
-  // Afficher l'accès refusé si l'utilisateur n'a pas les permissions de lecture
   if (!canRead) {
     return (
-      <AccessDenied 
-        pageName="Trésorerie" 
-        message="Vous n'avez pas les permissions nécessaires pour accéder à cette page."
+      <AccessDenied
+        title="Accès refusé"
+        message="Vous n'avez pas les permissions nécessaires pour accéder à la Trésorerie. Contactez votre administrateur pour obtenir l'accès."
       />
     );
   }
 
+  const treasuryTabIds = ['contracts', 'payments', 'invoices', 'tracking'] as const;
+  const activeTreasuryTab = treasuryTabIds[tabValue] ?? 'contracts';
+
+  const treasuryTabs = [
+    {
+      id: 'contracts',
+      label: 'Contrats',
+      icon: <DescriptionIcon />,
+      count: contractsPending,
+    },
+    {
+      id: 'payments',
+      label: 'Paiements',
+      icon: <PaymentIcon />,
+      count: paymentsPending,
+    },
+    {
+      id: 'invoices',
+      label: 'Factures',
+      icon: <ReceiptIcon />,
+      count: invoicesPending,
+    },
+    {
+      id: 'tracking',
+      label: 'Suivi',
+      icon: <CheckCircleIcon />,
+      count: invoicesTracked,
+    },
+  ];
+
+  const goToTreasuryTab = (id: string) => {
+    const idx = treasuryTabIds.indexOf(id as (typeof treasuryTabIds)[number]);
+    if (idx >= 0) setTabValue(idx);
+  };
+
+  const kpiClickSx = (active: boolean) => ({
+    cursor: 'pointer',
+    transition: tokens.transitions.fast,
+    bgcolor: active ? `${tokens.colors.brandTeal}0A` : 'transparent',
+    outline: active ? `2px solid ${tokens.colors.brandTeal}33` : '2px solid transparent',
+    outlineOffset: -2,
+    '&:hover': { bgcolor: active ? `${tokens.colors.brandTeal}12` : tokens.colors.gray50 },
+  });
+
   return (
-    <Box sx={{ p: 3 }}>
-      <Typography 
-        variant="h4" 
-        sx={{ 
-          mb: 3, 
-          fontWeight: 700,
-          fontSize: '2rem',
-          background: 'linear-gradient(45deg, #0071e3, #34c759)',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          animation: `${fadeIn} 0.5s ease-out`
-        }}
-      >
-        Trésorerie
-      </Typography>
+    <AppPageShell
+      eyebrow="Finance"
+      title="Trésorerie"
+      titleSuffix={String(studentContracts.length)}
+      subtitle="Contrats, paiements et suivi des factures"
+      kpiColumns={4}
+      kpiStrip={
+        <>
+          <Box onClick={() => setTabValue(0)} sx={kpiClickSx(tabValue === 0)}>
+            <KpiCard label="Contrats à générer" value={contractsPending} density="compact" sparkColor={tokens.colors.warning} />
+          </Box>
+          <Box onClick={() => setTabValue(1)} sx={kpiClickSx(tabValue === 1)}>
+            <KpiCard label="Paiements à faire" value={paymentsPending} density="compact" sparkColor={tokens.colors.warning} />
+          </Box>
+          <Box onClick={() => setTabValue(2)} sx={kpiClickSx(tabValue === 2)}>
+            <KpiCard label="Factures à envoyer" value={invoicesPending} density="compact" sparkColor={tokens.colors.info} />
+          </Box>
+          <Box onClick={() => setTabValue(3)} sx={kpiClickSx(tabValue === 3)}>
+            <KpiCard label="Factures suivies" value={invoicesTracked} density="compact" sparkColor={tokens.colors.success} />
+          </Box>
+        </>
+      }
+    >
+      <Box sx={{ px: 3, py: 2.5, pb: 4, width: '100%' }}>
+        {error && (
+          <Alert
+            severity="error"
+            sx={{
+              mb: 2,
+              borderRadius: tokens.radius.md,
+              border: `1px solid ${tokens.colors.error}33`,
+            }}
+            onClose={() => setError(null)}
+          >
+            {error}
+          </Alert>
+        )}
 
-      {error && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
+        <Box sx={{ mb: 2.5 }}>
+          <CommercialViewTabs
+            fullWidth
+            active={activeTreasuryTab}
+            onChange={goToTreasuryTab}
+            tabs={treasuryTabs}
+          />
+        </Box>
 
-      <Paper sx={{ 
-        borderRadius: '12px',
-        overflow: 'hidden',
-        boxShadow: '0 4px 24px rgba(0, 0, 0, 0.06)'
-      }}>
-        <Tabs 
-          value={tabValue} 
-          onChange={handleTabChange}
-          sx={{
-            borderBottom: 1,
-            borderColor: 'divider',
-            px: 2,
-            backgroundColor: '#f5f5f7'
-          }}
-        >
-          <Tab 
-            icon={<DescriptionIcon />} 
-            label="Contrats à générer" 
-            sx={{ textTransform: 'none' }}
-          />
-          <Tab 
-            icon={<PaymentIcon />} 
-            label="Paiements à effectuer" 
-            sx={{ textTransform: 'none' }}
-          />
-          <Tab 
-            icon={<ReceiptIcon />} 
-            label="Factures à envoyer" 
-            sx={{ textTransform: 'none' }}
-          />
-          <Tab 
-            icon={<CheckCircleIcon />} 
-            label="Suivi des factures" 
-            sx={{ textTransform: 'none' }}
-          />
-        </Tabs>
-
+        <Box>
         <TabPanel value={tabValue} index={0}>
-          {contracts.length === 0 ? (
-            <Paper 
-              sx={{ 
-                p: 4, 
-                textAlign: 'center',
-                bgcolor: 'white',
-                borderRadius: '1.2rem',
-                border: '1px solid #e5e5e7',
-                m: 2
-              }}
-            >
-              <DescriptionIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-              <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-                Aucun contrat à générer dans votre structure
-              </Typography>
-              <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-                Les contrats apparaîtront ici lorsqu'ils seront créés.
-              </Typography>
-            </Paper>
+          {studentContracts.length === 0 ? (
+            <EmptyState
+              icon={<DescriptionIcon />}
+              title="Aucun contrat à générer"
+              description="Les contrats apparaîtront ici lorsqu'un étudiant sera accepté sur une mission."
+            />
           ) : (
-            <Paper 
-              elevation={0}
-              sx={{ 
-                p: 2, 
-                mb: 2, 
-                mx: 2,
-                borderRadius: '12px',
-                backgroundColor: '#f8f9fa',
-                border: '1px solid #e5e5e7'
-              }}
-            >
-              <Box sx={{ 
-                display: 'flex', 
-                flexWrap: 'wrap',
-                gap: 2,
-                alignItems: 'center'
-              }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
-                  <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
-                    Statut :
-                  </Typography>
-                  <Chip
-                    label="Tous les contrats"
-                    onClick={() => setContractFilter('all')}
-                    color={contractFilter === 'all' ? 'primary' : 'default'}
-                    variant={contractFilter === 'all' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                  <Chip
-                    label="À générer"
-                    onClick={() => setContractFilter('pending')}
-                    color={contractFilter === 'pending' ? 'primary' : 'default'}
-                    variant={contractFilter === 'pending' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                  <Chip
-                    label="Déjà générés"
-                    onClick={() => setContractFilter('generated')}
-                    color={contractFilter === 'generated' ? 'primary' : 'default'}
-                    variant={contractFilter === 'generated' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                </Box>
-                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                  <FormControl 
-                    size="small" 
-                    sx={{ 
-                      minWidth: 150
-                    }}
+            <>
+              <Box sx={{ ...filterBarSx }}>
+                <SegmentedControl
+                  value={contractFilter}
+                  onChange={(v) => setContractFilter(v as ContractFilter)}
+                  options={[
+                    { value: 'pending', label: 'À générer' },
+                    { value: 'generated', label: 'Générés' },
+                    { value: 'all', label: 'Tous' },
+                  ]}
+                />
+                <TextField
+                  size="small"
+                  placeholder="Rechercher mission, étudiant…"
+                  value={contractsSearch}
+                  onChange={(e) => setContractsSearch(e.target.value)}
+                  sx={{ flex: '1 1 220px', minWidth: 180, ...filterFieldSx }}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchIcon sx={{ color: tokens.colors.gray400, fontSize: 18 }} />
+                      </InputAdornment>
+                    ),
+                  }}
+                />
+                <FormControl size="small" sx={{ minWidth: 150, ...filterFieldSx }}>
+                  <InputLabel>Mandat</InputLabel>
+                  <Select
+                    value={mandatFilter}
+                    label="Mandat"
+                    onChange={(e) => setMandatFilter(e.target.value)}
                   >
-                    <InputLabel>Mandat</InputLabel>
-                    <Select
-                      value={mandatFilter}
-                      label="Mandat"
-                      onChange={(e) => setMandatFilter(e.target.value)}
-                      sx={{
-                        borderRadius: '8px',
-                        backgroundColor: 'white',
-                        '& .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#d2d2d7',
-                        },
-                      }}
-                    >
-                      <MenuItem value="all">Tous les mandats</MenuItem>
-                      {AVAILABLE_MANDATS.map(mandat => (
-                        <MenuItem key={mandat} value={mandat}>
-                          {mandat}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                  {Object.values(filters).some(filter => filter !== '') && (
-                    <Button
-                      startIcon={<ClearIcon />}
-                      onClick={handleResetFilters}
-                      size="small"
-                      variant="outlined"
-                      sx={{
-                        color: '#FF3B30',
-                        borderColor: '#FF3B30',
-                        borderRadius: '8px',
-                        textTransform: 'none',
-                        '&:hover': {
-                          backgroundColor: 'rgba(255, 59, 48, 0.08)',
-                          borderColor: '#FF3B30'
-                        }
-                      }}
-                    >
-                      Réinitialiser
-                    </Button>
-                  )}
-                </Box>
+                    <MenuItem value="all">Tous les mandats</MenuItem>
+                    {AVAILABLE_MANDATS.map((mandat) => (
+                      <MenuItem key={mandat} value={mandat}>
+                        {mandat}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                {(contractsSearch || Object.values(filters).some((f) => f !== '') || mandatFilter !== 'all' || contractFilter !== 'pending') && (
+                  <Button
+                    startIcon={<ClearIcon />}
+                    onClick={() => {
+                      setContractsSearch('');
+                      setMandatFilter('all');
+                      setContractFilter('pending');
+                      handleResetFilters();
+                    }}
+                    size="small"
+                    variant="text"
+                    sx={{ color: tokens.colors.gray600, textTransform: 'none', fontWeight: 600 }}
+                  >
+                    Réinitialiser
+                  </Button>
+                )}
               </Box>
-            </Paper>
-          )}
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell />
-                  <TableCell>
-                    <FilterableColumnHeader column="numeroMission" label="Numéro de mission" />
-                  </TableCell>
-                  <TableCell>
-                    <FilterableColumnHeader column="student" label="Étudiant" />
-                  </TableCell>
-                  <TableCell>
-                    <FilterableColumnHeader column="startDate" label="Date de début" />
-                  </TableCell>
-                  <TableCell>
-                    <FilterableColumnHeader column="endDate" label="Date de fin" />
-                  </TableCell>
-                  <TableCell>
-                    <FilterableColumnHeader column="hours" label="Heures assignées" />
-                  </TableCell>
-                  <TableCell>
-                    <FilterableColumnHeader column="status" label="Statut" />
-                  </TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {getSortedContracts(getFilteredContracts(contracts.filter(contract => {
-                  // Filtre par mandat
-                  if (mandatFilter !== 'all') {
-                    const contractMandat = contract.cdmMandat || contract.mission.mandat;
-                    if (contractMandat !== mandatFilter) return false;
-                  }
-                  return true;
-                })))
-                  .map((contract) => {
+
+              <Box sx={panelSx}>
+                <Box
+                  sx={{
+                    px: 2.5,
+                    py: 1.5,
+                    borderBottom: `1px solid ${tokens.colors.divider}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 1,
+                  }}
+                >
+                  <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+                    Contrats
+                  </Typography>
+                  <Typography sx={{ fontSize: 12, color: tokens.colors.gray500 }}>
+                    {contractsTabFiltered.length} résultat{contractsTabFiltered.length > 1 ? 's' : ''}
+                    {contractsTabFiltered.length > CONTRACTS_PAGE_SIZE
+                      ? ` · page ${contractsPage}/${contractsTabPageCount}`
+                      : ''}
+                  </Typography>
+                </Box>
+
+                {contractsTabFiltered.length === 0 ? (
+                  <EmptyState
+                    icon={<DescriptionIcon />}
+                    title="Aucun résultat"
+                    description="Aucun contrat ne correspond à ces filtres. Essayez « Tous » ou élargissez la recherche."
+                  />
+                ) : (
+                  <>
+                    <TableContainer sx={{ maxHeight: 'min(62vh, 640px)', overflow: 'auto' }}>
+                      <Table stickyHeader size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ ...thSx, width: 48, position: 'sticky', top: 0, zIndex: 3 }} />
+                            <TableCell sx={{ ...thSx, position: 'sticky', top: 0, zIndex: 3 }}>
+                              <FilterableColumnHeader column="numeroMission" label="Mission" />
+                            </TableCell>
+                            <TableCell sx={{ ...thSx, position: 'sticky', top: 0, zIndex: 3 }}>
+                              <FilterableColumnHeader column="student" label="Étudiant" />
+                            </TableCell>
+                            <TableCell sx={{ ...thSx, position: 'sticky', top: 0, zIndex: 3 }}>
+                              <FilterableColumnHeader column="startDate" label="Début" />
+                            </TableCell>
+                            <TableCell sx={{ ...thSx, position: 'sticky', top: 0, zIndex: 3 }}>
+                              <FilterableColumnHeader column="endDate" label="Fin" />
+                            </TableCell>
+                            <TableCell sx={{ ...thSx, position: 'sticky', top: 0, zIndex: 3 }} align="right">
+                              <FilterableColumnHeader column="hours" label="Heures" />
+                            </TableCell>
+                            <TableCell sx={{ ...thSx, position: 'sticky', top: 0, zIndex: 3 }}>
+                              <FilterableColumnHeader column="status" label="Statut" />
+                            </TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                {contractsTabPageRows.map((contract) => {
                     const rowId = `${contract.mission.id}-${contract.application.id}`;
                     const isOpen = openRows[rowId] || false;
 
                     return (
                       <React.Fragment key={rowId}>
-                        <TableRow>
+                        <TableRow
+                          hover
+                          selected={isOpen}
+                          sx={{
+                            '& > td': {
+                              py: 1.1,
+                              fontSize: 13,
+                              borderBottom: `1px solid ${tokens.colors.divider}`,
+                              verticalAlign: 'middle',
+                            },
+                            '&:hover': { bgcolor: tokens.colors.gray50 },
+                            '&.Mui-selected': { bgcolor: `${tokens.colors.brandTeal}0F` },
+                            '&.Mui-selected:hover': { bgcolor: `${tokens.colors.brandTeal}18` },
+                          }}
+                        >
                           <TableCell>
                             <IconButton
                               size="small"
                               onClick={() => handleToggleRow(rowId)}
+                              sx={{ color: tokens.colors.gray500 }}
                             >
-                              {isOpen ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
+                              {isOpen ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
                             </IconButton>
                           </TableCell>
-                          <TableCell>{contract.mission.numeroMission}</TableCell>
+                          <TableCell>
+                            <Typography sx={{ fontSize: 13, fontWeight: 600, color: tokens.colors.gray900, fontVariantNumeric: 'tabular-nums' }}>
+                              {contract.mission.numeroMission}
+                            </Typography>
+                          </TableCell>
                           <TableCell>
                             <StyledTooltip
                               title={<UserInfoTooltip userData={contract.application.userData || {
@@ -1965,10 +2099,17 @@ const Tresorerie: React.FC = () => {
                               <Typography sx={{ 
                                 cursor: 'pointer',
                                 '&:hover': {
-                                  color: '#007AFF'
+                                  color: tokens.colors.info
                                 }
                               }}>
-                                {contract.application.userDisplayName}
+                                <UserReferenceText
+                                  userId={contract.application.userId}
+                                  name={contract.application.userDisplayName}
+                                  firstName={contract.application.userData?.firstName}
+                                  lastName={contract.application.userData?.lastName}
+                                  component="span"
+                                  fallback="Inconnu"
+                                />
                               </Typography>
                             </StyledTooltip>
                           </TableCell>
@@ -1980,27 +2121,17 @@ const Tresorerie: React.FC = () => {
                           <TableCell>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                <Chip
-                                  label={contract.status?.isContractGenerated ? "Généré" : "Non généré"}
-                                  color={contract.status?.isContractGenerated ? "success" : "default"}
-                                  size="small"
+                                <Box
                                   onClick={() => handleToggleContractGeneration(contract.mission.id, !!contract.status?.isContractGenerated)}
-                                  sx={{
-                                    borderRadius: '8px',
-                                    backgroundColor: contract.status?.isContractGenerated ? 'rgba(52, 199, 89, 0.1)' : 'rgba(142, 142, 147, 0.1)',
-                                    color: contract.status?.isContractGenerated ? '#34C759' : '#8E8E93',
-                                    border: 'none',
-                                    fontWeight: 500,
-                                    cursor: 'pointer',
-                                    '&:hover': {
-                                      backgroundColor: contract.status?.isContractGenerated ? 'rgba(52, 199, 89, 0.2)' : 'rgba(142, 142, 147, 0.2)'
-                                    },
-                                    '& .MuiChip-label': {
-                                      px: 2
-                                    }
-                                  }}
-                                  clickable
-                                />
+                                  sx={{ cursor: 'pointer', display: 'inline-flex' }}
+                                >
+                                  <DsPill
+                                    bg={contract.status?.isContractGenerated ? `${tokens.colors.success}22` : tokens.colors.gray100}
+                                    fg={contract.status?.isContractGenerated ? tokens.colors.success : tokens.colors.gray600}
+                                  >
+                                    {contract.status?.isContractGenerated ? 'Généré' : 'Non généré'}
+                                  </DsPill>
+                                </Box>
                                 {contract.status?.isContractGenerated && contract.status?.contractGeneratedAt && (
                                   <StyledTooltip
                                     title={
@@ -2010,7 +2141,7 @@ const Tresorerie: React.FC = () => {
                                       }}>
                                         <Typography variant="subtitle2" sx={{ 
                                           fontWeight: 600,
-                                          color: '#1d1d1f',
+                                          color: tokens.colors.textPrimary,
                                           mb: 1,
                                           backgroundColor: '#FFFFFF'
                                         }}>
@@ -2029,13 +2160,13 @@ const Tresorerie: React.FC = () => {
                                             backgroundColor: '#FFFFFF'
                                           }}>
                                             <Typography variant="body2" sx={{ 
-                                              color: '#86868b',
+                                              color: tokens.colors.textSecondary,
                                               backgroundColor: '#FFFFFF'
                                             }}>
                                               Date :
                                             </Typography>
                                             <Typography variant="body2" sx={{ 
-                                              color: '#1d1d1f',
+                                              color: tokens.colors.textPrimary,
                                               backgroundColor: '#FFFFFF'
                                             }}>
                                               {contract.status.contractGeneratedAt.toLocaleDateString('fr-FR', {
@@ -2052,13 +2183,13 @@ const Tresorerie: React.FC = () => {
                                             backgroundColor: '#FFFFFF'
                                           }}>
                                             <Typography variant="body2" sx={{ 
-                                              color: '#86868b',
+                                              color: tokens.colors.textSecondary,
                                               backgroundColor: '#FFFFFF'
                                             }}>
                                               Heure :
                                             </Typography>
                                             <Typography variant="body2" sx={{ 
-                                              color: '#1d1d1f',
+                                              color: tokens.colors.textPrimary,
                                               backgroundColor: '#FFFFFF'
                                             }}>
                                               {contract.status.contractGeneratedAt.toLocaleTimeString('fr-FR', {
@@ -2074,17 +2205,18 @@ const Tresorerie: React.FC = () => {
                                             backgroundColor: '#FFFFFF'
                                           }}>
                                             <Typography variant="body2" sx={{ 
-                                              color: '#86868b',
+                                              color: tokens.colors.textSecondary,
                                               backgroundColor: '#FFFFFF'
                                             }}>
                                               Généré par :
                                             </Typography>
-                                            <Typography variant="body2" sx={{ 
-                                              color: '#1d1d1f',
-                                              backgroundColor: '#FFFFFF'
-                                            }}>
-                                              {contract.createdByName || 'Utilisateur inconnu'}
-                                            </Typography>
+                                            <UserReferenceText
+                                              name={contract.createdByName}
+                                              fallback="Utilisateur inconnu"
+                                              component="span"
+                                              variant="body2"
+                                              sx={{ color: tokens.colors.textPrimary, backgroundColor: '#FFFFFF' }}
+                                            />
                                           </Box>
                                         </Box>
                                       </Box>
@@ -2095,7 +2227,7 @@ const Tresorerie: React.FC = () => {
                                     <IconButton
                                       size="small"
                                       sx={{
-                                        color: '#007AFF',
+                                        color: tokens.colors.info,
                                         padding: '4px',
                                         '&:hover': {
                                           backgroundColor: 'rgba(0, 122, 255, 0.08)'
@@ -2255,179 +2387,127 @@ const Tresorerie: React.FC = () => {
                       </React.Fragment>
                     );
                   })}
-              </TableBody>
-            </Table>
-          </TableContainer>
+
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                    {contractsTabPageCount > 1 && (
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          justifyContent: 'center',
+                          py: 1.5,
+                          borderTop: `1px solid ${tokens.colors.divider}`,
+                          bgcolor: tokens.colors.surfaceAlt,
+                        }}
+                      >
+                        <Pagination
+                          count={contractsTabPageCount}
+                          page={contractsPage}
+                          onChange={(_, p) => {
+                            setContractsPage(p);
+                            setOpenRows({});
+                          }}
+                          color="primary"
+                          shape="rounded"
+                          size="small"
+                          sx={{
+                            '& .MuiPaginationItem-root': {
+                              borderRadius: tokens.radius.sm,
+                              fontWeight: 600,
+                            },
+                            '& .Mui-selected': {
+                              bgcolor: `${tokens.colors.brandTeal} !important`,
+                              color: '#fff',
+                            },
+                          }}
+                        />
+                      </Box>
+                    )}
+                  </>
+                )}
+              </Box>
+            </>
+          )}
         </TabPanel>
         <TabPanel value={tabValue} index={1}>
-          {contracts.length === 0 ? (
-            <Paper 
-              sx={{ 
-                p: 4, 
-                textAlign: 'center',
-                bgcolor: 'white',
-                borderRadius: '1.2rem',
-                border: '1px solid #e5e5e7',
-                m: 2
-              }}
-            >
-              <PaymentIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-              <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-                Aucun paiement à effectuer dans votre structure
-              </Typography>
-              <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-                Les paiements apparaîtront ici lorsqu'ils seront créés.
-              </Typography>
-            </Paper>
+          {studentContracts.length === 0 ? (
+            <EmptyState
+              icon={<PaymentIcon />}
+              title="Aucun paiement à effectuer"
+              description="Les paiements apparaîtront ici lorsqu'ils seront créés, ou ajustez vos filtres."
+            />
           ) : (
-            <Paper 
-              elevation={0}
-              sx={{ 
-                p: 2, 
-                mb: 2, 
-                mx: 2,
-                borderRadius: '12px',
-                backgroundColor: '#f8f9fa',
-                border: '1px solid #e5e5e7'
-              }}
-            >
-              <Box sx={{ 
-                display: 'flex', 
-                flexWrap: 'wrap',
-                gap: 2,
-                alignItems: 'center'
-              }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
-                  <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
-                    Statut :
-                  </Typography>
-                  <Chip
-                    label="Tous les paiements"
-                    onClick={() => setPaymentFilter('all')}
-                    color={paymentFilter === 'all' ? 'primary' : 'default'}
-                    variant={paymentFilter === 'all' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                  <Chip
-                    label="À effectuer"
-                    onClick={() => setPaymentFilter('pending')}
-                    color={paymentFilter === 'pending' ? 'primary' : 'default'}
-                    variant={paymentFilter === 'pending' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                  <Chip
-                    label="Effectués"
-                    onClick={() => setPaymentFilter('processed')}
-                    color={paymentFilter === 'processed' ? 'primary' : 'default'}
-                    variant={paymentFilter === 'processed' ? 'filled' : 'outlined'}
-                    sx={{
-                      borderRadius: '8px',
-                      '&.MuiChip-filled': {
-                        backgroundColor: '#007AFF',
-                      },
-                      '&.MuiChip-outlined': {
-                        borderColor: '#d2d2d7',
-                        color: '#1d1d1f',
-                        '&:hover': {
-                          backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                        }
-                      }
-                    }}
-                  />
-                </Box>
-                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                  <FormControl 
-                    size="small" 
-                    sx={{ 
-                      minWidth: 150
-                    }}
-                  >
+            <Box sx={{ ...filterBarSx }}>
+              <SegmentedControl
+                value={paymentFilter}
+                onChange={(v) => setPaymentFilter(v as PaymentFilter)}
+                options={[
+                  { value: 'all', label: 'Tous' },
+                  { value: 'pending', label: 'À effectuer' },
+                  { value: 'processed', label: 'Effectués' },
+                ]}
+              />
+                  <FormControl size="small" sx={{ minWidth: 150, ...filterFieldSx }}>
                     <InputLabel>Mandat</InputLabel>
                     <Select
                       value={mandatFilter}
                       label="Mandat"
                       onChange={(e) => setMandatFilter(e.target.value)}
-                      sx={{
-                        borderRadius: '8px',
-                        backgroundColor: 'white',
-                        '& .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#d2d2d7',
-                        },
-                      }}
                     >
                       <MenuItem value="all">Tous les mandats</MenuItem>
-                      {AVAILABLE_MANDATS.map(mandat => (
+                      {AVAILABLE_MANDATS.map((mandat) => (
                         <MenuItem key={mandat} value={mandat}>
                           {mandat}
                         </MenuItem>
                       ))}
                     </Select>
                   </FormControl>
-                  {Object.values(filters).some(filter => filter !== '') && (
+                  {Object.values(filters).some((filter) => filter !== '') && (
                     <Button
                       startIcon={<ClearIcon />}
                       onClick={handleResetFilters}
                       size="small"
                       variant="outlined"
                       sx={{
-                        color: '#FF3B30',
-                        borderColor: '#FF3B30',
-                        borderRadius: '8px',
+                        color: tokens.colors.error,
+                        borderColor: tokens.colors.error,
+                        borderRadius: tokens.radius.md,
                         textTransform: 'none',
                         '&:hover': {
                           backgroundColor: 'rgba(255, 59, 48, 0.08)',
-                          borderColor: '#FF3B30'
-                        }
+                          borderColor: tokens.colors.error,
+                        },
                       }}
                     >
                       Réinitialiser
                     </Button>
                   )}
-                </Box>
-              </Box>
-            </Paper>
+            </Box>
           )}
+          <Box sx={panelSx}>
+            <Box sx={{ px: 2.5, py: 1.75, borderBottom: `1px solid ${tokens.colors.divider}` }}>
+              <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+                Paiements à effectuer
+              </Typography>
+            </Box>
           <TableContainer>
             <Table>
               <TableHead>
                 <TableRow>
-                  <TableCell />
-                  <TableCell>Numéro de mission</TableCell>
-                  <TableCell>Étudiant</TableCell>
-                  <TableCell>Date de fin</TableCell>
-                  <TableCell>Heures assignées</TableCell>
-                  <TableCell>Rémunération horaire</TableCell>
-                  <TableCell>Notes de frais</TableCell>
-                  <TableCell>Total à payer</TableCell>
-                  <TableCell>Actions</TableCell>
+                  <TableCell sx={thSx} />
+                  <TableCell sx={thSx}>Numéro de mission</TableCell>
+                  <TableCell sx={thSx}>Étudiant</TableCell>
+                  <TableCell sx={thSx}>Date de fin</TableCell>
+                  <TableCell sx={thSx}>Heures assignées</TableCell>
+                  <TableCell sx={thSx}>Rémunération horaire</TableCell>
+                  <TableCell sx={thSx}>Notes de frais</TableCell>
+                  <TableCell sx={thSx}>Total à payer</TableCell>
+                  <TableCell sx={thSx}>Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {contracts
+                {studentContracts
                   .filter(contract => {
                     // Filtre par statut de paiement
                     if (paymentFilter === 'pending' && contract.isPaymentProcessed) return false;
@@ -2454,89 +2534,55 @@ const Tresorerie: React.FC = () => {
               </TableBody>
             </Table>
           </TableContainer>
+          </Box>
         </TabPanel>
         <TabPanel value={tabValue} index={2}>
           {contracts.length === 0 ? (
-            <Paper 
-              sx={{ 
-                p: 4, 
-                textAlign: 'center',
-                bgcolor: 'white',
-                borderRadius: '1.2rem',
-                border: '1px solid #e5e5e7',
-                m: 2
-              }}
-            >
-              <ReceiptIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-              <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-                Aucune facture à envoyer dans votre structure
-              </Typography>
-              <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-                Les factures apparaîtront ici lorsqu'elles seront créées.
-              </Typography>
-            </Paper>
+            <EmptyState
+              icon={<ReceiptIcon />}
+              title="Aucune facture à envoyer"
+              description="Les factures apparaîtront ici lorsqu'elles seront créées, ou ajustez vos filtres."
+            />
           ) : (
             <>
-              <Paper 
-                elevation={0}
-                sx={{ 
-                  p: 2, 
-                  mb: 2, 
-                  mx: 2,
-                  borderRadius: '12px',
-                  backgroundColor: '#f8f9fa',
-                  border: '1px solid #e5e5e7'
-                }}
-              >
-                <Box sx={{ 
-                  display: 'flex', 
-                  justifyContent: 'flex-end', 
-                  alignItems: 'center'
-                }}>
-                  <FormControl 
-                    size="small" 
-                    sx={{ 
-                      minWidth: 150
-                    }}
-                  >
+              <Box sx={{ ...filterBarSx, justifyContent: 'flex-end' }}>
+                  <FormControl size="small" sx={{ minWidth: 150, ...filterFieldSx }}>
                     <InputLabel>Mandat</InputLabel>
                     <Select
                       value={mandatFilter}
                       label="Mandat"
                       onChange={(e) => setMandatFilter(e.target.value)}
-                      sx={{
-                        borderRadius: '8px',
-                        backgroundColor: 'white',
-                        '& .MuiOutlinedInput-notchedOutline': {
-                          borderColor: '#d2d2d7',
-                        },
-                      }}
                     >
                       <MenuItem value="all">Tous les mandats</MenuItem>
-                      {AVAILABLE_MANDATS.map(mandat => (
+                      {AVAILABLE_MANDATS.map((mandat) => (
                         <MenuItem key={mandat} value={mandat}>
                           {mandat}
                         </MenuItem>
                       ))}
                     </Select>
                   </FormControl>
+            </Box>
+              <Box sx={panelSx}>
+                <Box sx={{ px: 2.5, py: 1.75, borderBottom: `1px solid ${tokens.colors.divider}` }}>
+                  <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+                    Factures à envoyer
+                  </Typography>
                 </Box>
-              </Paper>
               <TableContainer>
                 <Table>
                   <TableHead>
                     <TableRow>
-                      <TableCell>Numéro de mission</TableCell>
-                      <TableCell>Date de fin</TableCell>
-                      <TableCell>Prix HT</TableCell>
-                      <TableCell>Total HT</TableCell>
-                      <TableCell>TVA (20%)</TableCell>
-                      <TableCell>Notes de frais</TableCell>
-                      <TableCell>Prix final TTC</TableCell>
-                      <TableCell>Facture</TableCell>
-                      <TableCell>Date d'envoi</TableCell>
-                      <TableCell>Date d'échéance</TableCell>
-                      <TableCell>Statut</TableCell>
+                      <TableCell sx={thSx}>Numéro de mission</TableCell>
+                      <TableCell sx={thSx}>Date de fin</TableCell>
+                      <TableCell sx={thSx}>Prix HT</TableCell>
+                      <TableCell sx={thSx}>Total HT</TableCell>
+                      <TableCell sx={thSx}>TVA (20%)</TableCell>
+                      <TableCell sx={thSx}>Notes de frais</TableCell>
+                      <TableCell sx={thSx}>Prix final TTC</TableCell>
+                      <TableCell sx={thSx}>Facture</TableCell>
+                      <TableCell sx={thSx}>Date d'envoi</TableCell>
+                      <TableCell sx={thSx}>Date d'échéance</TableCell>
+                      <TableCell sx={thSx}>Statut</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -2623,32 +2669,42 @@ const Tresorerie: React.FC = () => {
                         <TableCell>{tvaMontant.toFixed(2)}€</TableCell>
                         <TableCell>{validatedExpenses.toFixed(2)}€</TableCell>
                         <TableCell>
-                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                            <Typography sx={{ fontWeight: 600, color: '#34C759', fontSize: '0.95rem' }}>
-                              {contract.invoiceDocument?.invoiceAmount 
-                                ? `${contract.invoiceDocument.invoiceAmount.toFixed(2)}€` 
-                                : `${finalPrice.toFixed(2)}€`}
-                            </Typography>
-                            {contract.invoiceDocument?.invoiceAmount && (
-                              <Chip
-                                label="Confirmé"
-                                size="small"
-                                sx={{
-                                  height: 18,
-                                  fontSize: '0.65rem',
-                                  backgroundColor: '#34C759',
-                                  color: 'white',
-                                  fontWeight: 600,
-                                  width: 'fit-content'
-                                }}
-                              />
-                            )}
-                            {!contract.invoiceDocument?.invoiceAmount && (
-                              <Typography sx={{ fontSize: '0.7rem', color: '#86868b', fontStyle: 'italic' }}>
-                                Calculé
-                              </Typography>
-                            )}
-                          </Box>
+                          {(() => {
+                            const amount = contract.invoiceDocument?.invoiceAmount ?? finalPrice;
+                            if (!amount || amount <= 0) {
+                              return (
+                                <Typography sx={{ fontSize: 13, color: tokens.colors.gray400 }}>
+                                  —
+                                </Typography>
+                              );
+                            }
+                            const confirmed = !!contract.invoiceDocument?.invoiceAmount;
+                            return (
+                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                                <Typography sx={{ fontWeight: 600, color: tokens.colors.success, fontSize: '0.95rem' }}>
+                                  {amount.toFixed(2)}€
+                                </Typography>
+                                {confirmed ? (
+                                  <Chip
+                                    label="Confirmé"
+                                    size="small"
+                                    sx={{
+                                      height: 18,
+                                      fontSize: '0.65rem',
+                                      backgroundColor: tokens.colors.success,
+                                      color: 'white',
+                                      fontWeight: 600,
+                                      width: 'fit-content',
+                                    }}
+                                  />
+                                ) : (
+                                  <Typography sx={{ fontSize: '0.7rem', color: tokens.colors.textSecondary, fontStyle: 'italic' }}>
+                                    Calculé
+                                  </Typography>
+                                )}
+                              </Box>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell>
                           {contract.invoiceDocument ? (
@@ -2659,12 +2715,12 @@ const Tresorerie: React.FC = () => {
                                 onClick={() => window.open(contract.invoiceDocument!.fileUrl, '_blank')}
                                 sx={{
                                   textTransform: 'none',
-                                  borderRadius: '8px',
+                                  borderRadius: tokens.radius.sm,
                                   fontSize: '0.75rem',
-                                  borderColor: '#34C759',
-                                  color: '#34C759',
+                                  borderColor: tokens.colors.success,
+                                  color: tokens.colors.success,
                                   '&:hover': {
-                                    borderColor: '#34C759',
+                                    borderColor: tokens.colors.success,
                                     backgroundColor: 'rgba(52, 199, 89, 0.08)'
                                   }
                                 }}
@@ -2675,7 +2731,7 @@ const Tresorerie: React.FC = () => {
                               </Button>
                             </Tooltip>
                           ) : (
-                            <Typography variant="body2" sx={{ color: '#86868b', fontStyle: 'italic' }}>
+                            <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, fontStyle: 'italic' }}>
                               Aucune facture
                             </Typography>
                           )}
@@ -2686,7 +2742,7 @@ const Tresorerie: React.FC = () => {
                               {new Date(contract.invoiceDocument.invoiceSentDate).toLocaleDateString('fr-FR')}
                             </Typography>
                           ) : (
-                            <Typography variant="body2" sx={{ color: '#86868b' }}>
+                            <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                               -
                             </Typography>
                           )}
@@ -2698,7 +2754,7 @@ const Tresorerie: React.FC = () => {
                                 variant="body2" 
                                 sx={{ 
                                   fontSize: '0.875rem',
-                                  color: isOverdue ? '#FF3B30' : '#1d1d1f',
+                                  color: isOverdue ? tokens.colors.error : tokens.colors.textPrimary,
                                   fontWeight: isOverdue ? 600 : 400
                                 }}
                               >
@@ -2711,7 +2767,7 @@ const Tresorerie: React.FC = () => {
                                   sx={{
                                     height: 20,
                                     fontSize: '0.65rem',
-                                    backgroundColor: '#FF3B30',
+                                    backgroundColor: tokens.colors.error,
                                     color: 'white',
                                     fontWeight: 600
                                   }}
@@ -2719,7 +2775,7 @@ const Tresorerie: React.FC = () => {
                               )}
                             </Box>
                           ) : (
-                            <Typography variant="body2" sx={{ color: '#86868b' }}>
+                            <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                               -
                             </Typography>
                           )}
@@ -2732,7 +2788,7 @@ const Tresorerie: React.FC = () => {
                             sx={{ 
                               cursor: 'pointer', 
                               fontWeight: 500, 
-                              borderRadius: '8px',
+                              borderRadius: tokens.radius.sm,
                               '&:hover': {
                                 opacity: 0.8
                               }
@@ -2745,170 +2801,42 @@ const Tresorerie: React.FC = () => {
                 </TableBody>
               </Table>
             </TableContainer>
+              </Box>
           </>
         )}
       </TabPanel>
       <TabPanel value={tabValue} index={3}>
-        <Paper 
-          elevation={0}
-          sx={{ 
-            p: 2, 
-            mb: 2, 
-            mx: 2,
-            borderRadius: '12px',
-            backgroundColor: '#f8f9fa',
-            border: '1px solid #e5e5e7'
-          }}
-        >
-          <Box sx={{ 
-            display: 'flex', 
-            flexWrap: 'wrap',
-            gap: 2,
-            alignItems: 'center',
-            justifyContent: 'space-between'
-          }}>
-            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flex: 1 }}>
-              <Typography variant="body2" sx={{ color: '#86868b', mr: 1, fontWeight: 500 }}>
-                Filtrer par :
-              </Typography>
-              <Chip
-                label="Toutes"
-                onClick={() => setInvoiceTrackingFilter('all')}
-                color={invoiceTrackingFilter === 'all' ? 'primary' : 'default'}
-                variant={invoiceTrackingFilter === 'all' ? 'filled' : 'outlined'}
-                sx={{
-                  borderRadius: '8px',
-                  '&.MuiChip-filled': {
-                    backgroundColor: '#007AFF',
-                  },
-                  '&.MuiChip-outlined': {
-                    borderColor: '#d2d2d7',
-                    color: '#1d1d1f',
-                    '&:hover': {
-                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                    }
-                  }
-                }}
+        <Box sx={{ ...filterBarSx }}>
+              <SegmentedControl
+                value={invoiceTrackingFilter}
+                onChange={(v) => setInvoiceTrackingFilter(v as InvoiceTrackingFilter)}
+                options={[
+                  { value: 'all', label: 'Toutes' },
+                  { value: 'unpaid', label: 'À payer' },
+                  { value: 'paid', label: 'Payées' },
+                  { value: 'overdue', label: 'En retard' },
+                  { value: 'upcoming', label: 'Échéance proche' },
+                ]}
               />
-              <Chip
-                label="À payer"
-                onClick={() => setInvoiceTrackingFilter('unpaid')}
-                color={invoiceTrackingFilter === 'unpaid' ? 'primary' : 'default'}
-                variant={invoiceTrackingFilter === 'unpaid' ? 'filled' : 'outlined'}
-                sx={{
-                  borderRadius: '8px',
-                  '&.MuiChip-filled': {
-                    backgroundColor: '#FF9500',
-                  },
-                  '&.MuiChip-outlined': {
-                    borderColor: '#d2d2d7',
-                    color: '#1d1d1f',
-                    '&:hover': {
-                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                    }
-                  }
-                }}
-              />
-              <Chip
-                label="Payées"
-                onClick={() => setInvoiceTrackingFilter('paid')}
-                color={invoiceTrackingFilter === 'paid' ? 'primary' : 'default'}
-                variant={invoiceTrackingFilter === 'paid' ? 'filled' : 'outlined'}
-                sx={{
-                  borderRadius: '8px',
-                  '&.MuiChip-filled': {
-                    backgroundColor: '#34C759',
-                  },
-                  '&.MuiChip-outlined': {
-                    borderColor: '#d2d2d7',
-                    color: '#1d1d1f',
-                    '&:hover': {
-                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                    }
-                  }
-                }}
-              />
-              <Chip
-                label="En retard"
-                onClick={() => setInvoiceTrackingFilter('overdue')}
-                color={invoiceTrackingFilter === 'overdue' ? 'primary' : 'default'}
-                variant={invoiceTrackingFilter === 'overdue' ? 'filled' : 'outlined'}
-                sx={{
-                  borderRadius: '8px',
-                  '&.MuiChip-filled': {
-                    backgroundColor: '#FF3B30',
-                  },
-                  '&.MuiChip-outlined': {
-                    borderColor: '#d2d2d7',
-                    color: '#1d1d1f',
-                    '&:hover': {
-                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                    }
-                  }
-                }}
-              />
-              <Chip
-                label="Échéance proche"
-                onClick={() => setInvoiceTrackingFilter('upcoming')}
-                color={invoiceTrackingFilter === 'upcoming' ? 'primary' : 'default'}
-                variant={invoiceTrackingFilter === 'upcoming' ? 'filled' : 'outlined'}
-                sx={{
-                  borderRadius: '8px',
-                  '&.MuiChip-filled': {
-                    backgroundColor: '#FF9500',
-                  },
-                  '&.MuiChip-outlined': {
-                    borderColor: '#d2d2d7',
-                    color: '#1d1d1f',
-                    '&:hover': {
-                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
-                    }
-                  }
-                }}
-              />
+                  <FormControl size="small" sx={{ minWidth: 150, ...filterFieldSx }}>
+                    <InputLabel>Mandat</InputLabel>
+                    <Select
+                      value={mandatFilter}
+                      label="Mandat"
+                      onChange={(e) => setMandatFilter(e.target.value)}
+                    >
+                      <MenuItem value="all">Tous les mandats</MenuItem>
+                      {AVAILABLE_MANDATS.map((mandat) => (
+                        <MenuItem key={mandat} value={mandat}>
+                          {mandat}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
             </Box>
-            <FormControl 
-              size="small" 
-              sx={{ 
-                minWidth: 150
-              }}
-            >
-              <InputLabel>Mandat</InputLabel>
-              <Select
-                value={mandatFilter}
-                label="Mandat"
-                onChange={(e) => setMandatFilter(e.target.value)}
-                sx={{
-                  borderRadius: '8px',
-                  backgroundColor: 'white',
-                  '& .MuiOutlinedInput-notchedOutline': {
-                    borderColor: '#d2d2d7',
-                  },
-                }}
-              >
-                <MenuItem value="all">Tous les mandats</MenuItem>
-                {AVAILABLE_MANDATS.map(mandat => (
-                  <MenuItem key={mandat} value={mandat}>
-                    {mandat}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
-    </Paper>
 
         {/* Statistiques des factures avec barre de progression */}
-        <Paper 
-          elevation={0}
-          sx={{ 
-            p: 3, 
-            mb: 3, 
-            mx: 2,
-            borderRadius: '16px',
-            backgroundColor: 'white',
-            border: '1px solid #e5e5e7'
-          }}
-        >
+        <Box sx={{ ...panelSx, p: 2.5, mb: 2.5 }}>
           {(() => {
             const allInvoices = contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName);
             const totalInvoices = allInvoices.length;
@@ -2936,10 +2864,10 @@ const Tresorerie: React.FC = () => {
               <>
                 {/* En-tête avec totaux */}
                 <Box sx={{ mb: 3 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: '#1d1d1f', mb: 1 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: tokens.colors.textPrimary, mb: 1 }}>
                     {totalAmount.toFixed(2)}€
                   </Typography>
-                  <Typography variant="body2" sx={{ color: '#86868b' }}>
+                  <Typography variant="body2" sx={{ color: tokens.colors.textSecondary }}>
                     pour {totalInvoices} {totalInvoices > 1 ? 'factures' : 'facture'}
                   </Typography>
                 </Box>
@@ -2951,26 +2879,26 @@ const Tresorerie: React.FC = () => {
                     height: 8, 
                     borderRadius: '4px',
                     overflow: 'hidden',
-                    backgroundColor: '#f5f5f7'
+                    backgroundColor: tokens.colors.bgSubtle
                   }}>
                     {paidPercentage > 0 && (
                       <Box sx={{ 
                         width: `${paidPercentage}%`, 
-                        backgroundColor: '#34C759',
+                        backgroundColor: tokens.colors.success,
                         transition: 'width 0.3s ease'
                       }} />
                     )}
                     {unpaidPercentage > 0 && (
                       <Box sx={{ 
                         width: `${unpaidPercentage}%`, 
-                        backgroundColor: '#FF9500',
+                        backgroundColor: tokens.colors.warning,
                         transition: 'width 0.3s ease'
                       }} />
                     )}
                     {overduePercentage > 0 && (
                       <Box sx={{ 
                         width: `${overduePercentage}%`, 
-                        backgroundColor: '#FF3B30',
+                        backgroundColor: tokens.colors.error,
                         transition: 'width 0.3s ease'
                       }} />
                     )}
@@ -2980,34 +2908,34 @@ const Tresorerie: React.FC = () => {
                 {/* Légende */}
                 <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: '#34C759' }} />
+                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: tokens.colors.success }} />
                     <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         {paidInvoices.length} Payée{paidInvoices.length > 1 ? 's' : ''}
                       </Typography>
-                      <Typography variant="caption" sx={{ color: '#86868b' }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.textSecondary }}>
                         {paidAmount.toFixed(2)}€
                       </Typography>
                     </Box>
                   </Box>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: '#FF9500' }} />
+                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: tokens.colors.warning }} />
                     <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         {unpaidInvoices.length} À payer
                       </Typography>
-                      <Typography variant="caption" sx={{ color: '#86868b' }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.textSecondary }}>
                         {unpaidAmount.toFixed(2)}€
                       </Typography>
                     </Box>
                   </Box>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: '#FF3B30' }} />
+                    <Box sx={{ width: 12, height: 12, borderRadius: '3px', backgroundColor: tokens.colors.error }} />
                     <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#1d1d1f' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600, color: tokens.colors.textPrimary }}>
                         {overdueInvoices.length} En retard
                       </Typography>
-                      <Typography variant="caption" sx={{ color: '#86868b' }}>
+                      <Typography variant="caption" sx={{ color: tokens.colors.textSecondary }}>
                         {overdueAmount.toFixed(2)}€
                       </Typography>
                     </Box>
@@ -3016,24 +2944,23 @@ const Tresorerie: React.FC = () => {
               </>
             );
           })()}
-        </Paper>
+        </Box>
 
         {selectedInvoices.size > 0 && (
-          <Paper 
-            elevation={0}
-            sx={{ 
-              p: 2, 
-              mb: 2, 
-              mx: 2,
-              borderRadius: '12px',
-              backgroundColor: 'rgba(0, 122, 255, 0.08)',
-              border: '1px solid #007AFF',
+          <Box
+            sx={{
+              ...panelSx,
+              p: 1.5,
+              mb: 2.5,
+              bgcolor: `${tokens.colors.brandTeal}14`,
+              borderColor: `${tokens.colors.brandTeal}44`,
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between'
+              justifyContent: 'space-between',
+              gap: 2,
             }}
           >
-            <Typography variant="body2" sx={{ color: '#007AFF', fontWeight: 600 }}>
+            <Typography variant="body2" sx={{ color: tokens.colors.info, fontWeight: 600 }}>
               {selectedInvoices.size} facture{selectedInvoices.size > 1 ? 's' : ''} sélectionnée{selectedInvoices.size > 1 ? 's' : ''}
             </Typography>
             <Box sx={{ display: 'flex', gap: 1 }}>
@@ -3043,39 +2970,46 @@ const Tresorerie: React.FC = () => {
                 startIcon={<ClearIcon />}
                 onClick={() => setSelectedInvoices(new Set())}
                 sx={{
-                  color: '#007AFF',
-                  borderColor: '#007AFF',
-                  borderRadius: '8px',
+                  color: tokens.colors.info,
+                  borderColor: tokens.colors.info,
+                  borderRadius: tokens.radius.sm,
                   textTransform: 'none',
                   '&:hover': {
                     backgroundColor: 'rgba(0, 122, 255, 0.08)',
-                    borderColor: '#007AFF'
+                    borderColor: tokens.colors.info
                   }
                 }}
               >
                 Désélectionner tout
               </Button>
             </Box>
-          </Paper>
+          </Box>
         )}
 
-        <TableContainer sx={{ mx: 2, borderRadius: '12px', border: '1px solid #e5e5e7', overflowX: 'auto', width: 'auto' }}>
-          <Table 
-            sx={{ 
-              '& .MuiTableCell-root': { 
-                borderBottom: '1px solid #f5f5f7',
-                px: 0.5,
-                py: 0.5,
-                fontSize: '0.7rem'
+        <Box sx={panelSx}>
+          <Box sx={{ px: 2.5, py: 1.75, borderBottom: `1px solid ${tokens.colors.divider}` }}>
+            <Typography sx={{ fontSize: 14, fontWeight: 600, color: tokens.colors.gray900 }}>
+              Suivi des factures
+            </Typography>
+          </Box>
+        <TableContainer sx={{ overflowX: 'auto' }}>
+          <Table
+            sx={{
+              '& .MuiTableCell-root': {
+                borderBottom: `1px solid ${tokens.colors.divider}`,
+                px: 1,
+                py: 1,
+                fontSize: '0.8125rem',
               },
               '& .MuiTableCell-head': {
-                fontSize: '0.7rem'
+                ...thSx,
+                fontSize: '0.6875rem',
               },
               width: '100%',
-              tableLayout: 'fixed'
+              tableLayout: 'fixed',
             }}
           >
-            <TableHead sx={{ backgroundColor: '#f8f9fa' }}>
+            <TableHead>
               <TableRow>
                 <TableCell padding="checkbox" sx={{ width: '3%', minWidth: 40 }}>
                   <Checkbox
@@ -3084,17 +3018,17 @@ const Tresorerie: React.FC = () => {
                     checked={contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName).length > 0 && selectedInvoices.size === contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName).length}
                     onChange={() => handleSelectAllInvoices(contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName))}
                     sx={{
-                      color: '#007AFF',
+                      color: tokens.colors.info,
                       '&.Mui-checked': {
-                        color: '#007AFF',
+                        color: tokens.colors.info,
                       },
                       '&.MuiCheckbox-indeterminate': {
-                        color: '#007AFF',
+                        color: tokens.colors.info,
                       }
                     }}
                   />
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '8%' }}>
+                <TableCell sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap', width: '8%' }}>
                   <Box 
                     sx={{ 
                       display: 'flex', 
@@ -3114,7 +3048,7 @@ const Tresorerie: React.FC = () => {
                       alignItems: 'center',
                       opacity: invoiceTrackingSort.column === 'numeroMission' ? 1 : 0,
                       transition: 'opacity 0.2s',
-                      color: '#007AFF'
+                      color: tokens.colors.info
                     }} className="sort-icon">
                       {invoiceTrackingSort.column === 'numeroMission' && (
                         invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -3127,7 +3061,7 @@ const Tresorerie: React.FC = () => {
                 </TableCell>
                 <TableCell sx={{ 
                   fontWeight: 600, 
-                  color: '#1d1d1f', 
+                  color: tokens.colors.textPrimary, 
                   fontSize: '0.7rem', 
                   whiteSpace: 'nowrap', 
                   width: '12%',
@@ -3152,7 +3086,7 @@ const Tresorerie: React.FC = () => {
                       alignItems: 'center',
                       opacity: invoiceTrackingSort.column === 'company' ? 1 : 0,
                       transition: 'opacity 0.2s',
-                      color: '#007AFF'
+                      color: tokens.colors.info
                     }} className="sort-icon">
                       {invoiceTrackingSort.column === 'company' && (
                         invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -3163,10 +3097,10 @@ const Tresorerie: React.FC = () => {
                     </Box>
                   </Box>
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '6%' }}>
+                <TableCell sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap', width: '6%' }}>
                   Doc.
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                <TableCell sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
                   <Box 
                     sx={{ 
                       display: 'flex', 
@@ -3186,7 +3120,7 @@ const Tresorerie: React.FC = () => {
                       alignItems: 'center',
                       opacity: invoiceTrackingSort.column === 'amount' ? 1 : 0,
                       transition: 'opacity 0.2s',
-                      color: '#007AFF'
+                      color: tokens.colors.info
                     }} className="sort-icon">
                       {invoiceTrackingSort.column === 'amount' && (
                         invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -3197,7 +3131,7 @@ const Tresorerie: React.FC = () => {
                     </Box>
                   </Box>
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                <TableCell sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
                   <Box 
                     sx={{ 
                       display: 'flex', 
@@ -3217,7 +3151,7 @@ const Tresorerie: React.FC = () => {
                       alignItems: 'center',
                       opacity: invoiceTrackingSort.column === 'sentDate' ? 1 : 0,
                       transition: 'opacity 0.2s',
-                      color: '#007AFF'
+                      color: tokens.colors.info
                     }} className="sort-icon">
                       {invoiceTrackingSort.column === 'sentDate' && (
                         invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -3228,7 +3162,7 @@ const Tresorerie: React.FC = () => {
                     </Box>
                   </Box>
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                <TableCell sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
                   <Box 
                     sx={{ 
                       display: 'flex', 
@@ -3248,7 +3182,7 @@ const Tresorerie: React.FC = () => {
                       alignItems: 'center',
                       opacity: invoiceTrackingSort.column === 'dueDate' ? 1 : 0,
                       transition: 'opacity 0.2s',
-                      color: '#007AFF'
+                      color: tokens.colors.info
                     }} className="sort-icon">
                       {invoiceTrackingSort.column === 'dueDate' && (
                         invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -3261,7 +3195,7 @@ const Tresorerie: React.FC = () => {
                 </TableCell>
                 <TableCell sx={{ 
                   fontWeight: 600, 
-                  color: '#1d1d1f', 
+                  color: tokens.colors.textPrimary, 
                   fontSize: '0.7rem', 
                   whiteSpace: 'nowrap', 
                   width: '6%',
@@ -3286,7 +3220,7 @@ const Tresorerie: React.FC = () => {
                       alignItems: 'center',
                       opacity: invoiceTrackingSort.column === 'daysRemaining' ? 1 : 0,
                       transition: 'opacity 0.2s',
-                      color: '#007AFF'
+                      color: tokens.colors.info
                     }} className="sort-icon">
                       {invoiceTrackingSort.column === 'daysRemaining' && (
                         invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -3297,7 +3231,7 @@ const Tresorerie: React.FC = () => {
                     </Box>
                   </Box>
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                <TableCell sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
                   <Box 
                     sx={{ 
                       display: 'flex', 
@@ -3317,7 +3251,7 @@ const Tresorerie: React.FC = () => {
                       alignItems: 'center',
                       opacity: invoiceTrackingSort.column === 'status' ? 1 : 0,
                       transition: 'opacity 0.2s',
-                      color: '#007AFF'
+                      color: tokens.colors.info
                     }} className="sort-icon">
                       {invoiceTrackingSort.column === 'status' && (
                         invoiceTrackingSort.direction === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : 
@@ -3328,7 +3262,7 @@ const Tresorerie: React.FC = () => {
                     </Box>
                   </Box>
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
+                <TableCell sx={{ fontWeight: 600, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap', width: '9%' }}>
                   Actions
                 </TableCell>
               </TableRow>
@@ -3411,7 +3345,7 @@ const Tresorerie: React.FC = () => {
                       selected={selectedInvoices.has(contract.mission.id)}
                       sx={{
                         '&:hover': {
-                          backgroundColor: '#f8f9fa'
+                          backgroundColor: tokens.colors.bgDefault
                         }
                       }}
                     >
@@ -3421,9 +3355,9 @@ const Tresorerie: React.FC = () => {
                           checked={selectedInvoices.has(contract.mission.id)}
                           onChange={() => handleSelectInvoice(contract.mission.id)}
                           sx={{
-                            color: '#007AFF',
+                            color: tokens.colors.info,
                             '&.Mui-checked': {
-                              color: '#007AFF',
+                              color: tokens.colors.info,
                             }
                           }}
                         />
@@ -3436,7 +3370,7 @@ const Tresorerie: React.FC = () => {
                           sx={{ 
                             fontWeight: 600, 
                             fontSize: '0.7rem',
-                            color: '#007AFF',
+                            color: tokens.colors.info,
                             cursor: 'pointer',
                             textDecoration: 'none',
                             whiteSpace: 'nowrap',
@@ -3455,7 +3389,7 @@ const Tresorerie: React.FC = () => {
 
                       {/* Entreprise */}
                       <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>
-                        <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.7rem', color: '#1d1d1f', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.7rem', color: tokens.colors.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {contract.mission.company || '-'}
                         </Typography>
                       </TableCell>
@@ -3469,7 +3403,7 @@ const Tresorerie: React.FC = () => {
                           sx={{
                             textTransform: 'none',
                             fontSize: '0.625rem',
-                            color: '#007AFF',
+                            color: tokens.colors.info,
                             fontWeight: 500,
                             p: 0,
                             minWidth: 'auto',
@@ -3484,7 +3418,7 @@ const Tresorerie: React.FC = () => {
 
                       {/* Montant */}
                       <TableCell>
-                        <Typography sx={{ fontWeight: 700, color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
+                        <Typography sx={{ fontWeight: 700, color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
                           {contract.invoiceDocument?.invoiceAmount 
                             ? `${contract.invoiceDocument.invoiceAmount.toFixed(2)}€` 
                             : '-'}
@@ -3494,7 +3428,7 @@ const Tresorerie: React.FC = () => {
                       {/* Date d'envoi */}
                       <TableCell>
                         {contract.invoiceDocument?.invoiceSentDate ? (
-                          <Typography variant="body2" sx={{ color: '#1d1d1f', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textPrimary, fontSize: '0.7rem', whiteSpace: 'nowrap' }}>
                             {new Date(contract.invoiceDocument.invoiceSentDate).toLocaleDateString('fr-FR', {
                               day: '2-digit',
                               month: '2-digit',
@@ -3502,7 +3436,7 @@ const Tresorerie: React.FC = () => {
                             })}
                           </Typography>
                         ) : (
-                          <Typography variant="body2" sx={{ color: '#86868b', fontSize: '0.7rem' }}>-</Typography>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, fontSize: '0.7rem' }}>-</Typography>
                         )}
                       </TableCell>
 
@@ -3512,7 +3446,7 @@ const Tresorerie: React.FC = () => {
                           <Typography 
                             variant="body2"
                             sx={{ 
-                              color: isOverdue ? '#FF3B30' : '#1d1d1f',
+                              color: isOverdue ? tokens.colors.error : tokens.colors.textPrimary,
                               fontWeight: isOverdue ? 600 : 400,
                               fontSize: '0.7rem',
                               whiteSpace: 'nowrap'
@@ -3525,7 +3459,7 @@ const Tresorerie: React.FC = () => {
                             })}
                           </Typography>
                         ) : (
-                          <Typography variant="body2" sx={{ color: '#86868b', fontSize: '0.7rem' }}>-</Typography>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, fontSize: '0.7rem' }}>-</Typography>
                         )}
                       </TableCell>
 
@@ -3535,9 +3469,9 @@ const Tresorerie: React.FC = () => {
                           <Typography 
                             variant="body2"
                             sx={{ 
-                              color: daysRemaining < 0 ? '#FF3B30' : 
-                                     daysRemaining <= 7 ? '#FF9500' : 
-                                     '#1d1d1f',
+                              color: daysRemaining < 0 ? tokens.colors.error : 
+                                     daysRemaining <= 7 ? tokens.colors.warning : 
+                                     tokens.colors.textPrimary,
                               fontWeight: 600,
                               fontSize: '0.7rem',
                               whiteSpace: 'nowrap'
@@ -3550,7 +3484,7 @@ const Tresorerie: React.FC = () => {
                               : `${daysRemaining}j`}
                           </Typography>
                         ) : (
-                          <Typography variant="body2" sx={{ color: '#86868b', fontSize: '0.7rem' }}>-</Typography>
+                          <Typography variant="body2" sx={{ color: tokens.colors.textSecondary, fontSize: '0.7rem' }}>-</Typography>
                         )}
                       </TableCell>
 
@@ -3565,8 +3499,8 @@ const Tresorerie: React.FC = () => {
                             backgroundColor: isPaid ? 'rgba(52, 199, 89, 0.1)' : 
                                            isOverdue ? 'rgba(255, 59, 48, 0.1)' :
                                            'rgba(255, 149, 0, 0.1)',
-                            color: isPaid ? '#34C759' : isOverdue ? '#FF3B30' : '#FF9500',
-                            border: `1px solid ${isPaid ? '#34C759' : isOverdue ? '#FF3B30' : '#FF9500'}`,
+                            color: isPaid ? tokens.colors.success : isOverdue ? tokens.colors.error : tokens.colors.warning,
+                            border: `1px solid ${isPaid ? tokens.colors.success : isOverdue ? tokens.colors.error : tokens.colors.warning}`,
                             fontWeight: 600,
                             borderRadius: '3px',
                             '& .MuiChip-label': {
@@ -3592,15 +3526,15 @@ const Tresorerie: React.FC = () => {
                             py: 0.125,
                             minWidth: 'auto',
                             ...(isPaid ? {
-                              borderColor: '#d2d2d7',
-                              color: '#1d1d1f',
+                              borderColor: tokens.colors.gray300,
+                              color: tokens.colors.textPrimary,
                               '&:hover': {
-                                borderColor: '#FF3B30',
-                                color: '#FF3B30',
+                                borderColor: tokens.colors.error,
+                                color: tokens.colors.error,
                                 backgroundColor: 'rgba(255, 59, 48, 0.05)'
                               }
                             } : {
-                              backgroundColor: '#34C759',
+                              backgroundColor: tokens.colors.success,
                               color: 'white',
                               boxShadow: 'none',
                               '&:hover': {
@@ -3619,30 +3553,19 @@ const Tresorerie: React.FC = () => {
             </TableBody>
           </Table>
         </TableContainer>
+        </Box>
 
         {contracts.filter(c => c.invoiceDocument && c.invoiceDocument.fileName).length === 0 && (
-          <Paper 
-            sx={{ 
-              p: 4, 
-              textAlign: 'center',
-              bgcolor: 'white',
-              borderRadius: '1.2rem',
-              border: '1px solid #e5e5e7',
-              m: 2
-            }}
-          >
-            <CheckCircleIcon sx={{ fontSize: 48, color: '#86868b', mb: 2 }} />
-            <Typography variant="h6" sx={{ color: '#1d1d1f', mb: 1 }}>
-              Aucune facture à suivre
-            </Typography>
-            <Typography variant="body1" sx={{ color: '#86868b', mb: 3 }}>
-              Les factures uploadées apparaîtront ici avec leur suivi.
-            </Typography>
-          </Paper>
+          <EmptyState
+            icon={<CheckCircleIcon />}
+            title="Aucune facture à suivre"
+            description="Les factures uploadées apparaîtront ici avec leur suivi."
+          />
         )}
       </TabPanel>
-    </Paper>
-  </Box>
+        </Box>
+      </Box>
+    </AppPageShell>
   );
 };
 
