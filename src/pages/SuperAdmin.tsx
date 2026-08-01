@@ -1081,7 +1081,6 @@ const SuperAdmin: React.FC = () => {
     }
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleDeleteStructure = async (structureId: string) => {
     if (window.confirm('Êtes-vous sûr de vouloir supprimer cette structure ?')) {
       try {

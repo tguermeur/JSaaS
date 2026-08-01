@@ -219,29 +219,4 @@ export function usePermission(pageId: string): UsePermissionReturn {
   };
 }
 
-/**
- * Hook pour vérifier les permissions de plusieurs pages en une fois
- * 
- * @param pageIds - Liste des identifiants de pages
- * @returns Record<pageId, { canRead, canWrite }>
- */
-export function useMultiplePermissions(pageIds: string[]): {
-  permissions: Record<string, { canRead: boolean; canWrite: boolean }>;
-  loading: boolean;
-} {
-  const results = pageIds.map(pageId => ({
-    pageId,
-    ...usePermission(pageId),
-  }));
-
-  const loading = results.some(r => r.loading);
-  
-  const permissions = results.reduce((acc, { pageId, canRead, canWrite }) => {
-    acc[pageId] = { canRead, canWrite };
-    return acc;
-  }, {} as Record<string, { canRead: boolean; canWrite: boolean }>);
-
-  return { permissions, loading };
-}
-
 export default usePermission;
