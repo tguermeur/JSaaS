@@ -27,6 +27,7 @@ import {
   USER_B,
   USER_OTHER_A,
   USER_SA,
+  USER_ENTREPRISE,
 } from './helpers.js';
 
 /** @type {import('@firebase/rules-unit-testing').RulesTestEnvironment} */
@@ -80,12 +81,6 @@ const COLLECTIONS = [
     createDataA: { structureId: STRUCTURE_A, title: 'New Mission A' },
     createDataSpoof: { structureId: STRUCTURE_A, title: 'Spoof' },
     updateData: { title: 'Updated Mission' },
-    // FAILLE : hasPermissionOrStructureFallback autorise un user permissionné
-    // sur sa propre structure à lire/écrire une ressource d'un autre tenant.
-    read: { b: 'allow' },
-    create: { b: 'allow' },
-    update: { b: 'allow' },
-    delete: { b: 'allow' },
   },
   {
     id: 'generatedDocuments (racine)',
@@ -102,10 +97,6 @@ const COLLECTIONS = [
     createDataA: { structureId: STRUCTURE_A, missionId: 'mission-a' },
     createDataSpoof: { structureId: STRUCTURE_A, missionId: 'mission-a' },
     updateData: { missionId: 'mission-a' },
-    read: { b: 'allow' },
-    create: { b: 'allow' },
-    update: { b: 'allow' },
-    delete: { b: 'allow' },
   },
   {
     id: 'templates',
@@ -203,10 +194,6 @@ const COLLECTIONS = [
     createDataA: { missionId: 'mission-a', createdBy: USER_A, content: 'New note' },
     createDataSpoof: { missionId: 'mission-a', createdBy: USER_B, content: 'Spoof' },
     updateData: { content: 'Updated note' },
-    read: { b: 'allow' },
-    create: { b: 'allow' },
-    update: { b: 'allow' },
-    delete: { b: 'allow' },
   },
   {
     id: 'expenseNotes',
@@ -215,10 +202,6 @@ const COLLECTIONS = [
     createDataA: { missionId: 'mission-a', createdBy: USER_A, amount: 42 },
     createDataSpoof: { missionId: 'mission-a', createdBy: USER_B, amount: 1 },
     updateData: { amount: 99 },
-    read: { b: 'allow' },
-    create: { b: 'allow' },
-    update: { b: 'allow' },
-    delete: { b: 'allow' },
   },
   {
     id: 'workingHours',
@@ -227,10 +210,37 @@ const COLLECTIONS = [
     createDataA: { applicationId: 'app-a', hours: 3 },
     createDataSpoof: { applicationId: 'app-a', hours: 1 },
     updateData: { hours: 5 },
-    read: { b: 'allow' },
-    create: { b: 'allow' },
-    update: { b: 'allow' },
-    delete: { b: 'allow' },
+  },
+  {
+    id: 'applications',
+    path: 'applications/app-a',
+    createPath: 'applications/app-a-new',
+    createDataA: {
+      missionId: 'mission-a',
+      userId: USER_A,
+      userEmail: 'a@example.com',
+      submittedAt: new Date().toISOString(),
+      status: 'En attente',
+    },
+    // userId ≠ B pour forcer canCreateApplicationViaMission (pas self-apply)
+    createDataSpoof: {
+      missionId: 'mission-a',
+      userId: 'spoof-student',
+      userEmail: 'spoof@example.com',
+      submittedAt: new Date().toISOString(),
+      status: 'En attente',
+    },
+    updateData: { status: 'Acceptée' },
+    // delete applications : if false
+    delete: { a: 'deny', b: 'deny', member: 'deny', sa: 'deny', unauth: 'deny' },
+  },
+  {
+    id: 'amendments',
+    path: 'amendments/amend-a',
+    createPath: 'amendments/amend-a-new',
+    createDataA: { missionId: 'mission-a', title: 'New Avenant' },
+    createDataSpoof: { missionId: 'mission-a', title: 'Spoof' },
+    updateData: { title: 'Updated Avenant' },
   },
   {
     id: 'notifications',
@@ -520,26 +530,108 @@ describe('couverture', () => {
 });
 
 /**
- * Garde-fous qui DOIVENT échouer tant que la faille
- * hasPermissionOrStructureFallback n'est pas corrigée.
- * Quand le fix landed, inverser en assertFails et retirer les allow B ci-dessus.
+ * Couverture ciblée du helper hasPermissionOrStructureFallback
+ * (missions, applications, notes, expenseNotes, workingHours, amendments,
+ * missions/{id}/generatedDocuments) — deux variantes d'auth.
  */
-describe('failles connues (documentées — ne pas « vertir » en corrigeant les expectations seules)', () => {
-  it('documente les collections touchées par hasPermissionOrStructureFallback', () => {
-    const affected = [
-      'missions',
-      'missions/{id}/generatedDocuments',
-      'notes (mission_notes)',
-      'expenseNotes',
-      'workingHours',
-    ];
-    for (const id of affected) {
-      const spec = COLLECTIONS.find((c) => c.id === id);
-      if (!spec || spec.read?.b !== 'allow' || spec.create?.b !== 'allow') {
-        throw new Error(
-          `${id} devrait encore déclarer read.b=allow et create.b=allow (faille ouverte)`,
-        );
+describe('hasPermissionOrStructureFallback — isolation forcée', () => {
+  const helperCollections = [
+    {
+      id: 'missions',
+      path: 'missions/mission-a',
+      createPath: 'missions/mission-helper-new',
+      createData: { structureId: STRUCTURE_A, title: 'Helper Mission' },
+      updateData: { title: 'Helper Updated' },
+    },
+    {
+      id: 'missions/{id}/generatedDocuments',
+      path: 'missions/mission-a/generatedDocuments/subgendoc-a',
+      createPath: 'missions/mission-a/generatedDocuments/helper-new',
+      createData: { structureId: STRUCTURE_A, missionId: 'mission-a' },
+      updateData: { missionId: 'mission-a' },
+    },
+    {
+      id: 'notes',
+      path: 'notes/note-a',
+      createPath: 'notes/note-helper-new',
+      createData: { missionId: 'mission-a', createdBy: USER_A, content: 'helper' },
+      updateData: { content: 'helper-upd' },
+    },
+    {
+      id: 'expenseNotes',
+      path: 'expenseNotes/expense-a',
+      createPath: 'expenseNotes/expense-helper-new',
+      createData: { missionId: 'mission-a', createdBy: USER_A, amount: 7 },
+      updateData: { amount: 8 },
+    },
+    {
+      id: 'workingHours',
+      path: 'workingHours/wh-a',
+      createPath: 'workingHours/wh-helper-new',
+      createData: { applicationId: 'app-a', hours: 1 },
+      updateData: { hours: 4 },
+    },
+    {
+      id: 'amendments',
+      path: 'amendments/amend-a',
+      createPath: 'amendments/amend-helper-new',
+      createData: { missionId: 'mission-a', title: 'Helper Amend' },
+      updateData: { title: 'Helper Amend Upd' },
+    },
+    {
+      id: 'applications',
+      path: 'applications/app-a',
+      createPath: 'applications/app-helper-new',
+      // Force le chemin canCreateApplicationViaMission (pas self-apply) :
+      // userId ≠ auth pour B, et pour A on utilise un userId différent aussi
+      // pour tester le helper — A create via permission mission.
+      createData: {
+        missionId: 'mission-a',
+        userId: 'some-student',
+        userEmail: 'student@example.com',
+        submittedAt: new Date().toISOString(),
+        status: 'En attente',
+      },
+      updateData: { status: 'Acceptée' },
+    },
+  ];
+
+  for (const variant of AUTH_VARIANTS) {
+    describe(variant.name, () => {
+      for (const spec of helperCollections) {
+        describe(spec.id, () => {
+          it('deny tenant B (permissionné chez lui) sur ressource A — read', async () => {
+            await expectReadDeny(variant.dbFor(USER_B), spec.path);
+          });
+          it('deny tenant B — create spoof', async () => {
+            await expectCreateDeny(variant.dbFor(USER_B), `${spec.createPath}-b`, spec.createData);
+          });
+          it('deny tenant B — update', async () => {
+            await expectUpdateDeny(variant.dbFor(USER_B), spec.path, spec.updateData);
+          });
+          it('deny tenant B — delete', async () => {
+            await expectDeleteDeny(variant.dbFor(USER_B), spec.path);
+          });
+          it('allow tenant A — read', async () => {
+            await expectReadAllow(variant.dbFor(USER_A), spec.path);
+          });
+          it('allow tenant A — create', async () => {
+            await expectCreateAllow(variant.dbFor(USER_A), `${spec.createPath}-a`, spec.createData);
+          });
+          it('allow superadmin — read', async () => {
+            await expectReadAllow(variant.dbFor(USER_SA), spec.path);
+          });
+        });
       }
-    }
-  });
+
+      describe('compte entreprise', () => {
+        it('allow lecture de SA mission (companyId == uid)', async () => {
+          await expectReadAllow(variant.dbFor(USER_ENTREPRISE), 'missions/mission-entreprise');
+        });
+        it('deny lecture d’une autre mission de la structure', async () => {
+          await expectReadDeny(variant.dbFor(USER_ENTREPRISE), 'missions/mission-a');
+        });
+      });
+    });
+  }
 });

@@ -34,6 +34,7 @@ export const USER_A = 'user-tenant-a';
 export const USER_B = 'user-tenant-b';
 export const USER_OTHER_A = 'user-other-a';
 export const USER_SA = 'user-superadmin';
+export const USER_ENTREPRISE = 'user-entreprise';
 
 export { assertFails, assertSucceeds };
 
@@ -43,6 +44,7 @@ export const USER_CLAIMS = {
   [USER_B]: { structureId: STRUCTURE_B, status: 'admin', role: 'admin' },
   [USER_OTHER_A]: { structureId: STRUCTURE_A, status: 'membre', role: 'membre' },
   [USER_SA]: { status: 'superadmin', role: 'superadmin', superadmin: true },
+  [USER_ENTREPRISE]: { status: 'entreprise', role: 'entreprise' },
 };
 
 /** @type {import('@firebase/app-compat').FirebaseNamespace['apps']} */
@@ -156,13 +158,21 @@ export async function seedFixtures() {
     role: 'superadmin',
     email: 'sa@example.com',
   });
+  await db.doc(`users/${USER_ENTREPRISE}`).set({
+    status: 'entreprise',
+    role: 'entreprise',
+    companyId: USER_ENTREPRISE,
+    email: 'entreprise@example.com',
+  });
 
   await db.doc(`structures/${STRUCTURE_A}`).set({ name: 'Structure A' });
   await db.doc(`structures/${STRUCTURE_B}`).set({ name: 'Structure B' });
 
   // Permissions module mission — nécessaires pour hasPermission / canWritePage
+  // Structure B DOIT avoir des permissions pour que les denies cross-tenant soient probants
+  // (sinon hasPermission=false et le test passe pour la mauvaise raison).
   for (const sid of [STRUCTURE_A, STRUCTURE_B]) {
-    for (const permId of ['mission', 'mission_read', 'organization']) {
+    for (const permId of ['mission', 'mission_read', 'organization', 'tresorerie', 'tresorerie_read', 'audit', 'audit_read']) {
       await db.doc(`structures/${sid}/permissions/${permId}`).set({
         allowedRoles: ['admin', 'membre', 'admin_structure'],
         allowedPoles: [],
@@ -180,10 +190,21 @@ export async function seedFixtures() {
     title: 'Mission A',
     isPublished: true,
   });
+  // Mission rattachée au compte entreprise (companyId == uid entreprise)
+  await db.doc('missions/mission-entreprise').set({
+    structureId: STRUCTURE_A,
+    title: 'Mission Entreprise',
+    companyId: USER_ENTREPRISE,
+    isPublished: true,
+  });
   await db.doc('applications/app-a').set({
     missionId: 'mission-a',
     userId: USER_A,
     structureId: STRUCTURE_A,
+  });
+  await db.doc('amendments/amend-a').set({
+    missionId: 'mission-a',
+    title: 'Avenant A',
   });
   await db.doc('templates/template-a').set({
     structureId: STRUCTURE_A,
