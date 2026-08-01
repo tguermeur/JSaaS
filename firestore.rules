@@ -165,11 +165,14 @@ service cloud.firestore {
       return hasPermission(pageId, 'write');
     }
     
-    // Accès selon les documents de permission (Réglages > Accès). Seul le superadmin contourne.
+    // Permission scoped to the RESOURCE structure (not the caller's alone).
+    // Guarantees: superadmin always allowed; otherwise the caller must belong to
+    // resourceStructureId AND hold the page permission in that same structure.
+    // Name kept for call-site stability — "Fallback" no longer means bypass tenant.
     function hasPermissionOrStructureFallback(pageId, accessType, resourceStructureId) {
       let validInputs = resourceStructureId != null && resourceStructureId != '';
       let sameStructure = validInputs && tokenStructureId() == resourceStructureId;
-      return hasPermission(pageId, accessType) || (sameStructure && isSuperAdmin());
+      return isSuperAdmin() || (sameStructure && hasPermission(pageId, accessType));
     }
     
     // =========================================================================
