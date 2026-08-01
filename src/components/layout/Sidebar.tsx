@@ -594,13 +594,6 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
   // Menu pour les Entreprises
   const companyMenuItems: MenuItem[] = [
     {
-      text: 'Tableau de bord',
-      icon: <DashboardIcon />,
-      iconSidebarIcon: <DashboardIcon />,
-      path: '/app/dashboard',
-      section: 'crm',
-    },
-    {
       text: 'Facturation',
       icon: <AttachMoneyIcon />,
       iconSidebarIcon: <DashboardIcon />,

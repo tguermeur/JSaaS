@@ -406,12 +406,24 @@ export const DocRowV2: React.FC<{
       PDF
     </Box>
     <Box sx={{ flex: 1, minWidth: 0 }}>
-      <Typography sx={{ fontSize: 13, fontWeight: 600, color: tokens.colors.gray900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {name}
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+        <Typography
+          sx={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: tokens.colors.gray900,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0,
+          }}
+        >
+          {name}
+        </Typography>
+        {tags}
+      </Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap', mt: 0.25 }}>
         <Typography sx={{ fontSize: 11, color: tokens.colors.gray400 }}>{meta}</Typography>
-        {tags}
       </Box>
     </Box>
     {size && (

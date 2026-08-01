@@ -33,6 +33,7 @@ import {
   Close as CloseIcon,
   Send as SendIcon,
   Delete as DeleteIcon,
+  Draw as DrawIcon,
 } from '@mui/icons-material';
 import PageHeader from '../components/common/PageHeader';
 import EmptyState from '../components/common/EmptyState';
@@ -48,6 +49,7 @@ import {
   resendSignatureInvite,
 } from '../services/signatureService';
 import NewSignatureRequestDialog from '../components/signatures/NewSignatureRequestDialog';
+import ConfigureTemplateSignaturePlacements from '../components/signatures/ConfigureTemplateSignaturePlacements';
 
 const STATUS_LABEL: Record<
   string,
@@ -138,6 +140,7 @@ const Signatures: React.FC = () => {
   } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
+  const [placementsOpen, setPlacementsOpen] = useState(false);
   const [downloadReq, setDownloadReq] = useState<SignatureRequest | null>(null);
   const [downloadBusy, setDownloadBusy] = useState<'document' | 'full' | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SignatureRequest | null>(null);
@@ -267,6 +270,24 @@ const Signatures: React.FC = () => {
             >
               Nouveau document
             </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<DrawIcon />}
+              onClick={() => setPlacementsOpen(true)}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 600,
+                borderColor: tokens.colors.divider,
+                color: tokens.colors.textPrimary,
+                '&:hover': {
+                  borderColor: tokens.colors.brandTeal,
+                  bgcolor: tokens.colors.primaryAlpha10,
+                },
+              }}
+            >
+              Emplacements
+            </Button>
             <IconButton onClick={() => void load()} aria-label="Actualiser">
               <RefreshIcon />
             </IconButton>
@@ -279,6 +300,11 @@ const Signatures: React.FC = () => {
           {error}
         </Alert>
       )}
+
+      <ConfigureTemplateSignaturePlacements
+        open={placementsOpen}
+        onClose={() => setPlacementsOpen(false)}
+      />
 
       <Box
         sx={{

@@ -3,7 +3,7 @@ import { auth, getFunctionsBaseUrl } from '../firebase/config';
 
 interface StripeCustomer {
   id: string;
-  email: string;
+  email: string | null;
   name: string;
   subscriptionStatus: string;
   subscriptionTitle: string;

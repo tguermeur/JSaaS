@@ -11,8 +11,25 @@ export type DocumentType =
   | 'proces_verbal_recette'
   | 'rapport_pedagogique'
   | 'avenant_convention'
-  | 'bulletin_versement'
   | 'convention_consultant';
+
+/** Rôle métier d’une zone de signature préconfigurée sur un template. */
+export type SignaturePlacementRole = 'counterparty' | 'structure';
+
+/**
+ * Emplacement de signature préconfiguré (coords en % de page, origine haut-gauche).
+ * `counterparty` = client (PC) ou étudiant (LM / avenant) ; `structure` = JE / Job Service.
+ */
+export interface TemplateSignaturePlacement {
+  id: string;
+  role: SignaturePlacementRole;
+  pageIndex: number;
+  xPct: number;
+  yPct: number;
+  widthPct: number;
+  heightPct: number;
+  label?: string;
+}
 
 export interface TemplateAssignment {
   id?: string;
@@ -20,8 +37,22 @@ export interface TemplateAssignment {
   templateId: string;
   structureId: string;
   generationType?: 'template' | 'editor';
+  /** Zones de signature SES préconfigurées (client/étudiant + structure). */
+  signaturePlacements?: TemplateSignaturePlacement[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** Types de documents MissionDetails pour lesquels on préconfigure les signatures. */
+export const SIGNATURE_TEMPLATE_DOCUMENT_TYPES: DocumentType[] = [
+  'proposition_commerciale',
+  'lettre_mission',
+  'avenant',
+];
+
+export function counterpartyLabelForDocumentType(documentType: DocumentType): string {
+  if (documentType === 'proposition_commerciale') return 'Client';
+  return 'Étudiant';
 }
 
 export const DOCUMENT_TYPES: { [key in DocumentType]: string } = {
@@ -37,7 +68,6 @@ export const DOCUMENT_TYPES: { [key in DocumentType]: string } = {
   proces_verbal_recette: 'PV Recette',
   rapport_pedagogique: 'Rapport Pédagogique',
   avenant_convention: 'Avenant Convention',
-  bulletin_versement: 'Bulletin de Versement',
   convention_consultant: 'Convention Consultant',
 };
 
@@ -71,69 +101,27 @@ export interface Template {
   pdfUrl: string;
   fileName: string;
   variables: TemplateVariable[];
+  /** @deprecated Préférer templateAssignments.signaturePlacements (par structure). */
+  signaturePlacements?: TemplateSignaturePlacement[];
   createdAt: Date;
   updatedAt: Date;
   createdBy: string;
 }
+
+/** Nature de la valeur pour détection manquante / fallback PDF. */
+export type TagValueKind = 'text' | 'number' | 'hours' | 'money' | 'date';
 
 export interface TagMapping {
   tag: string;
   variableId: string;
   description: string;
   example: string;
+  /** Autres variableId qui résolvent vers ce même tag. */
+  aliases?: string[];
+  /** Override du kind (sinon dérivé du nom de balise). */
+  valueKind?: TagValueKind;
+  /** Sources Firestore typiques pour désambiguïser variableId. */
+  dataSources?: Array<
+    'missions' | 'users' | 'companies' | 'contacts' | 'expenseNotes' | 'workingHours' | 'amendments' | 'structures'
+  >;
 }
-
-export const VARIABLE_TAGS: TagMapping[] = [
-  // Tags pour les missions
-  { tag: '<mission_numero>', variableId: 'numeroMission', description: 'Numéro de mission', example: 'M2024-001' },
-  { tag: '<mission_cdm>', variableId: 'chargeName', description: 'Chef de mission', example: 'Jean Dupont' },
-  { tag: '<mission_date>', variableId: 'startDate', description: 'Date de mission', example: '01/01/2024' },
-  { tag: '<mission_lieu>', variableId: 'location', description: 'Lieu', example: 'Paris' },
-  { tag: '<mission_entreprise>', variableId: 'company', description: 'Entreprise', example: 'Entreprise SA' },
-  { tag: '<mission_prix>', variableId: 'priceHT', description: 'Prix HT', example: '1000€' },
-  { tag: '<mission_description>', variableId: 'description', description: 'Description de la mission', example: 'Description détaillée...' },
-  { tag: '<mission_titre>', variableId: 'title', description: 'Titre de la mission', example: 'Titre de la mission' },
-  { tag: '<mission_heures>', variableId: 'hours', description: 'Nombre d\'heures', example: '40' },
-  { tag: '<mission_statut>', variableId: 'status', description: 'Statut de la mission', example: 'En cours' },
-  { tag: '<mission_heures_par_etudiant>', variableId: 'hoursPerStudent', description: 'Heures par étudiant', example: '10' },
-  { tag: '<mission_nb_etudiants>', variableId: 'studentCount', description: 'Nombre d\'étudiants', example: '4' },
-  
-  // Tags pour les utilisateurs
-  { tag: '<user_nom>', variableId: 'lastName', description: 'Nom utilisateur', example: 'Dupont' },
-  { tag: '<user_prenom>', variableId: 'firstName', description: 'Prénom utilisateur', example: 'Jean' },
-  { tag: '<user_email>', variableId: 'email', description: 'Email', example: 'jean.dupont@email.com' },
-  { tag: '<user_ecole>', variableId: 'ecole', description: 'École', example: 'École ABC' },
-  { tag: '<user_telephone>', variableId: 'phone', description: 'Téléphone', example: '06 12 34 56 78' },
-  { tag: '<user_adresse>', variableId: 'address', description: 'Adresse', example: '123 rue Example' },
-  { tag: '<user_ville>', variableId: 'city', description: 'Ville', example: 'Paris' },
-  { tag: '<user_formation>', variableId: 'formation', description: 'Formation', example: 'Informatique' },
-  { tag: '<user_specialite>', variableId: 'speciality', description: 'Spécialité', example: 'Développement Web' },
-  { tag: '<user_niveau_etude>', variableId: 'studyLevel', description: 'Niveau d\'études', example: 'Master' },
-  
-  // Tags pour les entreprises
-  { tag: '<entreprise_nom>', variableId: 'name', description: 'Nom de l\'entreprise', example: 'Entreprise SA' },
-  { tag: '<entreprise_siren>', variableId: 'siren', description: 'Numéro SIREN', example: '123456789' },
-  { tag: '<entreprise_adresse>', variableId: 'address', description: 'Adresse', example: '123 rue Example' },
-  { tag: '<entreprise_ville>', variableId: 'city', description: 'Ville', example: 'Paris' },
-  { tag: '<entreprise_pays>', variableId: 'country', description: 'Pays', example: 'France' },
-  { tag: '<entreprise_telephone>', variableId: 'phone', description: 'Téléphone', example: '01 23 45 67 89' },
-  { tag: '<entreprise_email>', variableId: 'email', description: 'Email', example: 'contact@entreprise.fr' },
-  { tag: '<entreprise_site_web>', variableId: 'website', description: 'Site web', example: 'www.entreprise.fr' },
-  { tag: '<entreprise_description>', variableId: 'description', description: 'Description', example: 'Description de l\'entreprise' },
-
-  // Tags pour les heures de travail
-  { tag: '<workinghours_date_debut>', variableId: 'workingHoursDateDebut', description: 'Date de début des heures de travail', example: '01/01/2024' },
-  { tag: '<workinghours_heure_debut>', variableId: 'workingHoursHeureDebut', description: 'Heure de début des heures de travail', example: '09:00' },
-  { tag: '<workinghours_date_fin>', variableId: 'workingHoursDateFin', description: 'Date de fin des heures de travail', example: '01/01/2024' },
-  { tag: '<workinghours_heure_fin>', variableId: 'workingHoursHeureFin', description: 'Heure de fin des heures de travail', example: '17:00' },
-  { tag: '<workinghours_pauses>', variableId: 'workingHoursPauses', description: 'Pauses pendant les heures de travail', example: '12:00-13:00' },
-  { tag: '<workinghours_total>', variableId: 'workingHoursTotal', description: 'Total des heures de travail', example: '8.00' },
-  { tag: '<workinghours_creation>', variableId: 'workingHoursCreation', description: 'Date de création des heures de travail', example: '01/01/2024' },
-  { tag: '<workinghours_maj>', variableId: 'workingHoursMaj', description: 'Date de mise à jour des heures de travail', example: '01/01/2024' },
-  
-  // Tags spécifiques aux Junior-Entreprises
-  { tag: '<etude_jeh_total>', variableId: 'etudeJehTotal', description: 'Total des JEH de l\'étude', example: '120' },
-  { tag: '<etude_duree_semaines>', variableId: 'etudeDureeSemaines', description: 'Durée de l\'étude en semaines', example: '12' },
-  { tag: '<phase_liste>', variableId: 'phaseListe', description: 'Liste des phases/budgetItems de l\'étude', example: 'Phase 1: Analyse (20 JEH), Phase 2: Développement (80 JEH)' },
-  { tag: '<etudiant_remuneration_brute_total>', variableId: 'etudiantRemunerationBruteTotal', description: 'Rémunération brute totale de l\'étudiant', example: '2400€' }
-]; 

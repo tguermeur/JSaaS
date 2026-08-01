@@ -34,9 +34,8 @@ export const TEMPLATE_ACTIONS: Array<{
 }> = [
   { id: 'proposition_commerciale', label: 'Proposition commerciale', color: '#173B6C', hint: 'Devis détaillé · 2 pages' },
   { id: 'lettre_mission', label: 'Lettre de mission', color: '#3b82f6', hint: 'LM étudiant · 1 page' },
-  { id: 'convention_entreprise', label: 'Convention de mission', color: '#21BDA3', hint: 'Contrat tripartite · 4 pages' },
-  { id: 'facture', label: 'Facture', color: '#ec4899', hint: 'Émission TTC · 1 page' },
   { id: 'avenant', label: 'Avenant', color: '#f59e0b', hint: 'Modification de mission' },
+  { id: 'facture', label: 'Facture', color: '#ec4899', hint: 'Émission TTC · 1 page' },
 ];
 
 export const DOC_CATEGORY_CHIPS = [

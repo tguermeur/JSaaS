@@ -1,6 +1,6 @@
-import type { TagMapping } from '../types/templates';
+import type { TagMapping, TagValueKind } from '../types/templates';
 
-export type { TagMapping };
+export type { TagMapping, TagValueKind };
 
 /**
  * Liste canonique des balises PDF (templates, génération de documents).
@@ -21,16 +21,16 @@ export const VARIABLE_TAGS: TagMapping[] = [
   { tag: '<mission_type>', variableId: 'missionType', description: 'Type de mission', example: 'Consulting' },
   { tag: '<mission_date_generation>', variableId: 'generationDate', description: 'Date de génération du document', example: '01/01/2024' },
   { tag: '<mission_date_generation_plus_1_an>', variableId: 'generationDatePlusOneYear', description: 'Date de génération + 1 an (365 jours)', example: '01/01/2025' },
-  { tag: '<mission_prix>', variableId: 'priceHT', description: 'Prix HT', example: '1000€' },
-  { tag: '<mission_prix_horaire_ht>', variableId: 'priceHT', description: 'Prix horaire HT', example: '25.00' },
-  { tag: '<mission_prix_total_heures_ht>', variableId: 'totalHoursHT', description: 'Prix total des heures travaillées HT (prix horaire × nombre d\'heures)', example: '1000.00' },
-  { tag: '<mission_description>', variableId: 'missionDetailsDescription', description: 'Description saisie sur la fiche mission (champ description)', example: 'Mission pour le client X...' },
+  { tag: '<mission_prix>', variableId: 'priceHT', description: 'Prix HT', example: '1000€', valueKind: 'money', dataSources: ['missions'] },
+  { tag: '<mission_prix_horaire_ht>', variableId: 'priceHT', description: 'Prix horaire HT', example: '25.00', valueKind: 'money', dataSources: ['missions'] },
+  { tag: '<mission_prix_total_heures_ht>', variableId: 'totalHoursHT', description: 'Prix total des heures travaillées HT (prix horaire × nombre d\'heures)', example: '1000.00', valueKind: 'money' },
+  { tag: '<mission_description>', variableId: 'missionDetailsDescription', description: 'Description saisie sur la fiche mission (champ description)', example: 'Mission pour le client X...', aliases: ['missionDescription', 'description'], dataSources: ['missions'] },
   { tag: '<mission_type_description>', variableId: 'missionTypeDescription', description: 'Description du type de mission lié (missionTypes.missionDescription)', example: 'Description du type Consulting...' },
   { tag: '<mission_titre>', variableId: 'title', description: 'Titre', example: 'Titre de la mission' },
-  { tag: '<mission_heures>', variableId: 'hours', description: 'Nombre d\'heures', example: '40' },
-  { tag: '<mission_nb_etudiants>', variableId: 'studentCount', description: 'Nombre d\'étudiants', example: '4' },
-  { tag: '<total_ttc>', variableId: 'totalTTC', description: 'Total TTC de la mission', example: '1200.00' },
-  { tag: '<tva>', variableId: 'tva', description: 'Montant de la TVA', example: '200.00' },
+  { tag: '<mission_heures>', variableId: 'hours', description: 'Nombre d\'heures', example: '40', valueKind: 'hours' },
+  { tag: '<mission_nb_etudiants>', variableId: 'studentCount', description: 'Nombre d\'étudiants', example: '4', valueKind: 'number' },
+  { tag: '<total_ttc>', variableId: 'totalTTC', description: 'Total TTC de la mission', example: '1200.00', valueKind: 'money' },
+  { tag: '<tva>', variableId: 'tva', description: 'Montant de la TVA', example: '200.00', valueKind: 'money' },
   { tag: '<course_application>', variableId: 'courseApplication', description: 'Application du cours (type de mission)', example: 'Gestion des papiers...' },
   { tag: '<mission_learning>', variableId: 'missionLearning', description: 'Objectifs d\'apprentissage (type de mission)', example: 'Compétences acquises...' },
   { tag: '<student_profile>', variableId: 'studentProfile', description: 'Profil étudiant recherché (type de mission)', example: 'Étudiant en M1...' },
@@ -102,18 +102,18 @@ export const VARIABLE_TAGS: TagMapping[] = [
   { tag: '<heures_detaillees>', variableId: 'heuresDetaillees', description: 'Heures détaillées (tous les jours avec créneaux et pauses)', example: '28/01/2026 de 16h à 18h, 04/02/2026 de 16h à 18h' },
 
   // Tags pour les gratifications et total à payer (par étudiant / candidature)
-  { tag: '<gratification_nette>', variableId: 'gratificationNet', description: 'Gratification nette (€) pour l\'étudiant', example: '12,50' },
-  { tag: '<gratification_brute>', variableId: 'gratificationBrute', description: 'Gratification brute (€) pour l\'étudiant', example: '15,00' },
-  { tag: '<total_a_payer>', variableId: 'totalAPayer', description: 'Total à payer (heures × gratification nette, €)', example: '100,00' },
+  { tag: '<gratification_nette>', variableId: 'gratificationNet', description: 'Gratification nette (€) pour l\'étudiant', example: '12,50', valueKind: 'money' },
+  { tag: '<gratification_brute>', variableId: 'gratificationBrute', description: 'Gratification brute (€) pour l\'étudiant', example: '15,00', valueKind: 'money' },
+  { tag: '<total_a_payer>', variableId: 'totalAPayer', description: 'Total à payer (heures × gratification nette, €)', example: '100,00', valueKind: 'money' },
 
   // Tags pour les avenants
   { tag: '<amendment_planned_start_date>', variableId: 'plannedStartDate', description: 'Date de début prévue', example: '01/01/2024' },
   { tag: '<amendment_planned_end_date>', variableId: 'plannedEndDate', description: 'Date de fin prévue', example: '31/01/2024' },
   { tag: '<amendment_actual_start_date>', variableId: 'actualStartDate', description: 'Date de début réelle', example: '01/01/2024' },
   { tag: '<amendment_actual_end_date>', variableId: 'actualEndDate', description: 'Date de fin réelle', example: '31/01/2024' },
-  { tag: '<amendment_planned_hours>', variableId: 'plannedHours', description: 'Heures prévues (lettre de mission)', example: '40' },
-  { tag: '<amendment_new_hours>', variableId: 'amendmentNewHours', description: 'Total des heures finalement travaillées (compteur)', example: '130' },
-  { tag: '<amendment_actual_hours>', variableId: 'actualHours', description: 'Total des heures finalement travaillées (alias de amendment_new_hours)', example: '130' },
+  { tag: '<amendment_planned_hours>', variableId: 'plannedHours', description: 'Heures prévues (lettre de mission)', example: '40', valueKind: 'hours' },
+  { tag: '<amendment_new_hours>', variableId: 'amendmentNewHours', description: 'Total des heures finalement travaillées (compteur)', example: '130', valueKind: 'hours' },
+  { tag: '<amendment_actual_hours>', variableId: 'actualHours', description: 'Total des heures finalement travaillées (alias de amendment_new_hours)', example: '130', valueKind: 'hours', aliases: ['amendment_actual_hours'] },
   { tag: '<heures_finalement_travaillees>', variableId: 'heuresFinalementTravaillees', description: 'Dates et horaires détaillés des heures travaillées (créneaux saisis)', example: '28/01/2026 de 16h à 18h' },
   { tag: '<amendment_reason>', variableId: 'reason', description: 'Motif de l\'avenant', example: 'Modification des dates' },
   { tag: '<amendment_target>', variableId: 'amendmentTarget', description: 'Personne concernée par l\'avenant', example: 'Jean Dupont (contact entreprise)' },
@@ -268,7 +268,7 @@ export function getTemplateTagCategory(tagName: string): string {
   if (tag.startsWith('user_') || ['graduationYear', 'gender', 'birthPlace', 'birthDate', 'address', 'nationality', 'socialSecurityNumber', 'phone', 'program'].includes(tag)) {
     return 'Utilisateur';
   }
-  if (tag.startsWith('mission_') || ['missionType', 'totalHT', 'totalTTC', 'total_ttc', 'tva', 'generationDate', 'endDate', 'missionDescription', 'missionStartDate', 'missionLearning', 'courseApplication', 'studentProfile', 'mission_gratificationhorraire'].includes(tag)) {
+  if (tag.startsWith('mission_') || ['missionType', 'totalHT', 'totalTTC', 'total_ttc', 'tva', 'generationDate', 'endDate', 'missionDescription', 'missionStartDate', 'missionLearning', 'courseApplication', 'studentProfile', 'mission_gratificationhorraire', 'gratification_nette', 'gratification_brute', 'total_a_payer'].includes(tag)) {
     return 'Mission';
   }
   if (tag.startsWith('contact_')) return 'Contact';
@@ -297,4 +297,229 @@ export function isDocumentPlaceholderValue(value: string): boolean {
   const trimmed = (value || '').trim();
   if (!trimmed) return true;
   return trimmed.startsWith('[') && trimmed.endsWith(']');
+}
+
+/** Noms de balises (sans <> ) considérés numériques pour fallback "0". */
+const NUMERIC_TAG_NAME_SET = new Set([
+  'mission_prix', 'mission_prix_horaire_ht', 'mission_prix_total_heures_ht',
+  'mission_heures', 'mission_heures_par_etudiant', 'mission_nb_etudiants',
+  'totalHT', 'total_ht', 'totalTTC', 'total_ttc', 'tva',
+  'workinghours_total', 'workingHoursTotal',
+  'gratification_nette', 'gratification_brute', 'total_a_payer',
+  'mission_gratificationhorraire',
+  'amendment_new_hours', 'amendmentNewHours', 'amendment_actual_hours', 'actualHours',
+  'amendment_planned_hours', 'plannedHours',
+  'depense1_tva', 'depense1_prix', 'depense2_tva', 'depense2_prix',
+  'depense3_tva', 'depense3_prix', 'depense4_tva', 'depense4_prix',
+  'siren', 'nSiret', 'entreprise_siren', 'entreprise_nsiret',
+]);
+
+export const NUMERIC_DOC_TAGS: ReadonlySet<string> = NUMERIC_TAG_NAME_SET;
+
+/** Dérive le kind d'une balise (override catalogue ou heuristique). */
+export function getTagValueKind(tagOrName: string): TagValueKind {
+  const name = tagOrName.replace(/[<>]/g, '');
+  const found = VARIABLE_TAGS.find((v) => v.tag.replace(/[<>]/g, '') === name);
+  if (found?.valueKind) return found.valueKind;
+
+  if (
+    name.includes('prix') ||
+    name.includes('price') ||
+    name.includes('ttc') ||
+    name.includes('total_a_payer') ||
+    name.includes('gratification') ||
+    name === 'tva' ||
+    name === 'totalHT' ||
+    name === 'total_ht' ||
+    name === 'totalTTC' ||
+    name === 'total_ttc'
+  ) {
+    return 'money';
+  }
+  if (
+    name.includes('heure') ||
+    name.includes('hours') ||
+    name.includes('Hours') ||
+    name.endsWith('_total') && name.toLowerCase().includes('working')
+  ) {
+    return 'hours';
+  }
+  if (NUMERIC_TAG_NAME_SET.has(name) || /_tva$|_prix$|nb_etudiants|studentCount/.test(name)) {
+    return 'number';
+  }
+  if (name.includes('date') || name.includes('Date')) return 'date';
+  return 'text';
+}
+
+export function isNumericDocTag(tagOrName: string): boolean {
+  const name = tagOrName.replace(/[<>]/g, '');
+  const kind = getTagValueKind(name);
+  return kind === 'number' || kind === 'hours' || kind === 'money' || NUMERIC_TAG_NAME_SET.has(name);
+}
+
+/** Fallback PDF : "0" pour numérique, "" pour texte. */
+export function defaultValueForTag(tagOrName: string): string {
+  return isNumericDocTag(tagOrName) ? '0' : '';
+}
+
+/**
+ * True si la valeur doit être considérée manquante pour la popup.
+ * Les numériques à 0 / "0 h" / vide ne bloquent pas.
+ */
+export function isEmptyForDetection(tagOrName: string, value: string): boolean {
+  const trimmed = (value || '').trim();
+  if (isDocumentPlaceholderValue(trimmed) || /non disponible/i.test(trimmed)) {
+    return !isNumericDocTag(tagOrName);
+  }
+  if (!trimmed) {
+    return !isNumericDocTag(tagOrName);
+  }
+  if (isNumericDocTag(tagOrName) && (trimmed === '0' || trimmed === '0 h' || /^0(\.0+)?\s*h?$/i.test(trimmed))) {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Résout la balise PDF à partir d'un variableId / fieldId de template.
+ * Les IDs ambigus (email, phone, address…) sont désambiguïsés via dataSource.
+ */
+export function resolveTagFromVariableId(
+  variableId: string,
+  dataSource?: string | null
+): string {
+  if (!variableId) return '';
+  if (variableId.startsWith('<') && variableId.endsWith('>')) return variableId;
+
+  const asExactTag = VARIABLE_TAGS.find((m) => m.tag === `<${variableId}>`);
+  if (asExactTag) return asExactTag.tag;
+
+  const matches = VARIABLE_TAGS.filter(
+    (m) => m.variableId === variableId || m.aliases?.includes(variableId)
+  );
+  if (matches.length === 1) return matches[0].tag;
+
+  if (matches.length > 1) {
+    const sourcePrefix: Record<string, string[]> = {
+      missions: ['<mission_', '<total_', '<tva>', '<course_', '<student_', '<depense'],
+      users: ['<user_'],
+      companies: ['<entreprise_'],
+      contacts: ['<contact_'],
+      expenseNotes: ['<note_frais_'],
+      workingHours: ['<workingHours', '<heures_', '<workinghours_'],
+      amendments: ['<amendment_', '<heures_finalement'],
+      structures: ['<structure_'],
+    };
+    const prefixes = dataSource ? sourcePrefix[dataSource] : undefined;
+    if (prefixes) {
+      const filtered = matches.filter((m) => prefixes.some((p) => m.tag.startsWith(p)));
+      if (filtered.length >= 1) return filtered[0].tag;
+    }
+    // Prefer dataSources annotation when present
+    if (dataSource) {
+      const byDs = matches.filter((m) => m.dataSources?.includes(dataSource as never));
+      if (byDs.length >= 1) return byDs[0].tag;
+    }
+    return matches[0].tag;
+  }
+
+  // Legacy / mappings hors VARIABLE_TAGS
+  const legacy: Record<string, string> = {
+    numeroMission: '<mission_numero>',
+    chargeName: '<mission_cdm>',
+    startDate: dataSource === 'workingHours' ? '<workingHoursDateDebut>' : '<mission_date>',
+    location: '<mission_lieu>',
+    company: '<mission_entreprise>',
+    priceHT: '<mission_prix>',
+    missionDetailsDescription: '<mission_description>',
+    missionDescription: '<mission_description>',
+    missionTypeDescription: '<mission_type_description>',
+    description: dataSource === 'companies' ? '<entreprise_description>' : '<mission_description>',
+    title: '<mission_titre>',
+    hours: '<mission_heures>',
+    hoursPerStudent: '<mission_heures_par_etudiant>',
+    studentCount: '<mission_nb_etudiants>',
+    lastName: '<user_nom>',
+    firstName: '<user_prenom>',
+    email: dataSource === 'companies' ? '<entreprise_email>' : '<user_email>',
+    ecole: '<user_ecole>',
+    displayName: '<user_nom_complet>',
+    studentId: '<user_numero_etudiant>',
+    phone: dataSource === 'companies' ? '<entreprise_telephone>' : '<user_telephone>',
+    address: dataSource === 'companies' ? '<entreprise_adresse>' : '<user_adresse>',
+    city: dataSource === 'companies' ? '<entreprise_ville>' : '<user_ville>',
+    name: '<entreprise_nom>',
+    country: '<entreprise_pays>',
+    website: '<entreprise_site_web>',
+    siren: '<entreprise_siren>',
+    nSiret: '<entreprise_nsiret>',
+    contact_lastName: '<contact_lastName>',
+    contact_firstName: '<contact_firstName>',
+    contact_email: '<contact_email>',
+    contact_phone: '<contact_phone>',
+    contact_position: '<contact_position>',
+    contact_linkedin: '<contact_linkedin>',
+    contact_fullName: '<contact_fullName>',
+    contact_nom: '<contact_nom>',
+    contact_prenom: '<contact_prenom>',
+    contact_telephone: '<contact_telephone>',
+    contact_poste: '<contact_poste>',
+    contact_nom_complet: '<contact_nom_complet>',
+    structure_nom: '<structure_nom>',
+    structure_name: '<structure_nom>',
+    structure_ecole: '<structure_ecole>',
+    structure_address: '<structure_adresse>',
+    structure_phone: '<structure_telephone>',
+    structure_email: '<structure_email>',
+    structure_siret: '<structure_siret>',
+    structure_tvaNumber: '<structure_tvaNumber>',
+    structure_apeCode: '<structure_apeCode>',
+    structure_president_fullName: '<structure_president_nom_complet>',
+    charge_email: '<mission_cdm_email>',
+    charge_phone: '<mission_cdm_telephone>',
+    generationDate: '<mission_date_generation>',
+    generationDatePlusOneYear: '<mission_date_generation_plus_1_an>',
+    heuresDetaillees: '<heures_detaillees>',
+    actualHours: '<amendment_actual_hours>',
+    amendmentNewHours: '<amendment_new_hours>',
+    heuresFinalementTravaillees: '<heures_finalement_travaillees>',
+    plannedHours: '<amendment_planned_hours>',
+    reason: '<amendment_reason>',
+    totalHT: '<totalHT>',
+    totalTTC: '<total_ttc>',
+    tva: '<tva>',
+    workingHoursDateDebut: '<workingHoursDateDebut>',
+    workingHoursHeureDebut: '<workingHoursHeureDebut>',
+    workingHoursDateFin: '<workingHoursDateFin>',
+    workingHoursHeureFin: '<workingHoursHeureFin>',
+    workingHoursPauses: '<workingHoursPauses>',
+    workingHoursTotal: '<workingHoursTotal>',
+    workingHoursCreation: '<workingHoursCreation>',
+    workingHoursMaj: '<workingHoursMaj>',
+  };
+
+  return legacy[variableId] || `<${variableId}>`;
+}
+
+/** Préfixes de tags pour décider quelles données charger en cache. */
+export function tagNeedsChargeData(tagName: string): boolean {
+  const t = tagName.replace(/[<>]/g, '');
+  return (
+    t === 'charge_email' ||
+    t === 'charge_phone' ||
+    t === 'mission_cdm_email' ||
+    t === 'mission_cdm_telephone' ||
+    t === 'mission_cdm'
+  );
+}
+
+export function tagNeedsMissionTypeData(tagName: string): boolean {
+  const t = tagName.replace(/[<>]/g, '');
+  return [
+    'missionType', 'mission_type',
+    'studentProfile', 'student_profile',
+    'courseApplication', 'course_application',
+    'missionLearning', 'mission_learning',
+    'mission_type_description', 'missionTypeDescription',
+  ].includes(t);
 }

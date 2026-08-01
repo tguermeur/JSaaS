@@ -33,13 +33,28 @@ declare global {
 
 interface StripeCustomer {
   id: string;
-  email: string;
+  email: string | null;
   name: string;
   subscriptionStatus: string;
   subscriptionTitle: string;
   currentPeriodEnd: number | null;
   cancelAtPeriodEnd: boolean;
   environment: 'production' | 'test';
+}
+
+function normalizeEmailForMatch(email: string | null | undefined): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+function findStripeCustomerByEmail(
+  customers: StripeCustomer[],
+  email: string | null | undefined
+): StripeCustomer | undefined {
+  const target = normalizeEmailForMatch(email);
+  if (!target || !target.includes('@')) return undefined;
+  return customers.find(
+    (c) => c.email != null && normalizeEmailForMatch(c.email) === target
+  );
 }
 
 interface StripePayment {
@@ -188,18 +203,14 @@ const Billing: React.FC = () => {
         setStripeCustomers(customers);
         
         // Vérifier si l'email de l'organisation correspond à un client Stripe
+        // (certains clients Stripe n'ont pas d'email — même logique que Organization.tsx)
         if (organizationEmail && customers.length > 0) {
           console.log('Email de la structure:', organizationEmail);
           console.log('Emails des clients Stripe:', customers.map(c => c.email));
-          
-          const isCustomer = customers.some(customer => {
-            const match = customer.email.toLowerCase() === organizationEmail.toLowerCase();
-            console.log(`Comparaison: "${customer.email}" === "${organizationEmail}" ? ${match}`);
-            return match;
-          });
-          
-          setIsStripeCustomer(isCustomer);
-          console.log('Structure est cliente Stripe:', isCustomer);
+
+          const matchedCustomer = findStripeCustomerByEmail(customers, organizationEmail);
+          setIsStripeCustomer(!!matchedCustomer);
+          console.log('Structure est cliente Stripe:', !!matchedCustomer);
         } else {
           console.log('Conditions non remplies:', { organizationEmail, customersCount: customers.length });
         }

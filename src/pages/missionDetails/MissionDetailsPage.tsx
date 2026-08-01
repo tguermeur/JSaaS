@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import {
   Box,
@@ -141,7 +141,14 @@ import AddCandidatesDialog, {
   type CandidatePick,
 } from './v2/AddCandidatesDialog';
 import { toDateFromFirestore, formatShortDate } from '../../utils/dateUtils';
-import { getTemplateTagMeta, isDocumentPlaceholderValue } from '../../utils/variableTags';
+import { resolveTagFromVariableId, tagNeedsChargeData, tagNeedsMissionTypeData } from '../../utils/variableTags';
+import {
+  applyTagReplacements,
+  buildTagReplacements,
+  detectMissingTags,
+  reviewTemplateTags,
+  type TagReplacementContext,
+} from '../../utils/documentTagEngine';
 
 import { parseWorkingHoursFromFirestoreDocs, fetchWorkingHoursForApplications, buildWorkingHoursDocumentData, type WorkingHourEntry } from './workingHoursUtils';
 // --- STRICT MODE DROPPABLE FIX ---
@@ -1470,10 +1477,10 @@ const MissionDetails: React.FC = () => {
 
         // Les entreprises ne peuvent pas accéder à la page MissionDetails
         if (isEntreprise) {
-          setError("Les entreprises ne peuvent pas accéder à cette page. Vous pouvez voir le statut de vos missions depuis le tableau de bord.");
+          setError("Les entreprises ne peuvent pas accéder à cette page.");
           setLoading(false);
           setTimeout(() => {
-            navigate('/app/dashboard');
+            navigate('/app/billing-page');
           }, 2000);
           return;
         }
@@ -2556,16 +2563,19 @@ const MissionDetails: React.FC = () => {
     const needsUserData = application?.userId && tagList.some((t) =>
       t.startsWith('user_') || ['graduationYear', 'gender', 'birthPlace', 'birthDate', 'address', 'nationality', 'socialSecurityNumber', 'phone', 'program'].includes(t)
     );
-    const needsChargeData = tagList.some((t) => ['charge_email', 'charge_phone'].includes(t));
-    const needsMissionTypeData = !!mission.missionTypeId && tagList.some((t) =>
-      ['missionType', 'studentProfile', 'courseApplication', 'missionLearning'].includes(t)
-    );
+    const needsChargeData = tagList.some((t) => tagNeedsChargeData(t));
+    const needsMissionTypeData = !!mission.missionTypeId && tagList.some((t) => tagNeedsMissionTypeData(t));
     const needsStructureData = !!mission.structureId && tagList.some((t) =>
-      t.startsWith('structure_') && t !== 'structure_president_nom_complet'
+      (t.startsWith('structure_') && t !== 'structure_president_nom_complet') ||
+      t === 'gratification_nette' ||
+      t === 'gratification_brute' ||
+      t === 'total_a_payer' ||
+      t === 'mission_gratificationhorraire'
     );
     const needsPresident = !!mission.structureId && tagList.includes('structure_president_nom_complet');
     const needsWorkingHours = !!application && tagList.some((t) =>
       t.startsWith('workinghours_') ||
+      t.startsWith('workingHours') ||
       t === 'heures_detaillees' ||
       t === 'heuresDetaillees' ||
       t === 'heures_finalement_travaillees' ||
@@ -2685,547 +2695,29 @@ const MissionDetails: React.FC = () => {
     };
   };
 
+  const resolveVariableTag = (variable: TemplateVariable): string => {
+    if (variable.type === 'raw') return variable.rawText || '';
+    const id = variable.variableId || variable.fieldId;
+    if (!id) return '';
+    return resolveTagFromVariableId(id, variable.dataSource);
+  };
+
   const extractTemplateTagNames = (templateVariables: TemplateVariable[]): string[] => {
     const allTagNames = new Set<string>();
     for (const variable of templateVariables) {
-      let valueToCheck = '';
-      if (variable.type === 'raw') {
-        valueToCheck = variable.rawText || '';
-      } else if (variable.variableId) {
-        valueToCheck = getTagFromVariableId(variable.variableId);
-      }
+      const valueToCheck = resolveVariableTag(variable);
       const tags = valueToCheck.match(/<[^>]+>/g) || [];
       tags.forEach((tag) => allTagNames.add(tag.replace(/[<>]/g, '')));
     }
     return [...allTagNames];
   };
 
-  // Fonction pour détecter les données manquantes
+  // Détection des données manquantes via le moteur documentTagEngine
   const detectMissingData = async (documentType: DocumentType, application?: Application, expenseNote?: ExpenseNote) => {
     if (!mission) return [];
-
     try {
-      // Récupérer le template
-      const templateData = await getAssignedTemplate(documentType);
-      if (!templateData) return [];
-
-      const templateVariables = (templateData.variables || []) as TemplateVariable[];
-
-      const missingData: Array<{
-        tag: string;
-        label: string;
-        category: string;
-      }> = [];
-
-      const tagList = extractTemplateTagNames(templateVariables);
-      const cache = await loadDocumentGenerationCache(application, tagList);
-
-      const userDataForCheck = cache.userData;
-      const chargeDataForCheck = cache.chargeData;
-      const structureDataForCheck = cache.structureData;
-      const contactForCheck = cache.contactData ?? mission.contact;
-      const company = (cache.companyData ?? companies.find((c) => c.id === mission.companyId)) as Record<string, unknown> & {
-        name?: string;
-        nSiret?: string;
-        address?: string;
-        city?: string;
-        country?: string;
-        phone?: string;
-        email?: string;
-        website?: string;
-        description?: string;
-      };
-      const missionTypeData = cache.missionTypeData;
-      const workingHoursData = cache.workingHoursData;
-      const presidentFullName = cache.presidentFullName;
-
-      // Vérifier chaque variable du template
-      for (const variable of templateVariables) {
-        let valueToCheck = '';
-        
-        if (variable.type === 'raw') {
-          valueToCheck = variable.rawText || '';
-        } else if (variable.variableId) {
-          valueToCheck = getTagFromVariableId(variable.variableId);
-        }
-
-        // Si c'est une note de frais, ajouter les variables spécifiques
-        if (documentType === 'note_de_frais' && expenseNote) {
-          valueToCheck = valueToCheck
-            .replace('<expense_amount>', expenseNote.amount.toString())
-            .replace('<expense_description>', expenseNote.description)
-            .replace('<expense_date>', expenseNote.date.toLocaleDateString());
-        }
-
-        // Si c'est une lettre de mission et qu'il y a des heures de travail, ajouter les variables spécifiques
-        if (documentType === 'lettre_mission' && workingHoursData) {
-          const totalHours = workingHoursData.hours.reduce((total: number, wh: any) => {
-            return total + calculateWorkingHours(wh.startTime, wh.endTime, wh.breaks);
-          }, 0);
-
-          valueToCheck = valueToCheck
-            .replace('<workingHoursDateDebut>', workingHoursData.hours[0]?.startDate || '')
-            .replace('<workingHoursHeureDebut>', workingHoursData.hours[0]?.startTime || '')
-            .replace('<workingHoursDateFin>', workingHoursData.hours[0]?.endDate || '')
-            .replace('<workingHoursHeureFin>', workingHoursData.hours[0]?.endTime || '')
-            .replace('<workingHoursPauses>', workingHoursData.hours[0]?.breaks?.map((b: any) => `${b.start}-${b.end}`).join(', ') || '')
-            .replace('<workingHoursTotal>', totalHours.toFixed(2))
-            .replace('<workingHoursCreation>', workingHoursData.createdAt?.toDate().toLocaleDateString() || '')
-            .replace('<workingHoursMaj>', workingHoursData.updatedAt?.toDate().toLocaleDateString() || '');
-        }
-
-        // Extraire toutes les balises du texte
-        const tags = valueToCheck.match(/<[^>]+>/g) || [];
-        
-        for (const tag of tags) {
-          const tagName = tag.replace(/[<>]/g, '');
-          let isMissing = false;
-          let category = '';
-          let label = '';
-          
-          // Vérifier d'abord si c'est une balise inconnue (non gérée dans les remplacements)
-          const knownTags = [
-            'mission_numero', 'mission_cdm', 'mission_date', 'mission_lieu', 'mission_entreprise', 'mission_prix',
-            'mission_prix_horaire_ht', 'mission_prix_total_heures_ht',
-            'mission_description', 'mission_titre', 'mission_heures', 'mission_heures_par_etudiant', 'mission_nb_etudiants',
-            'missionType', 'totalHT', 'totalTTC', 'total_ttc', 'tva', 'generationDate',
-            'workinghours_date_debut', 'workinghours_heure_debut', 'workinghours_date_fin', 'workinghours_heure_fin',
-            'workinghours_pauses', 'workinghours_total', 'workinghours_creation', 'workinghours_maj', 'heures_detaillees', 'heuresDetaillees',
-            'contact_nom', 'contact_prenom', 'contact_email', 'contact_telephone', 'contact_poste', 'contact_linkedin', 'contact_nom_complet',
-            'user_nom', 'user_prenom', 'user_email', 'user_ecole', 'user_nom_complet', 'user_telephone', 'user_formation',
-            'user_specialite', 'user_niveau_etude', 'graduationYear', 'gender', 'birthPlace', 'birthDate', 'address', 'nationality',
-            'socialSecurityNumber', 'phone',
-            'structure_nom', 'structure_ecole', 'structure_address', 'structure_phone', 'structure_email', 'structure_siret',
-            'structure_tvaNumber', 'structure_apeCode', 'structure_president_nom_complet',
-            'entreprise_nom', 'entreprise_siren', 'entreprise_adresse', 'entreprise_ville', 'entreprise_pays',
-            'entreprise_telephone', 'entreprise_email', 'entreprise_site_web', 'entreprise_description',
-            'studentProfile', 'courseApplication', 'missionLearning',
-            'siren', 'nSiret', 'companyName', 'missionDescription', 'missionStartDate', 'charge_email', 'charge_phone',
-            'mission_date_debut', 'mission_date_heure_debut', 'mission_date_fin', 'mission_date_heure_fin',
-            'endDate', 'program', 'mission_gratificationhorraire',
-            // Balises pour les dépenses (jusqu'à 4 dépenses)
-            'depense1_nom', 'depense1_tva', 'depense1_prix',
-            'depense2_nom', 'depense2_tva', 'depense2_prix',
-            'depense3_nom', 'depense3_tva', 'depense3_prix',
-            'depense4_nom', 'depense4_tva', 'depense4_prix',
-            'amendment_actual_hours', 'amendment_new_hours', 'actualHours',
-            'heures_finalement_travaillees',
-            'amendment_planned_hours', 'plannedHours',
-            'amendment_reason', 'reason', 'workingHoursTotal'
-          ];
-          
-          if (!knownTags.includes(tagName)) {
-            // C'est une balise inconnue
-            isMissing = true;
-            category = 'Balise inconnue';
-            label = `Balise inconnue: ${tagName}`;
-          }
-
-          // Vérifier les balises de mission
-          if (tagName === 'mission_numero' && !mission.numeroMission) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Numéro de mission';
-          } else if (tagName === 'mission_cdm' && !mission.chargeName) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Chef de mission';
-          } else if (tagName === 'mission_date' && !mission.startDate) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Date de début';
-          } else if (tagName === 'mission_lieu' && !mission.location) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Lieu';
-          } else if (tagName === 'mission_entreprise' && !company?.name) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Nom de l\'entreprise';
-          } else if (tagName === 'mission_prix' && typeof mission.priceHT !== 'number') {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Prix HT';
-          } else if (tagName === 'mission_prix_horaire_ht' && typeof mission.priceHT !== 'number') {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Prix horaire HT';
-          } else if (tagName === 'mission_prix_total_heures_ht' && (typeof mission.priceHT !== 'number' || typeof mission.hours !== 'number')) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Prix total des heures travaillées HT';
-          } else if (tagName === 'mission_description' && !mission.description) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Description';
-          } else if (tagName === 'mission_titre' && !mission.title) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Titre';
-          } else if (tagName === 'mission_heures' && !mission.hours) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Heures';
-          } else if (tagName === 'mission_heures_par_etudiant' && !mission.hoursPerStudent) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Heures par étudiant';
-          } else if (tagName === 'mission_nb_etudiants' && !mission.studentCount) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Nombre d\'étudiants';
-          } else if (tagName === 'missionType' && (!mission.missionTypeId || !missionTypeData?.title)) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Type de mission';
-          } else if (tagName === 'totalHT' && typeof mission.totalHT !== 'number') {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Total HT';
-          } else if (tagName === 'totalTTC' && typeof mission.totalTTC !== 'number') {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Total TTC';
-          } else if (tagName === 'total_ttc' && typeof mission.totalTTC !== 'number') {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Total TTC';
-          } else if (tagName === 'tva' && typeof mission.tva !== 'number') {
-            isMissing = true;
-            category = 'Mission';
-            label = 'TVA';
-          }
-          // Balises pour les heures de travail
-          else if (tagName === 'workinghours_date_debut' && !application?.workingHours?.[0]?.date) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Date de début';
-          } else if (tagName === 'workinghours_heure_debut' && !application?.workingHours?.[0]?.startTime) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Heure de début';
-          } else if (tagName === 'workinghours_date_fin' && !application?.workingHours?.[0]?.date) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Date de fin';
-          } else if (tagName === 'workinghours_heure_fin' && !application?.workingHours?.[0]?.endTime) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Heure de fin';
-          } else if (tagName === 'workinghours_pauses' && !application?.workingHours?.[0]?.breaks) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Pauses';
-          } else if (tagName === 'workinghours_total' && !application?.workingHours?.length) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Total des heures';
-          } else if (tagName === 'workingHoursTotal' && !application?.workingHours?.length) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Total des heures';
-          } else if (tagName === 'workinghours_creation' && !application?.createdAt) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Date de création';
-          } else if (tagName === 'workinghours_maj' && !application?.updatedAt) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Date de mise à jour';
-          } else if ((tagName === 'heures_detaillees' || tagName === 'heuresDetaillees') && (!workingHoursData?.hours?.length) && (!mission.startDate || !mission.endDate)) {
-            isMissing = true;
-            category = 'Heures de travail';
-            label = 'Heures détaillées (ou dates de mission pour le repli)';
-          }
-          // Balises avenant
-          else if (
-            ['amendment_new_hours', 'amendment_actual_hours', 'actualHours'].includes(tagName) &&
-            !application?.documentTagOverrides?.amendment_new_hours &&
-            !application?.documentTagOverrides?.amendment_actual_hours &&
-            !application?.documentTagOverrides?.actualHours &&
-            !application?.workingHours?.length
-          ) {
-            isMissing = true;
-            category = 'Avenant';
-            label = 'Total des heures finalement travaillées';
-          } else if (
-            tagName === 'heures_finalement_travaillees' &&
-            !application?.documentTagOverrides?.heures_finalement_travaillees &&
-            !workingHoursData?.hours?.length &&
-            !application?.workingHours?.length &&
-            (!mission.startDate || !mission.endDate)
-          ) {
-            isMissing = true;
-            category = 'Avenant';
-            label = 'Dates et horaires des heures travaillées';
-          } else if (
-            ['amendment_planned_hours', 'plannedHours'].includes(tagName) &&
-            !mission.hoursPerStudent &&
-            !mission.hours &&
-            !application?.documentTagOverrides?.amendment_planned_hours &&
-            !application?.documentTagOverrides?.plannedHours
-          ) {
-            isMissing = true;
-            category = 'Avenant';
-            label = 'Heures prévues';
-          } else if (
-            ['amendment_reason', 'reason'].includes(tagName) &&
-            !application?.documentTagOverrides?.amendment_reason &&
-            !application?.documentTagOverrides?.reason
-          ) {
-            isMissing = true;
-            category = 'Avenant';
-            label = 'Motif de l\'avenant';
-          }
-          // Balises de contact
-          else if (tagName === 'contact_nom' && !contactForCheck?.lastName) {
-            isMissing = true;
-            category = 'Contact';
-            label = 'Nom du contact';
-          } else if (tagName === 'contact_prenom' && !contactForCheck?.firstName) {
-            isMissing = true;
-            category = 'Contact';
-            label = 'Prénom du contact';
-          } else if (tagName === 'contact_email' && !contactForCheck?.email) {
-            isMissing = true;
-            category = 'Contact';
-            label = 'Email du contact';
-          } else if (tagName === 'contact_telephone' && !contactForCheck?.phone) {
-            isMissing = true;
-            category = 'Contact';
-            label = 'Téléphone du contact';
-          } else if (tagName === 'contact_poste' && !contactForCheck?.position) {
-            isMissing = true;
-            category = 'Contact';
-            label = 'Poste du contact';
-          } else if (tagName === 'contact_linkedin' && !contactForCheck?.linkedin) {
-            isMissing = true;
-            category = 'Contact';
-            label = 'LinkedIn du contact';
-          } else if (tagName === 'contact_nom_complet' && !contactForCheck?.firstName && !contactForCheck?.lastName) {
-            isMissing = true;
-            category = 'Contact';
-            label = 'Nom complet du contact';
-          }
-          // Balises utilisateur
-          else if (tagName === 'user_nom' && !userDataForCheck?.lastName && !application?.userDisplayName?.split(' ').slice(-1)[0]) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Nom de l\'utilisateur';
-          } else if (tagName === 'user_prenom' && !userDataForCheck?.firstName && !application?.userDisplayName?.split(' ')[0]) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Prénom de l\'utilisateur';
-          } else if (tagName === 'user_email' && !userDataForCheck?.email && !application?.userEmail) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Email de l\'utilisateur';
-          } else if (tagName === 'user_ecole' && !userDataForCheck?.ecole && !application?.userEmail?.split('@')[1]?.split('.')[0]) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'École de l\'utilisateur';
-          } else if (tagName === 'user_nom_complet' && !userDataForCheck?.displayName && !application?.userDisplayName) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Nom complet de l\'utilisateur';
-          } else if (tagName === 'user_telephone' && !userDataForCheck?.phone) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Téléphone de l\'utilisateur';
-          } else if (tagName === 'user_formation' && !userDataForCheck?.formation) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Formation de l\'utilisateur';
-          } else if (tagName === 'user_specialite' && !userDataForCheck?.speciality) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Spécialité de l\'utilisateur';
-          } else if (tagName === 'user_niveau_etude' && !userDataForCheck?.studyLevel) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Niveau d\'études de l\'utilisateur';
-          } else if (tagName === 'graduationYear' && !userDataForCheck?.graduationYear) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Année de diplômation';
-          } else if (tagName === 'gender' && !userDataForCheck?.gender) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Genre';
-          } else if (tagName === 'birthPlace' && !userDataForCheck?.birthPlace) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Lieu de naissance';
-          } else if (tagName === 'birthDate' && !userDataForCheck?.birthDate) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Date de naissance';
-          } else if (tagName === 'address' && !userDataForCheck?.address) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Adresse';
-          } else if (tagName === 'nationality' && !userDataForCheck?.nationality) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Nationalité';
-          } else if (tagName === 'socialSecurityNumber' && !userDataForCheck?.socialSecurityNumber) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Numéro de sécurité sociale';
-          } else if (tagName === 'phone' && !userDataForCheck?.phone) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Téléphone';
-          }
-          // Balises de la structure
-          else if (tagName === 'structure_nom' && !structureDataForCheck?.nom) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'Nom de la structure';
-          } else if (tagName === 'structure_ecole' && !structureDataForCheck?.ecole) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'École de la structure';
-          } else if (tagName === 'structure_address' && !structureDataForCheck?.address) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'Adresse de la structure';
-          } else if (tagName === 'structure_phone' && !structureDataForCheck?.phone) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'Téléphone de la structure';
-          } else if (tagName === 'structure_email' && !structureDataForCheck?.email) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'Email de la structure';
-          } else if (tagName === 'structure_siret' && !structureDataForCheck?.siret) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'SIRET de la structure';
-          } else if (tagName === 'structure_tvaNumber' && !structureDataForCheck?.tvaNumber) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'Numéro de TVA de la structure';
-          } else if (tagName === 'structure_apeCode' && !structureDataForCheck?.apeCode) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'Code APE de la structure';
-          } else if (tagName === 'structure_president_nom_complet' && !presidentFullName) {
-            isMissing = true;
-            category = 'Structure';
-            label = 'Prénom et Nom du président du mandat le plus récent';
-          }
-          // Balises pour l'entreprise
-          else if (tagName === 'entreprise_nom' && !company?.name) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Nom de l\'entreprise';
-          } else if (tagName === 'entreprise_siren' && !(company as any)?.nSiret) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'SIREN de l\'entreprise';
-          } else if (tagName === 'nSiret' && !(company as any)?.nSiret) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'SIRET de l\'entreprise';
-          } else if (tagName === 'entreprise_adresse' && !company?.address) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Adresse de l\'entreprise';
-          } else if (tagName === 'entreprise_ville' && !company?.city) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Ville de l\'entreprise';
-          } else if (tagName === 'entreprise_pays' && !company?.country) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Pays de l\'entreprise';
-          } else if (tagName === 'entreprise_telephone' && !company?.phone) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Téléphone de l\'entreprise';
-          } else if (tagName === 'entreprise_email' && !company?.email) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Email de l\'entreprise';
-          } else if (tagName === 'entreprise_site_web' && !company?.website) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Site web de l\'entreprise';
-          } else if (tagName === 'entreprise_description' && !company?.description) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Description de l\'entreprise';
-          } else if (tagName === 'studentProfile' && !missionTypeData?.studentProfile) {
-            isMissing = true;
-            category = 'Type de mission';
-            label = 'Profil étudiant';
-          } else if (tagName === 'courseApplication' && !missionTypeData?.courseApplication) {
-            isMissing = true;
-            category = 'Type de mission';
-            label = 'Application du cours';
-          } else if (tagName === 'missionLearning' && !missionTypeData?.missionLearning) {
-            isMissing = true;
-            category = 'Type de mission';
-            label = 'Apprentissage de la mission';
-          }
-          // Balises pour les dépenses (jusqu'à 4 dépenses) - optionnelles, ne pas signaler comme manquantes
-          // Les dépenses sont optionnelles, donc on ne vérifie pas si elles sont vides
-          // Elles seront simplement remplacées par une chaîne vide dans replaceTags si absentes
-          // Balises spéciales
-          else if (tagName === 'siren' && !(company as any)?.nSiret) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'SIRET';
-          } else if (tagName === 'companyName' && !company?.name) {
-            isMissing = true;
-            category = 'Entreprise';
-            label = 'Nom de l\'entreprise';
-          } else if (tagName === 'missionDescription' && !mission.description) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Description de la mission';
-          } else if (tagName === 'missionStartDate' && !mission.startDate) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Date de début de la mission';
-          } else if (tagName === 'charge_email' && !chargeDataForCheck?.email) {
-            isMissing = true;
-            category = 'Chargé de mission';
-            label = 'Email du chargé de mission';
-          } else if (tagName === 'charge_phone' && !chargeDataForCheck?.phone) {
-            isMissing = true;
-            category = 'Chargé de mission';
-            label = 'Téléphone du chargé de mission';
-          } else if (tagName === 'endDate' && !mission.endDate) {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Date de fin';
-          } else if (tagName === 'program' && !userDataForCheck?.program) {
-            isMissing = true;
-            category = 'Utilisateur';
-            label = 'Programme';
-          } else if (tagName === 'mission_gratificationhorraire' && typeof mission.priceHT !== 'number') {
-            isMissing = true;
-            category = 'Mission';
-            label = 'Gratification horaire';
-          }
-
-          if (isMissing) {
-            // Vérifier si cette balise n'a pas déjà été ajoutée
-            const alreadyExists = missingData.some(item => item.tag === tagName);
-            if (!alreadyExists) {
-              missingData.push({
-                tag: tagName,
-                label,
-                category
-              });
-            }
-          }
-        }
-      }
-
-      return missingData;
+      const review = await fetchTemplateTagsReview(documentType, application, expenseNote);
+      return detectMissingTags(review);
     } catch (error) {
       console.error('Erreur lors de la détection des données manquantes:', error);
       return [];
@@ -3255,622 +2747,257 @@ const MissionDetails: React.FC = () => {
 
     const cache = await loadDocumentGenerationCache(application, tagList);
     const tagOverrideSeed = application?.documentTagOverrides ?? {};
-    const resolvedBlock = await replaceTags(
-      tagList.map((t) => `<${t}>`).join('\n'),
+
+    // Construit le contexte puis résout tag-par-tag (pas de join/split fragile)
+    const replacements = await buildReplacementsForContext(
       application,
       cache.structureData,
       tagOverrideSeed,
       cache,
       documentType
     );
-    const resolvedLines = resolvedBlock.split('\n');
 
-    const items: TemplateTagReviewItem[] = tagList.map((tagName, index) => {
-      const rawValue = resolvedLines[index] ?? '';
-      const unreplaced = /^<[^>]+>$/.test(rawValue.trim());
-      const value = unreplaced || isDocumentPlaceholderValue(rawValue) ? '' : rawValue.trim();
-      const meta = getTemplateTagMeta(tagName);
+    return reviewTemplateTags(tagList, replacements, tagOverrideSeed);
+  };
 
-      return {
-        tag: tagName,
-        label: meta.label,
-        category: meta.category,
-        value,
-        isMissing: !value,
-      };
+  /** Hydrate le contexte (cache / fetch / decrypt) puis construit la carte de remplacements. */
+  const buildReplacementsForContext = async (
+    application?: Application,
+    structureData?: Record<string, unknown> | null,
+    tempDataOverride?: { [key: string]: string },
+    cachedData?: {
+      userData?: Record<string, unknown> | null;
+      chargeData?: Record<string, unknown> | null;
+      contactData?: Record<string, unknown> | null;
+      companyData?: Record<string, unknown> | null;
+      structureData?: Record<string, unknown> | null;
+      missionTypeData?: Record<string, unknown> | null;
+      presidentFullName?: string | null;
+      workingHoursData?: {
+        hours?: Array<{
+          date?: string;
+          startTime?: string;
+          endTime?: string;
+          breaks?: Array<{ start?: string; end?: string }>;
+        }>;
+        createdAt?: { toDate?: () => Date };
+        updatedAt?: { toDate?: () => Date };
+      } | null;
+    },
+    documentType?: DocumentType
+  ): Promise<Record<string, string>> => {
+    if (!mission) return {};
+
+    let userData = cachedData?.userData;
+    if (!userData && application?.userId) {
+      const userDoc = await getDoc(doc(db, 'users', application.userId));
+      if (userDoc.exists()) {
+        userData = userDoc.data();
+      }
+    }
+
+    let chargeData = cachedData?.chargeData;
+    if (!chargeData && mission.chargeId) {
+      const chargeDoc = await getDoc(doc(db, 'users', mission.chargeId));
+      chargeData = chargeDoc.exists() ? chargeDoc.data() : null;
+    }
+
+    let companyData = cachedData?.companyData;
+    if (!companyData && mission.companyId) {
+      const companyDoc = await getDoc(doc(db, 'companies', mission.companyId));
+      if (companyDoc.exists()) {
+        companyData = { id: companyDoc.id, ...companyDoc.data() };
+      } else {
+        const fromList = companies.find((c) => c.id === mission.companyId);
+        if (fromList) companyData = fromList as unknown as Record<string, unknown>;
+      }
+    }
+
+    let contactData = cachedData?.contactData ?? (mission.contact as Record<string, unknown> | undefined);
+    let structureDataResolved = cachedData?.structureData ?? structureData;
+    if (!structureDataResolved && mission.structureId) {
+      const structureDoc = await getDoc(doc(db, 'structures', mission.structureId));
+      if (structureDoc.exists()) {
+        structureDataResolved = { id: structureDoc.id, ...structureDoc.data() };
+      }
+    }
+
+    const decrypted = await prepareDecryptedDocumentContext({
+      userId: application?.userId,
+      userData,
+      chargeId: mission.chargeId,
+      chargeData,
+      contactId: mission.contactId,
+      contactData: contactData ? { ...contactData } : null,
+      companyId: mission.companyId,
+      companyData,
+      structureId: mission.structureId,
+      structureData: structureDataResolved,
     });
+    userData = decrypted.userData ?? userData;
+    chargeData = decrypted.chargeData ?? chargeData;
+    contactData = decrypted.contactData ?? contactData;
+    companyData = decrypted.companyData ?? companyData;
+    structureDataResolved = decrypted.structureData ?? structureDataResolved;
 
-    items.sort((a, b) => {
-      if (a.isMissing !== b.isMissing) return a.isMissing ? -1 : 1;
-      if (a.category !== b.category) return a.category.localeCompare(b.category, 'fr');
-      return a.label.localeCompare(b.label, 'fr');
-    });
+    let missionTypeData = cachedData?.missionTypeData;
+    if (!missionTypeData && mission.missionTypeId) {
+      const missionTypeDoc = await getDoc(doc(db, 'missionTypes', mission.missionTypeId));
+      missionTypeData = missionTypeDoc.exists() ? missionTypeDoc.data() : null;
+    }
 
-    return items;
+    let presidentFullName = '';
+    if (cachedData && 'presidentFullName' in cachedData) {
+      presidentFullName = cachedData.presidentFullName || '';
+    } else if (mission.structureId) {
+      try {
+        const usersRef = collection(db, 'users');
+        const q = query(usersRef, where('structureId', '==', mission.structureId));
+        const usersSnapshot = await getDocs(q);
+
+        let members = usersSnapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...docSnap.data(),
+          mandat: docSnap.data().mandat || null,
+          bureauRole: docSnap.data().bureauRole || null,
+          poles: docSnap.data().poles || [],
+          firstName: docSnap.data().firstName || '',
+          lastName: docSnap.data().lastName || '',
+          displayName: docSnap.data().displayName || '',
+        }));
+        members = await decryptUsersList(members as Parameters<typeof decryptUsersList>[0]);
+
+        const presidents = members.filter((member) => {
+          const hasPresidentRole =
+            member.bureauRole === 'president' ||
+            member.poles?.some((p: { poleId?: string }) => p.poleId === 'pre');
+          return hasPresidentRole && member.mandat;
+        });
+
+        if (presidents.length > 0) {
+          const sortedPresidents = presidents.sort((a, b) => {
+            if (!a.mandat || !b.mandat) return 0;
+            const aYear = parseInt(a.mandat.split('-')[0], 10);
+            const bYear = parseInt(b.mandat.split('-')[0], 10);
+            return bYear - aYear;
+          });
+          const mostRecentPresident = sortedPresidents[0];
+          if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
+            presidentFullName = `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
+          } else if (mostRecentPresident.displayName) {
+            presidentFullName = mostRecentPresident.displayName;
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors de la récupération du président:', error);
+      }
+    }
+
+    const workingHoursSlots =
+      cachedData?.workingHoursData?.hours?.length
+        ? cachedData.workingHoursData.hours
+        : application?.workingHours ?? [];
+
+    const whCreation = (() => {
+      const d = cachedData?.workingHoursData?.createdAt;
+      if (d && typeof d.toDate === 'function') return d.toDate().toLocaleDateString('fr-FR');
+      return application?.createdAt ? new Date(application.createdAt).toLocaleDateString('fr-FR') : '';
+    })();
+    const whMaj = (() => {
+      const d = cachedData?.workingHoursData?.updatedAt;
+      if (d && typeof d.toDate === 'function') return d.toDate().toLocaleDateString('fr-FR');
+      return application?.updatedAt ? new Date(application.updatedAt).toLocaleDateString('fr-FR') : '';
+    })();
+
+    if (!missionTypeData && mission.missionTypeId) {
+      const fromList = missionTypes.find((t) => t.id === mission.missionTypeId);
+      if (fromList) missionTypeData = fromList as unknown as Record<string, unknown>;
+    }
+
+    const ctx: TagReplacementContext = {
+      mission: mission as unknown as Record<string, unknown>,
+      documentType,
+      application: application
+        ? {
+            userDisplayName: application.userDisplayName,
+            userEmail: application.userEmail,
+            userPhone: application.userPhone,
+            userStudentId: application.userStudentId,
+            createdAt: application.createdAt,
+            updatedAt: application.updatedAt,
+            documentTagOverrides: application.documentTagOverrides,
+            workingHours: application.workingHours,
+            gratificationBrute: (application as { gratificationBrute?: number }).gratificationBrute,
+            gratificationNet: (application as { gratificationNet?: number }).gratificationNet,
+          }
+        : null,
+      userData: userData as Record<string, unknown> | null,
+      chargeData: chargeData as Record<string, unknown> | null,
+      contactData: contactData as Record<string, unknown> | null,
+      companyData: companyData as Record<string, unknown> | null,
+      structureData: structureDataResolved as Record<string, unknown> | null,
+      missionTypeData: missionTypeData as Record<string, unknown> | null,
+      presidentFullName,
+      workingHoursSlots,
+      workingHoursCreatedAt: whCreation,
+      workingHoursUpdatedAt: whMaj,
+      tempDataOverride,
+    };
+
+    return buildTagReplacements(ctx);
   };
 
   const replaceTags = async (
-    text: string, 
-    application?: Application, 
-    structureData?: any, 
+    text: string,
+    application?: Application,
+    structureData?: Record<string, unknown> | null,
     tempDataOverride?: { [key: string]: string },
     cachedData?: {
-      userData?: any;
-      chargeData?: any;
-      contactData?: any;
-      companyData?: any;
-      structureData?: any;
-      missionTypeData?: any;
+      userData?: Record<string, unknown> | null;
+      chargeData?: Record<string, unknown> | null;
+      contactData?: Record<string, unknown> | null;
+      companyData?: Record<string, unknown> | null;
+      structureData?: Record<string, unknown> | null;
+      missionTypeData?: Record<string, unknown> | null;
       presidentFullName?: string | null;
-      workingHoursData?: { hours?: Array<{ date?: string; startTime?: string; endTime?: string; breaks?: Array<{ start?: string; end?: string }> }> } | null;
+      workingHoursData?: {
+        hours?: Array<{
+          date?: string;
+          startTime?: string;
+          endTime?: string;
+          breaks?: Array<{ start?: string; end?: string }>;
+        }>;
+        createdAt?: { toDate?: () => Date };
+        updatedAt?: { toDate?: () => Date };
+      } | null;
     },
     documentType?: DocumentType
   ) => {
     if (!text || !mission) return text;
 
     try {
-      let userData = cachedData?.userData;
-      if (!userData && application?.userId) {
-        const userDoc = await getDoc(doc(db, 'users', application.userId));
-        if (userDoc.exists()) {
-          userData = userDoc.data();
-        }
-      }
-
-      let chargeData = cachedData?.chargeData;
-      if (!chargeData && mission.chargeId) {
-        const chargeDoc = await getDoc(doc(db, 'users', mission.chargeId));
-        chargeData = chargeDoc.exists() ? chargeDoc.data() : null;
-      }
-
-      let companyData = cachedData?.companyData;
-      if (!companyData && mission.companyId) {
-        const companyDoc = await getDoc(doc(db, 'companies', mission.companyId));
-        if (companyDoc.exists()) {
-          companyData = { id: companyDoc.id, ...companyDoc.data() };
-        }
-      } else if (!companyData && mission.companyId) {
-        const fromList = companies.find(c => c.id === mission.companyId);
-        if (fromList) companyData = fromList;
-      }
-
-      let contactData = cachedData?.contactData ?? mission.contact;
-      let structureDataResolved = cachedData?.structureData ?? structureData;
-      if (!structureDataResolved && mission.structureId) {
-        const structureDoc = await getDoc(doc(db, 'structures', mission.structureId));
-        if (structureDoc.exists()) {
-          structureDataResolved = { id: structureDoc.id, ...structureDoc.data() };
-        }
-      }
-
-      const decrypted = await prepareDecryptedDocumentContext({
-        userId: application?.userId,
-        userData,
-        chargeId: mission.chargeId,
-        chargeData,
-        contactId: mission.contactId,
-        contactData: contactData ? { ...contactData } : null,
-        companyId: mission.companyId,
-        companyData,
-        structureId: mission.structureId,
-        structureData: structureDataResolved,
+      const replacements = await buildReplacementsForContext(
+        application,
+        structureData,
+        tempDataOverride,
+        cachedData,
+        documentType
+      );
+      return applyTagReplacements(text, replacements, {
+        tempDataOverride,
+        mission: mission as unknown as Record<string, unknown>,
       });
-      userData = decrypted.userData ?? userData;
-      chargeData = decrypted.chargeData ?? chargeData;
-      contactData = decrypted.contactData ?? contactData;
-      companyData = decrypted.companyData ?? companyData;
-      structureDataResolved = decrypted.structureData ?? structureDataResolved;
-
-      const company = companyData;
-
-      let missionTypeData = cachedData?.missionTypeData;
-      if (!missionTypeData && mission.missionTypeId) {
-        const missionTypeDoc = await getDoc(doc(db, 'missionTypes', mission.missionTypeId));
-        missionTypeData = missionTypeDoc.exists() ? missionTypeDoc.data() : null;
-      }
-
-      // Utiliser les données en cache si disponibles
-      let presidentFullName = '[Président non disponible]';
-      if (cachedData && 'presidentFullName' in cachedData) {
-        presidentFullName = cachedData.presidentFullName || '[Président non disponible]';
-      } else if (mission.structureId) {
-        try {
-          const usersRef = collection(db, 'users');
-          const q = query(usersRef, where('structureId', '==', mission.structureId));
-          const usersSnapshot = await getDocs(q);
-          
-          let members = usersSnapshot.docs.map(docSnap => ({
-            id: docSnap.id,
-            ...docSnap.data(),
-            mandat: docSnap.data().mandat || null,
-            bureauRole: docSnap.data().bureauRole || null,
-            poles: docSnap.data().poles || [],
-            firstName: docSnap.data().firstName || '',
-            lastName: docSnap.data().lastName || '',
-            displayName: docSnap.data().displayName || ''
-          }));
-          members = await decryptUsersList(members as any);
-
-          // Filtrer les présidents (via bureauRole ou pôle 'pre')
-          const presidents = members.filter(member => {
-            const hasPresidentRole = member.bureauRole === 'president' || 
-              member.poles?.some((p: any) => p.poleId === 'pre');
-            return hasPresidentRole && member.mandat;
-          });
-
-          if (presidents.length > 0) {
-            // Trier les mandats pour trouver le plus récent
-            const sortedPresidents = presidents.sort((a, b) => {
-              if (!a.mandat || !b.mandat) return 0;
-              // Comparer les années de début des mandats (format: "2024-2025")
-              const aYear = parseInt(a.mandat.split('-')[0]);
-              const bYear = parseInt(b.mandat.split('-')[0]);
-              return bYear - aYear; // Plus récent en premier
-            });
-
-            const mostRecentPresident = sortedPresidents[0];
-            // Construire le nom complet : prénom + nom ou displayName
-            if (mostRecentPresident.firstName && mostRecentPresident.lastName) {
-              presidentFullName = `${mostRecentPresident.firstName} ${mostRecentPresident.lastName}`.trim();
-            } else if (mostRecentPresident.displayName) {
-              presidentFullName = mostRecentPresident.displayName;
-            }
-          }
-        } catch (error) {
-          console.error('Erreur lors de la récupération du président:', error);
-        }
-      }
-
-      // Fonction pour nettoyer le texte des retours à la ligne
-      const cleanText = (text: string) => {
-        if (!text) return '';
-        return text.replace(/[\n\r]+/g, ' ').trim();
-      };
-
-      const docOverrides = application?.documentTagOverrides ?? {};
-      const resolveDocTag = (...keys: string[]): string => {
-        for (const k of keys) {
-          const v = docOverrides[k];
-          if (v != null && String(v).trim() !== '') return String(v).trim();
-        }
-        return '';
-      };
-
-      const workingHoursSlots =
-        cachedData?.workingHoursData?.hours?.length
-          ? cachedData.workingHoursData.hours
-          : application?.workingHours ?? [];
-      const workingHoursTotal = workingHoursSlots.length
-        ? workingHoursSlots
-            .reduce((total, wh) => {
-              return (
-                total +
-                calculateWorkingHours(
-                  wh.startTime || '',
-                  wh.endTime || '',
-                  (wh.breaks || []) as Array<{ start: string; end: string }>
-                )
-              );
-            }, 0)
-            .toFixed(2)
-        : '[Total non disponible]';
-
-      const formatDetailedWorkingHours = (
-        hours: Array<{ date?: string; startTime?: string; endTime?: string; breaks?: Array<{ start?: string; end?: string; startTime?: string; endTime?: string }> }>,
-        options?: { allowMissionFallback?: boolean }
-      ): string => {
-        const allowMissionFallback = options?.allowMissionFallback !== false;
-        const missionDebut = mission.startDate
-          ? `${new Date(mission.startDate).toLocaleDateString('fr-FR')} à ${new Date(mission.startDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
-          : '';
-        const missionFin = mission.endDate
-          ? `${new Date(mission.endDate).toLocaleDateString('fr-FR')} à ${new Date(mission.endDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
-          : '';
-        if (!hours.length) {
-          if (allowMissionFallback) {
-            return missionDebut && missionFin ? ` De ${missionDebut} à ${missionFin}` : '[Heures détaillées non disponibles]';
-          }
-          return '';
-        }
-        const formatTime = (t: string) => (t ? t.replace(/:\d{2}$/, 'h') : '');
-        const formatDateHour = (dateStr: string, timeStr: string) => {
-          const d = dateStr ? new Date(dateStr).toLocaleDateString('fr-FR') : '';
-          const t = formatTime(timeStr);
-          return t ? `${d} à ${t}` : d;
-        };
-        if (hours.length === 1) {
-          const day = hours[0];
-          const debut = formatDateHour(day.date || '', day.startTime || '');
-          const fin = formatDateHour(day.date || '', day.endTime || '');
-          return debut && fin ? `${debut} - ${fin}` : debut || fin || '[Heures détaillées non disponibles]';
-        }
-        const parts = hours.map((day) => {
-          const dateStr = day.date ? new Date(day.date).toLocaleDateString('fr-FR') : '';
-          const startH = formatTime(day.startTime || '');
-          const endH = formatTime(day.endTime || '');
-          let s = `${dateStr} de ${startH} à ${endH}`;
-          if (day.breaks?.length) {
-            const breaksStr = day.breaks
-              .map((b) => `${b.start ?? b.startTime ?? ''}-${b.end ?? b.endTime ?? ''}`)
-              .filter(Boolean)
-              .join(', ');
-            if (breaksStr) s += ` (pauses: ${breaksStr})`;
-          }
-          return s;
-        });
-        return parts.join(', ');
-      };
-
-      const isAvenantDocument = documentType === 'avenant';
-      const plannedDetailedHours = formatDetailedWorkingHours([], { allowMissionFallback: true });
-      const actualDetailedHours = formatDetailedWorkingHours(workingHoursSlots, { allowMissionFallback: false });
-      const detailedWorkingHours = isAvenantDocument
-        ? plannedDetailedHours
-        : formatDetailedWorkingHours(workingHoursSlots, { allowMissionFallback: true });
-      const heuresFinalementTravaillees =
-        resolveDocTag('heures_finalement_travaillees') ||
-        (isAvenantDocument ? actualDetailedHours : formatDetailedWorkingHours(workingHoursSlots, { allowMissionFallback: true }));
-      const plannedHoursTotal =
-        mission.hoursPerStudent?.toString() ||
-        mission.hours?.toString() ||
-        '';
-      const amendmentNewHours =
-        resolveDocTag('amendment_new_hours', 'amendment_actual_hours', 'actualHours') ||
-        (workingHoursTotal !== '[Total non disponible]' ? workingHoursTotal : '');
-      const resolvedWorkingHoursTotal = isAvenantDocument
-        ? plannedHoursTotal || workingHoursTotal
-        : workingHoursTotal;
-      const formatHoursWithUnit = (value: string): string => {
-        const trimmed = (value || '').trim();
-        if (!trimmed || /\[|non disponible/i.test(trimmed)) return trimmed;
-        if (/\bh\s*$/i.test(trimmed)) return trimmed;
-        return `${trimmed} h`;
-      };
-      const amendmentNewHoursDisplay = formatHoursWithUnit(amendmentNewHours);
-      const workingHoursTotalDisplay = formatHoursWithUnit(resolvedWorkingHoursTotal);
-      const amendmentPlannedHours =
-        resolveDocTag('amendment_planned_hours', 'plannedHours') ||
-        mission.hoursPerStudent?.toString() ||
-        mission.hours?.toString() ||
-        '';
-      const amendmentReason = resolveDocTag('amendment_reason', 'reason');
-
-      const replacements: { [key: string]: string } = {
-        // Balises de mission
-        '<mission_numero>': mission.numeroMission || '[Numéro de mission non disponible]',
-        '<mission_cdm>': mission.chargeName || '[Chef de mission non disponible]',
-        '<mission_date>': mission.startDate ? new Date(mission.startDate).toLocaleDateString() : '[Date non disponible]',
-        '<mission_lieu>': mission.location || '[Lieu non disponible]',
-        '<mission_entreprise>': company?.name || '[Entreprise non disponible]',
-        '<mission_prix>': typeof mission.priceHT === 'number' ? mission.priceHT.toString() : '[Prix non disponible]',
-        '<mission_prix_horaire_ht>': typeof mission.priceHT === 'number' ? mission.priceHT.toFixed(2) : '[Prix horaire HT non disponible]',
-        '<mission_prix_total_heures_ht>': typeof mission.priceHT === 'number' && typeof mission.hours === 'number' 
-          ? (mission.priceHT * mission.hours).toFixed(2) 
-          : '[Prix total des heures travaillées HT non disponible]',
-        '<mission_description>': (mission.description || '[Description non disponible]').replace(/[\n\r]+/g, ' '),
-        '<mission_titre>': mission.title || '[Titre non disponible]',
-        '<mission_heures>': mission.hours?.toString() || '[Heures non disponibles]',
-        '<mission_heures_par_etudiant>': mission.hoursPerStudent || '[Heures par étudiant non disponibles]',
-        '<mission_nb_etudiants>': mission.studentCount?.toString() || '[Nombre d\'étudiants non disponible]',
-        '<missionType>': missionTypes.find(t => t.id === mission.missionTypeId)?.title || '[Type de mission non disponible]',
-        '<generationDate>': new Date().toLocaleDateString(),
-        '<mission_date_generation>': new Date().toLocaleDateString('fr-FR'),
-        '<mission_date_generation_plus_1_an>': (() => {
-          const today = new Date();
-          const oneYearLater = new Date(today);
-          oneYearLater.setDate(today.getDate() + 365);
-          return oneYearLater.toLocaleDateString('fr-FR');
-        })(),
-        '<totalHT>': typeof mission.totalHT === 'number' ? mission.totalHT.toString() : '[Total HT non disponible]',
-        '<totalTTC>': typeof mission.totalTTC === 'number' ? mission.totalTTC.toString() : '[Total TTC non disponible]',
-        '<total_ttc>': typeof mission.totalTTC === 'number' ? mission.totalTTC.toString() : '[Total TTC non disponible]',
-        '<tva>': typeof mission.tva === 'number' ? mission.tva.toFixed(2) : '[TVA non disponible]',
-
-        // Balises pour les heures de travail
-        '<workinghours_date_debut>': application?.workingHours?.[0]?.date || '[Date de début non disponible]',
-        '<workinghours_heure_debut>': application?.workingHours?.[0]?.startTime || '[Heure de début non disponible]',
-        '<workinghours_date_fin>': application?.workingHours?.[0]?.date || '[Date de fin non disponible]',
-        '<workinghours_heure_fin>': application?.workingHours?.[0]?.endTime || '[Heure de fin non disponible]',
-        '<workinghours_pauses>': application?.workingHours?.[0]?.breaks?.map(b => `${b.start}-${b.end}`).join(', ') || '[Pauses non disponibles]',
-        '<workinghours_total>': workingHoursTotalDisplay,
-        '<workingHoursTotal>': workingHoursTotalDisplay,
-        '<workinghours_creation>': application?.createdAt ? new Date(application.createdAt).toLocaleDateString() : '[Date de création non disponible]',
-        '<workinghours_maj>': application?.updatedAt ? new Date(application.updatedAt).toLocaleDateString() : '[Date de mise à jour non disponible]',
-        '<heures_detaillees>': detailedWorkingHours,
-        '<heuresDetaillees>': detailedWorkingHours,
-
-        // Balises de contact
-        '<contact_nom>': contactData?.lastName || '[Nom du contact non disponible]',
-        '<contact_prenom>': contactData?.firstName || '[Prénom du contact non disponible]',
-        '<contact_email>': contactData?.email || '[Email du contact non disponible]',
-        '<contact_telephone>': contactData?.phone || '[Téléphone du contact non disponible]',
-        '<contact_poste>': contactData?.position || '[Poste du contact non disponible]',
-        '<contact_linkedin>': contactData?.linkedin || '[LinkedIn du contact non disponible]',
-        '<contact_nom_complet>': `${contactData?.firstName || ''} ${contactData?.lastName || ''}`.trim() || '[Nom complet du contact non disponible]',
-
-        // Balises utilisateur
-        '<user_nom>': userData?.lastName || application?.userDisplayName?.split(' ').slice(-1)[0] || '[Nom non disponible]',
-        '<user_prenom>': userData?.firstName || application?.userDisplayName?.split(' ')[0] || '[Prénom non disponible]',
-        '<user_email>': userData?.email || application?.userEmail || '[Email non disponible]',
-        '<user_ecole>': userData?.ecole || application?.userEmail?.split('@')[1]?.split('.')[0] || '[École non disponible]',
-        '<user_nom_complet>': userData?.displayName || application?.userDisplayName || '[Nom complet non disponible]',
-        '<user_telephone>': userData?.phone || application?.userPhone || '[Téléphone non disponible]',
-        '<user_numero_etudiant>': userData?.studentId || application?.userStudentId || '[Numéro étudiant non disponible]',
-        '<user_formation>': userData?.formation || '[Formation non disponible]',
-        '<user_specialite>': userData?.speciality || '[Spécialité non disponible]',
-        '<user_niveau_etude>': userData?.studyLevel || '[Niveau d\'études non disponible]',
-        '<graduationYear>': userData?.graduationYear || '[Année de diplômation non disponible]',
-        '<gender>': userData?.gender || '[Genre non disponible]',
-        '<birthPlace>': userData?.birthPlace || '[Lieu de naissance non disponible]',
-        '<birthDate>': userData?.birthDate ? new Date(userData.birthDate).toLocaleDateString('fr-FR') : '[Date de naissance non disponible]',
-        '<address>': userData?.address || '[Adresse non disponible]',
-        '<nationality>': userData?.nationality || '[Nationalité non disponible]',
-        '<socialSecurityNumber>': userData?.socialSecurityNumber || '[Numéro de sécurité sociale non disponible]',
-        '<phone>': userData?.phone || '[Téléphone non disponible]',
-        // AJOUT DES BALISES MANQUANTES
-        '<siren>': (company as any)?.nSiret ? String((company as any).nSiret).substring(0, 9) : '[SIREN non disponible]',
-        '<companyName>': company?.name || '[Nom entreprise non disponible]',
-        '<missionDescription>': mission.description || '[Description non disponible]',
-        '<missionStartDate>': mission.startDate ? new Date(mission.startDate).toLocaleDateString() : '[Date de début non disponible]',
-        '<mission_date_debut>': mission.startDate ? new Date(mission.startDate).toLocaleDateString('fr-FR') : '[Date de début non disponible]',
-        '<mission_date_heure_debut>': mission.startDate ? `${new Date(mission.startDate).toLocaleDateString('fr-FR')} à ${new Date(mission.startDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : '[Date et heure de début non disponibles]',
-        '<mission_date_fin>': mission.endDate ? new Date(mission.endDate).toLocaleDateString('fr-FR') : '[Date de fin non disponible]',
-        '<mission_date_heure_fin>': mission.endDate ? `${new Date(mission.endDate).toLocaleDateString('fr-FR')} à ${new Date(mission.endDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : '[Date et heure de fin non disponibles]',
-        '<charge_email>': chargeData?.email || '',
-        '<charge_phone>': chargeData?.phone || '',
-        // Balises de la structure
-        '<structure_nom>': structureDataResolved?.nom || '[Nom de la structure non disponible]',
-        '<structure_ecole>': structureDataResolved?.ecole || '[École de la structure non disponible]',
-        '<structure_address>': structureDataResolved?.address || '[Adresse de la structure non disponible]',
-        '<structure_phone>': structureDataResolved?.phone || '[Téléphone de la structure non disponible]',
-        '<structure_email>': structureDataResolved?.email || '[Email de la structure non disponible]',
-        '<structure_siret>': structureDataResolved?.siret || '[SIRET de la structure non disponible]',
-        '<structure_tvaNumber>': structureDataResolved?.tvaNumber || '[Numéro de TVA de la structure non disponible]',
-        '<structure_apeCode>': structureDataResolved?.apeCode || '[Code APE de la structure non disponible]',
-        '<structure_president_nom_complet>': presidentFullName,
-
-        // Balises pour l'entreprise
-        '<entreprise_nom>': company?.name || '[Nom entreprise non disponible]',
-        '<entreprise_siren>': (company as any)?.nSiret ? (company as any).nSiret.substring(0, 9) : '[SIREN non disponible]',
-        '<nSiret>': (company as any)?.nSiret || '[SIRET non disponible]',
-        '<entreprise_adresse>': company?.address || '[Adresse entreprise non disponible]',
-        '<entreprise_ville>': company?.city || '[Ville entreprise non disponible]',
-        '<entreprise_pays>': company?.country || '[Pays entreprise non disponible]',
-        '<entreprise_telephone>': company?.phone || '[Téléphone entreprise non disponible]',
-        '<entreprise_email>': company?.email || '[Email entreprise non disponible]',
-        '<entreprise_site_web>': company?.website || '[Site web entreprise non disponible]',
-        '<entreprise_description>': company?.description || '[Description entreprise non disponible]',
-        '<studentProfile>': (missionTypeData?.studentProfile || '[Profil étudiant non disponible]').trim(),
-        '<courseApplication>': (missionTypeData?.courseApplication || '[Application du cours non disponible]').trim(),
-        '<missionLearning>': (missionTypeData?.missionLearning || '[Apprentissage de la mission non disponible]').trim(),
-        '<endDate>': mission.endDate ? new Date(mission.endDate).toLocaleDateString('fr-FR') : '[Date de fin non disponible]',
-        '<program>': userData?.program || '[Programme non disponible]',
-        '<mission_gratificationhorraire>': typeof mission.priceHT === 'number' ? mission.priceHT.toString() : '[Gratification horaire non disponible]',
-
-        // Balises avenant
-        '<amendment_new_hours>': amendmentNewHoursDisplay,
-        '<amendmentNewHours>': amendmentNewHoursDisplay,
-        '<amendment_actual_hours>': amendmentNewHoursDisplay,
-        '<actualHours>': amendmentNewHoursDisplay,
-        '<heures_finalement_travaillees>': heuresFinalementTravaillees,
-        '<amendment_planned_hours>': amendmentPlannedHours,
-        '<plannedHours>': amendmentPlannedHours,
-        '<amendment_reason>': amendmentReason,
-        '<reason>': amendmentReason,
-        
-        // Balises pour les dépenses (jusqu'à 4 dépenses)
-        '<depense1_nom>': (mission as any).nomdepense1 || '',
-        '<depense1_tva>': typeof (mission as any).tvadepense1 === 'number' ? (mission as any).tvadepense1.toString() : '',
-        '<depense1_prix>': typeof (mission as any).totaldepense1 === 'number' ? (mission as any).totaldepense1.toFixed(2) : '',
-        '<depense2_nom>': (mission as any).nomdepense2 || '',
-        '<depense2_tva>': typeof (mission as any).tvadepense2 === 'number' ? (mission as any).tvadepense2.toString() : '',
-        '<depense2_prix>': typeof (mission as any).totaldepense2 === 'number' ? (mission as any).totaldepense2.toFixed(2) : '',
-        '<depense3_nom>': (mission as any).nomdepense3 || '',
-        '<depense3_tva>': typeof (mission as any).tvadepense3 === 'number' ? (mission as any).tvadepense3.toString() : '',
-        '<depense3_prix>': typeof (mission as any).totaldepense3 === 'number' ? (mission as any).totaldepense3.toFixed(2) : '',
-        '<depense4_nom>': (mission as any).nomdepense4 || '',
-        '<depense4_tva>': typeof (mission as any).tvadepense4 === 'number' ? (mission as any).tvadepense4.toString() : '',
-        '<depense4_prix>': typeof (mission as any).totaldepense4 === 'number' ? (mission as any).totaldepense4.toFixed(2) : '',
-      };
-
-      let result = text;
-      let missingInfo = false;
-
-      // Ajout de logs pour déboguer
-      console.log('[replaceTags] Texte initial:', text);
-      console.log('[replaceTags] Description de la mission:', mission.description);
-
-      const hourCounterTagNames = new Set([
-        'amendment_new_hours',
-        'amendment_actual_hours',
-        'actualHours',
-        'amendmentNewHours',
-        'workinghours_total',
-        'workingHoursTotal',
-      ]);
-
-      Object.entries(replacements).forEach(([tag, value]) => {
-        const regex = new RegExp(escapeRegExp(tag), 'g');
-        const before = result;
-        const tagName = tag.replace(/[<>]/g, '');
-        const hasTempOverride =
-          tempDataOverride != null && Object.prototype.hasOwnProperty.call(tempDataOverride, tagName);
-        let finalValue = hasTempOverride ? tempDataOverride![tagName] : value;
-        if (hourCounterTagNames.has(tagName)) {
-          finalValue = formatHoursWithUnit(finalValue);
-        }
-
-        result = result.replace(regex, finalValue);
-        
-        // Logs réduits pour améliorer les performances
-        // if (tag === '<mission_description>') {
-        //   console.log('[replaceTags] Remplacement de la description:', {
-        //     tag,
-        //     value: finalValue,
-        //     before,
-        //     after: result
-        //   });
-        // }
-        
-        if (result !== before && (finalValue.includes('[Information') || finalValue.includes('non disponible]'))) {
-          missingInfo = true;
-          console.warn(`[replaceTags] Balise non remplacée : ${tag} => ${finalValue}`);
-        }
-      });
-
-      // Logs réduits pour améliorer les performances
-      // console.log('[replaceTags] Texte final:', result);
-      // console.log('[replaceTags] Données utilisées :', { mission, companies, application, userData, structureData });
-
-      // Nettoyer les dépenses vides : supprimer les lignes/sections qui contiennent uniquement des dépenses vides
-      // Pour chaque dépense (1 à 4), si elle est vide, supprimer les lignes qui ne contiennent que cette dépense et son contexte
-      for (let i = 1; i <= 4; i++) {
-        const nomKey = `nomdepense${i}`;
-        const prixKey = `totaldepense${i}`;
-        const nomValue = (mission as any)[nomKey];
-        const prixValue = (mission as any)[prixKey];
-        
-        // Si la dépense est vide (pas de nom ou pas de prix)
-        if (!nomValue && (!prixValue || typeof prixValue !== 'number' || prixValue === 0)) {
-          // Après le remplacement, les balises vides ont été remplacées par des chaînes vides
-          // On doit maintenant supprimer les lignes qui ne contiennent que des espaces, "€ HT", ":", etc.
-          // Diviser le texte en lignes
-          const lines = result.split('\n');
-          const cleanedLines: string[] = [];
-          
-          for (let j = 0; j < lines.length; j++) {
-            const line = lines[j];
-            // Vérifier si la ligne contient uniquement des espaces, "€", "HT", ":", ou des combinaisons
-            // après qu'une balise de dépense vide ait été remplacée
-            const trimmedLine = line.trim();
-            
-            // Si la ligne est vide ou ne contient que des caractères de ponctuation/espaces après remplacement d'une dépense vide
-            if (trimmedLine === '' || 
-                /^[\s:€HT]*$/.test(trimmedLine) ||
-                /^[\s:€HT]*€[\s:€HT]*HT[\s:€HT]*$/.test(trimmedLine) ||
-                /^[\s:€HT]*Prix[\s:€HT]*:[\s:€HT]*€[\s:€HT]*HT[\s:€HT]*$/.test(trimmedLine)) {
-              // Ne pas ajouter cette ligne si elle ne contient que des espaces/ponctuation
-              // Mais garder les lignes vraiment vides pour préserver la structure
-              if (trimmedLine === '') {
-                // Garder les lignes vides sauf si la ligne précédente était aussi vide ou supprimée
-                if (cleanedLines.length > 0 && cleanedLines[cleanedLines.length - 1] !== '') {
-                  cleanedLines.push('');
-                }
-              }
-              // Sinon, c'est une ligne avec seulement "€ HT" ou similaire, on la supprime
-            } else {
-              cleanedLines.push(line);
-            }
-          }
-          
-          result = cleanedLines.join('\n');
-        }
-      }
-      
-      // Nettoyer les lignes vides multiples consécutives
-      result = result.replace(/\n\s*\n\s*\n+/g, '\n\n');
-
-      // Appliquer les overrides saisis dans la modale (balises absentes du mapping ci-dessus)
-      if (tempDataOverride) {
-        for (const [tagName, tempVal] of Object.entries(tempDataOverride)) {
-          if (tempVal === undefined || tempVal === null) continue;
-          const tag = `<${tagName}>`;
-          result = result.replace(new RegExp(escapeRegExp(tag), 'g'), tempVal);
-        }
-      }
-
-      // Vérifier s'il reste des balises non remplacées
-      const remainingTags = result.match(/<[^>]+>/g);
-      if (remainingTags) {
-        remainingTags.forEach(tag => {
-          const tagName = tag.replace(/[<>]/g, '');
-          result = result.replace(tag, `[Information "${tagName}" non disponible]`);
-          missingInfo = true;
-          console.warn(`[replaceTags] Balise inconnue non remplacée : ${tag}`);
-        });
-      }
-
-      // Note: Les données manquantes sont maintenant gérées par la popup dans generateDocument
-      // Pas besoin d'afficher un snackbar ici
-
-      return result;
     } catch (error) {
       console.error('Erreur lors du remplacement des variables:', error);
       setSnackbar({
         open: true,
         message: 'Une erreur est survenue lors du remplacement des variables',
-        severity: 'error'
+        severity: 'error',
       });
       return text;
     }
   };
 
-  const escapeRegExp = (string: string): string => {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  };
-
-  // Ajouter cette fonction utilitaire pour convertir l'ID de variable en balise
-  const getTagFromVariableId = (variableId: string): string => {
-    const tagMappings: { [key: string]: string } = {
-      'numeroMission': '<mission_numero>',
-      'chargeName': '<mission_cdm>',
-      'startDate': '<mission_date>',
-      'missionDateDebut': '<mission_date_debut>',
-      'missionDateHeureDebut': '<mission_date_heure_debut>',
-      'missionDateFin': '<mission_date_fin>',
-      'missionDateHeureFin': '<mission_date_heure_fin>',
-      'location': '<mission_lieu>',
-      'company': '<mission_entreprise>',
-      'priceHT': '<mission_prix>',  // C'est bien priceHT dans la DB
-      'description': '<mission_description>',
-      'title': '<mission_titre>',
-      'hours': '<mission_heures>',
-      'hoursPerStudent': '<mission_heures_par_etudiant>',
-      'studentCount': '<mission_nb_etudiants>',
-      'lastName': '<user_nom>',
-      'firstName': '<user_prenom>',
-      'email': '<user_email>',
-      'ecole': '<user_ecole>',
-      'displayName': '<user_nom_complet>',
-      'studentId': '<user_numero_etudiant>',
-      // Mappings pour les contacts
-      'contact_lastName': '<contact_nom>',
-      'contact_firstName': '<contact_prenom>',
-      'contact_email': '<contact_email>',
-      'contact_phone': '<contact_telephone>',
-      'contact_position': '<contact_poste>',
-      'contact_linkedin': '<contact_linkedin>',
-      'contact_fullName': '<contact_nom_complet>',
-      '<charge_email>': '<charge_email>',
-      '<charge_phone>': '<charge_phone>',
-      // Nouveaux champs pour les totaux
-      'totalHT': '<totalHT>',
-      'totalTTC': '<totalTTC>',
-      'tva': '<tva>',
-      // Balises de la structure
-      'structure_nom': '<structure_nom>',
-      'structure_ecole': '<structure_ecole>',
-      'structure_address': '<structure_address>',
-      'structure_phone': '<structure_phone>',
-      'structure_email': '<structure_email>',
-      'structure_siret': '<structure_siret>',
-      'structure_tvaNumber': '<structure_tvaNumber>',
-      'structure_apeCode': '<structure_apeCode>',
-      'structure_president_fullName': '<structure_president_nom_complet>',
-      'generationDate': '<generationDate>',
-      'generationDatePlusOneYear': '<mission_date_generation_plus_1_an>',
-      'heuresDetaillees': '<heures_detaillees>',
-      'actualHours': '<amendment_actual_hours>',
-      'amendmentNewHours': '<amendment_new_hours>',
-      'heuresFinalementTravaillees': '<heures_finalement_travaillees>',
-      'plannedHours': '<amendment_planned_hours>',
-      'reason': '<amendment_reason>',
-    };
-
-    // Logs réduits pour améliorer les performances
-    // console.log('Converting variableId:', variableId, 'to tag:', tagMappings[variableId] || `<${variableId}>`);
-    return tagMappings[variableId] || `<${variableId}>`;
-  };
 
   const generateDocument = async (
     documentType: DocumentType,
@@ -3904,17 +3031,6 @@ const MissionDetails: React.FC = () => {
     
     try {
       setGeneratingDocType(documentType);
-
-      if (!ignoreMissingData) {
-        setMissingDataDialog({
-          open: true,
-          detecting: true,
-          missingData: [],
-          documentType,
-          application,
-          expenseNote
-        });
-      }
       
       console.log('🚀 Début de la génération du document:', documentType);
       
@@ -3944,6 +3060,12 @@ const MissionDetails: React.FC = () => {
 
         if (missingData.length > 0) {
           console.log('⚠️ Données manquantes détectées:', missingData);
+          setGeneratingDocType(null);
+          // Fermer la popup LM (loader) avant d'ouvrir celle des manquantes
+          if (documentType === 'lettre_mission') {
+            setLmDialogOpen(false);
+            await new Promise((resolve) => setTimeout(resolve, 80));
+          }
           setMissingDataDialog({
             open: true,
             detecting: false,
@@ -3952,14 +3074,12 @@ const MissionDetails: React.FC = () => {
             application,
             expenseNote
           });
-          setGeneratingDocType(null);
           if (forceDownload) {
             setDownloadProgress(null);
           }
           return;
         }
         console.log('✅ Aucune donnée manquante, génération en cours...');
-        setMissingDataDialog((prev) => ({ ...prev, open: false, detecting: false }));
       } else {
         console.log('✅ Vérification des données ignorée (saisie modale ou forçage)');
         setMissingDataDialog((prev) => ({ ...prev, open: false, detecting: false }));
@@ -4238,14 +3358,7 @@ const MissionDetails: React.FC = () => {
 
         try {
           // Obtenir la valeur de la variable
-          let valueToReplace;
-          if (variable.type === 'raw') {
-            valueToReplace = variable.rawText || '';
-          } else if (variable.variableId) {
-            valueToReplace = getTagFromVariableId(variable.variableId);
-          } else {
-            valueToReplace = '';
-          }
+          let valueToReplace = resolveVariableTag(variable);
 
           // Si c'est une note de frais, ajouter les variables spécifiques
           if (documentType === 'note_de_frais' && expenseNote) {
@@ -4256,20 +3369,36 @@ const MissionDetails: React.FC = () => {
           }
 
           // Si c'est une lettre de mission et qu'il y a des heures de travail, ajouter les variables spécifiques
-          if (documentType === 'lettre_mission' && workingHoursData) {
+          if (documentType === 'lettre_mission' && workingHoursData?.hours?.length) {
+            const first = workingHoursData.hours[0];
             const totalHours = workingHoursData.hours.reduce((total: number, wh: any) => {
               return total + calculateWorkingHours(wh.startTime, wh.endTime, wh.breaks);
             }, 0);
+            const formatWhDate = (d?: unknown) => {
+              if (!d) return '';
+              if (typeof (d as { toDate?: () => Date }).toDate === 'function') {
+                return (d as { toDate: () => Date }).toDate().toLocaleDateString('fr-FR');
+              }
+              return String(d);
+            };
 
             valueToReplace = valueToReplace
-              .replace('<workingHoursDateDebut>', workingHoursData.hours[0]?.startDate || '')
-              .replace('<workingHoursHeureDebut>', workingHoursData.hours[0]?.startTime || '')
-              .replace('<workingHoursDateFin>', workingHoursData.hours[0]?.endDate || '')
-              .replace('<workingHoursHeureFin>', workingHoursData.hours[0]?.endTime || '')
-              .replace('<workingHoursPauses>', workingHoursData.hours[0]?.breaks?.map((b: any) => `${b.start}-${b.end}`).join(', ') || '')
+              .replace('<workingHoursDateDebut>', first?.date || '')
+              .replace('<workinghours_date_debut>', first?.date || '')
+              .replace('<workingHoursHeureDebut>', first?.startTime || '')
+              .replace('<workinghours_heure_debut>', first?.startTime || '')
+              .replace('<workingHoursDateFin>', first?.date || '')
+              .replace('<workinghours_date_fin>', first?.date || '')
+              .replace('<workingHoursHeureFin>', first?.endTime || '')
+              .replace('<workinghours_heure_fin>', first?.endTime || '')
+              .replace('<workingHoursPauses>', first?.breaks?.map((b: any) => `${b.start}-${b.end}`).join(', ') || '')
+              .replace('<workinghours_pauses>', first?.breaks?.map((b: any) => `${b.start}-${b.end}`).join(', ') || '')
               .replace('<workingHoursTotal>', totalHours.toFixed(2))
-              .replace('<workingHoursCreation>', workingHoursData.createdAt?.toDate().toLocaleDateString() || '')
-              .replace('<workingHoursMaj>', workingHoursData.updatedAt?.toDate().toLocaleDateString() || '');
+              .replace('<workinghours_total>', totalHours.toFixed(2))
+              .replace('<workingHoursCreation>', formatWhDate(workingHoursData.createdAt))
+              .replace('<workinghours_creation>', formatWhDate(workingHoursData.createdAt))
+              .replace('<workingHoursMaj>', formatWhDate(workingHoursData.updatedAt))
+              .replace('<workinghours_maj>', formatWhDate(workingHoursData.updatedAt));
           }
 
           // Logs réduits pour améliorer les performances
@@ -4630,6 +3759,18 @@ const MissionDetails: React.FC = () => {
       // Créer le document dans Firestore (seulement si l'upload vers Storage a réussi)
       if (uploadSucceeded && documentUrl) {
         console.log('📊 Création du document dans Firestore...');
+        console.log('📊 Création du document dans Firestore...');
+        let creatorDisplayName = getSafeDisplayName(userData, '');
+        if ((!creatorDisplayName || creatorDisplayName === 'Utilisateur') && currentUser?.uid) {
+          const decrypted = await getDecryptedUserDisplayName(currentUser.uid, userData || null);
+          if (decrypted && decrypted !== 'Inconnu') {
+            creatorDisplayName = decrypted;
+          }
+        }
+        if (!creatorDisplayName || creatorDisplayName === 'Utilisateur') {
+          creatorDisplayName = currentUser?.email || 'Utilisateur';
+        }
+
         const documentData: Omit<GeneratedDocument, 'id'> = {
           missionId: mission.id,
           missionNumber: mission.numeroMission,
@@ -4643,6 +3784,8 @@ const MissionDetails: React.FC = () => {
           createdAt: new Date(),
           updatedAt: new Date(),
           createdBy: currentUser?.uid || '',
+          createdByName: creatorDisplayName,
+          createdByPhotoURL: userData?.photoURL || currentUser?.photoURL || undefined,
           status: 'draft',
           isValid: true,
           tags,
@@ -7648,6 +6791,77 @@ const MissionDetails: React.FC = () => {
     setLmDialogOpen(false);
   };
 
+  /** Préremplissage signature : client/étudiant + structure (ordre = zones préconfigurées) */
+  const signatureDefaultSigners = useMemo(() => {
+    const selected = documentDialogs.selectedDocument;
+    if (!selected) return undefined;
+
+    const isDualSignerDoc = (
+      ['proposition_commerciale', 'lettre_mission', 'avenant'] as string[]
+    ).includes(selected.documentType);
+
+    const structureFirstName = (userData?.firstName || '').trim();
+    const structureLastName = (userData?.lastName || '').trim();
+    const structureEmail = (userData?.email || currentUser?.email || '').trim();
+    const structureName =
+      `${structureFirstName} ${structureLastName}`.trim() ||
+      getSafeDisplayName(userData, structureEmail);
+    const structureSigner = {
+      firstName: structureFirstName,
+      lastName: structureLastName,
+      email: structureEmail,
+      name: structureName,
+      role: 'structure' as const,
+    };
+
+    if (selected.documentType === 'proposition_commerciale') {
+      const contact = mission?.contact;
+      const firstName = (contact?.firstName || '').trim();
+      const lastName = (contact?.lastName || '').trim();
+      const email = (contact?.email || '').trim();
+      const name = `${firstName} ${lastName}`.trim();
+      const counterparty = {
+        firstName,
+        lastName,
+        email,
+        name,
+        role: 'counterparty' as const,
+      };
+      return isDualSignerDoc ? [counterparty, structureSigner] : [counterparty];
+    }
+
+    const app =
+      (selected.applicationId
+        ? applications.find((a) => a.id === selected.applicationId)
+        : undefined) ||
+      (selected.applicationUserEmail
+        ? applications.find((a) => a.userEmail === selected.applicationUserEmail)
+        : undefined);
+
+    const displayName = (app?.userDisplayName || selected.applicationUserName || '').trim();
+    const email = (app?.userEmail || selected.applicationUserEmail || '').trim();
+    if (!displayName && !email && !isDualSignerDoc) return undefined;
+
+    const parts = displayName.split(/\s+/).filter(Boolean);
+    const firstName = parts[0] || '';
+    const lastName = parts.slice(1).join(' ');
+    const counterparty = {
+      firstName,
+      lastName,
+      email,
+      name: displayName,
+      role: 'counterparty' as const,
+    };
+
+    return isDualSignerDoc ? [counterparty, structureSigner] : [counterparty];
+  }, [
+    documentDialogs.selectedDocument,
+    applications,
+    mission?.contact,
+    userData,
+    currentUser?.email,
+  ]);
+
   const handleLmGenerate = async (applicationId: string) => {
     const application = applications.find((app) => app.id === applicationId);
     if (!application || generatingDocType === 'lettre_mission') return;
@@ -9361,7 +8575,20 @@ const MissionDetails: React.FC = () => {
         onClose={() => setDocumentDialogs((prev) => ({ ...prev, sendSignature: false }))}
         generatedDocumentId={documentDialogs.selectedDocument?.id || ''}
         documentTitle={documentDialogs.selectedDocument?.fileName}
-        onCreated={() => {
+        documentType={documentDialogs.selectedDocument?.documentType}
+        structureId={mission?.structureId || userData?.structureId}
+        defaultSigners={signatureDefaultSigners}
+        onCreated={(requestId) => {
+          const selectedId = documentDialogs.selectedDocument?.id;
+          if (selectedId) {
+            setGeneratedDocuments((prev) =>
+              prev.map((d) =>
+                d.id === selectedId
+                  ? { ...d, signatureRequestId: requestId, signatureStatus: 'pending' }
+                  : d
+              )
+            );
+          }
           void fetchGeneratedDocuments();
           enqueueSnackbar('Invitations de signature envoyées', { variant: 'success' });
         }}
@@ -10051,9 +9278,61 @@ const MissionDetails: React.FC = () => {
         onSaveMissingField={(tag, value) => void handleAvenantSaveField(tag, value)}
       />
 
+      {/* Loader commun pendant génération / téléchargement — tous les types de templates */}
+      <Dialog
+        open={!!generatingDocType}
+        disableEscapeKeyDown
+        onClose={() => undefined}
+        PaperProps={{
+          sx: {
+            borderRadius: '12px',
+            minWidth: { xs: '90%', sm: 360 },
+            px: 1,
+          },
+        }}
+      >
+        <DialogContent
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 2,
+            py: 4,
+            px: 3,
+          }}
+        >
+          <CircularProgress size={40} sx={{ color: '#173B6C' }} />
+          <Typography
+            sx={{
+              fontSize: 16,
+              fontWeight: 600,
+              color: tokens.colors.gray900,
+              textAlign: 'center',
+            }}
+          >
+            Génération{' '}
+            {generatingDocType
+              ? `de ${DOCUMENT_TYPES[generatingDocType].toLowerCase()}`
+              : 'du document'}
+            …
+          </Typography>
+          <Typography sx={{ fontSize: 13, color: tokens.colors.gray500, textAlign: 'center' }}>
+            Préparation du PDF — merci de patienter quelques instants.
+          </Typography>
+          <LinearProgress sx={{ width: '100%', maxWidth: 280, mt: 1 }} />
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={missingDataDialog.open}
-        onClose={handleCloseMissingDataDialog}
+        onClose={(_event, reason) => {
+          if (missingDataDialog.detecting) return;
+          if (reason === 'backdropClick' || reason === 'escapeKeyDown') {
+            handleCloseMissingDataDialog();
+          }
+        }}
+        disableEscapeKeyDown={!!missingDataDialog.detecting}
         maxWidth="md"
         fullWidth
       >

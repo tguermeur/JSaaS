@@ -27,9 +27,6 @@ import {
   TextField,
   Snackbar,
   Alert,
-  Tabs,
-  Tab,
-  Chip,
   CircularProgress,
   Table,
   TableBody,
@@ -44,7 +41,6 @@ import {
   Person as PersonIcon,
   Dashboard as DashboardIcon,
   AttachMoney as AttachMoneyIcon,
-  Assignment as AssignmentIcon,
   Work as WorkIcon,
   Group as GroupIcon,
   Add as AddIcon,
@@ -55,9 +51,8 @@ import {
   Folder as FolderIcon,
   CheckCircle as CheckCircleIcon
 } from '@mui/icons-material';
-import EnterpriseMissionForm from '../components/missions/EnterpriseMissionForm';
 import { useAuth } from '../contexts/AuthContext';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { logoutUser } from '../firebase/auth';
 import { collection, query, where, getDocs, getCountFromServer, addDoc, Timestamp, getDoc, doc, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase/config';
@@ -68,7 +63,7 @@ import ChargeNameText from '../components/common/ChargeNameText';
 import UserAvatarInitials from '../components/common/UserAvatarInitials';
 import { usePermission } from '../hooks/usePermission';
 import AccessDenied from '../components/common/AccessDenied';
-import EmptyState from '../components/common/EmptyState';
+import { getPostAuthRedirectPath } from '../utils/safeAppHome';
 import { useDashboardData } from '../hooks/useDashboardData';
 import type { DashboardMission, DashboardCalendarEvent } from '../hooks/useDashboardData';
 import LoadingState from '../components/common/LoadingState';
@@ -138,26 +133,40 @@ export default function Dashboard(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
   
-  // Rediriger les contacts avec accès vers available-missions (une seule fois)
-  // Utiliser useRef pour éviter les redirections multiples
+  // Rediriger les contacts / comptes entreprise hors du dashboard (plus de page dédiée)
   const hasRedirectedRef = useRef(false);
   
   useEffect(() => {
-    // Ne rediriger qu'une seule fois et seulement si on est vraiment sur le dashboard
-    if (!hasRedirectedRef.current && 
-        location.pathname === '/app/dashboard' && 
-        isContactWithAccess && 
-        userData?.status === 'entreprise' && 
-        contactPermissions?.canViewEvents) {
+    if (
+      !hasRedirectedRef.current &&
+      location.pathname === '/app/dashboard' &&
+      userData?.status === 'entreprise'
+    ) {
       hasRedirectedRef.current = true;
-      // Utiliser un timeout pour éviter les redirections multiples
       const timeoutId = setTimeout(() => {
-        navigate('/app/available-missions', { replace: true });
-      }, 200);
-      
+        navigate(
+          getPostAuthRedirectPath({
+            status: userData.status,
+            companyId: userData.companyId,
+            isContactWithAccess,
+            canViewEvents: contactPermissions?.canViewEvents,
+            canManageAmbassadors: contactPermissions?.canManageAmbassadors,
+          }),
+          { replace: true }
+        );
+      }, 50);
+
       return () => clearTimeout(timeoutId);
     }
-  }, [location.pathname, isContactWithAccess, userData?.status, contactPermissions?.canViewEvents, navigate]);
+  }, [
+    location.pathname,
+    isContactWithAccess,
+    userData?.status,
+    userData?.companyId,
+    contactPermissions?.canViewEvents,
+    contactPermissions?.canManageAmbassadors,
+    navigate,
+  ]);
 
   const [openEventDialog, setOpenEventDialog] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -172,8 +181,6 @@ export default function Dashboard(): JSX.Element {
     message: '',
     severity: 'success' as 'success' | 'error'
   });
-  const [enterpriseMissionDialogOpen, setEnterpriseMissionDialogOpen] = useState(false);
-  const [enterpriseMissionTab, setEnterpriseMissionTab] = useState(0);
   const [recentDocuments, setRecentDocuments] = useState<Document[]>([]);
   const [lastCompany, setLastCompany] = useState<{
     id: string;
@@ -913,8 +920,8 @@ export default function Dashboard(): JSX.Element {
     );
   };
 
-  // Vérification des permissions (pour les utilisateurs non-entreprise et non-étudiant)
-  // Les entreprises et étudiants ont leur propre dashboard et ne sont pas soumis aux permissions
+  // Vérification des permissions (hors étudiants / contacts entreprise — redirigés ou exemptés)
+  // Les étudiants ont leur propre vue ; les entreprises sont redirigées plus bas
   if (!isEntreprise && !isEtudiant && !isContactWithAccess) {
     // Afficher le chargement des permissions
     if (permissionLoading) {
@@ -936,365 +943,19 @@ export default function Dashboard(): JSX.Element {
     }
   }
 
-  // Dashboard simplifié pour les Entreprises
+  // Plus de dashboard dédié aux entreprises — redirection
   if (isEntreprise) {
-    // Filtrer toutes les missions de l'entreprise
-    // Logs réduits pour éviter la répétition
-    
-    const allEnterpriseMissions = missions.filter(mission => {
-      if (!currentUser) return false;
-      const matches = mission.companyId === currentUser.uid;
-      if (!matches) {
-        console.log('Mission filtrée (companyId ne correspond pas):', {
-          missionId: mission.id,
-          missionCompanyId: mission.companyId,
-          currentUserId: currentUser.uid
-        });
-      }
-      return matches;
-    });
-
-    // Logs réduits pour éviter la répétition
-
-    // Trier par date de création (plus récentes en premier)
-    const sortedMissions = [...allEnterpriseMissions].sort((a, b) => {
-      let dateA: Date;
-      let dateB: Date;
-      
-      if (a.createdAt) {
-        if (a.createdAt.toDate && typeof a.createdAt.toDate === 'function') {
-          dateA = a.createdAt.toDate();
-        } else if (a.createdAt instanceof Date) {
-          dateA = a.createdAt;
-        } else if (typeof a.createdAt === 'string' || typeof a.createdAt === 'number') {
-          dateA = new Date(a.createdAt);
-        } else {
-          // Timestamp Firestore avec seconds/nanoseconds
-          const ts = a.createdAt as any;
-          if (ts.seconds) {
-            dateA = new Date(ts.seconds * 1000);
-          } else {
-            dateA = new Date(0);
-          }
-        }
-      } else {
-        dateA = new Date(0);
-      }
-      
-      if (b.createdAt) {
-        if (b.createdAt.toDate && typeof b.createdAt.toDate === 'function') {
-          dateB = b.createdAt.toDate();
-        } else if (b.createdAt instanceof Date) {
-          dateB = b.createdAt;
-        } else if (typeof b.createdAt === 'string' || typeof b.createdAt === 'number') {
-          dateB = new Date(b.createdAt);
-        } else {
-          // Timestamp Firestore avec seconds/nanoseconds
-          const ts = b.createdAt as any;
-          if (ts.seconds) {
-            dateB = new Date(ts.seconds * 1000);
-          } else {
-            dateB = new Date(0);
-          }
-        }
-      } else {
-        dateB = new Date(0);
-      }
-      
-      return dateB.getTime() - dateA.getTime();
-    });
-
-    // Filtrer selon l'onglet sélectionné
-    const filteredMissions = enterpriseMissionTab === 0 
-      ? sortedMissions // Toutes
-      : enterpriseMissionTab === 1 
-      ? sortedMissions.filter(m => m.status === 'En attente de validation' || m.status === 'Draft') // En attente
-      : enterpriseMissionTab === 2
-      ? sortedMissions.filter(m => {
-          const endDate = new Date(m.endDate);
-          const now = new Date();
-          return endDate >= now && m.status !== 'En attente de validation' && m.status !== 'Draft' && m.status !== 'Terminée';
-        }) // En cours
-      : sortedMissions.filter(m => {
-          const endDate = new Date(m.endDate);
-          const now = new Date();
-          return endDate < now || m.status === 'Terminée';
-        }); // Terminées
-
-    // Fonction pour obtenir la couleur du statut
-    const getStatusColor = (status: string) => {
-      if (!status) return 'default';
-      if (status.includes('attente') || status === 'Draft') return 'warning';
-      if (status.includes('cours') || status.includes('Négociation') || status.includes('Recrutement')) return 'info';
-      if (status === 'Terminée') return 'success';
-      return 'default';
-    };
-
-    // Fonction pour formater le statut
-    const formatStatus = (status: string) => {
-      if (!status) return 'En attente';
-      if (status === 'En attente de validation') return 'En attente';
-      return status;
-    };
-
-    const handleEnterpriseMissionSuccess = () => {
-      setSnackbar({
-        open: true,
-        message: 'Votre demande a été envoyée avec succès. Notre équipe vous contactera sous 48h.',
-        severity: 'success'
-      });
-      // Rafraîchir les missions en rechargeant simplement depuis Firestore
-      // On réutilise la même logique que dans le useEffect initial
-      if (!currentUser) return;
-      
-      const refreshMissions = async () => {
-        try {
-          const missionsRef = collection(db, 'missions');
-          const missionsQuery = query(
-            missionsRef,
-            where('companyId', '==', currentUser.uid)
-          );
-          const missionsSnapshot = await getDocs(missionsQuery);
-          
-          console.log('Rafraîchissement - Missions trouvées:', missionsSnapshot.docs.length);
-          
-          const missionsList: Mission[] = missionsSnapshot.docs
-            .map(doc => {
-              const data = doc.data();
-              let startDate = '';
-              let endDate = '';
-              
-              if (data.startDate) {
-                if (data.startDate.toDate && typeof data.startDate.toDate === 'function') {
-                  startDate = data.startDate.toDate().toISOString().split('T')[0];
-                } else if (typeof data.startDate === 'string') {
-                  startDate = data.startDate.includes('T') 
-                    ? data.startDate.split('T')[0] 
-                    : data.startDate;
-                } else {
-                  startDate = new Date(data.startDate).toISOString().split('T')[0];
-                }
-              }
-              
-              if (data.endDate) {
-                if (data.endDate.toDate && typeof data.endDate.toDate === 'function') {
-                  endDate = data.endDate.toDate().toISOString().split('T')[0];
-                } else if (typeof data.endDate === 'string') {
-                  endDate = data.endDate.includes('T') 
-                    ? data.endDate.split('T')[0] 
-                    : data.endDate;
-                } else {
-                  endDate = new Date(data.endDate).toISOString().split('T')[0];
-                }
-              }
-              
-              return {
-                id: doc.id,
-                numeroMission: data.numeroMission || '',
-                title: data.title || data.company || '',
-                startDate: startDate,
-                endDate: endDate || startDate,
-                company: data.company || '',
-                description: data.description || '',
-                status: data.status || 'En attente de validation',
-                createdAt: data.createdAt,
-                companyId: data.companyId || ''
-              };
-            });
-            
-          console.log('✅ Rafraîchissement - Missions chargées:', missionsList.length);
-          setMissions(missionsList);
-          setStatistics({
-            totalRevenue: 0,
-            totalMissions: missionsList.length,
-            activeMissions: missionsList.filter(m => {
-              const end = new Date(m.endDate);
-              return end >= new Date();
-            }).length,
-            totalStudents: 0
-          });
-        } catch (error: any) {
-          console.error('❌ Erreur lors du rafraîchissement des missions:', error);
-          if (error?.code === 'permission-denied') {
-            console.error('❌ Permissions insuffisantes lors du rafraîchissement');
-            console.error('Détails de l\'erreur:', {
-              code: error.code,
-              message: error.message,
-              uid: currentUser.uid
-            });
-            setSnackbar({
-              open: true,
-              message: 'Erreur de permissions lors du rafraîchissement.',
-              severity: 'error'
-            });
-          }
-        }
-      };
-      
-      refreshMissions();
-    };
-
     return (
-      <Container maxWidth="lg">
-        <Box sx={{ py: 4 }}>
-          <Typography variant="h4" sx={{ mb: 4, fontWeight: 600 }}>
-            Tableau de bord
-          </Typography>
-          
-          {/* Bouton CTA principal */}
-          <Box sx={{ mb: 4 }}>
-            <Button 
-              variant="contained" 
-              size="large"
-              startIcon={<AddIcon />}
-              onClick={() => setEnterpriseMissionDialogOpen(true)}
-              sx={{ 
-                py: 2,
-                px: 4,
-                fontSize: '1.1rem',
-                fontWeight: 600,
-                borderRadius: tokens.radius.md,
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-                '&:hover': {
-                  boxShadow: '0 6px 16px rgba(0, 0, 0, 0.2)',
-                }
-              }}
-            >
-              Déposer une nouvelle mission
-            </Button>
-          </Box>
-
-          {/* Modal de création de mission entreprise */}
-          <EnterpriseMissionForm
-            open={enterpriseMissionDialogOpen}
-            onClose={() => setEnterpriseMissionDialogOpen(false)}
-            onSuccess={handleEnterpriseMissionSuccess}
-          />
-
-          {/* Liste des demandes de mission */}
-          <Card elevation={0} sx={{ borderRadius: tokens.radius.md, boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)' }}>
-            <CardContent>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                  Mes demandes de mission
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {allEnterpriseMissions.length} demande{allEnterpriseMissions.length > 1 ? 's' : ''} au total
-                </Typography>
-              </Box>
-
-              {/* Onglets de filtrage */}
-              <Tabs 
-                value={enterpriseMissionTab} 
-                onChange={(e, newValue) => setEnterpriseMissionTab(newValue)}
-                sx={{ mb: 3, borderBottom: 1, borderColor: 'divider' }}
-              >
-                <Tab label="Toutes" />
-                <Tab label="En attente" />
-                <Tab label="En cours" />
-                <Tab label="Terminées" />
-              </Tabs>
-              
-              {filteredMissions.length === 0 ? (
-                <EmptyState
-                  icon={<AssignmentIcon sx={{ fontSize: 48, color: tokens.colors.textSecondary }} />}
-                  title={
-                    enterpriseMissionTab === 0
-                      ? 'Aucune demande envoyée'
-                      : enterpriseMissionTab === 1
-                      ? 'Aucune demande en attente'
-                      : enterpriseMissionTab === 2
-                      ? 'Aucune mission en cours'
-                      : 'Aucune mission terminée'
-                  }
-                  description="Vos missions apparaîtront ici dès qu'elles seront créées ou mises à jour."
-                />
-              ) : (
-                <Box>
-                  {filteredMissions.map((mission) => {
-                    const createdDate = mission.createdAt?.toDate 
-                      ? mission.createdAt.toDate() 
-                      : (mission.createdAt ? new Date(mission.createdAt) : null);
-                    
-                    return (
-                      <Box 
-                        key={mission.id}
-                        sx={{ 
-                          p: 2, 
-                          mb: 2, 
-                          border: '1px solid #e5e5ea', 
-                          borderRadius: tokens.radius.sm,
-                          cursor: 'pointer',
-                          '&:hover': {
-                            bgcolor: tokens.colors.bgSubtle,
-                            borderColor: '#d1d1d6'
-                          }
-                        }}
-                        onClick={() => {
-                          if (mission.id) {
-                            navigate(`/app/mission/${mission.id}`);
-                          }
-                        }}
-                      >
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
-                              {mission.title || mission.company || 'Sans titre'}
-                            </Typography>
-                            {mission.numeroMission && mission.numeroMission !== '' && (
-                              <Typography variant="caption" color="text.secondary">
-                                Mission #{mission.numeroMission}
-                              </Typography>
-                            )}
-                          </Box>
-                          <Chip 
-                            label={formatStatus(mission.status || 'En attente')} 
-                            color={getStatusColor(mission.status || '') as any}
-                            size="small"
-                            sx={{ ml: 2 }}
-                          />
-                        </Box>
-                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, mt: 1.5 }}>
-                          {mission.startDate && (
-                            <Typography variant="body2" color="text.secondary">
-                              <strong>Période:</strong> {new Date(mission.startDate).toLocaleDateString('fr-FR')} 
-                              {mission.endDate && ` - ${new Date(mission.endDate).toLocaleDateString('fr-FR')}`}
-                            </Typography>
-                          )}
-                          {createdDate && (
-                            <Typography variant="body2" color="text.secondary">
-                              <strong>Envoyée le:</strong> {createdDate.toLocaleDateString('fr-FR', { 
-                                day: 'numeric', 
-                                month: 'long', 
-                                year: 'numeric' 
-                              })}
-                            </Typography>
-                          )}
-                        </Box>
-                        {mission.description && (
-                          <Typography 
-                            variant="body2" 
-                            color="text.secondary" 
-                            sx={{ mt: 1, 
-                              overflow: 'hidden', 
-                              textOverflow: 'ellipsis', 
-                              display: '-webkit-box',
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: 'vertical'
-                            }}
-                          >
-                            {mission.description}
-                          </Typography>
-                        )}
-                      </Box>
-                    );
-                  })}
-                </Box>
-              )}
-            </CardContent>
-          </Card>
-        </Box>
-      </Container>
+      <Navigate
+        to={getPostAuthRedirectPath({
+          status: userStatus,
+          companyId: userData?.companyId,
+          isContactWithAccess,
+          canViewEvents: contactPermissions?.canViewEvents,
+          canManageAmbassadors: contactPermissions?.canManageAmbassadors,
+        })}
+        replace
+      />
     );
   }
 

@@ -479,7 +479,7 @@ const AvailableMissions: React.FC = () => {
         // Ne pas rediriger les contacts avec accès qui ont canViewEvents
         // Ils peuvent voir les missions ambassadeurs de leur entreprise
         if (userStatus === 'entreprise' && !(isContactWithAccess && contactPermissions?.canViewEvents)) {
-          navigate('/app/dashboard', { replace: true });
+          navigate('/app/billing-page', { replace: true });
           return;
         }
 

@@ -1,39 +1,45 @@
-import { VARIABLE_TAGS } from '../types/templates';
+import { VARIABLE_TAGS, resolveTagFromVariableId } from './variableTags';
+import { applyTagReplacements, buildTagReplacements, escapeRegExp } from './documentTagEngine';
 
-// Fonction pour échapper les caractères spéciaux dans les expressions régulières
-export const escapeRegExp = (string: string): string => {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export { escapeRegExp };
+
+/** Résout la balise PDF à partir d'un variableId. */
+export const getTagFromVariableId = (variableId: string, dataSource?: string | null): string => {
+  return resolveTagFromVariableId(variableId, dataSource);
 };
 
-// Fonction pour obtenir la balise à partir de l'ID de la variable
-export const getTagFromVariableId = (variableId: string): string => {
-  const tagMapping = VARIABLE_TAGS.find(mapping => mapping.variableId === variableId);
-  return tagMapping ? tagMapping.tag : '';
-};
-
-// Fonction pour remplacer les balises par leurs valeurs
-export const replaceTags = async (text: string, missionData?: any, userData?: any, companyData?: any): Promise<string> => {
+/**
+ * Remplacement simple (mission / user / company) — pour usages légers.
+ * Préférer buildTagReplacements + applyTagReplacements pour le PDF mission.
+ */
+export const replaceTags = async (
+  text: string,
+  missionData?: Record<string, unknown>,
+  userData?: Record<string, unknown>,
+  companyData?: Record<string, unknown>
+): Promise<string> => {
   if (!text) return '';
-  
+
   try {
+    if (missionData) {
+      const replacements = buildTagReplacements({
+        mission: missionData,
+        userData: userData ?? null,
+        companyData: companyData ?? null,
+      });
+      return applyTagReplacements(text, replacements, { mission: missionData });
+    }
+
     let result = text;
     for (const { tag, variableId } of VARIABLE_TAGS) {
       let value = '';
-      
-      // Chercher d'abord dans les données de mission
       if (missionData && variableId in missionData) {
         value = missionData[variableId]?.toString() || '';
-      }
-      // Puis dans les données utilisateur
-      else if (userData && variableId in userData) {
+      } else if (userData && variableId in userData) {
         value = userData[variableId]?.toString() || '';
-      }
-      // Enfin dans les données de l'entreprise
-      else if (companyData && variableId in companyData) {
+      } else if (companyData && variableId in companyData) {
         value = companyData[variableId]?.toString() || '';
       }
-
-      // Remplacer la balise par la valeur
       result = result.replace(new RegExp(escapeRegExp(tag), 'g'), value);
     }
     return result;
@@ -41,4 +47,4 @@ export const replaceTags = async (text: string, missionData?: any, userData?: an
     console.error('Erreur lors du remplacement des balises:', error);
     return text;
   }
-}; 
+};

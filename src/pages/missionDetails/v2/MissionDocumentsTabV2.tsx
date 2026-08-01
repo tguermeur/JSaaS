@@ -113,12 +113,14 @@ export const MissionDocumentsTabV2: React.FC<MissionDocumentsTabV2Props> = ({
             />
           ))}
           {onGenerateFromTemplate && (
-            <TemplateActionCard
-              label="Générer depuis une template"
-              hint="Templates PDF de la structure"
-              color="#6366f1"
-              onClick={() => !generatingDocType && onGenerateFromTemplate()}
-            />
+            <Box sx={{ gridColumn: { xs: '1', sm: '1 / -1' } }}>
+              <TemplateActionCard
+                label="Générer depuis une template"
+                hint="Templates PDF de la structure"
+                color="#6366f1"
+                onClick={() => !generatingDocType && onGenerateFromTemplate()}
+              />
+            </Box>
           )}
         </Box>
       </CollapsiblePanel>
@@ -192,6 +194,16 @@ const DocList: React.FC<{
       <Box>
         {docs.map((doc) => {
           const colors = DOC_COLORS[doc.documentType] || DOC_COLORS.default;
+          const isSigned =
+            !!doc.isSigned ||
+            !!doc.locked ||
+            doc.signatureStatus === 'completed';
+          const isPendingSignature =
+            !isSigned &&
+            (doc.signatureStatus === 'pending' ||
+              doc.signatureStatus === 'sent' ||
+              (!!doc.signatureRequestId && doc.signatureStatus !== 'cancelled'));
+
           return (
             <DocRowV2
               key={doc.id}
@@ -203,45 +215,59 @@ const DocList: React.FC<{
                   {`v${doc.version} · ${doc.createdAt.toLocaleDateString('fr-FR')} · par `}
                   <UserReferenceText
                     userId={doc.createdBy}
-                    name={doc.createdByName}
+                    name={
+                      doc.createdByName &&
+                      doc.createdByName !== 'Utilisateur' &&
+                      doc.createdByName !== 'Inconnu'
+                        ? doc.createdByName
+                        : undefined
+                    }
                     fallback="Utilisateur"
                     component="span"
                     sx={{ fontSize: 'inherit', color: 'inherit' }}
                   />
                 </>
               }
-              size={fmtSize(doc.fileSize)}
               tags={
                 <>
-                  {doc.isUploaded && (
-                    <Chip label="Importé" size="small" sx={{ height: 16, fontSize: 9 }} />
-                  )}
-                  {(doc.isSigned || doc.locked || doc.signatureStatus === 'completed') && (
+                  {isSigned && (
                     <Chip
                       label="Signé"
                       size="small"
                       sx={{
-                        height: 16,
-                        fontSize: 9,
+                        height: 20,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        flexShrink: 0,
                         bgcolor: tokens.colors.successLight,
                         color: tokens.colors.success,
                       }}
                     />
                   )}
-                  {doc.signatureStatus === 'pending' && !doc.isSigned && (
+                  {isPendingSignature && (
                     <Chip
                       label="En signature"
                       size="small"
                       sx={{
-                        height: 16,
-                        fontSize: 9,
+                        height: 20,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        flexShrink: 0,
                         bgcolor: tokens.colors.warningLight,
                         color: '#b45309',
                       }}
                     />
                   )}
+                  {doc.isUploaded && (
+                    <Chip
+                      label="Importé"
+                      size="small"
+                      sx={{ height: 20, fontSize: 10, fontWeight: 600, flexShrink: 0 }}
+                    />
+                  )}
                 </>
               }
+              size={fmtSize(doc.fileSize)}
               onClick={() => onOpen(doc)}
               actions={
                 <Box sx={{ display: 'flex', gap: 0.25 }}>

@@ -32,6 +32,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       border: `1px solid ${tokens.colors.divider}`,
       borderRadius: tokens.radius.lg,
       overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
       ...sx,
     }}
   >
@@ -46,6 +48,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           px: dense ? 1.5 : 2.25,
           borderBottom: `1px solid ${tokens.colors.gray100}`,
           gap: dense ? 1 : 1.5,
+          flexShrink: 0,
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: dense ? 1 : 1.25, minWidth: 0 }}>
@@ -81,7 +84,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         {action}
       </Box>
     )}
-    <Box sx={{ p: pad }}>{children}</Box>
+    <Box sx={{ p: pad, flex: 1, display: 'flex', flexDirection: 'column' }}>{children}</Box>
     {footer && (
       <Box
         component="footer"

@@ -11,7 +11,6 @@ import {
   Alert,
   Snackbar,
   CircularProgress,
-  Grid,
   Tooltip,
   alpha,
   useTheme
@@ -413,7 +412,15 @@ const TemplateAssignmentComponent: React.FC = () => {
           <CircularProgress size={40} />
         </Box>
       ) : (
-        <Grid container spacing={3}>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+            gap: 3,
+            alignItems: 'stretch',
+            gridAutoRows: '1fr',
+          }}
+        >
           {Object.entries(DOCUMENT_TYPES)
             .filter(([type]) => {
               // Filtrer selon le structureType
@@ -441,9 +448,10 @@ const TemplateAssignmentComponent: React.FC = () => {
               }
             })
             .map(([type, label]) => (
-            <Grid item xs={12} md={6} key={type}>
-              <SettingsPanel
+            <SettingsPanel
+                key={type}
                 title={label}
+                sx={{ height: '100%', minHeight: 0 }}
                 action={isSuperAdmin ? (
                   <Tooltip title="Template par défaut">
                     <StarIcon
@@ -456,7 +464,7 @@ const TemplateAssignmentComponent: React.FC = () => {
                   </Tooltip>
                 ) : undefined}
               >
-                  {type === 'proposition_commerciale' && (
+                  {type === 'proposition_commerciale' ? (
                     <Box sx={{ mb: 2 }}>
                       <SegmentedControl
                         value={generationTypes[type as DocumentType] || 'template'}
@@ -469,6 +477,8 @@ const TemplateAssignmentComponent: React.FC = () => {
                         ]}
                       />
                     </Box>
+                  ) : (
+                    <Box sx={{ mb: 2, minHeight: 40 }} aria-hidden />
                   )}
 
                   <FormControl fullWidth>
@@ -555,7 +565,7 @@ const TemplateAssignmentComponent: React.FC = () => {
 
                   {isSuperAdmin && assignments[type as DocumentType] && (
                     <Box sx={{ 
-                      mt: 2, 
+                      mt: 'auto',
                       display: 'flex', 
                       alignItems: 'center', 
                       gap: 2,
@@ -604,9 +614,8 @@ const TemplateAssignmentComponent: React.FC = () => {
                     </Box>
                   )}
               </SettingsPanel>
-            </Grid>
           ))}
-        </Grid>
+        </Box>
       )}
 
       {!canSave && (
