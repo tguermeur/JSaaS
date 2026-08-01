@@ -3058,6 +3058,10 @@ Pour l'entreprise :                    Pour l'étudiant :
             }
             
             // Calculer la portion du canvas à capturer
+            // contentHeight = hauteur DOM du contenu ; le facteur canvas/scrollHeight convertit en pixels canvas.
+            // Incertitude : actualImgHeight est dérivé de trimmedHeight (contenu réel), pas de canvas.height entier —
+            // si la pagination découpe mal en multi-pages, revoir ce mapping.
+            const contentHeight = tempDiv.scrollHeight;
             const sourceY = (yPosition / actualImgHeight) * contentHeight * (canvas.height / tempDiv.scrollHeight);
             const sourceHeight = (currentPageHeight / actualImgHeight) * contentHeight * (canvas.height / tempDiv.scrollHeight);
             

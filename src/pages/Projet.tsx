@@ -58,6 +58,7 @@ import { decryptUsersList, getDecryptedUserDisplayName, getSafeDisplayName } fro
 import { tokens } from '../theme/tokens';
 import ChargeNameText from '../components/common/ChargeNameText';
 import UserAvatarInitials from '../components/common/UserAvatarInitials';
+import { fadeIn } from '../styles/animations';
 
 // Animations
 

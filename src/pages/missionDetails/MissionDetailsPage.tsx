@@ -3101,6 +3101,7 @@ const MissionDetails: React.FC = () => {
       console.log('🗑️ Suppression des anciens documents...');
       const existingDocsQuery = query(
         collection(db, 'generatedDocuments'),
+        where('structureId', '==', mission.structureId),
         where('missionId', '==', mission.id),
         where('documentType', '==', documentType)
       );
@@ -3112,7 +3113,29 @@ const MissionDetails: React.FC = () => {
             )
           : existingDocsSnapshot.docs;
       console.log('🗑️ Anciens documents trouvés:', docsToDelete.length);
-      
+
+      // Garde-fou : ne pas détruire un document engagé dans une signature
+      // (signatureStatus cancelled reste supprimable). Dupliqué dans EtudeDetailsPage.
+      const isSignatureProtected = (data: Record<string, unknown>): boolean => {
+        if (data.signatureStatus === 'cancelled') return false;
+        if (data.signatureStatus === 'pending' || data.signatureStatus === 'completed') return true;
+        return Boolean(data.signatureRequestId);
+      };
+      const hasProtectedDoc = docsToDelete.some((docSnap) =>
+        isSignatureProtected(docSnap.data() as Record<string, unknown>)
+      );
+      if (hasProtectedDoc) {
+        enqueueSnackbar(
+          'Ce document est engagé dans un processus de signature et ne peut pas être régénéré. Annulez la demande de signature avant de le régénérer.',
+          { variant: 'error' }
+        );
+        setGeneratingDocType(null);
+        if (forceDownload) {
+          setDownloadProgress(null);
+        }
+        return;
+      }
+
       for (const doc of docsToDelete) {
         const docData = doc.data();
         // Supprimer de Storage
@@ -3850,6 +3873,31 @@ const MissionDetails: React.FC = () => {
         setDownloadProgress(null);
       }
     }
+  };
+
+  /**
+   * Handler du dialogue de confirmation de régénération.
+   * IMPORTANT : ce dialogue n'est PAS encore câblé — `setDocumentConfirmDialog({ open: true })`
+   * n'est appelé nulle part. Aujourd'hui `generateDocument` remplace automatiquement les
+   * documents existants (avec garde-fou signature). Le câblage complet (ouverture + reprise
+   * keep/replace) est prévu au LOT 4.
+   */
+  const handleDocumentConfirmation = (
+    action: 'cancel' | 'replace' | 'keep'
+  ): void => {
+    if (action === 'cancel') {
+      setDocumentConfirmDialog((prev) => ({
+        ...prev,
+        open: false,
+        action: 'cancel',
+      }));
+      return;
+    }
+    setDocumentConfirmDialog((prev) => ({
+      ...prev,
+      open: false,
+      action,
+    }));
   };
 
   const handleSavePrice = async () => {

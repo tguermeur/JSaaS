@@ -2465,13 +2465,18 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ userData, onUpdate }) => {
                 <Button
                   variant="contained"
                   onClick={async () => {
-                    // Réessayer d'ouvrir le document
-                    const docType = documentTypes.find(dt => {
-                      const url = (userData as any)[dt.fieldName];
-                      return url && url.includes(path?.split('/').pop() || '');
+                    // Réessayer d'ouvrir le document (chemin Storage du dernier decrypt en attente)
+                    const storagePath = pendingDecryptDocument?.path;
+                    if (!storagePath) return;
+                    const fileName = storagePath.split('/').pop() || '';
+                    const docType = DOCUMENT_TYPES.find((dt) => {
+                      const url = (userData as Record<string, unknown>)[dt.fieldName];
+                      return typeof url === 'string' && fileName.length > 0 && url.includes(fileName);
                     });
                     if (docType) {
                       await handleDocumentView(docType);
+                    } else {
+                      await openDocumentWithDecrypt(storagePath);
                     }
                   }}
                 >
