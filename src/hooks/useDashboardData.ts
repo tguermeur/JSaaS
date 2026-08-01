@@ -157,7 +157,7 @@ async function fetchPaidItems(
     const snap = await getDocs(
       query(ref, where('structureId', '==', structureId), where('invoiceStatus', 'in', [...statuses]), limit(PAID_LIST_LIMIT))
     );
-    return snap.docs.map((d) => mapDocToDashboardMission(d.id, d.data() as Record<string, unknown>, { isEtude }));
+    return snap.docs.map((d) => mapFirestoreToDashboardMission(d.id, d.data() as Record<string, unknown>, { isEtude }));
   } catch {
     // Index composite manquant : fallback scan + filtre client
     try {
@@ -170,7 +170,7 @@ async function fetchPaidItems(
             .replace(/[\u0300-\u036f]/g, '');
           return s === 'paid' || s === 'payee' || s === 'paye';
         })
-        .map((d) => mapDocToDashboardMission(d.id, d.data() as Record<string, unknown>, { isEtude }));
+        .map((d) => mapFirestoreToDashboardMission(d.id, d.data() as Record<string, unknown>, { isEtude }));
     } catch {
       return [];
     }

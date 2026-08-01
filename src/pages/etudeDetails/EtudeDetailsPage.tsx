@@ -1365,12 +1365,37 @@ const EtudeDetails: React.FC = () => {
       console.log('🗑️ Suppression des anciens documents...');
       const existingDocsQuery = query(
         collection(db, 'generatedDocuments'),
+        where('structureId', '==', etude.structureId),
         where('etudeId', '==', etude.id || ''),
         where('documentType', '==', documentType)
       );
       const existingDocsSnapshot = await getDocs(existingDocsQuery);
       console.log('🗑️ Anciens documents trouvés:', existingDocsSnapshot.size);
-      
+
+      // Garde-fou : ne pas détruire un document engagé dans une signature
+      // (signatureStatus cancelled reste supprimable). Dupliqué dans MissionDetailsPage.
+      const isSignatureProtected = (data: Record<string, unknown>): boolean => {
+        if (data.signatureStatus === 'cancelled') return false;
+        if (data.signatureStatus === 'pending' || data.signatureStatus === 'completed') return true;
+        return Boolean(data.signatureRequestId);
+      };
+      const hasProtectedDoc = existingDocsSnapshot.docs.some((docSnap) =>
+        isSignatureProtected(docSnap.data() as Record<string, unknown>)
+      );
+      if (hasProtectedDoc) {
+        setSnackbar({
+          open: true,
+          message:
+            'Ce document est engagé dans un processus de signature et ne peut pas être régénéré. Annulez la demande de signature avant de le régénérer.',
+          severity: 'error',
+        });
+        setGeneratingDoc(false);
+        if (forceDownload) {
+          setDownloadProgress(null);
+        }
+        return;
+      }
+
       for (const doc of existingDocsSnapshot.docs) {
         const docData = doc.data();
         // Supprimer de Storage
