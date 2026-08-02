@@ -19,8 +19,9 @@ jobs:
       VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.STAGING_VITE_FIREBASE_MESSAGING_SENDER_ID }}
       VITE_FIREBASE_APP_ID: ${{ secrets.STAGING_VITE_FIREBASE_APP_ID }}
       VITE_APP_URL: ${{ secrets.STAGING_VITE_APP_URL }}
-      VITE_FUNCTIONS_REGION: ${{ secrets.STAGING_VITE_FUNCTIONS_REGION }}
-      VITE_FUNCTIONS_BASE_URL: ${{ secrets.STAGING_VITE_FUNCTIONS_BASE_URL }}
+      # Défaut us-central1 si secret absent (callables staging déployées en us-central1)
+      VITE_FUNCTIONS_REGION: ${{ secrets.STAGING_VITE_FUNCTIONS_REGION || 'us-central1' }}
+      VITE_FUNCTIONS_BASE_URL: ${{ secrets.STAGING_VITE_FUNCTIONS_BASE_URL || 'https://us-central1-js-connect-staging.cloudfunctions.net' }}
       # EmailJS volontairement absent — le staging ne doit pas envoyer d'emails
 
     steps:

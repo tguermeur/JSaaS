@@ -59,7 +59,7 @@ Configurer sur le projet **`js-connect-staging`** (Secret Manager / variables d�
 | `STRIPE_SECRET_KEY` | Clé **test** uniquement (`sk_test_…`) |
 | `STRIPE_WEBHOOK_SECRET` | Secret du **webhook staging** (endpoint distinct) |
 | `STRIPE_MODE` | `test` |
-| `FUNCTIONS_REGION` | `europe-west1` |
+| `FUNCTIONS_REGION` | `us-central1` (callables ; Firestore data en europe-west1) |
 
 ### Sécurité critique — clés de chiffrement
 
