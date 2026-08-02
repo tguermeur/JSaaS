@@ -217,6 +217,33 @@ async function main() {
   await batch1.commit();
   console.log(`✓ ${companyIds.length} entreprises, ${studentIds.length} étudiants (Firestore only)`);
 
+  const contactFirst = ['Marie', 'Thomas', 'Sophie', 'Lucas', 'Emma'];
+  const contactLast = ['Martin', 'Bernard', 'Dubois', 'Petit', 'Robert'];
+  const contactPos = ['Directrice achats', 'DRH', 'Responsable projet', 'Chef de projet', 'Directeur général'];
+  const batchContacts = db.batch();
+  let contactCount = 0;
+  for (let i = 0; i < companyIds.length; i++) {
+    for (let j = 0; j < 2; j++) {
+      const first = contactFirst[(i + j) % contactFirst.length];
+      const last = contactLast[(i + j) % contactLast.length];
+      const ref = db.collection('contacts').doc();
+      batchContacts.set(ref, {
+        companyId: companyIds[i].id,
+        structureId,
+        firstName: first,
+        lastName: last,
+        email: `${first.toLowerCase()}.${last.toLowerCase()}@entreprise-${i + 1}.test`,
+        position: contactPos[(i + j) % contactPos.length],
+        isDefault: j === 0,
+        createdBy: adminUid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      contactCount += 1;
+    }
+  }
+  await batchContacts.commit();
+  console.log(`✓ ${contactCount} contacts`);
+
   const now = new Date();
   const mandat = `${now.getFullYear() - 1}-${now.getFullYear()}`;
   let missionCount = 0;

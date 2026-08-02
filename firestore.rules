@@ -435,10 +435,10 @@ service cloud.firestore {
                resource.id == userData.companyId;
       }
       
-      // Admin/membre : accepter status OU role (compatibilité)
+      // Admin/membre : accepter status OU role (compatibilité) — admin_structure inclus
       function isAdminOrMember(userData) {
-        return userData.status == 'admin' || userData.status == 'membre' ||
-               userData.role == 'admin' || userData.role == 'superadmin';
+        return userData.status == 'admin' || userData.status == 'admin_structure' || userData.status == 'membre' || userData.status == 'member' ||
+               userData.role == 'admin' || userData.role == 'admin_structure' || userData.role == 'superadmin';
       }
       
       function canReadCompanies() {
@@ -1566,7 +1566,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null && 
-                 userData.status in ['admin', 'membre'] &&
+                 userData.status in ['admin', 'admin_structure', 'membre', 'member'] &&
                  contactData.structureId == userData.structureId
                ) ||
                (
@@ -1576,7 +1576,7 @@ service cloud.firestore {
                    isSuperAdmin() ||
                    (
                      userData != null && 
-                     userData.status in ['admin', 'membre'] &&
+                     userData.status in ['admin', 'admin_structure', 'membre', 'member'] &&
                      get(/databases/$(database)/documents/companies/$(contactData.companyId)).data.structureId == userData.structureId
                    )
                  )
@@ -1600,7 +1600,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           request.resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
+          getUserData().status in ['membre', 'member', 'admin', 'admin_structure']
         )
       );
       
@@ -1608,7 +1608,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
+          getUserData().status in ['membre', 'member', 'admin', 'admin_structure']
         )
       );
       
@@ -1616,7 +1616,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
+          getUserData().status in ['membre', 'member', 'admin', 'admin_structure']
         )
       );
     }
@@ -1627,7 +1627,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null && 
-                 userData.status in ['admin', 'membre'] &&
+                 userData.status in ['admin', 'admin_structure', 'membre', 'member'] &&
                  exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
                  get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == userData.structureId
                ) ||
@@ -1652,7 +1652,7 @@ service cloud.firestore {
         isSuperAdmin() ||
         (
           getUserData() != null &&
-          getUserData().status in ['admin', 'membre'] &&
+          getUserData().status in ['admin', 'admin_structure', 'membre', 'member'] &&
           exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
           get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == getUserData().structureId
         )
