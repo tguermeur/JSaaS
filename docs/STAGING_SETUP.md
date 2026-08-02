@@ -1,12 +1,12 @@
-# Environnement de staging — jsaas-staging
+# Environnement de staging — js-connect-staging
 
-Projet Firebase dédié : **`jsaas-staging`** (app web « JS Connect Staging »).  
+Projet Firebase dédié : **`js-connect-staging`** (app web « JS Connect Staging »).  
 La production reste sur **`jsaas-dd2f7`** et se déploie **manuellement**.
 
 | Alias `.firebaserc` | Projet |
 |---------------------|--------|
 | `default` / `prod` | `jsaas-dd2f7` |
-| `staging` | `jsaas-staging` |
+| `staging` | `js-connect-staging` |
 
 ## Bascule d’alias
 
@@ -34,7 +34,7 @@ npm run deploy:staging:functions
 
 ## Cloud Functions — 22 variables (staging)
 
-Configurer sur le projet **`jsaas-staging`** (Secret Manager / variables d’env Cloud Functions), **pas** sur la prod.
+Configurer sur le projet **`js-connect-staging`** (Secret Manager / variables d’env Cloud Functions), **pas** sur la prod.
 
 | Variable | Valeur attendue en staging |
 |----------|----------------------------|
@@ -53,7 +53,7 @@ Configurer sur le projet **`jsaas-staging`** (Secret Manager / variables d’env
 | `EMAILJS_TEMPLATE_ID_DEMARCHAGE` | **Vide / non défini** |
 | `EMAILJS_USER_ID` | **Vide / non défini** |
 | `EMAILJS_PRIVATE_KEY` | **Vide / non défini** |
-| `FRONTEND_URL` | `https://jsaas-staging.web.app` |
+| `FRONTEND_URL` | `https://js-connect-staging.web.app` |
 | `CONTACT_INBOX` | Boîte staging ou vide |
 | `CONTACT_EMAIL` | Idem / vide |
 | `STRIPE_SECRET_KEY` | Clé **test** uniquement (`sk_test_…`) |
@@ -91,9 +91,9 @@ echo -n "whsec_..." | firebase functions:secrets:set STRIPE_WEBHOOK_SECRET --dat
 
 # FRONTEND_URL : variable d’environnement non secrète (pas dans secrets),
 # pour éviter le conflit « overlaps non secret » au deploy.
-# Console GCP → Cloud Run / Functions → FRONTEND_URL=https://jsaas-staging.web.app
+# Console GCP → Cloud Run / Functions → FRONTEND_URL=https://js-connect-staging.web.app
 
-firebase deploy --only functions --project jsaas-staging
+firebase deploy --only functions --project js-connect-staging
 ```
 
 Ou, une fois un `.env` local dédié staging (hors git) :
@@ -105,7 +105,7 @@ node scripts/setup-firebase-secrets.js   # lit .env — vérifier le contenu ava
 
 ## CI — déploiement auto staging
 
-Workflow [`.github/workflows/deploy-staging.yml`](../.github/workflows/deploy-staging.yml) : sur **push `main`**, build `--mode staging` puis `firebase deploy --project jsaas-staging` via compte de service (`FIREBASE_SERVICE_ACCOUNT_STAGING`).
+Workflow [`.github/workflows/deploy-staging.yml`](../.github/workflows/deploy-staging.yml) : sur **push `main`**, build `--mode staging` puis `firebase deploy --project js-connect-staging` via compte de service (`FIREBASE_SERVICE_ACCOUNT_STAGING`).
 
 La **production** n’est **pas** déployée automatiquement. Les scripts `deploy` / `deploy:hosting` / `deploy:security` exigent la saisie interactive de `jsaas-dd2f7`.
 
@@ -120,7 +120,7 @@ GOOGLE_APPLICATION_CREDENTIALS=./service-account.json \
   node scripts/seed-staging-from-prod.mjs --confirm --limit=50
 ```
 
-Le script lit `jsaas-dd2f7` et n’écrit que dans `jsaas-staging`. Les URLs Storage prod (`*Url`, documents d’identité, `customDocuments`) sont nullifiées.
+Le script lit `jsaas-dd2f7` et n’écrit que dans `js-connect-staging`. Les URLs Storage prod (`*Url`, documents d’identité, `customDocuments`) sont nullifiées.
 
 Pour l’émulateur local uniquement : `scripts/seed-emulator-from-prod.mjs` (exige `FIRESTORE_EMULATOR_HOST`).
 
@@ -132,4 +132,4 @@ Ordre type : dry-run staging → exécution staging → validation → seulement
 
 ## Rollback staging
 
-Redeployer le commit / artefact précédent sur `jsaas-staging` (`firebase use staging` puis `firebase deploy` ciblé).
+Redeployer le commit / artefact précédent sur `js-connect-staging` (`firebase use staging` puis `firebase deploy` ciblé).

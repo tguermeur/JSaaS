@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Seed Firestore staging avec un échantillon anonymisé lu depuis prod.
- * Lecture seule sur jsaas-dd2f7 → écriture uniquement sur jsaas-staging.
+ * Lecture seule sur jsaas-dd2f7 → écriture uniquement sur js-connect-staging.
  *
  * Usage :
  *   node scripts/seed-staging-from-prod.mjs --dry-run
@@ -9,11 +9,11 @@
  *
  * Env :
  *   PROD_PROJECT_ID=jsaas-dd2f7
- *   STAGING_PROJECT_ID=jsaas-staging
+ *   STAGING_PROJECT_ID=js-connect-staging
  *   GOOGLE_APPLICATION_CREDENTIALS=... (compte avec lecture prod + écriture staging)
  *
  * Garde-fous (tous obligatoires) :
- *   1. projet cible === jsaas-staging
+ *   1. projet cible === js-connect-staging
  *   2. --confirm présent (sauf --dry-run)
  *   3. FIRESTORE_EMULATOR_HOST non défini
  */
@@ -25,8 +25,8 @@ const limitArg = args.find((a) => a.startsWith('--limit='));
 const LIMIT = limitArg ? parseInt(limitArg.split('=')[1], 10) : 50;
 
 const PROD_PROJECT_ID = process.env.PROD_PROJECT_ID || 'jsaas-dd2f7';
-const STAGING_PROJECT_ID = process.env.STAGING_PROJECT_ID || 'jsaas-staging';
-const EXPECTED_STAGING = 'jsaas-staging';
+const STAGING_PROJECT_ID = process.env.STAGING_PROJECT_ID || 'js-connect-staging';
+const EXPECTED_STAGING = 'js-connect-staging';
 
 if (STAGING_PROJECT_ID !== EXPECTED_STAGING) {
   console.error(
@@ -36,7 +36,7 @@ if (STAGING_PROJECT_ID !== EXPECTED_STAGING) {
 }
 
 if (!dryRun && !confirmed) {
-  console.error('Refus : ajoutez --confirm pour écrire dans jsaas-staging (ou --dry-run pour simuler).');
+  console.error('Refus : ajoutez --confirm pour écrire dans js-connect-staging (ou --dry-run pour simuler).');
   process.exit(1);
 }
 
