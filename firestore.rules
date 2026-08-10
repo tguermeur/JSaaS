@@ -72,6 +72,14 @@ service cloud.firestore {
       let userData = getUserData();
       return userData != null && userData.status == 'entreprise';
     }
+
+    // Quota plan gratuit : true si pas encore de doc billing, plan payant, ou quota items non saturé.
+    function hasFreeQuotaForNewItem(structureId) {
+      let billingPath = /databases/$(database)/documents/structures/$(structureId)/billing/current;
+      return !exists(billingPath)
+        || get(billingPath).data.plan != 'free'
+        || get(billingPath).data.freeItemsUsed < get(billingPath).data.freeItemsLimit;
+    }
     
     // =========================================================================
     // FONCTIONS DE VÉRIFICATION DE PERMISSIONS (GRANULAIRES)
@@ -289,9 +297,15 @@ service cloud.firestore {
       
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        canCreateViaStructure() ||
-        isEnterpriseCreatingOwnMission() ||
-        isContactCreatingEvent()
+        (
+          (canCreateViaStructure() || isEnterpriseCreatingOwnMission() || isContactCreatingEvent())
+          && (
+            request.resource.data.type == 'ambassadeur_event'
+            || !(request.resource.data.structureId is string)
+            || request.resource.data.structureId == ''
+            || hasFreeQuotaForNewItem(request.resource.data.structureId)
+          )
+        )
       );
       
       function canContactUpdateEvent() {
@@ -726,6 +740,12 @@ service cloud.firestore {
         allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
         allow create, update, delete: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
       }
+
+      // Quota plan gratuit — lecture membres / SA ; écriture Admin SDK uniquement
+      match /billing/{docId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
+        allow write: if false;
+      }
     }
 
     // =========================================================================
@@ -1090,7 +1110,8 @@ service cloud.firestore {
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
         (getUserData().status in ['admin', 'membre'] &&
-         request.resource.data.structureId == getUserData().structureId)
+         request.resource.data.structureId == getUserData().structureId &&
+         hasFreeQuotaForNewItem(request.resource.data.structureId))
       );
       
       allow update: if isAuthenticated() && (

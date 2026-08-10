@@ -1512,6 +1512,13 @@ export {
 // Exporter le trigger de chiffrement automatique des users
 export { encryptUserOnWrite } from './firestoreTriggers';
 
+// Quotas plan gratuit (billing/current init + incrément items)
+export {
+  onStructureCreatedInitQuota,
+  onMissionCreatedCountQuota,
+  onEtudeCreatedCountQuota,
+} from './quota';
+
 export {
   onAmbassadorApplicationWrite,
   onAmbassadorDocumentWrite,

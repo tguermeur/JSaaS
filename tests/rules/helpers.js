@@ -160,6 +160,19 @@ export async function seedFixtures() {
   await db.doc(`structures/${STRUCTURE_A}`).set({ name: 'Structure A' });
   await db.doc(`structures/${STRUCTURE_B}`).set({ name: 'Structure B' });
 
+  // Quota plan gratuit — défaut free avec usage 0 (les tests create existants restent verts)
+  const defaultBilling = {
+    plan: 'free',
+    freeItemsLimit: 3,
+    freeItemsUsed: 0,
+    freeItemsCountedRefs: [],
+    freeSignatureTokensLimit: 10,
+    freeSignatureTokensUsed: 0,
+    updatedAt: new Date().toISOString(),
+  };
+  await db.doc(`structures/${STRUCTURE_A}/billing/current`).set(defaultBilling);
+  await db.doc(`structures/${STRUCTURE_B}/billing/current`).set(defaultBilling);
+
   // Permissions module mission — nécessaires pour hasPermission / canWritePage
   for (const sid of [STRUCTURE_A, STRUCTURE_B]) {
     for (const permId of ['mission', 'mission_read', 'organization']) {

@@ -20,6 +20,10 @@ import {
   extractRequestContext,
 } from './audit';
 import { sealSignedDocument } from './seal';
+import {
+  billingCurrentRef,
+  consumeFreeSignatureTokenInTransaction,
+} from '../quotaHelpers';
 
 export { sendSignerOtp, verifySignerOtp } from './smsStubs';
 
@@ -332,7 +336,7 @@ export const createSignatureRequest = onCall(callConfigAuth, async (request) => 
       };
     });
 
-  await requestRef.set({
+  const requestPayload = {
     structureId,
     createdBy: uid,
     createdAt: FieldValue.serverTimestamp(),
@@ -358,6 +362,14 @@ export const createSignatureRequest = onCall(callConfigAuth, async (request) => 
     signatureFields,
     smsReady: true,
     expiresAt,
+  };
+
+  // Quota signatures free + création de la demande — atomiques
+  const billingRef = billingCurrentRef(db, structureId);
+  await db.runTransaction(async (tx) => {
+    const billingSnap = await tx.get(billingRef);
+    consumeFreeSignatureTokenInTransaction(tx, billingRef, billingSnap);
+    tx.set(requestRef, requestPayload);
   });
 
   await appendSignatureEvent(requestRef.id, {
