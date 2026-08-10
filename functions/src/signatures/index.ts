@@ -20,8 +20,17 @@ import {
   extractRequestContext,
 } from './audit';
 import { sealSignedDocument } from './seal';
+import {
+  billingCurrentRef,
+  consumeFreeSignatureTokenInTransaction,
+} from '../quotaHelpers';
+import { getStoragePdfForClient } from './storagePdf';
 
 export { sendSignerOtp, verifySignerOtp } from './smsStubs';
+export {
+  listMySignatureRequestsAsCompanyContact,
+  runListMySignatureRequestsAsCompanyContact,
+} from './companyContactList';
 
 const secrets = [...EMAILJS_GENERIC_SECRETS, 'ENCRYPTION_KEY'] as const;
 
@@ -38,38 +47,6 @@ const callConfigPublic = {
   timeoutSeconds: 120,
   secrets: [...secrets],
 };
-
-/** URL signée Storage, ou base64 si le SA n’a pas iam.serviceAccounts.signBlob. */
-async function getStoragePdfForClient(storagePath: string): Promise<{
-  pdfUrl: string | null;
-  pdfBase64: string | null;
-}> {
-  if (!storagePath) {
-    throw new HttpsError('failed-precondition', 'Chemin PDF manquant.');
-  }
-  const file = admin.storage().bucket().file(storagePath);
-  try {
-    const [url] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 15 * 60 * 1000,
-      version: 'v4',
-    });
-    return { pdfUrl: url, pdfBase64: null };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn('getSignedUrl failed, fallback base64:', msg);
-    const [exists] = await file.exists();
-    if (!exists) throw new HttpsError('not-found', 'Fichier PDF introuvable.');
-    const [buf] = await file.download();
-    if (buf.length > 6 * 1024 * 1024) {
-      throw new HttpsError(
-        'resource-exhausted',
-        'PDF trop volumineux. Accordez roles/iam.serviceAccountTokenCreator au compte de service des Functions.'
-      );
-    }
-    return { pdfUrl: null, pdfBase64: Buffer.from(buf).toString('base64') };
-  }
-}
 
 type SignerInput = {
   email: string;
@@ -332,7 +309,7 @@ export const createSignatureRequest = onCall(callConfigAuth, async (request) => 
       };
     });
 
-  await requestRef.set({
+  const requestPayload = {
     structureId,
     createdBy: uid,
     createdAt: FieldValue.serverTimestamp(),
@@ -358,6 +335,14 @@ export const createSignatureRequest = onCall(callConfigAuth, async (request) => 
     signatureFields,
     smsReady: true,
     expiresAt,
+  };
+
+  // Quota signatures free + création de la demande — atomiques
+  const billingRef = billingCurrentRef(db, structureId);
+  await db.runTransaction(async (tx) => {
+    const billingSnap = await tx.get(billingRef);
+    consumeFreeSignatureTokenInTransaction(tx, billingRef, billingSnap);
+    tx.set(requestRef, requestPayload);
   });
 
   await appendSignatureEvent(requestRef.id, {

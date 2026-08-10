@@ -8,6 +8,8 @@ build/
 
 # Environment variables
 .env
+.env.staging
+.secrets-local/
 .env.local
 .env.development.local
 .env.test.local

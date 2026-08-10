@@ -21,6 +21,7 @@ import {
   TableHead,
   TableRow,
   Typography,
+  Tooltip,
 } from '@mui/material';
 import {
   Gesture as GestureIcon,
@@ -39,6 +40,8 @@ import PageHeader from '../components/common/PageHeader';
 import EmptyState from '../components/common/EmptyState';
 import { tokens } from '../theme/tokens';
 import { useAuth } from '../contexts/AuthContext';
+import { useFreeQuotaUpgrade } from '../contexts/FreeQuotaUpgradeContext';
+import { useStructureQuota } from '../hooks/useStructureQuota';
 import type { SignatureEvent, SignatureRequest } from '../types/signature';
 import {
   cancelSignatureRequest,
@@ -126,6 +129,8 @@ function openPdfPayload(payload: { url: string | null; pdfBase64?: string | null
 
 const Signatures: React.FC = () => {
   const { userData } = useAuth();
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(userData?.structureId);
   const isSuperAdmin =
     userData?.status === 'superadmin' || userData?.role === 'superadmin';
   const [requests, setRequests] = useState<SignatureRequest[]>([]);
@@ -145,6 +150,14 @@ const Signatures: React.FC = () => {
   const [downloadBusy, setDownloadBusy] = useState<'document' | 'full' | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SignatureRequest | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const handleOpenNewDocument = () => {
+    if (structureQuota.plan === 'free' && structureQuota.isSignatureQuotaExceeded) {
+      openFreeQuotaDialog('signatures');
+      return;
+    }
+    setNewOpen(true);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -257,19 +270,31 @@ const Signatures: React.FC = () => {
         subtitle="Suivez les demandes de signature électronique"
         action={
           <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={() => setNewOpen(true)}
-              sx={{
-                bgcolor: tokens.colors.brandTeal,
-                '&:hover': { bgcolor: tokens.colors.brandTeal700 },
-                textTransform: 'none',
-                fontWeight: 600,
-              }}
+            <Tooltip
+              title={
+                structureQuota.plan === 'free' && structureQuota.isSignatureQuotaExceeded
+                  ? 'Quota gratuit atteint (10 signatures). Passez au plan payant.'
+                  : ''
+              }
             >
-              Nouveau document
-            </Button>
+              <span>
+                <Button
+                  variant="contained"
+                  startIcon={<AddIcon />}
+                  onClick={handleOpenNewDocument}
+                  sx={{
+                    bgcolor: tokens.colors.brandTeal,
+                    '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+                    textTransform: 'none',
+                    fontWeight: 600,
+                  }}
+                >
+                  {structureQuota.plan === 'free' && structureQuota.isSignatureQuotaExceeded
+                    ? 'Passer au plan payant'
+                    : 'Nouveau document'}
+                </Button>
+              </span>
+            </Tooltip>
             <Button
               variant="outlined"
               size="small"
@@ -325,8 +350,11 @@ const Signatures: React.FC = () => {
             title="Aucune demande de signature"
             description="Ajoutez un PDF à faire signer, éventuellement lié à une mission."
             action={{
-              label: 'Nouveau document',
-              onClick: () => setNewOpen(true),
+              label:
+                structureQuota.plan === 'free' && structureQuota.isSignatureQuotaExceeded
+                  ? 'Passer au plan payant'
+                  : 'Nouveau document',
+              onClick: handleOpenNewDocument,
               icon: <AddIcon />,
             }}
           />

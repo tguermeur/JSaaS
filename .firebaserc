@@ -2,7 +2,7 @@
   "projects": {
     "default": "jsaas-dd2f7",
     "prod": "jsaas-dd2f7",
-    "prof": "jsaas-dd2f7"
+    "staging": "js-connect-staging"
   },
   "targets": {},
   "etags": {}

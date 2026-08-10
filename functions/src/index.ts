@@ -1512,6 +1512,14 @@ export {
 // Exporter le trigger de chiffrement automatique des users
 export { encryptUserOnWrite } from './firestoreTriggers';
 
+// Quotas plan gratuit (billing/current init + incrément items)
+export {
+  onStructureCreatedInitQuota,
+  onMissionCreatedCountQuota,
+  onMissionUpdatedCountQuota,
+  onEtudeCreatedCountQuota,
+} from './quota';
+
 export {
   onAmbassadorApplicationWrite,
   onAmbassadorDocumentWrite,
@@ -1537,6 +1545,10 @@ export {
   inviteStructureMember,
   sendWelcomeEmailCallable,
 } from './notifications/structureInvite';
+export {
+  inviteCompanyContact,
+  linkCompanyContactAfterRegister,
+} from './notifications/companyInvite';
 
 // Exporter les fonctions de scoring IA (prospects, relances, analyse clients)
 export {
@@ -1579,6 +1591,7 @@ export {
   getSignatureAudit,
   getSealedDocumentUrl,
   listSignatureRequests,
+  listMySignatureRequestsAsCompanyContact,
   sendSignerOtp,
   verifySignerOtp,
 } from './signatures';

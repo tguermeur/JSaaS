@@ -2417,7 +2417,7 @@ const Organization = () => {
 
                           {subscriptionStatus.details === 'trialing' && (
                             <Typography variant="body2" color="primary">
-                              Vous êtes actuellement en période d'essai.
+                              Votre abonnement est en cours d'activation.
                             </Typography>
                           )}
                         </>

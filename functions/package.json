@@ -10,6 +10,8 @@
     "deploy": "firebase deploy --only functions",
     "migrate:stripe-secrets": "node scripts/migrate-stripe-secrets.js",
     "migrate:stripe-secrets:dry-run": "node scripts/migrate-stripe-secrets.js --dry-run",
+    "backfill:quota": "npx tsx scripts/backfill-quota.ts",
+    "backfill:quota:dry-run": "npx tsx scripts/backfill-quota.ts --dry-run",
     "deploy:security-failed": "firebase deploy --only functions:saveStructureStripeSecret,functions:encryptUserOnWrite",
     "deploy:failed-quota": "firebase deploy --only functions:decryptUserDataForStructure,functions:createCheckoutSession",
     "deploy:entreprise-ambassador": "firebase deploy --only functions:decryptUserDataForStructure,functions:decryptContactDataForStructure,functions:decryptOwnUserData,functions:decryptOwnCompanyData",
@@ -38,6 +40,7 @@
     "@types/node": "^20.11.19",
     "@types/speakeasy": "^2.0.10",
     "firebase-functions-test": "^3.1.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.3.3"
   },
   "private": true

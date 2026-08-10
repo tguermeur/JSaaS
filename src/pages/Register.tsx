@@ -52,6 +52,7 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { fr } from 'date-fns/locale';
 import { tokens } from '../theme/tokens';
 import { getStructureAcademicConfig } from '../services/structureAcademicService';
+import { linkCompanyContactAfterRegister } from '../services/companyInviteService';
 
 // Style pour l'input de fichier
 const VisuallyHiddenInput = styled('input')({
@@ -92,12 +93,27 @@ const Register: React.FC = () => {
   const planParam = searchParams.get('plan');
   const inviteToken = searchParams.get('invite');
   const inviteStructureId = searchParams.get('structure');
+  const inviteCompanyIdParam = searchParams.get('company');
 
-  // Invitation RH : précharger la structure
+  // Invitation RH (étudiant) ou invitation contact entreprise
   useEffect(() => {
     if (!inviteToken) return;
     (async () => {
       try {
+        if (registrationType === 'company') {
+          const inviteSnap = await getDoc(doc(db, 'companyInvites', inviteToken));
+          if (!inviteSnap.exists()) return;
+          const invite = inviteSnap.data();
+          if (invite.email) setCompanyEmail(String(invite.email));
+          if (invite.companyName) setCompanyName(String(invite.companyName));
+          setCompanyInviteMeta({
+            companyId: String(invite.companyId || inviteCompanyIdParam || ''),
+            structureId: String(invite.structureId || ''),
+            companyName: String(invite.companyName || ''),
+          });
+          return;
+        }
+
         const inviteSnap = await getDoc(doc(db, 'structureInvites', inviteToken));
         if (!inviteSnap.exists()) return;
         const invite = inviteSnap.data();
@@ -113,7 +129,7 @@ const Register: React.FC = () => {
         console.warn('Invite load failed:', err);
       }
     })();
-  }, [inviteToken, inviteStructureId]);
+  }, [inviteToken, inviteStructureId, inviteCompanyIdParam, registrationType]);
   const isPremiumPlan = Boolean(planParam === 'premium' || (typeof window !== 'undefined' && window.location.search.includes('plan=premium')));
   
   const navigate = useNavigate();
@@ -158,6 +174,11 @@ const Register: React.FC = () => {
   const [companyContactFirstName, setCompanyContactFirstName] = useState('');
   const [companyContactLastName, setCompanyContactLastName] = useState('');
   const [companyEmail, setCompanyEmail] = useState('');
+  const [companyInviteMeta, setCompanyInviteMeta] = useState<{
+    companyId: string;
+    structureId: string;
+    companyName: string;
+  } | null>(null);
   const [companyPhone, setCompanyPhone] = useState('');
   const [companyPassword, setCompanyPassword] = useState('');
   const [companyConfirmPassword, setCompanyConfirmPassword] = useState('');
@@ -578,8 +599,30 @@ const Register: React.FC = () => {
           createdAt: new Date(),
           status: 'entreprise' as any
         };
+
+        // Invitation contact entreprise : rattacher companyId uniquement (jamais structureId)
+        if (registrationType === 'company' && inviteToken && companyInviteMeta?.companyId) {
+          userData.companyId = companyInviteMeta.companyId;
+        }
         
         await createUserDocument(user.uid, userData);
+
+        if (registrationType === 'company' && inviteToken) {
+          try {
+            await updateDoc(doc(db, 'companyInvites', inviteToken), {
+              status: 'accepted',
+              acceptedBy: user.uid,
+              acceptedAt: new Date(),
+            });
+            try {
+              await linkCompanyContactAfterRegister(inviteToken);
+            } catch (linkErr) {
+              console.warn('Company contact link after register failed:', linkErr);
+            }
+          } catch (inviteErr) {
+            console.warn('Company invite mark accepted failed:', inviteErr);
+          }
+        }
         
         setFieldErrors({}); // Effacer les erreurs après succès
         // Rediriger vers la route centrale qui choisit le bon écran selon le statut
@@ -1597,10 +1640,10 @@ const Register: React.FC = () => {
         }}
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-          🎉 Votre essai gratuit de 2 mois commence dès l'inscription.
+          Gratuit jusqu'à 3 missions ou études, et 10 signatures.
         </Typography>
         <Typography variant="body2">
-          Accédez à toutes les fonctionnalités pendant 60 jours, sans engagement.
+          Passez au plan payant quand vous le souhaitez, sans engagement.
         </Typography>
       </Alert>
       

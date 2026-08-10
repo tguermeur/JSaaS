@@ -34,7 +34,7 @@ const plans: PricingPlan[] = [
     name: 'Premium',
     price: '149,90€',
     features: [
-      '2 mois gratuits',
+      'Gratuit jusqu\'à 3 missions ou études, et 10 signatures',
       'Toutes les fonctionnalités incluses',
       'Support prioritaire'
     ],
@@ -301,23 +301,23 @@ export default function PricingPlans() {
                   zIndex: 1
                 }}
               >
-                2 mois gratuits
+                Gratuit jusqu'à 3 missions ou études, et 10 signatures
               </Box>
               <CardContent sx={{ flexGrow: 1, pt: 4 }}>
                 <Typography variant="h5" component="h2" gutterBottom>
                   {plan.name}
                 </Typography>
                 <Typography sx={{ color: '#30D158', fontWeight: 700, fontSize: '1.1rem', mb: 1 }}>
-                  Économisez 299,80€
+                  Puis 149,90€/mois
                 </Typography>
                 <Typography variant="h4" component="div" gutterBottom>
-                  0€
+                  {plan.price}
                   <Typography variant="body2" component="span" color="text.secondary" sx={{ ml: 0.5 }}>
-                    les 2 premiers mois
+                    /mois
                   </Typography>
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  puis {plan.price}/mois
+                  Sans engagement
                 </Typography>
                 <List disablePadding>
                   {plan.features.map((feature, index) => (

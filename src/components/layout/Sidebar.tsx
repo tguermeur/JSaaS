@@ -591,7 +591,7 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
     return items;
   }, [userData?.isAmbassador]);
 
-  // Menu pour les Entreprises
+  // Menu pour les Entreprises (auto-inscription libre)
   const companyMenuItems: MenuItem[] = [
     {
       text: 'Facturation',
@@ -601,9 +601,19 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       section: 'crm',
     },
   ];
+
+  // Espace contact invité (lot 3b)
+  const contactSpaceMenuItem: MenuItem = {
+    text: 'Mon espace',
+    icon: <BusinessCenterIcon />,
+    iconSidebarIcon: <BusinessCenterIcon />,
+    path: '/app/mon-espace-entreprise',
+    section: 'crm',
+  };
   
-  // Menu pour les Contacts avec accès
+  // Menu pour les Contacts avec accès ambassadeur
   const contactMenuItems: MenuItem[] = [
+    contactSpaceMenuItem,
     {
       text: 'Ambassadeurs',
       icon: <CampaignIcon />,
@@ -619,6 +629,9 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       section: 'missions',
     },
   ];
+
+  // Contact invité sans droits ambassadeur
+  const contactBasicMenuItems: MenuItem[] = [contactSpaceMenuItem];
 
   const superAdminMenuItems: MenuItem[] = [
     {
@@ -654,6 +667,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
       // Si c'est un contact avec accès, afficher le menu spécifique
       if (isContactWithAccess && (canViewEvents || canManageAmbassadors)) {
         allItems = contactMenuItems;
+      } else if (isContactWithAccess) {
+        allItems = contactBasicMenuItems;
       } else {
         allItems = companyMenuItems;
       }
@@ -728,6 +743,8 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose }) => {
         return true;
       });
       allMenuItems = filteredContactItems;
+    } else if (isContactWithAccess) {
+      allMenuItems = contactBasicMenuItems;
     } else {
       allMenuItems = companyMenuItems;
     }

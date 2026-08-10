@@ -17,6 +17,16 @@ import { addDoc, collection, getDocs, limit, orderBy, query, where } from 'fireb
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
+import { useFreeQuotaUpgrade } from '../../contexts/FreeQuotaUpgradeContext';
+import {
+  confirmFreeQuotaExceeded,
+  SIGNATURE_QUOTA_EXHAUSTED_MSG,
+  useStructureQuota,
+} from '../../hooks/useStructureQuota';
+import {
+  getFirebaseErrorMessage,
+  isFunctionsResourceExhausted,
+} from '../../utils/firebaseErrors';
 import { tokens } from '../../theme/tokens';
 import { SIGNATURE_CONSENT_WORDING, type SignatureField } from '../../types/signature';
 import { createSignatureRequest, type SignerInput } from '../../services/signatureService';
@@ -42,6 +52,8 @@ const emptySigner = (): SignerInput => ({ email: '', name: '' });
 
 const NewSignatureRequestDialog: React.FC<Props> = ({ open, onClose, onCreated }) => {
   const { currentUser, userData } = useAuth();
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(userData?.structureId);
   const [step, setStep] = useState<'form' | 'place'>('form');
   const [file, setFile] = useState<File | null>(null);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
@@ -181,6 +193,10 @@ const NewSignatureRequestDialog: React.FC<Props> = ({ open, onClose, onCreated }
       setError('Aucune structure associée à votre compte.');
       return;
     }
+    if (structureQuota.plan === 'free' && structureQuota.isSignatureQuotaExceeded) {
+      openFreeQuotaDialog('signatures');
+      return;
+    }
     if (!file) {
       setError('Sélectionnez un document PDF à signer.');
       return;
@@ -253,6 +269,18 @@ const NewSignatureRequestDialog: React.FC<Props> = ({ open, onClose, onCreated }
       reset();
       onClose();
     } catch (e: unknown) {
+      if (isFunctionsResourceExhausted(e)) {
+        const msg = getFirebaseErrorMessage(e);
+        const looksLikeSignatureQuota =
+          msg.includes('Quota de signatures') || msg.includes(SIGNATURE_QUOTA_EXHAUSTED_MSG);
+        if (looksLikeSignatureQuota) {
+          const quotaHit = await confirmFreeQuotaExceeded(structureId, 'signatures');
+          if (quotaHit) {
+            openFreeQuotaDialog('signatures');
+            return;
+          }
+        }
+      }
       const msg =
         e && typeof e === 'object' && 'message' in e
           ? String((e as { message: string }).message)

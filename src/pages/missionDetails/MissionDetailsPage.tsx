@@ -96,6 +96,9 @@ import { getDownloadURL, ref, uploadBytes, deleteObject } from 'firebase/storage
 import { db, app, storage, getAppFunctions } from '../../firebase/config';
 import { JOBSERVICE_WORKSPACE } from '../detailWorkspace';
 import { useAuth } from '../../contexts/AuthContext';
+import { useFreeQuotaUpgrade } from '../../contexts/FreeQuotaUpgradeContext';
+import { confirmFreeQuotaExceeded, useStructureQuota } from '../../hooks/useStructureQuota';
+import { isFirestorePermissionDenied } from '../../utils/firebaseErrors';
 import { usePermission } from '../../hooks/usePermission';
 import AccessDenied from '../../components/common/AccessDenied';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
@@ -968,6 +971,8 @@ const MissionDetails: React.FC = () => {
   const { missionId } = useParams<{ missionId: string }>();
   const navigate = useNavigate();
   const { currentUser, userData } = useAuth();
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(userData?.structureId);
   const { canRead, canWrite, loading: permissionLoading } = usePermission('mission');
   const [mission, setMission] = useState<Mission | null>(null);
   const [loading, setLoading] = useState(true);
@@ -6397,6 +6402,10 @@ const MissionDetails: React.FC = () => {
       enqueueSnackbar('Impossible de dupliquer : structure manquante', { variant: 'error' });
       return;
     }
+    if (structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded) {
+      openFreeQuotaDialog('items');
+      return;
+    }
 
     try {
       enqueueSnackbar('Duplication en cours…', { variant: 'info' });
@@ -6451,6 +6460,13 @@ const MissionDetails: React.FC = () => {
       navigate(`/app/mission/${docRef.id}`);
     } catch (error) {
       console.error('Erreur lors de la duplication de la mission:', error);
+      if (isFirestorePermissionDenied(error)) {
+        const quotaHit = await confirmFreeQuotaExceeded(mission.structureId, 'items');
+        if (quotaHit) {
+          openFreeQuotaDialog('items');
+          return;
+        }
+      }
       enqueueSnackbar('Erreur lors de la duplication de la mission', { variant: 'error' });
     }
   };

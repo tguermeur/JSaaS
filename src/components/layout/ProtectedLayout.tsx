@@ -7,6 +7,7 @@ import ImpersonationBanner from '../common/ImpersonationBanner';
 import { useChangelog } from '../../contexts/ChangelogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { MissionProvider } from '../../contexts/MissionContext';
+import { FreeQuotaUpgradeProvider } from '../../contexts/FreeQuotaUpgradeContext';
 
 const ProtectedLayout: React.FC = () => {
   const { showChangelog, showOnboarding, markChangelogAsSeen, markOnboardingAsSeen, closeOnboardingAndSaveStep, loading: changelogLoading } = useChangelog();
@@ -18,7 +19,7 @@ const ProtectedLayout: React.FC = () => {
   };
 
   return (
-    <>
+    <FreeQuotaUpgradeProvider>
       {/* Bandeau d'impersonation (Run as) */}
       <ImpersonationBanner />
       
@@ -42,8 +43,8 @@ const ProtectedLayout: React.FC = () => {
           />
         </>
       )}
-    </>
+    </FreeQuotaUpgradeProvider>
   );
 };
 
-export default ProtectedLayout; 
+export default ProtectedLayout;

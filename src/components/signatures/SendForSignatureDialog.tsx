@@ -22,6 +22,16 @@ import {
   loadSignaturePlacementsForDocumentType,
   placementsToSignatureFields,
 } from '../../utils/signaturePlacements';
+import { useFreeQuotaUpgrade } from '../../contexts/FreeQuotaUpgradeContext';
+import {
+  confirmFreeQuotaExceeded,
+  SIGNATURE_QUOTA_EXHAUSTED_MSG,
+  useStructureQuota,
+} from '../../hooks/useStructureQuota';
+import {
+  getFirebaseErrorMessage,
+  isFunctionsResourceExhausted,
+} from '../../utils/firebaseErrors';
 
 export type DefaultSigner = {
   firstName?: string;
@@ -98,6 +108,8 @@ const SendForSignatureDialog: React.FC<Props> = ({
   defaultSigners,
   onCreated,
 }) => {
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(structureId);
   const [signers, setSigners] = useState<SignerForm[]>([emptySigner()]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +183,11 @@ const SendForSignatureDialog: React.FC<Props> = ({
       }
     }
 
+    if (structureQuota.plan === 'free' && structureQuota.isSignatureQuotaExceeded) {
+      openFreeQuotaDialog('signatures');
+      return;
+    }
+
     setLoading(true);
     try {
       let signatureFields: ReturnType<typeof placementsToSignatureFields> | undefined;
@@ -198,6 +215,18 @@ const SendForSignatureDialog: React.FC<Props> = ({
       setSigners([emptySigner()]);
       onClose();
     } catch (e: unknown) {
+      if (isFunctionsResourceExhausted(e)) {
+        const msg = getFirebaseErrorMessage(e);
+        const looksLikeSignatureQuota =
+          msg.includes('Quota de signatures') || msg.includes(SIGNATURE_QUOTA_EXHAUSTED_MSG);
+        if (looksLikeSignatureQuota) {
+          const quotaHit = await confirmFreeQuotaExceeded(structureId, 'signatures');
+          if (quotaHit) {
+            openFreeQuotaDialog('signatures');
+            return;
+          }
+        }
+      }
       const msg =
         e && typeof e === 'object' && 'message' in e
           ? String((e as { message: string }).message)

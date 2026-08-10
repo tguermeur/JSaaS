@@ -34,6 +34,9 @@ export const USER_A = 'user-tenant-a';
 export const USER_B = 'user-tenant-b';
 export const USER_OTHER_A = 'user-other-a';
 export const USER_SA = 'user-superadmin';
+export const USER_ENT_A = 'user-entreprise-a';
+export const USER_ENT_B = 'user-entreprise-b';
+export const USER_INVITEE = 'user-company-invitee';
 
 export { assertFails, assertSucceeds };
 
@@ -43,6 +46,9 @@ export const USER_CLAIMS = {
   [USER_B]: { structureId: STRUCTURE_B, status: 'admin', role: 'admin' },
   [USER_OTHER_A]: { structureId: STRUCTURE_A, status: 'membre', role: 'membre' },
   [USER_SA]: { status: 'superadmin', role: 'superadmin', superadmin: true },
+  [USER_ENT_A]: { status: 'entreprise', role: 'entreprise', companyId: 'company-a' },
+  [USER_ENT_B]: { status: 'entreprise', role: 'entreprise', companyId: 'company-b' },
+  [USER_INVITEE]: { status: 'entreprise', role: 'entreprise' },
 };
 
 /** @type {import('@firebase/app-compat').FirebaseNamespace['apps']} */
@@ -80,9 +86,8 @@ export function dbAsUser(uid) {
 }
 
 /**
- * Auth avec custom claims (chemin production peuplé par userSync).
  * @param {string} uid
- * @param {{ structureId?: string, status?: string, role?: string, superadmin?: boolean }} claims
+ * @param {{ structureId?: string, status?: string, role?: string, superadmin?: boolean, companyId?: string }} claims
  */
 export function dbAsUserWithClaims(uid, claims = {}) {
   const token = { sub: uid, user_id: uid };
@@ -90,6 +95,7 @@ export function dbAsUserWithClaims(uid, claims = {}) {
   if (claims.status != null) token.status = claims.status;
   if (claims.role != null) token.role = claims.role;
   if (claims.superadmin != null) token.superadmin = claims.superadmin;
+  if (claims.companyId != null) token.companyId = claims.companyId;
   return getTestDb(token);
 }
 
@@ -156,9 +162,39 @@ export async function seedFixtures() {
     role: 'superadmin',
     email: 'sa@example.com',
   });
+  await db.doc(`users/${USER_ENT_A}`).set({
+    status: 'entreprise',
+    role: 'entreprise',
+    companyId: 'company-a',
+    email: 'ent-a@example.com',
+  });
+  await db.doc(`users/${USER_ENT_B}`).set({
+    status: 'entreprise',
+    role: 'entreprise',
+    companyId: 'company-b',
+    email: 'ent-b@example.com',
+  });
+  await db.doc(`users/${USER_INVITEE}`).set({
+    status: 'entreprise',
+    role: 'entreprise',
+    email: 'invitee@example.com',
+  });
 
   await db.doc(`structures/${STRUCTURE_A}`).set({ name: 'Structure A' });
   await db.doc(`structures/${STRUCTURE_B}`).set({ name: 'Structure B' });
+
+  // Quota plan gratuit — défaut free avec usage 0 (les tests create existants restent verts)
+  const defaultBilling = {
+    plan: 'free',
+    freeItemsLimit: 3,
+    freeItemsUsed: 0,
+    freeItemsCountedRefs: [],
+    freeSignatureTokensLimit: 10,
+    freeSignatureTokensUsed: 0,
+    updatedAt: new Date().toISOString(),
+  };
+  await db.doc(`structures/${STRUCTURE_A}/billing/current`).set(defaultBilling);
+  await db.doc(`structures/${STRUCTURE_B}/billing/current`).set(defaultBilling);
 
   // Permissions module mission — nécessaires pour hasPermission / canWritePage
   for (const sid of [STRUCTURE_A, STRUCTURE_B]) {
@@ -174,6 +210,37 @@ export async function seedFixtures() {
   await db.doc('companies/company-a').set({
     structureId: STRUCTURE_A,
     name: 'Company A',
+  });
+  await db.doc('companies/company-b').set({
+    structureId: STRUCTURE_B,
+    name: 'Company B',
+  });
+  await db.doc('companies/company-a/documents/doc-a').set({
+    title: 'Doc A',
+    storagePath: 'companies/company-a/documents/doc-a.pdf',
+    contentType: 'application/pdf',
+    byteSize: 1000,
+    uploadedBy: USER_A,
+    uploadedByRole: 'structure',
+    createdAt: new Date().toISOString(),
+  });
+  await db.doc('companies/company-b/documents/doc-b').set({
+    title: 'Doc B',
+    storagePath: 'companies/company-b/documents/doc-b.pdf',
+    contentType: 'application/pdf',
+    byteSize: 1000,
+    uploadedBy: USER_B,
+    uploadedByRole: 'structure',
+    createdAt: new Date().toISOString(),
+  });
+  await db.doc('companyInvites/invite-pending').set({
+    email: 'invitee@example.com',
+    companyId: 'company-a',
+    companyName: 'Company A',
+    structureId: STRUCTURE_A,
+    createdBy: USER_A,
+    createdAt: new Date().toISOString(),
+    status: 'pending',
   });
   await db.doc('missions/mission-a').set({
     structureId: STRUCTURE_A,

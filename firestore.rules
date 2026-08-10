@@ -72,6 +72,14 @@ service cloud.firestore {
       let userData = getUserData();
       return userData != null && userData.status == 'entreprise';
     }
+
+    // Quota plan gratuit : true si pas encore de doc billing, plan payant, ou quota items non saturé.
+    function hasFreeQuotaForNewItem(structureId) {
+      let billingPath = /databases/$(database)/documents/structures/$(structureId)/billing/current;
+      return !exists(billingPath)
+        || get(billingPath).data.plan != 'free'
+        || get(billingPath).data.freeItemsUsed < get(billingPath).data.freeItemsLimit;
+    }
     
     // =========================================================================
     // FONCTIONS DE VÉRIFICATION DE PERMISSIONS (GRANULAIRES)
@@ -237,6 +245,19 @@ service cloud.firestore {
         return resource.data.structureId != null && resource.data.structureId != '' &&
                hasPermissionOrStructureFallback('mission', 'write', resource.data.structureId);
       }
+
+      // Assignation JE : structureId passe de vide/absent → valeur non vide
+      function isAssigningStructureId() {
+        return (resource.data.structureId == null || resource.data.structureId == '')
+          && request.resource.data.structureId is string
+          && request.resource.data.structureId != '';
+      }
+
+      function canAssignStructureIdViaStructure() {
+        return isAssigningStructureId()
+          && hasPermissionOrStructureFallback('mission', 'write', request.resource.data.structureId)
+          && hasFreeQuotaForNewItem(request.resource.data.structureId);
+      }
       
       function canCreateViaStructure() {
         return request.resource.data.structureId != null && request.resource.data.structureId != '' &&
@@ -289,9 +310,15 @@ service cloud.firestore {
       
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
-        canCreateViaStructure() ||
-        isEnterpriseCreatingOwnMission() ||
-        isContactCreatingEvent()
+        (
+          (canCreateViaStructure() || isEnterpriseCreatingOwnMission() || isContactCreatingEvent())
+          && (
+            request.resource.data.type == 'ambassadeur_event'
+            || !(request.resource.data.structureId is string)
+            || request.resource.data.structureId == ''
+            || hasFreeQuotaForNewItem(request.resource.data.structureId)
+          )
+        )
       );
       
       function canContactUpdateEvent() {
@@ -328,6 +355,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
         canWriteViaStructure() ||
+        canAssignStructureIdViaStructure() ||
         (
           isEntreprise() &&
           resource.data.companyId == request.auth.uid &&
@@ -435,10 +463,10 @@ service cloud.firestore {
                resource.id == userData.companyId;
       }
       
-      // Admin/membre : accepter status OU role (compatibilité)
+      // Admin/membre : accepter status OU role (compatibilité) — admin_structure inclus
       function isAdminOrMember(userData) {
-        return userData.status == 'admin' || userData.status == 'membre' ||
-               userData.role == 'admin' || userData.role == 'superadmin';
+        return userData.status == 'admin' || userData.status == 'admin_structure' || userData.status == 'membre' || userData.status == 'member' ||
+               userData.role == 'admin' || userData.role == 'admin_structure' || userData.role == 'superadmin';
       }
       
       function canReadCompanies() {
@@ -481,6 +509,32 @@ service cloud.firestore {
         isSuperAdmin() || 
         canWriteCompanies()
       );
+
+      // Métadonnées documents espace entreprise (indépendants des missions)
+      match /documents/{documentId} {
+        function canAccessCompanyDocumentMeta() {
+          let userData = getUserData();
+          let companyPath = /databases/$(database)/documents/companies/$(companyId);
+          return exists(companyPath) && (
+            isSuperAdmin() ||
+            (
+              userData != null &&
+              tokenStructureId() != null &&
+              tokenStructureId() == get(companyPath).data.structureId &&
+              isAdminOrMember(userData)
+            ) ||
+            (
+              userData != null &&
+              userData.status == 'entreprise' &&
+              userData.companyId == companyId
+            )
+          );
+        }
+
+        allow read: if isAuthenticated() && canAccessCompanyDocumentMeta();
+        allow create, update: if isAuthenticated() && canAccessCompanyDocumentMeta();
+        allow delete: if isAuthenticated() && canAccessCompanyDocumentMeta();
+      }
     }
 
     // =========================================================================
@@ -725,6 +779,12 @@ service cloud.firestore {
       match /documents/{documentId} {
         allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
         allow create, update, delete: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
+      }
+
+      // Quota plan gratuit — lecture membres / SA ; écriture Admin SDK uniquement
+      match /billing/{docId} {
+        allow read: if isAuthenticated() && (isSuperAdmin() || isStructureMember(structureId));
+        allow write: if false;
       }
     }
 
@@ -1090,7 +1150,8 @@ service cloud.firestore {
       allow create: if isAuthenticated() && (
         isSuperAdmin() ||
         (getUserData().status in ['admin', 'membre'] &&
-         request.resource.data.structureId == getUserData().structureId)
+         request.resource.data.structureId == getUserData().structureId &&
+         hasFreeQuotaForNewItem(request.resource.data.structureId))
       );
       
       allow update: if isAuthenticated() && (
@@ -1339,6 +1400,17 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Invitations contact entreprise (même pattern que structureInvites)
+    match /companyInvites/{inviteId} {
+      allow read: if true;
+      allow create: if false;
+      allow update: if isAuthenticated()
+        && resource.data.status == 'pending'
+        && request.resource.data.status == 'accepted'
+        && request.resource.data.acceptedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
     // Dédup notifications billing (CF only)
     match /billingNotificationState/{stateId} {
       allow read, write: if false;
@@ -1566,7 +1638,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null && 
-                 userData.status in ['admin', 'membre'] &&
+                 userData.status in ['admin', 'admin_structure', 'membre', 'member'] &&
                  contactData.structureId == userData.structureId
                ) ||
                (
@@ -1576,7 +1648,7 @@ service cloud.firestore {
                    isSuperAdmin() ||
                    (
                      userData != null && 
-                     userData.status in ['admin', 'membre'] &&
+                     userData.status in ['admin', 'admin_structure', 'membre', 'member'] &&
                      get(/databases/$(database)/documents/companies/$(contactData.companyId)).data.structureId == userData.structureId
                    )
                  )
@@ -1600,7 +1672,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           request.resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
+          getUserData().status in ['membre', 'member', 'admin', 'admin_structure']
         )
       );
       
@@ -1608,7 +1680,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
+          getUserData().status in ['membre', 'member', 'admin', 'admin_structure']
         )
       );
       
@@ -1616,7 +1688,7 @@ service cloud.firestore {
         isSuperAdmin() || 
         (
           resource.data.structureId == getUserData().structureId &&
-          getUserData().status in ['membre', 'admin']
+          getUserData().status in ['membre', 'member', 'admin', 'admin_structure']
         )
       );
     }
@@ -1627,7 +1699,7 @@ service cloud.firestore {
         return isSuperAdmin() ||
                (
                  userData != null && 
-                 userData.status in ['admin', 'membre'] &&
+                 userData.status in ['admin', 'admin_structure', 'membre', 'member'] &&
                  exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
                  get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == userData.structureId
                ) ||
@@ -1652,7 +1724,7 @@ service cloud.firestore {
         isSuperAdmin() ||
         (
           getUserData() != null &&
-          getUserData().status in ['admin', 'membre'] &&
+          getUserData().status in ['admin', 'admin_structure', 'membre', 'member'] &&
           exists(/databases/$(database)/documents/contacts/$(contactAccessId)) &&
           get(/databases/$(database)/documents/contacts/$(contactAccessId)).data.structureId == getUserData().structureId
         )

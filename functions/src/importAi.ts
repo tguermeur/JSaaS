@@ -6,7 +6,9 @@
 
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import axios from 'axios';
+import * as admin from 'firebase-admin';
 import { assertCanManageStructure } from './authHelpers';
+import { recordAiCreditUsageSafe } from './aiCreditsHelpers';
 
 const GEMINI_MODEL = 'gemini-2.0-flash';
 const MAX_ROWS_NORMALIZE = 80;
@@ -87,6 +89,7 @@ Règles:
       for (const [csvHeader, internalKey] of Object.entries(mapping)) {
         if (allowed.has(internalKey)) filtered[csvHeader] = internalKey;
       }
+      await recordAiCreditUsageSafe(admin.firestore(), structureId, 'import_mapping');
       return { mapping: filtered };
     } catch (err: unknown) {
       if (err instanceof HttpsError) throw err;
@@ -166,6 +169,7 @@ ${JSON.stringify(slice)}`;
       const rest = rows.length > MAX_ROWS_NORMALIZE ? rows.slice(MAX_ROWS_NORMALIZE) : [];
       const fullNormalized = [...normalized, ...rest];
 
+      await recordAiCreditUsageSafe(admin.firestore(), structureId, 'import_normalize');
       return { normalizedRows: fullNormalized, validationErrors };
     } catch (err: unknown) {
       if (err instanceof HttpsError) throw err;

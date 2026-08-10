@@ -42,12 +42,12 @@ export default function Pricing(): JSX.Element {
   const plans = [
     {
       title: "Premium",
-      promoBadge: "2 mois gratuits",
-      promoValue: "Économisez 299,80€",
+      promoBadge: "Gratuit jusqu'à 3 missions ou études, et 10 signatures",
+      promoValue: "Sans engagement",
       price: "149,90€",
       priceSuffix: "/mois",
-      priceNote: "puis 149,90€/mois",
-      button: "Profiter de l'offre",
+      priceNote: "",
+      button: "S'abonner",
       featured: true
     },
     {
@@ -189,7 +189,7 @@ export default function Pricing(): JSX.Element {
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: tokens.colors.marketingWhite, display: 'flex', flexDirection: 'column' }}>
-      <PageMeta title="Tarifs" description="Tarifs JS Connect : 2 mois offerts, puis abonnement flexible pour votre Junior-Entreprise." />
+      <PageMeta title="Tarifs" description="Tarifs JS Connect : gratuit jusqu'à 3 missions ou études et 10 signatures, puis abonnement flexible pour votre Junior-Entreprise." />
       <PublicNav selectedProfile="junior" onContactClick={handleContactClick} showPricing />
       {/* Titre & sous-titre */}
       <Container maxWidth="md" sx={{ textAlign: 'center', mb: 6 }}>
@@ -197,7 +197,7 @@ export default function Pricing(): JSX.Element {
           Tarifs
         </Typography>
         <Typography variant="h5" sx={{ color: tokens.colors.ink, fontWeight: 500, mb: 1, fontSize: { xs: '1.2rem', md: '1.4rem' }, animation: `${fadeIn} 1s 0.2s both` }}>
-          2 mois offerts
+          Gratuit jusqu'à 3 missions ou études, et 10 signatures
         </Typography>
         <Typography variant="body1" sx={{ color: tokens.colors.inkMuted, fontWeight: 400, mb: 4, fontSize: { xs: '1rem', md: '1.1rem' }, animation: `${fadeIn} 1s 0.25s both` }}>
           puis 149,90€/mois · Sans engagement

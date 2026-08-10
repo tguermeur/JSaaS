@@ -17,7 +17,7 @@ export function getSafeAppHomePath(opts: {
     if (opts.canViewEvents || opts.canManageAmbassadors) {
       return '/app/ambassadeurs';
     }
-    return '/app/billing-page';
+    return '/app/mon-espace-entreprise';
   }
 
   if (status === 'entreprise') {
@@ -31,6 +31,7 @@ export function getSafeAppHomeLabel(path: string): string {
   if (path === '/app/profile') return 'Retour à mon profil';
   if (path === '/app/ambassadeurs') return 'Retour aux ambassadeurs';
   if (path === '/app/available-missions') return 'Retour aux missions';
+  if (path === '/app/mon-espace-entreprise') return 'Retour à mon espace entreprise';
   if (path === '/app/billing-page') return 'Retour à la facturation';
   return 'Retour au tableau de bord';
 }
@@ -38,7 +39,8 @@ export function getSafeAppHomeLabel(path: string): string {
 /**
  * Landing post-login / index /app.
  * Contact + (canViewEvents || canManageAmbassadors) → ambassadeurs ;
- * contact sans ces droits / entreprise → facturation ;
+ * contact sans ces droits → mon espace entreprise ;
+ * entreprise auto-inscrite → facturation ;
  * etudiant → profile ; sinon dashboard.
  */
 export function getPostAuthRedirectPath(opts: {
@@ -57,7 +59,7 @@ export function getPostAuthRedirectPath(opts: {
     if (opts.canViewEvents || opts.canManageAmbassadors) {
       return '/app/ambassadeurs';
     }
-    return '/app/billing-page';
+    return '/app/mon-espace-entreprise';
   }
 
   if (status === 'entreprise') {

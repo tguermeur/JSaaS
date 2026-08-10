@@ -17,6 +17,7 @@ import {
  */
 export type EmailTemplateKey =
   | 'MEMBER_INVITE'
+  | 'COMPANY_CONTACT_INVITE'
   | 'WELCOME'
   | 'MISSION_ACCEPTED'
   | 'MISSION_REJECTED'
@@ -117,6 +118,16 @@ function buildGenericContent(
         header_subtitle: str(p.structure_name, 'JS Connect'),
         body_html: `Bonjour,<br /><br />Vous êtes invité(e) à rejoindre <strong>${name}</strong> sur JS Connect.<br /><br />Cliquez sur le bouton ci-dessous pour créer votre compte et accepter l'invitation :`,
         cta_label: 'Rejoindre la structure',
+        cta_link: abs('invite_link', '/register'),
+      };
+    }
+    case 'COMPANY_CONTACT_INVITE': {
+      const name = escapeHtml(str(p.company_name, 'votre entreprise'));
+      return {
+        header_title: 'Invitation espace entreprise',
+        header_subtitle: str(p.company_name, 'JS Connect'),
+        body_html: `Bonjour,<br /><br />Vous êtes invité(e) à rejoindre l'espace entreprise de <strong>${name}</strong> sur JS Connect.<br /><br />Cliquez sur le bouton ci-dessous pour créer votre compte contact et accepter l'invitation :`,
+        cta_label: "Rejoindre l'espace entreprise",
         cta_link: abs('invite_link', '/register'),
       };
     }
