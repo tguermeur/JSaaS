@@ -45,6 +45,9 @@ import {
   WorkHistory as WorkHistoryIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
+import { useFreeQuotaUpgrade } from '../contexts/FreeQuotaUpgradeContext';
+import { confirmFreeQuotaExceeded, useStructureQuota } from '../hooks/useStructureQuota';
+import { isFirestorePermissionDenied } from '../utils/firebaseErrors';
 import { db } from '../firebase/config';
 import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setDoc, deleteDoc, orderBy, limit } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
@@ -146,6 +149,8 @@ interface ChargeData {
 const Etude: React.FC = () => {
   const { currentUser, userData } = useAuth();
   const { canRead, canWrite, loading: permissionLoading } = usePermission('audit');
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(userData?.structureId);
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [showNoStructureAlert, setShowNoStructureAlert] = useState(false);
@@ -664,12 +669,27 @@ const Etude: React.FC = () => {
       });
     } catch (error) {
       console.error('Erreur lors de la création de l\'étude:', error);
+      if (isFirestorePermissionDenied(error)) {
+        const quotaHit = await confirmFreeQuotaExceeded(userStructureId, 'items');
+        if (quotaHit) {
+          openFreeQuotaDialog('items');
+          return;
+        }
+      }
       setSnackbar({
         open: true,
         message: 'Erreur lors de la création de l\'étude',
         severity: 'error'
       });
     }
+  };
+
+  const handleOpenCreateDialog = () => {
+    if (structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded) {
+      openFreeQuotaDialog('items');
+      return;
+    }
+    setCreateDialogOpen(true);
   };
 
   const handleCardClick = (etude: EtudeData) => {
@@ -703,7 +723,11 @@ const Etude: React.FC = () => {
       <MissionsListPage
         title="Études"
         subtitle="Pipeline complet des études de la structure."
-        newLabel="Nouvelle étude"
+        newLabel={
+          structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded
+            ? 'Passer au plan payant'
+            : 'Nouvelle étude'
+        }
         searchPlaceholder="Rechercher une étude…"
         rows={filteredEtudes.map((e): MissionListRow => ({
           id: e.id || '',
@@ -719,7 +743,12 @@ const Etude: React.FC = () => {
           isEtude: true,
         }))}
         canWrite={canWrite}
-        onNew={() => setCreateDialogOpen(true)}
+        newTooltip={
+          structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded
+            ? 'Quota gratuit atteint (3 missions ou études). Passez au plan payant.'
+            : undefined
+        }
+        onNew={handleOpenCreateDialog}
         onRowClick={(row) => {
           const etude = filteredEtudes.find((e) => e.id === row.id);
           if (etude) handleCardClick(etude);

@@ -1,5 +1,9 @@
 # Guide de Configuration Stripe - Offre 2 mois gratuits (Premium)
 
+> **OBSOLÈTE (lot 2 quota)** — Le trial calendaire Stripe de 60 jours (`trial_period_days: 60`) a été retiré.
+> L’offre gratuite est désormais un **quota d’usage** (3 missions ou études, 10 signatures), géré côté Firestore / Cloud Functions.
+> Ce document est conservé à titre d’archive historique uniquement.
+
 Ce guide vous explique comment configurer l'offre **2 mois gratuits** puis **149,90€/mois** pour le plan Premium, et la création du compte structure après paiement.
 
 ## 1. Configuration des Produits dans le Dashboard Stripe

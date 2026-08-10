@@ -14,6 +14,7 @@ import {
   InputAdornment,
   Menu,
   MenuItem,
+  Tooltip,
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -51,6 +52,8 @@ export interface MissionsListPageProps {
   canWrite?: boolean;
   toolbarExtra?: React.ReactNode;
   onNew?: () => void;
+  /** Tooltip optionnel sur le bouton de création (ex. quota atteint) */
+  newTooltip?: string;
   onExport?: () => void;
   onRowClick?: (row: MissionListRow) => void;
   rowMenuItems?: (row: MissionListRow) => Array<{ label: string; onClick: () => void }>;
@@ -67,6 +70,7 @@ export const MissionsListPage: React.FC<MissionsListPageProps> = ({
   canWrite,
   toolbarExtra,
   onNew,
+  newTooltip,
   onExport,
   onRowClick,
   rowMenuItems,
@@ -102,9 +106,13 @@ export const MissionsListPage: React.FC<MissionsListPageProps> = ({
             Exporter
           </Button>
           {canWrite && onNew && (
-            <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={onNew} sx={{ textTransform: 'none', borderRadius: tokens.radius.md, bgcolor: tokens.colors.brandNavy }}>
-              {newLabel}
-            </Button>
+            <Tooltip title={newTooltip || ''}>
+              <span>
+                <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={onNew} sx={{ textTransform: 'none', borderRadius: tokens.radius.md, bgcolor: tokens.colors.brandNavy }}>
+                  {newLabel}
+                </Button>
+              </span>
+            </Tooltip>
           )}
         </>
       }

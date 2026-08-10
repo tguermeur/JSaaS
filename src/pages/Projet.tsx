@@ -49,6 +49,9 @@ import {
 } from '@mui/icons-material';
 import Papa from 'papaparse';
 import { useAuth } from '../contexts/AuthContext';
+import { useFreeQuotaUpgrade } from '../contexts/FreeQuotaUpgradeContext';
+import { confirmFreeQuotaExceeded, useStructureQuota } from '../hooks/useStructureQuota';
+import { isFirestorePermissionDenied } from '../utils/firebaseErrors';
 import { db } from '../firebase/config';
 import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setDoc, deleteDoc, orderBy, limit } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
@@ -135,6 +138,8 @@ interface ChargeData {
 
 const Etude: React.FC = () => {
   const { currentUser, userData } = useAuth();
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(userData?.structureId);
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [showNoStructureAlert, setShowNoStructureAlert] = useState(false);
@@ -753,12 +758,27 @@ const Etude: React.FC = () => {
       });
     } catch (error) {
       console.error('Erreur lors de la création de l\'étude:', error);
+      if (isFirestorePermissionDenied(error)) {
+        const quotaHit = await confirmFreeQuotaExceeded(userStructureId, 'items');
+        if (quotaHit) {
+          openFreeQuotaDialog('items');
+          return;
+        }
+      }
       setSnackbar({
         open: true,
         message: 'Erreur lors de la création de l\'étude',
         severity: 'error'
       });
     }
+  };
+
+  const handleOpenCreateDialog = () => {
+    if (structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded) {
+      openFreeQuotaDialog('items');
+      return;
+    }
+    setCreateDialogOpen(true);
   };
 
   const handleCardClick = (etude: EtudeData) => {
@@ -792,7 +812,7 @@ const Etude: React.FC = () => {
         <Button
           variant="contained"
           startIcon={<AddIcon />}
-          onClick={() => setCreateDialogOpen(true)}
+          onClick={handleOpenCreateDialog}
           sx={{
             bgcolor: '#0066cc',
             borderRadius: '0.8rem',
@@ -803,7 +823,9 @@ const Etude: React.FC = () => {
             }
           }}
         >
-          Ajouter une étude
+          {structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded
+            ? 'Passer au plan payant'
+            : 'Ajouter une étude'}
         </Button>
       </Box>
 
@@ -898,7 +920,7 @@ const Etude: React.FC = () => {
           <Button
             variant="contained"
             startIcon={<AddIcon />}
-            onClick={() => setCreateDialogOpen(true)}
+            onClick={handleOpenCreateDialog}
             sx={{
               bgcolor: '#0066cc',
               borderRadius: '0.8rem',
@@ -909,7 +931,9 @@ const Etude: React.FC = () => {
               }
             }}
           >
-            Ajouter une étude
+            {structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded
+              ? 'Passer au plan payant'
+              : 'Ajouter une étude'}
           </Button>
         </Paper>
       ) : (

@@ -751,7 +751,7 @@ const Features: React.FC = () => {
             }
           }}
         >
-          2 mois gratuits
+          Gratuit jusqu'à 3 missions ou études, et 10 signatures
         </Button>
       );
     }

@@ -348,21 +348,6 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
     const customerEmail = request.auth?.token?.email as string | undefined;
     const { success_url: customSuccessUrl, cancel_url: customCancelUrl } = request.data as CreateCheckoutSessionData;
     
-    // Vérifier si le client a déjà un abonnement actif
-    // Si oui, ne pas appliquer la période d'essai (pour les renouvellements/changements de plan)
-    let hasActiveSubscription = false;
-    try {
-      const subscriptions = await getStripeInstance().subscriptions.list({
-        customer: customerId,
-        status: 'active',
-        limit: 1
-      });
-      hasActiveSubscription = subscriptions.data.length > 0;
-    } catch (error) {
-      console.warn('Erreur lors de la vérification des abonnements existants:', error);
-      // En cas d'erreur, on considère qu'il n'y a pas d'abonnement actif (sécurité)
-    }
-    
     // Préparer les données de l'abonnement
     const subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData = {
       metadata: {
@@ -371,11 +356,6 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
         customerEmail: customerEmail || '',
       },
     };
-    
-    // Appliquer la période d'essai uniquement pour les nouveaux clients (pas d'abonnement actif)
-    if (!hasActiveSubscription) {
-      subscriptionData.trial_period_days = 60; // 2 mois gratuits pour les nouveaux clients
-    }
     
     // Créer une session de paiement
     const session = await getStripeInstance().checkout.sessions.create({
@@ -433,7 +413,6 @@ export const createCheckoutSessionForSignup = onCall(signupConfig, async (reques
       line_items: [{ price: priceId, quantity: 1 }],
       mode: 'subscription',
       subscription_data: {
-        trial_period_days: 60,
         metadata: {
           signupEmail: email.trim(),
           structureName: structureName.trim(),
@@ -672,30 +651,10 @@ export const createSubscription = onCall(lowResourceConfig, async (request) => {
       console.log('Stripe Functions - ID client sauvegardé dans Firestore');
     }
 
-    // Vérifier si le client a déjà un abonnement actif
-    // Si oui, ne pas appliquer la période d'essai (pour les renouvellements/changements de plan)
-    let hasActiveSubscription = false;
-    try {
-      const subscriptions = await getStripeInstance().subscriptions.list({
-        customer: customerId,
-        status: 'active',
-        limit: 1
-      });
-      hasActiveSubscription = subscriptions.data.length > 0;
-    } catch (error) {
-      console.warn('Erreur lors de la vérification des abonnements existants:', error);
-      // En cas d'erreur, on considère qu'il n'y a pas d'abonnement actif (sécurité)
-    }
-    
     // Préparer les données de l'abonnement
     const subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData = {};
     
-    // Appliquer la période d'essai uniquement pour les nouveaux clients (pas d'abonnement actif)
-    if (!hasActiveSubscription) {
-      subscriptionData.trial_period_days = 60; // 2 mois gratuits pour les nouveaux clients
-    }
-    
-    // Créer la session de paiement avec 2 mois gratuits (60 jours) pour les nouveaux clients
+    // Créer la session de paiement
     console.log('Stripe Functions - Création de la session de paiement');
     const session = await getStripeInstance().checkout.sessions.create({
       customer: customerId,

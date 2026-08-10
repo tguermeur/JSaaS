@@ -43,6 +43,9 @@ import {
   WorkHistory as WorkHistoryIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
+import { useFreeQuotaUpgrade } from '../contexts/FreeQuotaUpgradeContext';
+import { confirmFreeQuotaExceeded, useStructureQuota } from '../hooks/useStructureQuota';
+import { isFirestorePermissionDenied } from '../utils/firebaseErrors';
 import { db } from '../firebase/config';
 import { doc, getDoc, collection, addDoc, query, where, getDocs, updateDoc, setDoc, deleteDoc, orderBy, limit } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
@@ -167,6 +170,8 @@ interface ChargeData {
 const Mission: React.FC = () => {
   const { currentUser, userData: authUserData, loading: authLoading } = useAuth();
   const { canRead, canWrite, loading: permissionLoading } = usePermission('mission');
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(authUserData?.structureId);
   const [userStructureId, setUserStructureId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   // structureId effectif (state ou auth) pour créer des missions (admin doit toujours avoir structureId)
@@ -761,6 +766,13 @@ const Mission: React.FC = () => {
       });
     } catch (error: any) {
       console.error('Erreur lors de la création de la mission:', error);
+      if (isFirestorePermissionDenied(error)) {
+        const quotaHit = await confirmFreeQuotaExceeded(effectiveStructureId, 'items');
+        if (quotaHit) {
+          openFreeQuotaDialog('items');
+          return;
+        }
+      }
       setSnackbar({
         open: true,
         message: 'Erreur lors de la création de la mission',
@@ -774,6 +786,13 @@ const Mission: React.FC = () => {
   };
 
   const handleOpenCreateDialog = async () => {
+    if (
+      structureQuota.plan === 'free' &&
+      structureQuota.isItemQuotaExceeded
+    ) {
+      openFreeQuotaDialog('items');
+      return;
+    }
     setCreateDialogOpen(true);
     if (effectiveStructureId) {
       setIsGeneratingMissionNumber(true);
@@ -821,7 +840,11 @@ const Mission: React.FC = () => {
       <MissionsListPage
         title="Missions"
         subtitle="Pipeline complet des missions de la structure."
-        newLabel="Nouvelle mission"
+        newLabel={
+          structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded
+            ? 'Passer au plan payant'
+            : 'Nouvelle mission'
+        }
         searchPlaceholder="Rechercher une mission…"
         rows={filteredMissions.map((m): MissionListRow => ({
           id: m.id || '',
@@ -836,6 +859,11 @@ const Mission: React.FC = () => {
           dueDate: formatDate(m.endDate),
         }))}
         canWrite={canWrite}
+        newTooltip={
+          structureQuota.plan === 'free' && structureQuota.isItemQuotaExceeded
+            ? 'Quota gratuit atteint (3 missions ou études). Passez au plan payant.'
+            : undefined
+        }
         onNew={handleOpenCreateDialog}
         onRowClick={(row) => {
           const mission = filteredMissions.find((m) => m.id === row.id);

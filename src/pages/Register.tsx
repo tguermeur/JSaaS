@@ -1597,10 +1597,10 @@ const Register: React.FC = () => {
         }}
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-          🎉 Votre essai gratuit de 2 mois commence dès l'inscription.
+          Gratuit jusqu'à 3 missions ou études, et 10 signatures.
         </Typography>
         <Typography variant="body2">
-          Accédez à toutes les fonctionnalités pendant 60 jours, sans engagement.
+          Passez au plan payant quand vous le souhaitez, sans engagement.
         </Typography>
       </Alert>
       

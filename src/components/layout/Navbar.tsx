@@ -63,8 +63,11 @@ import NotificationBadge from '../ui/NotificationBadge';
 import NotificationList from '../ui/NotificationList';
 import { useSnackbar } from 'notistack';
 import { useChangelog } from '../../contexts/ChangelogContext';
+import { useFreeQuotaUpgrade } from '../../contexts/FreeQuotaUpgradeContext';
+import { useStructureQuota } from '../../hooks/useStructureQuota';
 import { tokens } from '../../theme/tokens';
 import { useAmbassadorBranding } from '../../hooks/useAmbassadorBranding';
+import { DsPill } from '../ds/SettingsPrimitives';
 
 const StyledAppBar = styled(AppBar)(({ theme }) => ({
   backgroundColor: '#ffffff',
@@ -134,6 +137,8 @@ const Navbar: React.FC<NavbarProps> = () => {
   } = useNotifications();
   const { enqueueSnackbar } = useSnackbar();
   const { openChangelog, openOnboarding, hasCompletedOnboarding, showInfoButtonHint, infoButtonHintMessage, hideInfoButtonHint, hasUnseenChangelog } = useChangelog();
+  const { openFreeQuotaDialog } = useFreeQuotaUpgrade();
+  const structureQuota = useStructureQuota(userData?.structureId);
 
   // États pour le menu utilisateur
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
@@ -1201,6 +1206,52 @@ const Navbar: React.FC<NavbarProps> = () => {
         
         {/* Section droite - Actions utilisateur */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {!structureQuota.loading && structureQuota.plan === 'free' && (
+            <Box
+              component="button"
+              type="button"
+              onClick={() => {
+                if (structureQuota.isItemQuotaExceeded) {
+                  openFreeQuotaDialog('items');
+                } else if (structureQuota.isSignatureQuotaExceeded) {
+                  openFreeQuotaDialog('signatures');
+                } else {
+                  openFreeQuotaDialog('items');
+                }
+              }}
+              sx={{
+                display: { xs: 'none', md: 'inline-flex' },
+                alignItems: 'center',
+                gap: 0.75,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                p: 0,
+                mr: 0.5,
+                '&:hover .quota-pill': { opacity: 0.85 },
+              }}
+              aria-label="Voir le quota gratuit et passer au plan payant"
+            >
+              <DsPill
+                bg={
+                  structureQuota.isItemQuotaExceeded || structureQuota.isSignatureQuotaExceeded
+                    ? 'rgba(255, 59, 48, 0.12)'
+                    : tokens.colors.gray100
+                }
+                fg={
+                  structureQuota.isItemQuotaExceeded || structureQuota.isSignatureQuotaExceeded
+                    ? '#c62828'
+                    : tokens.colors.gray700
+                }
+              >
+                <span className="quota-pill">
+                  {structureQuota.freeItemsUsed}/{structureQuota.freeItemsLimit} missions & études
+                  {' · '}
+                  {structureQuota.freeSignatureTokensUsed}/{structureQuota.freeSignatureTokensLimit} signatures
+                </span>
+              </DsPill>
+            </Box>
+          )}
           {/* Bouton de signalement de bug */}
           <IconButton
             onClick={() => setBugDialogOpen(true)}

@@ -63,7 +63,7 @@ const contentByProfile: Record<NonNullable<ProfileType>, ProfileContent> = {
   junior: {
     title: "Pilotez votre Junior de A à Z",
     subtitle: "Une gestion boostée à l'IA. La solution tout-en-un pour la gestion, le recrutement et la conformité de votre structure.",
-    cta: "2 mois gratuits",
+    cta: "Gratuit jusqu'à 3 missions ou études, et 10 signatures",
     ctaAction: () => {
       window.location.href = '/pricing';
     },
