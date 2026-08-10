@@ -7,6 +7,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import { decrypt } from './encryption';
+import { recordAiCreditUsageSafe } from './aiCreditsHelpers';
 
 const functionConfig = {
   memory: '128MiB' as const,
@@ -450,6 +451,7 @@ Réponds UNIQUEMENT avec un JSON valide, sans texte avant ou après, de la forme
       });
     }
 
+    await recordAiCreditUsageSafe(db, structureId, 'prospect_analysis');
     return { success: true, analyzedClientProfile };
   }
 );
@@ -606,6 +608,7 @@ Le message doit être professionnel, court (quelques phrases), personnalisé (no
       text = text.replace(/\[Votre Nom\]/gi, userName);
       text = text.replace(/\[Votre Poste\s*-\s*[^\]]*\]/gi, `${userPoste} - ${structureName}`);
       text = text.replace(/\[Votre Poste\]/gi, userPoste);
+      await recordAiCreditUsageSafe(db, structureId, 'contact_message');
       return { success: true, message: text };
     } catch (err: any) {
       if (err instanceof HttpsError) throw err;
