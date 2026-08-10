@@ -600,12 +600,9 @@ const Register: React.FC = () => {
           status: 'entreprise' as any
         };
 
-        // Invitation contact entreprise : rattacher companyId (+ structureId)
+        // Invitation contact entreprise : rattacher companyId uniquement (jamais structureId)
         if (registrationType === 'company' && inviteToken && companyInviteMeta?.companyId) {
           userData.companyId = companyInviteMeta.companyId;
-          if (companyInviteMeta.structureId) {
-            userData.structureId = companyInviteMeta.structureId;
-          }
         }
         
         await createUserDocument(user.uid, userData);

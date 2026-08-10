@@ -31,6 +31,7 @@ import {
   USER_ENT_A,
   USER_ENT_B,
   USER_INVITEE,
+  dbAsOwner,
 } from './helpers.js';
 
 /** @type {import('@firebase/rules-unit-testing').RulesTestEnvironment} */
@@ -622,6 +623,26 @@ describe('Firestore rules — company portal lot3a', () => {
 
     it('refuse entreprise B sur docs company A', async () => {
       await expectReadDeny(dbAsUser(USER_ENT_B), docA);
+    });
+  });
+
+  describe('entreprise sans structureId — isolation JE', () => {
+    it('refuse la lecture de structureTokens de la JE invitante', async () => {
+      // USER_ENT_A a companyId=company-a, pas de structureId (seed helpers)
+      await dbAsOwner().doc(`structureTokens/${STRUCTURE_A}`).set({
+        structureId: STRUCTURE_A,
+        token: 'secret-token-a',
+      });
+      await expectReadDeny(dbAsUser(USER_ENT_A), `structureTokens/${STRUCTURE_A}`);
+    });
+
+    it('refuse l’écriture sur programs de la JE invitante', async () => {
+      await dbAsOwner().doc(`programs/${STRUCTURE_A}`).set({
+        programs: ['existing'],
+      });
+      await expectUpdateDeny(dbAsUser(USER_ENT_A), `programs/${STRUCTURE_A}`, {
+        programs: ['hacked'],
+      });
     });
   });
 });
