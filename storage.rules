@@ -398,7 +398,7 @@ service firebase.storage {
                    // Membre de la structure
                    (
                      tokenStructureId() == firestore.get(companyPath).data.structureId &&
-                     getUserData().status in ['admin', 'member', 'membre']
+                     getUserData().status in ['admin', 'admin_structure', 'member', 'membre']
                    ) ||
                    // Contact de l'entreprise
                    (
@@ -410,7 +410,9 @@ service firebase.storage {
       }
       
       allow read: if isAuthenticated() && canAccessCompanyDocument();
-      allow write: if isAuthenticated() && canAccessCompanyDocument();
+      allow write: if isAuthenticated()
+        && canAccessCompanyDocument()
+        && request.resource.size < 100 * 1024 * 1024;
     }
 
     // =========================================================================

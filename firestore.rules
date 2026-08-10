@@ -509,6 +509,32 @@ service cloud.firestore {
         isSuperAdmin() || 
         canWriteCompanies()
       );
+
+      // Métadonnées documents espace entreprise (indépendants des missions)
+      match /documents/{documentId} {
+        function canAccessCompanyDocumentMeta() {
+          let userData = getUserData();
+          let companyPath = /databases/$(database)/documents/companies/$(companyId);
+          return exists(companyPath) && (
+            isSuperAdmin() ||
+            (
+              userData != null &&
+              tokenStructureId() != null &&
+              tokenStructureId() == get(companyPath).data.structureId &&
+              isAdminOrMember(userData)
+            ) ||
+            (
+              userData != null &&
+              userData.status == 'entreprise' &&
+              userData.companyId == companyId
+            )
+          );
+        }
+
+        allow read: if isAuthenticated() && canAccessCompanyDocumentMeta();
+        allow create, update: if isAuthenticated() && canAccessCompanyDocumentMeta();
+        allow delete: if isAuthenticated() && canAccessCompanyDocumentMeta();
+      }
     }
 
     // =========================================================================
@@ -1365,6 +1391,17 @@ service cloud.firestore {
 
     // Invitations structure (lecture publique pour inscription ; écriture CF ; acceptation client)
     match /structureInvites/{inviteId} {
+      allow read: if true;
+      allow create: if false;
+      allow update: if isAuthenticated()
+        && resource.data.status == 'pending'
+        && request.resource.data.status == 'accepted'
+        && request.resource.data.acceptedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Invitations contact entreprise (même pattern que structureInvites)
+    match /companyInvites/{inviteId} {
       allow read: if true;
       allow create: if false;
       allow update: if isAuthenticated()

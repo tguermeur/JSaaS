@@ -14,6 +14,7 @@ import {
   cleanupApps,
   AUTH_VARIANTS,
   dbUnauth,
+  dbAsUser,
   expectReadAllow,
   expectReadDeny,
   expectCreateAllow,
@@ -27,6 +28,9 @@ import {
   USER_B,
   USER_OTHER_A,
   USER_SA,
+  USER_ENT_A,
+  USER_ENT_B,
+  USER_INVITEE,
 } from './helpers.js';
 
 /** @type {import('@firebase/rules-unit-testing').RulesTestEnvironment} */
@@ -535,6 +539,91 @@ describe('Firestore rules — isolation structureId', () => {
       });
     });
   }
+});
+
+describe('Firestore rules — company portal lot3a', () => {
+  describe('companyInvites', () => {
+    const path = 'companyInvites/invite-pending';
+
+    it('autorise le destinataire à marquer accepted', async () => {
+      await expectUpdateAllow(dbAsUser(USER_INVITEE), path, {
+        status: 'accepted',
+        acceptedBy: USER_INVITEE,
+      });
+    });
+
+    it('refuse qu’un autre uid marque accepted à la place du destinataire', async () => {
+      await expectUpdateDeny(dbAsUser(USER_B), path, {
+        status: 'accepted',
+        acceptedBy: USER_INVITEE,
+      });
+    });
+
+    it('refuse create client (Admin SDK only)', async () => {
+      await expectCreateDeny(dbAsUser(USER_A), 'companyInvites/new-invite', {
+        email: 'x@example.com',
+        companyId: 'company-a',
+        status: 'pending',
+      });
+    });
+  });
+
+  describe('companies/{id}/documents', () => {
+    const docA = 'companies/company-a/documents/doc-a';
+    const docB = 'companies/company-b/documents/doc-b';
+    const newDocA = 'companies/company-a/documents/doc-new';
+    const newDocB = 'companies/company-b/documents/doc-new-b';
+    const meta = {
+      title: 'New',
+      storagePath: 'companies/company-a/documents/x.pdf',
+      contentType: 'application/pdf',
+      byteSize: 10,
+      uploadedBy: USER_A,
+      uploadedByRole: 'structure',
+      createdAt: new Date().toISOString(),
+    };
+
+    it('autorise entreprise A à lire/écrire ses docs', async () => {
+      await expectReadAllow(dbAsUser(USER_ENT_A), docA);
+      await expectCreateAllow(dbAsUser(USER_ENT_A), newDocA, {
+        ...meta,
+        uploadedBy: USER_ENT_A,
+        uploadedByRole: 'entreprise',
+      });
+    });
+
+    it('refuse entreprise A sur docs company B', async () => {
+      await expectReadDeny(dbAsUser(USER_ENT_A), docB);
+      await expectCreateDeny(dbAsUser(USER_ENT_A), newDocB, {
+        ...meta,
+        storagePath: 'companies/company-b/documents/x.pdf',
+        uploadedBy: USER_ENT_A,
+        uploadedByRole: 'entreprise',
+      });
+    });
+
+    it('autorise staff structure A sur docs company A', async () => {
+      await expectReadAllow(dbAsUser(USER_A), docA);
+      await expectCreateAllow(dbAsUser(USER_A), 'companies/company-a/documents/doc-staff', meta);
+    });
+
+    it('refuse staff structure A d’écrire docs company B', async () => {
+      await expectCreateDeny(dbAsUser(USER_A), newDocB, {
+        ...meta,
+        storagePath: 'companies/company-b/documents/x.pdf',
+      });
+      await expectUpdateDeny(dbAsUser(USER_A), docB, { title: 'Hacked' });
+    });
+
+    it('refuse staff structure B d’écrire docs company A', async () => {
+      await expectCreateDeny(dbAsUser(USER_B), 'companies/company-a/documents/doc-b-spoof', meta);
+      await expectUpdateDeny(dbAsUser(USER_B), docA, { title: 'Hacked' });
+    });
+
+    it('refuse entreprise B sur docs company A', async () => {
+      await expectReadDeny(dbAsUser(USER_ENT_B), docA);
+    });
+  });
 });
 
 describe('couverture', () => {

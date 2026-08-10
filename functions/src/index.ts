@@ -1545,6 +1545,10 @@ export {
   inviteStructureMember,
   sendWelcomeEmailCallable,
 } from './notifications/structureInvite';
+export {
+  inviteCompanyContact,
+  linkCompanyContactAfterRegister,
+} from './notifications/companyInvite';
 
 // Exporter les fonctions de scoring IA (prospects, relances, analyse clients)
 export {
