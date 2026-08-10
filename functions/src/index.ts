@@ -1591,6 +1591,7 @@ export {
   getSignatureAudit,
   getSealedDocumentUrl,
   listSignatureRequests,
+  listMySignatureRequestsAsCompanyContact,
   sendSignerOtp,
   verifySignerOtp,
 } from './signatures';

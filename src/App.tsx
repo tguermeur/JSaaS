@@ -53,6 +53,7 @@ const AvailableMissions = React.lazy(() => import('./pages/AvailableMissions'));
 const AmbassadorMissions = React.lazy(() => import('./pages/AmbassadorMissions'));
 const Profile = React.lazy(() => import('./pages/Profile'));
 const BillingPage = React.lazy(() => import('./pages/BillingPage'));
+const EntrepriseDashboard = React.lazy(() => import('./pages/entreprise/EntrepriseDashboard'));
 const HumanResources = React.lazy(() => import('./pages/HumanResources'));
 const Entreprises = React.lazy(() => import('./pages/Entreprises'));
 const EntrepriseDetail = React.lazy(() => import('./pages/EntrepriseDetail'));
@@ -226,6 +227,14 @@ function App(): JSX.Element {
                               element={
                                 <RequireRole allowedRoles={['entreprise']}>
                                   <BillingPage />
+                                </RequireRole>
+                              }
+                            />
+                            <Route
+                              path="mon-espace-entreprise"
+                              element={
+                                <RequireRole allowedRoles={['entreprise']}>
+                                  <EntrepriseDashboard />
                                 </RequireRole>
                               }
                             />
