@@ -35,7 +35,7 @@ export interface PagePermission {
 }
 
 // Stockage des permissions de page (à remplacer par une base de données)
-let pagePermissions: PagePermission[] = [];
+const pagePermissions: PagePermission[] = [];
 
 // Fonction pour vérifier l'accès à une page spécifique
 export const canAccessPage = (

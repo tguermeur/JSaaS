@@ -1337,7 +1337,7 @@ const EntrepriseDetail: React.FC = () => {
             const verticalAlign = variable.verticalAlign || 'top';
 
             // Fonction pour nettoyer le texte des caractères non-encodables en WinAnsi
-            const cleanTextForPDF = (text: string, isNumericIdentifier: boolean = false): string => {
+            const cleanTextForPDF = (text: string, isNumericIdentifier = false): string => {
               if (!text) return '';
               
               // Pour les identifiants numériques (SIRET, SIREN, etc.), ne pas modifier le texte
@@ -1374,7 +1374,7 @@ const EntrepriseDetail: React.FC = () => {
             };
 
             // Découper le texte en lignes selon la largeur max
-            const splitTextToLines = (text: string, font: any, fontSize: number, maxWidth: number, isShortIdentifier: boolean = false): string[] => {
+            const splitTextToLines = (text: string, font: any, fontSize: number, maxWidth: number, isShortIdentifier = false): string[] => {
               // Pour les identifiants courts, ne jamais découper - retourner le texte tel quel
               if (isShortIdentifier) {
                 console.log(`[splitTextToLines] Identifiant court détecté, retour du texte complet: "${text}" (longueur: ${text.length})`);

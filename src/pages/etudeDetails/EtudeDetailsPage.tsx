@@ -652,7 +652,7 @@ const EtudeDetails: React.FC = () => {
       if (datesChanged) {
         // Mettre à jour l'état local des postes de budget
         setBudgetItems(prev => prev.map(item => {
-          let newItem = { ...item };
+          const newItem = { ...item };
           
           // Si les dates d'étude sont supprimées, convertir les dates en semaines
           if (!etude.startDate || !etude.endDate) {
@@ -824,7 +824,7 @@ const EtudeDetails: React.FC = () => {
         }
 
         const etudeDoc = etudeSnapshot.docs[0];
-        let etudeData = { id: etudeDoc.id, ...etudeDoc.data() } as EtudeData;
+        const etudeData = { id: etudeDoc.id, ...etudeDoc.data() } as EtudeData;
 
         // Récupérer les informations de l'entreprise (ID, nom et logo)
         if (etudeData.company) {
@@ -1132,10 +1132,10 @@ const EtudeDetails: React.FC = () => {
 
     try {
       const rawContact = contacts.find(c => c.isDefault) || contacts[0];
-      let userDataRaw = cachedData?.userData || studentData;
-      let chargeDataRaw = cachedData?.chargeData;
+      const userDataRaw = cachedData?.userData || studentData;
+      const chargeDataRaw = cachedData?.chargeData;
       let structureDataResolved = structureData || structureFullData;
-      let companyDataRaw = companyFullData;
+      const companyDataRaw = companyFullData;
       const presidentFullName = cachedData?.presidentFullName || '';
 
       const userIdForDecrypt = userDataRaw?.id as string | undefined;
@@ -1319,8 +1319,8 @@ const EtudeDetails: React.FC = () => {
   const generateDocument = async (
     documentType: DocumentType,
     studentId?: string,
-    ignoreMissingData: boolean = false,
-    forceDownload: boolean = false
+    ignoreMissingData = false,
+    forceDownload = false
   ) => {
     if (etude?.isArchived) {
       setSnackbar({
@@ -1521,7 +1521,7 @@ const EtudeDetails: React.FC = () => {
             const q = query(usersRef, where('structureId', '==', etude.structureId));
             const usersSnapshot = await getDocs(q);
             
-            let members = usersSnapshot.docs.map(docSnap => ({
+            const members = usersSnapshot.docs.map(docSnap => ({
               id: docSnap.id,
               ...docSnap.data(),
               mandat: docSnap.data().mandat || null,

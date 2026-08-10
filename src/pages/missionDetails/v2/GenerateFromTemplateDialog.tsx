@@ -259,7 +259,7 @@ export const GenerateFromTemplateDialog: React.FC<GenerateFromTemplateDialogProp
         }
 
         if (missionDoc.exists()) {
-          let data: any = { id: missionDoc.id, ...missionDoc.data() };
+          const data: any = { id: missionDoc.id, ...missionDoc.data() };
           if (data.missionTypeId) {
             try {
               const mt = await getDoc(doc(db, 'missionTypes', data.missionTypeId));

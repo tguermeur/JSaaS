@@ -635,8 +635,7 @@ const AvailableMissions: React.FC = () => {
         // 4. Pour les contacts avec accès : récupérer les événements ambassadeur de leur entreprise
         if (isContactWithAccess && contactPermissions?.canViewEvents && userData?.companyId) {
           try {
-            let ambassadorQuery;
-            ambassadorQuery = query(
+            const ambassadorQuery = query(
               collection(db, 'missions'),
               where('type', '==', 'ambassadeur_event'),
               where('companyId', '==', userData.companyId),

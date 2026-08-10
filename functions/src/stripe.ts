@@ -461,7 +461,7 @@ export const getSignupCompletionData = onCall(signupConfig, async (request) => {
     const subscription = typeof session.subscription === 'object' ? session.subscription : await stripe.subscriptions.retrieve(session.subscription as string);
     const subId = subscription.id;
     const meta = subscription.metadata || {};
-    let snap = await admin.firestore().collection('signupCompletion').doc(subId).get();
+    const snap = await admin.firestore().collection('signupCompletion').doc(subId).get();
     if (!snap.exists && meta.signupEmail) {
       const signupEmail = (meta.signupEmail as string).trim();
       const structureName = (meta.structureName as string) || 'Structure';

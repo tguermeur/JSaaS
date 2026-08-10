@@ -395,7 +395,7 @@ app.post('/gemini/extract-profile', async (req, res) => {
       // Si on est dans une chaîne à la fin, la fermer
       if (inString) {
         // Trouver le début de la dernière chaîne ouverte
-        let lastQuote = repaired.lastIndexOf('"');
+        const lastQuote = repaired.lastIndexOf('"');
         if (lastQuote >= 0) {
           // Fermer la chaîne
           repaired = repaired.substring(0, lastQuote + 1) + '"';
@@ -403,10 +403,10 @@ app.post('/gemini/extract-profile', async (req, res) => {
       }
       
       // Fermer les objets/tableaux ouverts
-      let openBraces = (repaired.match(/\{/g) || []).length;
-      let closeBraces = (repaired.match(/\}/g) || []).length;
-      let openBrackets = (repaired.match(/\[/g) || []).length;
-      let closeBrackets = (repaired.match(/\]/g) || []).length;
+      const openBraces = (repaired.match(/\{/g) || []).length;
+      const closeBraces = (repaired.match(/\}/g) || []).length;
+      const openBrackets = (repaired.match(/\[/g) || []).length;
+      const closeBrackets = (repaired.match(/\]/g) || []).length;
       
       // Fermer les tableaux ouverts
       for (let i = 0; i < openBrackets - closeBrackets; i++) {
@@ -499,7 +499,7 @@ app.post('/gemini/extract-profile', async (req, res) => {
       return schoolKeywords.some(k => v.includes(k));
     };
 
-    let data: any = {
+    const data: any = {
       name: extracted.name || '',
       title: extracted.title || '',
       company: extracted.company || '',

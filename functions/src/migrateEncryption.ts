@@ -40,12 +40,12 @@ interface MigrationStats {
 async function migrateCollection(
   collectionName: string,
   sensitiveFields: readonly string[],
-  batchSize: number = 100
+  batchSize = 100
 ): Promise<{ total: number; encrypted: number; skipped: number; errors: number }> {
   const db = admin.firestore();
   const collectionRef = db.collection(collectionName);
   
-  let stats = {
+  const stats = {
     total: 0,
     encrypted: 0,
     skipped: 0,

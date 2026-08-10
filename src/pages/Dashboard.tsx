@@ -92,7 +92,7 @@ interface ConnectedUser {
 type CalendarEvent = DashboardCalendarEvent;
 
 // Ajouter cette fonction utilitaire pour l'animation du compteur
-const useCountAnimation = (targetValue: number, duration: number = 2000) => {
+const useCountAnimation = (targetValue: number, duration = 2000) => {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
@@ -848,7 +848,7 @@ export default function Dashboard(): JSX.Element {
   };
 
   // Fonction pour générer un camembert SVG
-  const generatePieChart = (data: Array<{ label: string; value: number; color: string }>, size: number = 120) => {
+  const generatePieChart = (data: Array<{ label: string; value: number; color: string }>, size = 120) => {
     const total = data.reduce((sum, item) => sum + item.value, 0);
     if (total === 0) return null;
 

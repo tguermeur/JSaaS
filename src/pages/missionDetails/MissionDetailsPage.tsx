@@ -1817,7 +1817,7 @@ const MissionDetails: React.FC = () => {
         const usersRef = collection(db, 'users');
         const q = query(usersRef, where('structureId', '==', mission.structureId));
         const snapshot = await getDocs(q);
-        let membersList = snapshot.docs.map(docSnap => {
+        const membersList = snapshot.docs.map(docSnap => {
           const data = docSnap.data();
           return {
             id: docSnap.id,
@@ -2489,7 +2489,7 @@ const MissionDetails: React.FC = () => {
     }
   };
 
-  const downloadTemplatePDF = async (documentType: DocumentType, forceDownload: boolean = true) => {
+  const downloadTemplatePDF = async (documentType: DocumentType, forceDownload = true) => {
     console.log('📥 Téléchargement du PDF template pour:', documentType);
     
     try {
@@ -3008,8 +3008,8 @@ const MissionDetails: React.FC = () => {
     documentType: DocumentType,
     application?: Application,
     expenseNote?: ExpenseNote,
-    ignoreMissingData: boolean = false,
-    forceDownload: boolean = false,
+    ignoreMissingData = false,
+    forceDownload = false,
     tempDataOverride?: Record<string, string>
   ) => {
     const activeTempData = tempDataOverride ?? tempData;
@@ -5055,7 +5055,7 @@ const MissionDetails: React.FC = () => {
     }
   };
 
-  const calculateAndUpdatePrices = async (forceUpdate: boolean = false, showNotification: boolean = false) => {
+  const calculateAndUpdatePrices = async (forceUpdate = false, showNotification = false) => {
     if (!mission?.id || !mission.priceHT || !mission.hours) return;
 
     // Si les totaux existent déjà et qu'on ne force pas la mise à jour, on ne fait rien

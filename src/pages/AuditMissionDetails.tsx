@@ -847,7 +847,7 @@ const AuditMissionDetails: React.FC = () => {
       };
 
       // Déterminer le contentType
-      let contentType = documentFile.type || getContentTypeFromFileName(documentFile.name);
+      const contentType = documentFile.type || getContentTypeFromFileName(documentFile.name);
       
       // Logger les informations du fichier pour le débogage
       console.log('📤 Informations du fichier à uploader:', {

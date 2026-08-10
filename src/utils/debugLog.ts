@@ -6,7 +6,7 @@ export function debugLog(
   location: string,
   message: string,
   data: any,
-  hypothesisId: string = 'default'
+  hypothesisId = 'default'
 ): void {
   // Fonction complètement désactivée pour éviter les erreurs de connexion
   return;

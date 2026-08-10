@@ -1808,7 +1808,7 @@ Pour l'entreprise :                    Pour l'étudiant :
             (filename.includes('ppt/slides/slide') && !filename.includes('slideLayout') && !filename.includes('slideMaster'))) {
           
           let content = file.asText();
-          let originalContent = content;
+          const originalContent = content;
           filesProcessed++;
           
           console.log(`Traitement du fichier: ${filename}`);
@@ -2381,7 +2381,7 @@ Pour l'entreprise :                    Pour l'étudiant :
              filename.includes('word/footnotes.xml'))) {
           
           let content = file.asText();
-          let originalContent = content;
+          const originalContent = content;
           filesProcessed++;
           
           console.log(`Traitement du fichier Word: ${filename}`);

@@ -428,7 +428,7 @@ export const CompanyInfoTab: React.FC = () => {
             }
 
             const dec = decryptedById[contactId];
-            let contact: ContactWithAccess = {
+            const contact: ContactWithAccess = {
               id: contactId,
               ...contactData,
               firstName: safeContactField(contactData.firstName),

@@ -564,7 +564,7 @@ export function AuthProvider({ children }) {
 
   // Fonction pour démarrer l'impersonation (Run as)
   // Si openInNewTab est true, on ne modifie pas l'état local (le nouvel onglet le fera)
-  const startImpersonation = useCallback(async (userId: string, openInNewTab: boolean = false) => {
+  const startImpersonation = useCallback(async (userId: string, openInNewTab = false) => {
     if (!currentUser || !userData) {
       console.error("Utilisateur non connecté");
       return;

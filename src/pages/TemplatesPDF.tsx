@@ -1827,7 +1827,7 @@ const TemplatesPDF: React.FC = () => {
   };
 
   // Déplacer toutes les balises sélectionnées dans une direction
-  const handleMoveSelectedVariables = (direction: 'up' | 'down' | 'left' | 'right', distance: number = 5) => {
+  const handleMoveSelectedVariables = (direction: 'up' | 'down' | 'left' | 'right', distance = 5) => {
     if (!selectedTemplate || selectedVariables.size === 0) return;
 
     const updatedVariables = selectedTemplate.variables.map(variable => {
