@@ -2,14 +2,15 @@
  * Quotas plan gratuit (Lot 1) :
  * - init billing/current à la création d'une structure
  * - incrément freeItemsUsed sur missions/études (hors ambassadeur_event)
+ * - incrément à l'assignation structureId (update mission empty → non-vide)
  */
 
-import { onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import * as admin from 'firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
 import {
   billingCurrentRef,
   defaultBillingQuota,
+  maybeIncrementFreeItem,
 } from './quotaHelpers';
 
 export {
@@ -17,6 +18,7 @@ export {
   consumeFreeSignatureToken,
   consumeFreeSignatureTokenInTransaction,
   defaultBillingQuota,
+  maybeIncrementFreeItem,
   DEFAULT_FREE_ITEMS_LIMIT,
   DEFAULT_FREE_SIGNATURE_TOKENS_LIMIT,
   SIGNATURE_QUOTA_EXHAUSTED_MSG,
@@ -30,45 +32,8 @@ const triggerConfig = {
   maxInstances: 5,
 };
 
-async function maybeIncrementFreeItem(
-  structureId: string | undefined,
-  itemRef: string,
-  opts?: { skip?: boolean; reason?: string }
-): Promise<void> {
-  if (opts?.skip) {
-    console.log(`[quota] skip incrément ${itemRef}: ${opts.reason || 'exempt'}`);
-    return;
-  }
-  if (!structureId || typeof structureId !== 'string' || structureId.trim() === '') {
-    console.warn(`[quota] structureId absent pour ${itemRef} — pas d'incrément`);
-    return;
-  }
-
-  const db = admin.firestore();
-  const billingRef = billingCurrentRef(db, structureId);
-
-  await db.runTransaction(async (tx) => {
-    const snap = await tx.get(billingRef);
-    if (!snap.exists) {
-      return;
-    }
-    const data = snap.data() || {};
-    if (data.plan !== 'free') {
-      return;
-    }
-    const refs: string[] = Array.isArray(data.freeItemsCountedRefs)
-      ? data.freeItemsCountedRefs
-      : [];
-    if (refs.includes(itemRef)) {
-      return;
-    }
-    const used = typeof data.freeItemsUsed === 'number' ? data.freeItemsUsed : 0;
-    tx.update(billingRef, {
-      freeItemsUsed: used + 1,
-      freeItemsCountedRefs: FieldValue.arrayUnion(itemRef),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-  });
+function isEmptyStructureId(value: unknown): boolean {
+  return value == null || (typeof value === 'string' && value.trim() === '');
 }
 
 /** Initialise billing/current dès qu'une structure est créée. */
@@ -104,7 +69,36 @@ export const onMissionCreatedCountQuota = onDocumentCreated(
     const structureId = data.structureId as string | undefined;
     const isEvent = data.type === 'ambassadeur_event';
 
-    await maybeIncrementFreeItem(structureId, `mission:${missionId}`, {
+    await maybeIncrementFreeItem(admin.firestore(), structureId, `mission:${missionId}`, {
+      skip: isEvent,
+      reason: 'ambassadeur_event hors quota',
+    });
+  }
+);
+
+/**
+ * Incrémente freeItemsUsed quand une mission reçoit son premier structureId
+ * (cas entreprise → assignation JE). Idempotent avec onCreate via freeItemsCountedRefs.
+ */
+export const onMissionUpdatedCountQuota = onDocumentUpdated(
+  {
+    ...triggerConfig,
+    document: 'missions/{missionId}',
+  },
+  async (event) => {
+    const missionId = event.params.missionId as string;
+    const before = event.data?.before.data() || {};
+    const after = event.data?.after.data() || {};
+
+    const beforeSid = before.structureId as string | undefined;
+    const afterSid = after.structureId as string | undefined;
+
+    if (!isEmptyStructureId(beforeSid) || isEmptyStructureId(afterSid)) {
+      return;
+    }
+
+    const isEvent = after.type === 'ambassadeur_event';
+    await maybeIncrementFreeItem(admin.firestore(), afterSid, `mission:${missionId}`, {
       skip: isEvent,
       reason: 'ambassadeur_event hors quota',
     });
@@ -122,6 +116,6 @@ export const onEtudeCreatedCountQuota = onDocumentCreated(
     const data = event.data?.data() || {};
     const structureId = data.structureId as string | undefined;
 
-    await maybeIncrementFreeItem(structureId, `etude:${etudeId}`);
+    await maybeIncrementFreeItem(admin.firestore(), structureId, `etude:${etudeId}`);
   }
 );

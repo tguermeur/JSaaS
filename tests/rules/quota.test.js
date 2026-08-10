@@ -13,6 +13,7 @@ import {
   expectReadDeny,
   expectCreateAllow,
   expectCreateDeny,
+  expectUpdateAllow,
   expectUpdateDeny,
   STRUCTURE_A,
   USER_A,
@@ -152,6 +153,47 @@ describe('quota plan gratuit — create missions/études', () => {
         await expectCreateAllow(variant.dbFor(USER_A), 'missions/mission-quota-ok', {
           structureId: STRUCTURE_A,
           title: '3rd mission',
+        });
+      });
+    });
+  }
+});
+
+describe('quota plan gratuit — assignation structureId (update)', () => {
+  const ENTERPRISE_UID = 'user-enterprise-quota';
+  const MISSION_PATH = 'missions/mission-enterprise-unassigned';
+
+  async function seedEnterpriseMission() {
+    const db = dbAsOwner();
+    await db.doc(`users/${ENTERPRISE_UID}`).set({
+      status: 'entreprise',
+      companyId: ENTERPRISE_UID,
+      email: 'ent@example.com',
+    });
+    await db.doc(MISSION_PATH).set({
+      structureId: '',
+      title: 'Mission entreprise non assignée',
+      companyId: ENTERPRISE_UID,
+      createdByEnterprise: true,
+      numeroMission: 'E-001',
+    });
+  }
+
+  for (const variant of AUTH_VARIANTS) {
+    describe(variant.name, () => {
+      it('JE à 3/3 ne peut pas assigner structureId', async () => {
+        await seedEnterpriseMission();
+        await setBilling(STRUCTURE_A, { plan: 'free', freeItemsUsed: 3 });
+        await expectUpdateDeny(variant.dbFor(USER_A), MISSION_PATH, {
+          structureId: STRUCTURE_A,
+        });
+      });
+
+      it('JE à 2/3 peut assigner structureId', async () => {
+        await seedEnterpriseMission();
+        await setBilling(STRUCTURE_A, { plan: 'free', freeItemsUsed: 2 });
+        await expectUpdateAllow(variant.dbFor(USER_A), MISSION_PATH, {
+          structureId: STRUCTURE_A,
         });
       });
     });

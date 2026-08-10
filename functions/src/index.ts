@@ -1516,6 +1516,7 @@ export { encryptUserOnWrite } from './firestoreTriggers';
 export {
   onStructureCreatedInitQuota,
   onMissionCreatedCountQuota,
+  onMissionUpdatedCountQuota,
   onEtudeCreatedCountQuota,
 } from './quota';
 

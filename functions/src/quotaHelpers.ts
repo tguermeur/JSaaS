@@ -71,6 +71,52 @@ export function consumeFreeSignatureTokenInTransaction(
 }
 
 /**
+ * Incrémente freeItemsUsed si plan free et ref pas déjà comptée.
+ * `fieldValue` optionnel pour les tests (évite dual-package FieldValue).
+ */
+export async function maybeIncrementFreeItem(
+  db: Firestore,
+  structureId: string | undefined,
+  itemRef: string,
+  opts?: { skip?: boolean; reason?: string; fieldValue?: typeof FieldValue }
+): Promise<void> {
+  if (opts?.skip) {
+    console.log(`[quota] skip incrément ${itemRef}: ${opts.reason || 'exempt'}`);
+    return;
+  }
+  if (!structureId || typeof structureId !== 'string' || structureId.trim() === '') {
+    console.warn(`[quota] structureId absent pour ${itemRef} — pas d'incrément`);
+    return;
+  }
+
+  const fv = opts?.fieldValue ?? FieldValue;
+  const billingRef = billingCurrentRef(db, structureId);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(billingRef);
+    if (!snap.exists) {
+      return;
+    }
+    const data = snap.data() || {};
+    if (data.plan !== 'free') {
+      return;
+    }
+    const refs: string[] = Array.isArray(data.freeItemsCountedRefs)
+      ? data.freeItemsCountedRefs
+      : [];
+    if (refs.includes(itemRef)) {
+      return;
+    }
+    const used = typeof data.freeItemsUsed === 'number' ? data.freeItemsUsed : 0;
+    tx.update(billingRef, {
+      freeItemsUsed: used + 1,
+      freeItemsCountedRefs: fv.arrayUnion(itemRef),
+      updatedAt: fv.serverTimestamp(),
+    });
+  });
+}
+
+/**
  * Helper autonome (tests / callables) : check + incrément signature dans une transaction.
  */
 export async function consumeFreeSignatureToken(

@@ -245,6 +245,19 @@ service cloud.firestore {
         return resource.data.structureId != null && resource.data.structureId != '' &&
                hasPermissionOrStructureFallback('mission', 'write', resource.data.structureId);
       }
+
+      // Assignation JE : structureId passe de vide/absent → valeur non vide
+      function isAssigningStructureId() {
+        return (resource.data.structureId == null || resource.data.structureId == '')
+          && request.resource.data.structureId is string
+          && request.resource.data.structureId != '';
+      }
+
+      function canAssignStructureIdViaStructure() {
+        return isAssigningStructureId()
+          && hasPermissionOrStructureFallback('mission', 'write', request.resource.data.structureId)
+          && hasFreeQuotaForNewItem(request.resource.data.structureId);
+      }
       
       function canCreateViaStructure() {
         return request.resource.data.structureId != null && request.resource.data.structureId != '' &&
@@ -342,6 +355,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         isSuperAdmin() ||
         canWriteViaStructure() ||
+        canAssignStructureIdViaStructure() ||
         (
           isEntreprise() &&
           resource.data.companyId == request.auth.uid &&
