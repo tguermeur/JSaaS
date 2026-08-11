@@ -742,13 +742,15 @@ const Register: React.FC = () => {
       
       {
         const emailDomain = structureEmail.includes('@') ? '@' + structureEmail.split('@')[1] : '@' + structureEmail;
+        const onboardingStatus = 'pending' as const;
         const structureId = await createStructure({
           nom: structureName,
           ecole: structureSchool,
           emailDomains: [emailDomain],
           domaines: [emailDomain],
           createdBy: user.uid,
-          structureType: 'junior'
+          structureType: 'junior',
+          onboardingStatus,
         });
         const userData: any = {
           displayName: structureName,
@@ -761,9 +763,6 @@ const Register: React.FC = () => {
           structureName,
           ecole: structureSchool,
           structureId,
-          trialStartDate: new Date(),
-          trialEndDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-          hasActiveTrial: true
         };
         await createUserDocument(user.uid, userData);
         try {
@@ -773,8 +772,8 @@ const Register: React.FC = () => {
         } catch (e) {
           console.warn('Initialisation des permissions structure (ignoré):', e);
         }
-        // Rediriger vers la route centrale qui choisit le bon écran selon le statut
-        navigate('/app');
+        // Wizard self-serve si onboarding encore pending
+        navigate(onboardingStatus === 'pending' ? '/app/onboarding' : '/app');
       }
     } catch (error: any) {
       console.error("Erreur d'inscription:", error);

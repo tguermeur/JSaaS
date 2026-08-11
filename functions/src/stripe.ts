@@ -481,6 +481,7 @@ export const getSignupCompletionData = onCall(signupConfig, async (request) => {
         emailDomains: [emailDomain],
         domaines: [emailDomain],
         structureType: 'junior',
+        onboardingStatus: 'pending',
         createdAt: new Date().toISOString(),
       });
       await createDefaultStructurePermissions(structureId);
@@ -790,6 +791,7 @@ stripeWebhookApp.post('*', async (req, res) => {
             emailDomains: [emailDomain],
             domaines: [emailDomain],
             structureType: 'junior',
+            onboardingStatus: 'pending',
             createdAt: new Date().toISOString(),
           });
           await createDefaultStructurePermissions(structureId);
