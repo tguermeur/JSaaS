@@ -15,9 +15,21 @@ export type StructurePlan = 'free' | 'paid';
 
 export const DEFAULT_FREE_ITEMS_LIMIT = 3;
 export const DEFAULT_FREE_SIGNATURE_TOKENS_LIMIT = 10;
+export const ONBOARDING_IMPORT_MAX_ATTEMPTS = 3;
 
 export const SIGNATURE_QUOTA_EXHAUSTED_MSG =
   'Quota de signatures gratuites atteint. Passez au plan payant pour continuer.';
+
+export const ONBOARDING_IMPORT_ATTEMPTS_EXHAUSTED_MSG =
+  'Quota d’imports d’onboarding atteint (3 tentatives maximum).';
+
+export const ONBOARDING_IMPORT_DAILY_LIMIT_MSG =
+  'Un import gratuit par jour maximum, réessayez demain.';
+
+/** Date du jour en UTC au format YYYY-MM-DD. */
+export function todayUtcYmd(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
 
 export function billingCurrentRef(db: Firestore, structureId: string) {
   return db.collection('structures').doc(structureId).collection('billing').doc('current');
@@ -128,5 +140,53 @@ export async function consumeFreeSignatureToken(
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(billingRef);
     consumeFreeSignatureTokenInTransaction(tx, billingRef, snap, fieldValue);
+  });
+}
+
+/**
+ * Réserve une tentative d’import onboarding (max 3 total, 1 par jour UTC).
+ * À appeler AVANT le traitement : consomme même si l’import échoue ensuite.
+ *
+ * `todayUtc` injectable pour les tests (YYYY-MM-DD).
+ */
+export async function reserveOnboardingImportAttempt(
+  db: Firestore,
+  structureId: string,
+  opts?: { fieldValue?: typeof FieldValue; todayUtc?: string }
+): Promise<void> {
+  const fv = opts?.fieldValue ?? FieldValue;
+  const today = opts?.todayUtc ?? todayUtcYmd();
+  const billingRef = billingCurrentRef(db, structureId);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(billingRef);
+    if (!snap.exists) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Billing introuvable pour cette structure.'
+      );
+    }
+    const data = snap.data() || {};
+    const attemptsUsed =
+      typeof data.onboardingImportAttemptsUsed === 'number'
+        ? data.onboardingImportAttemptsUsed
+        : 0;
+    const lastAttemptDate =
+      typeof data.onboardingImportLastAttemptDate === 'string'
+        ? data.onboardingImportLastAttemptDate
+        : null;
+
+    if (attemptsUsed >= ONBOARDING_IMPORT_MAX_ATTEMPTS) {
+      throw new HttpsError('resource-exhausted', ONBOARDING_IMPORT_ATTEMPTS_EXHAUSTED_MSG);
+    }
+    if (lastAttemptDate === today) {
+      throw new HttpsError('resource-exhausted', ONBOARDING_IMPORT_DAILY_LIMIT_MSG);
+    }
+
+    tx.update(billingRef, {
+      onboardingImportAttemptsUsed: attemptsUsed + 1,
+      onboardingImportLastAttemptDate: today,
+      updatedAt: fv.serverTimestamp(),
+    });
   });
 }

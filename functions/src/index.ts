@@ -1550,6 +1550,9 @@ export {
   linkCompanyContactAfterRegister,
 } from './notifications/companyInvite';
 
+// Bulk-import onboarding (quota exemption + Admin SDK)
+export { onboardingBulkImport as runOnboardingBulkImport } from './onboardingImport';
+
 // Exporter les fonctions de scoring IA (prospects, relances, analyse clients)
 export {
   computeProspectScores,

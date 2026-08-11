@@ -19,8 +19,10 @@ export {
   consumeFreeSignatureTokenInTransaction,
   defaultBillingQuota,
   maybeIncrementFreeItem,
+  reserveOnboardingImportAttempt,
   DEFAULT_FREE_ITEMS_LIMIT,
   DEFAULT_FREE_SIGNATURE_TOKENS_LIMIT,
+  ONBOARDING_IMPORT_MAX_ATTEMPTS,
   SIGNATURE_QUOTA_EXHAUSTED_MSG,
 } from './quotaHelpers';
 
@@ -57,7 +59,7 @@ export const onStructureCreatedInitQuota = onDocumentCreated(
   }
 );
 
-/** Incrémente freeItemsUsed à la création d'une mission (hors ambassadeur_event). */
+/** Incrémente freeItemsUsed à la création d'une mission (hors ambassadeur_event / onboarding). */
 export const onMissionCreatedCountQuota = onDocumentCreated(
   {
     ...triggerConfig,
@@ -67,11 +69,16 @@ export const onMissionCreatedCountQuota = onDocumentCreated(
     const missionId = event.params.missionId as string;
     const data = event.data?.data() || {};
     const structureId = data.structureId as string | undefined;
+    const isOnboardingImport = data.importedViaOnboarding === true;
     const isEvent = data.type === 'ambassadeur_event';
+    const skip = isOnboardingImport || isEvent;
+    const reason = isOnboardingImport
+      ? 'onboarding import hors quota'
+      : 'ambassadeur_event hors quota';
 
     await maybeIncrementFreeItem(admin.firestore(), structureId, `mission:${missionId}`, {
-      skip: isEvent,
-      reason: 'ambassadeur_event hors quota',
+      skip,
+      reason,
     });
   }
 );
@@ -105,7 +112,7 @@ export const onMissionUpdatedCountQuota = onDocumentUpdated(
   }
 );
 
-/** Incrémente freeItemsUsed à la création d'une étude. */
+/** Incrémente freeItemsUsed à la création d'une étude (hors onboarding import). */
 export const onEtudeCreatedCountQuota = onDocumentCreated(
   {
     ...triggerConfig,
@@ -115,7 +122,11 @@ export const onEtudeCreatedCountQuota = onDocumentCreated(
     const etudeId = event.params.etudeId as string;
     const data = event.data?.data() || {};
     const structureId = data.structureId as string | undefined;
+    const isOnboardingImport = data.importedViaOnboarding === true;
 
-    await maybeIncrementFreeItem(admin.firestore(), structureId, `etude:${etudeId}`);
+    await maybeIncrementFreeItem(admin.firestore(), structureId, `etude:${etudeId}`, {
+      skip: isOnboardingImport,
+      reason: 'onboarding import hors quota',
+    });
   }
 );
