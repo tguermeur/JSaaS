@@ -368,7 +368,7 @@ export const decryptCompanyData = onCall(functionConfig, async (request) => {
     }
 
     let companyData: Record<string, unknown> | undefined;
-    let resolvedCompanyId = typeof companyId === 'string' ? companyId : undefined;
+    const resolvedCompanyId = typeof companyId === 'string' ? companyId : undefined;
 
     if (resolvedCompanyId) {
       const companyDoc = await admin.firestore().collection('companies').doc(resolvedCompanyId).get();
@@ -733,7 +733,7 @@ export const decryptContactData = onCall(functionConfig, async (request) => {
     }
 
     let contactData: Record<string, unknown> | undefined;
-    let resolvedContactId = typeof contactId === 'string' ? contactId : undefined;
+    const resolvedContactId = typeof contactId === 'string' ? contactId : undefined;
 
     if (resolvedContactId) {
       const contactDoc = await admin.firestore().collection('contacts').doc(resolvedContactId).get();

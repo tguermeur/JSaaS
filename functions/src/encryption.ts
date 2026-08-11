@@ -275,7 +275,7 @@ export async function encryptSensitiveFields<T extends Record<string, any>>(
     sensitiveFields.includes('displayName');
 
   // display* en clair avant chiffrement des noms (listes UI sans CF)
-  let encrypted: Record<string, any> = isUserFields
+  const encrypted: Record<string, any> = isUserFields
     ? populateUserDisplayFields({ ...data })
     : { ...data };
 

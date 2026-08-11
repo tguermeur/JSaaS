@@ -685,7 +685,7 @@ const HumanResources = () => {
         
         if (userData) {
           // Fonction helper pour créer un document depuis une URL
-          const createDocumentFromUrl = (url: string | undefined, displayName: string, type: string = 'application/pdf'): Document | null => {
+          const createDocumentFromUrl = (url: string | undefined, displayName: string, type = 'application/pdf'): Document | null => {
             if (!url) return null;
             
             // Convertir la date en Timestamp si nécessaire
@@ -847,7 +847,7 @@ const HumanResources = () => {
   };
 
   const sanitizeZipEntryName = (name: string, usedNames: Set<string>): string => {
-    let base = (name || 'document').replace(/[/\\?%*:|"<>]/g, '_').trim() || 'document';
+    const base = (name || 'document').replace(/[/\\?%*:|"<>]/g, '_').trim() || 'document';
     if (!usedNames.has(base)) {
       usedNames.add(base);
       return base;

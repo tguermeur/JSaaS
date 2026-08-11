@@ -103,7 +103,7 @@ function getResourceType(accessType: AccessType): string {
 export async function getEncryptedDataAccessLogs(
   structureId?: string,
   userId?: string,
-  limit: number = 50,
+  limit = 50,
   startAfter?: admin.firestore.DocumentSnapshot
 ): Promise<{ logs: EncryptedDataAccessLog[]; lastDoc?: admin.firestore.DocumentSnapshot }> {
   try {

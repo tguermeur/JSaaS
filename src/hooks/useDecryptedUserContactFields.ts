@@ -100,4 +100,4 @@ export function useDecryptedUserContactFields(
   }, [userId, readCached, applyContact]);
 
   return { phone: contact.phone, studentId: contact.studentId, loading };
-};
+}

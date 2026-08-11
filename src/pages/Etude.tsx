@@ -214,9 +214,7 @@ const Etude: React.FC = () => {
 
         // Récupération des chargés d'étude de la structure
         const usersRef = collection(db, 'users');
-        let usersQuery;
-        
-        usersQuery = query(
+        const usersQuery = query(
           usersRef,
           where('structureId', '==', userStructureId),
           where('status', 'in', ['membre', 'admin', 'superadmin'])

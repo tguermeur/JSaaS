@@ -135,7 +135,7 @@ export async function assertContactRateLimit(email: string): Promise<void> {
     const snap = await tx.get(ref);
     const data = snap.data();
     const windowStart = (data?.windowStart as number) ?? now;
-    let count = (data?.count as number) ?? 0;
+    const count = (data?.count as number) ?? 0;
     if (now - windowStart > CONTACT_RATE_LIMIT_MS) {
       tx.set(ref, { windowStart: now, count: 1, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
       return;

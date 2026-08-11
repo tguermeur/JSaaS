@@ -2562,7 +2562,7 @@ const StructureSettings: React.FC = () => {
                               
                               // Permettre seulement les chiffres, une virgule ou un point
                               // Nettoyer la valeur en gardant seulement les chiffres et le séparateur
-                              let cleanValue = value.replace(/[^0-9,.]/g, '');
+                              const cleanValue = value.replace(/[^0-9,.]/g, '');
                               
                               // Vérifier qu'il n'y a qu'un seul séparateur décimal
                               const separators = (cleanValue.match(/[,.]/g) || []).length;

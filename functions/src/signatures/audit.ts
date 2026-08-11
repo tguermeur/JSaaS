@@ -55,7 +55,7 @@ export async function assertSignatureRateLimit(
     const snap = await tx.get(ref);
     const data = snap.data();
     const windowStart = (data?.windowStart as number) ?? now;
-    let count = (data?.count as number) ?? 0;
+    const count = (data?.count as number) ?? 0;
     if (now - windowStart > windowMs) {
       tx.set(ref, {
         windowStart: now,

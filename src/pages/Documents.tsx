@@ -702,7 +702,7 @@ const Documents: React.FC = () => {
             }
             
             // Fonction helper pour créer un document depuis une URL
-            const createDocumentFromUrl = (url: string | undefined, displayName: string, type: string = 'application/pdf'): Document | null => {
+            const createDocumentFromUrl = (url: string | undefined, displayName: string, type = 'application/pdf'): Document | null => {
               if (!url) return null;
               
               // Extraire le chemin depuis l'URL Firebase Storage

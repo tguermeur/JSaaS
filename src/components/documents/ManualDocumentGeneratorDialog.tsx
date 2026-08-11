@@ -351,7 +351,7 @@ const ManualDocumentGenerator: React.FC<ManualDocumentGeneratorProps> = ({
     if (!value) { clearEntityTags(MISSION_TAG_MAP); return; }
 
     // Load missionType data if mission has a missionTypeId
-    let missionDataWithType = { ...value.data };
+    const missionDataWithType = { ...value.data };
     if (value.data.missionTypeId) {
       try {
         const mtDoc = await getDoc(doc(db, 'missionTypes', value.data.missionTypeId));
