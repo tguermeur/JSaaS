@@ -69,4 +69,24 @@ describe('maybeIncrementFreeItem — assignation', () => {
     const snap = await billingCurrentRef(db, STRUCTURE_ID).get();
     expect(snap.data()?.freeItemsUsed).toBe(2);
   });
+
+  it('skip (importedViaOnboarding) ne touche pas freeItemsUsed', async () => {
+    await maybeIncrementFreeItem(db, STRUCTURE_ID, 'mission:onboarding-1', {
+      skip: true,
+      reason: 'onboarding import hors quota',
+      fieldValue: FieldValue,
+    });
+    const snap = await billingCurrentRef(db, STRUCTURE_ID).get();
+    expect(snap.data()?.freeItemsUsed).toBe(2);
+    expect(snap.data()?.freeItemsCountedRefs).not.toContain('mission:onboarding-1');
+  });
+
+  it('sans skip continue d’incrémenter (non-régression)', async () => {
+    await maybeIncrementFreeItem(db, STRUCTURE_ID, 'mission:normal-1', {
+      fieldValue: FieldValue,
+    });
+    const snap = await billingCurrentRef(db, STRUCTURE_ID).get();
+    expect(snap.data()?.freeItemsUsed).toBe(3);
+    expect(snap.data()?.freeItemsCountedRefs).toContain('mission:normal-1');
+  });
 });

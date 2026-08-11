@@ -14,41 +14,61 @@ const callConfig = {
   secrets: [...EMAILJS_GENERIC_SECRETS],
 };
 
-/**
- * RH: invite a member by email to join the caller's structure.
- */
-export const inviteStructureMember = onCall(callConfig, async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError('unauthenticated', 'Authentification requise.');
-  }
+export type InviteStructureMemberInput = {
+  email?: string;
+  role?: string;
+  /** Si omis : structure du caller (comportement historique). */
+  structureId?: string;
+};
 
-  const { email, role } = (request.data || {}) as { email?: string; role?: string };
-  const normalizedEmail = (email || '').trim().toLowerCase();
+/**
+ * Core logic for inviteStructureMember (exported for unit tests / bulk-import).
+ */
+export async function runInviteStructureMember(
+  uid: string,
+  data: InviteStructureMemberInput
+): Promise<{
+  success: true;
+  inviteToken: string;
+  emailSkipped: string | null;
+  emailOk: boolean;
+}> {
+  const normalizedEmail = (data.email || '').trim().toLowerCase();
   if (!normalizedEmail || !normalizedEmail.includes('@')) {
     throw new HttpsError('invalid-argument', 'email invalide.');
   }
 
   const fs = admin.firestore();
-  const callerSnap = await fs.collection('users').doc(request.auth.uid).get();
+  const callerSnap = await fs.collection('users').doc(uid).get();
   const caller = callerSnap.data() || {};
-  const structureId = caller.structureId as string | undefined;
+  const callerStructureId = caller.structureId as string | undefined;
   const callerStatus = (caller.status || caller.role || '').toString();
+  const isSuperAdmin = callerStatus === 'superadmin';
+
+  const requestedStructureId = (data.structureId || '').trim();
+  const structureId = requestedStructureId || callerStructureId;
 
   if (!structureId) {
     throw new HttpsError('failed-precondition', 'Aucune structure associée.');
   }
 
+  if (
+    requestedStructureId &&
+    !isSuperAdmin &&
+    callerStructureId !== requestedStructureId
+  ) {
+    throw new HttpsError('permission-denied', 'Structure non autorisée.');
+  }
+
   const isAdmin = ['admin', 'admin_structure', 'superadmin'].includes(callerStatus);
   if (!isAdmin) {
-    // Allow RH permission holders
+    // Allow RH permission holders on the target structure
     const rhPerm = await fs.doc(`structures/${structureId}/permissions/rh`).get();
     const perm = rhPerm.exists ? rhPerm.data() : null;
     const allowed =
       perm &&
-      ((Array.isArray(perm.allowedMembers) &&
-        perm.allowedMembers.includes(request.auth.uid)) ||
-        (Array.isArray(perm.allowedRoles) &&
-          perm.allowedRoles.includes(callerStatus)));
+      ((Array.isArray(perm.allowedMembers) && perm.allowedMembers.includes(uid)) ||
+        (Array.isArray(perm.allowedRoles) && perm.allowedRoles.includes(callerStatus)));
     if (!allowed) {
       throw new HttpsError('permission-denied', 'Permission RH requise.');
     }
@@ -67,8 +87,8 @@ export const inviteStructureMember = onCall(callConfig, async (request) => {
     email: normalizedEmail,
     structureId,
     structureName,
-    role: role || 'membre',
-    createdBy: request.auth.uid,
+    role: data.role || 'membre',
+    createdBy: uid,
     createdAt: FieldValue.serverTimestamp(),
     status: 'pending',
   });
@@ -85,7 +105,7 @@ export const inviteStructureMember = onCall(callConfig, async (request) => {
     },
     linkFields: ['invite_link'],
     structureId,
-    sentByUserId: request.auth.uid,
+    sentByUserId: uid,
     logType: 'member_invite',
   });
 
@@ -95,6 +115,19 @@ export const inviteStructureMember = onCall(callConfig, async (request) => {
     emailSkipped: result.skipped || null,
     emailOk: result.ok,
   };
+}
+
+/**
+ * RH: invite a member by email to join the caller's structure.
+ */
+export const inviteStructureMember = onCall(callConfig, async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError('unauthenticated', 'Authentification requise.');
+  }
+  return runInviteStructureMember(
+    request.auth.uid,
+    (request.data || {}) as InviteStructureMemberInput
+  );
 });
 
 /**

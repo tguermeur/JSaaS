@@ -19,7 +19,10 @@ import {
 } from '@mui/material';
 import { CloudUpload as CloudUploadIcon, Download as DownloadIcon, Warning as WarningIcon, ContentCopy as DuplicateIcon } from '@mui/icons-material';
 import { useDropzone } from 'react-dropzone';
-import Papa from 'papaparse';
+import {
+  parseImportSpreadsheet,
+  IMPORT_SPREADSHEET_ACCEPT,
+} from '../../utils/parseImportSpreadsheet';
 
 export type ImportType = 'mission' | 'etude';
 
@@ -118,26 +121,20 @@ const ImportMissionsEtudesDialog: React.FC<ImportMissionsEtudesDialogProps> = ({
     (acceptedFiles: File[]) => {
       const file = acceptedFiles[0];
       if (!file) return;
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results) => {
-          const rows = (results.data as Record<string, unknown>[]).filter(
-            (row) => Object.keys(row).some((k) => row[k] != null && String(row[k]).trim() !== '')
-          );
+      void parseImportSpreadsheet(file)
+        .then((rows) => {
           onFileParsed(rows);
-        },
-        error: () => {
+        })
+        .catch(() => {
           onFileParsed([]);
-        },
-      });
+        });
     },
     [onFileParsed]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: handleDrop,
-    accept: { 'text/csv': ['.csv'] },
+    accept: { ...IMPORT_SPREADSHEET_ACCEPT },
     maxFiles: 1,
     disabled: !open || processingAI,
   });
@@ -203,7 +200,7 @@ const ImportMissionsEtudesDialog: React.FC<ImportMissionsEtudesDialogProps> = ({
             <input {...getInputProps()} />
             <CloudUploadIcon sx={{ fontSize: 40, color: 'text.secondary', mb: 1 }} />
             <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
-              {isDragActive ? 'Déposez le fichier ici' : 'Glissez un fichier CSV ici'}
+              {isDragActive ? 'Déposez le fichier ici' : 'Glissez un fichier CSV ou Excel ici'}
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
               ou cliquez pour parcourir
