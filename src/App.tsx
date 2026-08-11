@@ -41,6 +41,7 @@ const MentionsLegales = React.lazy(() => import('./pages/MentionsLegales'));
 const PolitiqueConfidentialite = React.lazy(() => import('./pages/PolitiqueConfidentialite'));
 
 const Dashboard = React.lazy(() => import('./pages/Dashboard'));
+const OnboardingWizard = React.lazy(() => import('./pages/onboarding/OnboardingWizard'));
 const SuperAdmin = React.lazy(() => import('./pages/SuperAdmin'));
 const MissionDetails = React.lazy(() => import('./pages/MissionDetails'));
 const EtudeDetails = React.lazy(() => import('./pages/EtudeDetails'));
@@ -219,6 +220,14 @@ function App(): JSX.Element {
                                 <ProtectedRoute requiredPermission={{ pageId: 'dashboard', accessType: 'read' }}>
                                   <Dashboard />
                                 </ProtectedRoute>
+                              }
+                            />
+                            <Route
+                              path="onboarding"
+                              element={
+                                <RequireRole allowedRoles={['admin_structure', 'admin', 'superadmin']}>
+                                  <OnboardingWizard />
+                                </RequireRole>
                               }
                             />
                             <Route path="profile" element={<Profile />} />

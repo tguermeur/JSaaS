@@ -1,7 +1,9 @@
-import { collection, doc, setDoc, getDocs, deleteDoc, query, limit } from 'firebase/firestore';
+import { collection, doc, setDoc, getDocs, deleteDoc, query, limit, updateDoc } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from './config';
 import { Structure, CreateStructureData } from '../types/structure';
+
+export type OnboardingStatus = 'pending' | 'completed' | 'skipped';
 
 export async function createStructure(structureData: CreateStructureData): Promise<string> {
   try {
@@ -18,6 +20,13 @@ export async function createStructure(structureData: CreateStructureData): Promi
     console.error('Erreur lors de la création de la structure:', error);
     throw error;
   }
+}
+
+export async function updateStructureOnboardingStatus(
+  structureId: string,
+  onboardingStatus: OnboardingStatus
+): Promise<void> {
+  await updateDoc(doc(db, 'structures', structureId), { onboardingStatus });
 }
 
 

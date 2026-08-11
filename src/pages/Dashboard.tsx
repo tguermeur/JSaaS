@@ -52,6 +52,7 @@ import {
   CheckCircle as CheckCircleIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
+import { useStructure } from '../hooks/useStructure';
 import { useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { logoutUser } from '../firebase/auth';
 import { collection, query, where, getDocs, getCountFromServer, addDoc, Timestamp, getDoc, doc, orderBy, limit } from 'firebase/firestore';
@@ -200,6 +201,31 @@ export default function Dashboard(): JSX.Element {
   // Stabiliser les valeurs importantes de userData pour éviter les re-renders
   const userStructureId = useMemo(() => userData?.structureId, [userData?.structureId]);
   const userStatus = useMemo(() => userData?.status, [userData?.status]);
+
+  const { structure: structureForOnboarding } = useStructure(userStructureId);
+  const canManageOnboarding = ['admin', 'admin_structure', 'superadmin'].includes(userStatus || '');
+  const onboardingBannerStorageKey = userStructureId
+    ? `onboarding-import-banner-dismissed:${userStructureId}`
+    : null;
+  const [onboardingBannerDismissed, setOnboardingBannerDismissed] = useState(() => {
+    if (!onboardingBannerStorageKey || typeof window === 'undefined') return false;
+    return localStorage.getItem(onboardingBannerStorageKey) === '1';
+  });
+  useEffect(() => {
+    if (!onboardingBannerStorageKey || typeof window === 'undefined') return;
+    setOnboardingBannerDismissed(localStorage.getItem(onboardingBannerStorageKey) === '1');
+  }, [onboardingBannerStorageKey]);
+  const showOnboardingImportBanner =
+    canManageOnboarding &&
+    structureForOnboarding?.onboardingStatus === 'skipped' &&
+    !onboardingBannerDismissed;
+
+  const dismissOnboardingBanner = () => {
+    if (onboardingBannerStorageKey) {
+      localStorage.setItem(onboardingBannerStorageKey, '1');
+    }
+    setOnboardingBannerDismissed(true);
+  };
   
   const isEntreprise = userStatus === 'entreprise';
   const isEtudiant = userStatus === 'etudiant';
@@ -1041,6 +1067,20 @@ export default function Dashboard(): JSX.Element {
         <DashboardHeaderKpis metrics={periodMetrics} statistics={statistics} missionsLabel={missionsLabel} />
       }
     >
+      {showOnboardingImportBanner && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          onClose={dismissOnboardingBanner}
+          action={
+            <Button color="inherit" size="small" onClick={() => navigate('/app/onboarding')}>
+              Importer
+            </Button>
+          }
+        >
+          Importez vos données historiques pour démarrer plus vite.
+        </Alert>
+      )}
       <DashboardJuniorBody
         missions={missions}
         calendarEvents={calendarEvents}

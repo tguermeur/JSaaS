@@ -34,6 +34,8 @@ export interface Structure {
   defaultGratificationNet?: number;
   /** Gratification brute par défaut (€). */
   defaultGratificationBrute?: number;
+  /** Statut du wizard d’onboarding self-serve (lot B). */
+  onboardingStatus?: 'pending' | 'completed' | 'skipped';
 }
 
 export interface CreateStructureData {
@@ -44,4 +46,6 @@ export interface CreateStructureData {
   /** UID du créateur (requis pour l’inscription Junior, optionnel pour SuperAdmin). */
   createdBy?: string;
   structureType?: 'junior' | 'jobservice';
+  /** Statut du wizard d’onboarding self-serve (lot B). */
+  onboardingStatus?: 'pending' | 'completed' | 'skipped';
 } 

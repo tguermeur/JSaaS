@@ -14,7 +14,8 @@ import {
 import { Visibility, VisibilityOff } from '@mui/icons-material';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { signInWithEmailAndPassword } from 'firebase/auth';
-import { auth } from '../firebase/config';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase/config';
 import { tokens } from '../theme/tokens';
 
 const authPaperSx = {
@@ -111,7 +112,11 @@ export default function RegisterComplete(): JSX.Element {
       );
       await completeSignupAfterPayment({ sessionId, password });
       await signInWithEmailAndPassword(auth, completionData.email, password);
-      navigate('/app', { replace: true });
+      const structureSnap = await getDoc(doc(db, 'structures', completionData.structureId));
+      const onboardingStatus = structureSnap.exists()
+        ? (structureSnap.data()?.onboardingStatus as string | undefined)
+        : undefined;
+      navigate(onboardingStatus === 'pending' ? '/app/onboarding' : '/app', { replace: true });
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
       const message = (err as { message?: string })?.message ?? 'Erreur lors de la finalisation du compte.';
