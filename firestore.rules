@@ -1450,6 +1450,14 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
+    match /subscriptions_addons/{docId} {
+      allow read: if isAuthenticated() && (
+        isSuperAdmin() ||
+        (resource.data.structureId != null && isStructureAdmin(resource.data.structureId))
+      );
+      allow create, update, delete: if false;
+    }
+
     match /stripeCustomers/{customerId} {
       allow read: if isAuthenticated() && (
         isSuperAdmin() || 

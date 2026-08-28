@@ -9,7 +9,8 @@ import {
   useTheme,
   useMediaQuery,
   Chip,
-  Divider
+  Divider,
+  Button,
 } from '@mui/material';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSnackbar } from 'notistack';
@@ -17,6 +18,7 @@ import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useSearchParams } from 'react-router-dom';
 import { getStripeCustomers, fetchPaymentHistory } from '../../services/stripeApiService';
+import { subscribeToAmbassadorEnterpriseAccess } from '../../services/ambassadorEnterpriseAccessService';
 import { tokens } from '../../theme/tokens';
 import { settingsPageStyles, SettingsPanel } from '../../components/ds';
 
@@ -67,7 +69,11 @@ interface StripePayment {
   description?: string;
 }
 
-
+interface AmbassadorEnterpriseAccess {
+  active?: boolean;
+  status?: string;
+  currentPeriodEnd?: { toDate?: () => Date } | Date;
+}
 
 const Billing: React.FC = () => {
   const { currentUser } = useAuth();
@@ -87,8 +93,11 @@ const Billing: React.FC = () => {
   const [stripeCustomers, setStripeCustomers] = useState<StripeCustomer[]>([]);
   const [isStripeCustomer, setIsStripeCustomer] = useState<boolean>(false);
   const [loadingStripeCustomers, setLoadingStripeCustomers] = useState(false);
+  const [structureType, setStructureType] = useState<'jobservice' | 'junior' | null>(null);
+  const [ambassadorEnterpriseAccess, setAmbassadorEnterpriseAccess] =
+    useState<AmbassadorEnterpriseAccess | null>(null);
+  const [loadingAmbassadorCheckout, setLoadingAmbassadorCheckout] = useState(false);
   
-
   useEffect(() => {
     const checkAdminStatus = async () => {
       if (!currentUser) return;
@@ -130,8 +139,14 @@ const Billing: React.FC = () => {
       if (doc.exists()) {
         const data = doc.data();
         console.log('Données de la structure:', data);
+        setStructureType(data.structureType || 'jobservice');
+        setAmbassadorEnterpriseAccess(
+          (data.ambassadorEnterpriseAccess as AmbassadorEnterpriseAccess | undefined) ?? null
+        );
       } else {
         console.log('Document structure n\'existe pas');
+        setStructureType(null);
+        setAmbassadorEnterpriseAccess(null);
       }
       setLoading(false);
     }, (error) => {
@@ -269,9 +284,26 @@ const Billing: React.FC = () => {
     fetchPayments();
   }, [organizationEmail, currentUser, isStripeCustomer, enqueueSnackbar]);
 
+  const handleAmbassadorEnterpriseSubscribe = async () => {
+    if (!currentUser || !structureId) return;
 
+    try {
+      setLoadingAmbassadorCheckout(true);
+      await subscribeToAmbassadorEnterpriseAccess(structureId, currentUser.uid);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'Erreur lors de la création de la session de paiement';
+      enqueueSnackbar(message, { variant: 'error' });
+      setLoadingAmbassadorCheckout(false);
+    }
+  };
 
-
+  const ambassadorAccessActive = ambassadorEnterpriseAccess?.active === true;
+  const ambassadorPeriodEnd = ambassadorEnterpriseAccess?.currentPeriodEnd;
+  const ambassadorPeriodEndDate =
+    ambassadorPeriodEnd instanceof Date
+      ? ambassadorPeriodEnd
+      : ambassadorPeriodEnd?.toDate?.() ?? null;
 
 
   if (error) {
@@ -348,6 +380,62 @@ const Billing: React.FC = () => {
                     />
                   </Box>
                 )}
+              </>
+            )}
+          </Box>
+        </SettingsPanel>
+      )}
+
+      {isAdmin && structureType === 'jobservice' && (
+        <SettingsPanel
+          title="Accès Entreprise — Ambassadeurs"
+          desc="Add-on mensuel pour les structures Job Service (149,90 €/mois)"
+        >
+          <Box sx={{ textAlign: 'center' }}>
+            <Chip
+              label={
+                ambassadorAccessActive
+                  ? 'Add-on actif'
+                  : 'Add-on inactif'
+              }
+              color={ambassadorAccessActive ? 'success' : 'default'}
+              size="small"
+              sx={{ fontWeight: 500, mb: 2 }}
+            />
+            {ambassadorAccessActive && ambassadorPeriodEndDate && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Prochaine échéance :{' '}
+                {ambassadorPeriodEndDate.toLocaleDateString('fr-FR', {
+                  day: 'numeric',
+                  month: 'long',
+                  year: 'numeric',
+                })}
+              </Typography>
+            )}
+            {!ambassadorAccessActive && (
+              <>
+                <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 420, mx: 'auto', mb: 2 }}>
+                  Souscrivez à l&apos;add-on Accès Entreprise — Ambassadeurs pour activer les
+                  fonctionnalités entreprise dédiées aux ambassadeurs (facturation indépendante de
+                  l&apos;abonnement JS Connect Pro).
+                </Typography>
+                <Button
+                  variant="contained"
+                  disabled={loadingAmbassadorCheckout || !structureId || !currentUser}
+                  onClick={handleAmbassadorEnterpriseSubscribe}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 500,
+                    bgcolor: tokens.colors.brandTeal,
+                    '&:hover': { bgcolor: tokens.colors.brandTeal700 },
+                  }}
+                >
+                  {loadingAmbassadorCheckout ? (
+                    <CircularProgress size={22} color="inherit" />
+                  ) : (
+                    'Souscrire — 149,90 €/mois'
+                  )}
+                </Button>
               </>
             )}
           </Box>

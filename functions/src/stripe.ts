@@ -6,6 +6,15 @@ import { StripeProduct } from './types';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as express from 'express';
+import {
+  assertAmbassadorEnterpriseEligible,
+  buildAmbassadorEnterpriseAccessCanceledFields,
+  buildAmbassadorEnterpriseAccessFields,
+  getAmbassadorEnterpriseAddonDocId,
+  normalizeCheckoutSubscriptionType,
+  resolveSubscriptionType,
+  shouldUpdateClassicSubscription,
+} from './stripeSubscriptionHelpers';
 
 // Charger les variables d'environnement depuis le fichier .env
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
@@ -210,6 +219,7 @@ interface CreateCheckoutSessionData {
   structureId: string;
   success_url?: string;
   cancel_url?: string;
+  subscriptionType?: 'classic' | 'ambassador_enterprise_access';
 }
 
 interface CancelSubscriptionData {
@@ -295,7 +305,9 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
       throw new HttpsError('unauthenticated', 'Vous devez être connecté pour accéder à cette fonction.');
     }
 
-    const { priceId, userId, structureId } = request.data as CreateCheckoutSessionData;
+    const { priceId, userId, structureId, subscriptionType: rawSubscriptionType } =
+      request.data as CreateCheckoutSessionData;
+    const subscriptionType = normalizeCheckoutSubscriptionType(rawSubscriptionType);
 
     if (!priceId) {
       throw new HttpsError('invalid-argument', 'L\'ID du prix est requis.');
@@ -320,6 +332,10 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
 
     if ((!userData || !isAdminOrAdminStructure) && !isCreatorJustSignedUp) {
       throw new HttpsError('permission-denied', 'Vous n\'avez pas les permissions nécessaires pour gérer les abonnements de cette structure.');
+    }
+
+    if (subscriptionType === 'ambassador_enterprise_access') {
+      assertAmbassadorEnterpriseEligible(structureData?.structureType);
     }
 
     // Créer ou récupérer le client Stripe pour la structure
@@ -354,6 +370,7 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
         userId,
         structureId,
         customerEmail: customerEmail || '',
+        subscriptionType,
       },
     };
     
@@ -376,6 +393,7 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
         userId,
         structureId,
         customerEmail: customerEmail || '',
+        subscriptionType,
       },
     });
 
@@ -736,6 +754,9 @@ stripeWebhookApp.post('*', async (req, res) => {
       // Resolve structure via customer subscription metadata when possible
       let structureIdFromInvoice: string | undefined =
         (failedInvoice.metadata?.structureId as string) || undefined;
+      let subscriptionTypeFromInvoice = resolveSubscriptionType(
+        failedInvoice.metadata as Record<string, string> | undefined
+      );
       if (!structureIdFromInvoice && failedInvoice.subscription) {
         try {
           const subId =
@@ -744,15 +765,23 @@ stripeWebhookApp.post('*', async (req, res) => {
               : failedInvoice.subscription.id;
           const sub = await getStripeInstance().subscriptions.retrieve(subId);
           structureIdFromInvoice = sub.metadata?.structureId;
+          subscriptionTypeFromInvoice = resolveSubscriptionType(sub.metadata);
         } catch (e) {
           console.warn('invoice.payment_failed: unable to resolve structureId', e);
         }
       }
       if (structureIdFromInvoice) {
-        const { notifyPaymentFailed } = await import('./notifications/billingNotifications');
-        await notifyPaymentFailed(structureIdFromInvoice).catch((err) =>
-          console.error('notifyPaymentFailed', err)
-        );
+        const { notifyPaymentFailed, notifyAmbassadorEnterpriseAccessPaymentFailed } =
+          await import('./notifications/billingNotifications');
+        if (subscriptionTypeFromInvoice === 'ambassador_enterprise_access') {
+          await notifyAmbassadorEnterpriseAccessPaymentFailed(structureIdFromInvoice).catch((err) =>
+            console.error('notifyAmbassadorEnterpriseAccessPaymentFailed', err)
+          );
+        } else {
+          await notifyPaymentFailed(structureIdFromInvoice).catch((err) =>
+            console.error('notifyPaymentFailed', err)
+          );
+        }
       } else {
         console.warn('invoice.payment_failed: no structureId', failedStructureId);
       }
@@ -760,9 +789,10 @@ stripeWebhookApp.post('*', async (req, res) => {
     }
 
     case 'customer.subscription.created':
-    case 'customer.subscription.updated':
+    case 'customer.subscription.updated': {
       const subscription = event.data.object as Stripe.Subscription;
       const meta = subscription.metadata || {};
+      const subscriptionType = resolveSubscriptionType(meta);
       const customerEmail = meta.customerEmail || meta.signupEmail;
       let structureId = meta.structureId as string | undefined;
 
@@ -810,6 +840,36 @@ stripeWebhookApp.post('*', async (req, res) => {
         break;
       }
 
+      if (subscriptionType === 'ambassador_enterprise_access') {
+        console.log('Stripe Functions - Mise à jour add-on Accès Entreprise Ambassadeurs:', {
+          structureId,
+          status: subscription.status,
+        });
+
+        const ambassadorFields = buildAmbassadorEnterpriseAccessFields(subscription);
+        const addonDocId = getAmbassadorEnterpriseAddonDocId(structureId);
+
+        await admin.firestore().collection('structures').doc(structureId).update({
+          ambassadorEnterpriseAccess: {
+            ...ambassadorFields,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+        });
+
+        await admin.firestore().collection('subscriptions_addons').doc(addonDocId).set({
+          structureId,
+          type: 'ambassador_enterprise_access',
+          ...ambassadorFields,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        console.log('Stripe Functions - Add-on Accès Entreprise Ambassadeurs mis à jour dans Firestore');
+        break;
+      }
+
+      if (!shouldUpdateClassicSubscription(subscriptionType)) {
+        break;
+      }
+
       console.log('Stripe Functions - Mise à jour de l\'abonnement:', { structureId, status: subscription.status, customerEmail });
 
       await admin.firestore().collection('subscriptions').doc(structureId).set({
@@ -831,11 +891,41 @@ stripeWebhookApp.post('*', async (req, res) => {
       });
       console.log('Stripe Functions - Statut de l\'abonnement mis à jour dans Firestore');
       break;
+    }
 
-    case 'customer.subscription.deleted':
+    case 'customer.subscription.deleted': {
       const deletedSubscription = event.data.object as Stripe.Subscription;
+      const deletedSubscriptionType = resolveSubscriptionType(deletedSubscription.metadata);
       const deletedStructureId = deletedSubscription.metadata.structureId;
-      console.log('Stripe Functions - Annulation de l\'abonnement:', deletedStructureId);
+      console.log('Stripe Functions - Annulation de l\'abonnement:', deletedStructureId, deletedSubscriptionType);
+
+      if (deletedSubscriptionType === 'ambassador_enterprise_access') {
+        if (!deletedStructureId) {
+          console.warn('Stripe Functions - Add-on ambassadeur annulé sans structureId, ignoré');
+          break;
+        }
+
+        const canceledFields = buildAmbassadorEnterpriseAccessCanceledFields();
+        const addonDocId = getAmbassadorEnterpriseAddonDocId(deletedStructureId);
+
+        await admin.firestore().collection('structures').doc(deletedStructureId).update({
+          ambassadorEnterpriseAccess: {
+            ...canceledFields,
+            stripeSubscriptionId: deletedSubscription.id,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+        });
+
+        await admin.firestore().collection('subscriptions_addons').doc(addonDocId).set({
+          structureId: deletedStructureId,
+          type: 'ambassador_enterprise_access',
+          ...canceledFields,
+          stripeSubscriptionId: deletedSubscription.id,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        console.log('Stripe Functions - Add-on Accès Entreprise Ambassadeurs annulé dans Firestore');
+        break;
+      }
 
       // Mettre à jour le statut de l'abonnement dans Firestore
       await admin.firestore().collection('subscriptions').doc(deletedStructureId).set({
@@ -856,6 +946,7 @@ stripeWebhookApp.post('*', async (req, res) => {
       });
       console.log('Stripe Functions - Statut d\'annulation enregistré dans Firestore');
       break;
+    }
   }
 
   res.json({ received: true });

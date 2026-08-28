@@ -44,6 +44,45 @@ export async function notifyPaymentFailed(structureId: string): Promise<void> {
   );
 }
 
+export async function notifyAmbassadorEnterpriseAccessPaymentFailed(
+  structureId: string
+): Promise<void> {
+  if (!structureId) return;
+  const structureSnap = await admin.firestore().doc(`structures/${structureId}`).get();
+  const structureName =
+    (structureSnap.data()?.name || structureSnap.data()?.nom || 'votre structure').toString();
+  const billingLink = '/app/settings/billing';
+  const admins = await getStructureAdminUserIds(structureId);
+
+  await notifyUsers(admins, {
+    type: 'billing',
+    title: 'Échec de paiement — Accès Entreprise Ambassadeurs',
+    message: `Le paiement de l'add-on Accès Entreprise — Ambassadeurs de « ${structureName} » a échoué.`,
+    priority: 'urgent',
+    metadata: {
+      structureId,
+      redirectUrl: billingLink,
+      source: 'ambassador_enterprise_access_payment_failed',
+    },
+  });
+
+  await Promise.all(
+    admins.map((uid) =>
+      maybeEmailUser({
+        userId: uid,
+        type: 'billing',
+        priority: 'urgent',
+        templateKey: 'PAYMENT_FAILED',
+        subject: `Échec de paiement add-on Ambassadeurs — ${structureName}`,
+        templateParams: { structure_name: structureName, billing_link: billingLink },
+        linkFields: ['billing_link'],
+        structureId,
+        logType: 'ambassador_enterprise_access_payment_failed',
+      })
+    )
+  );
+}
+
 export async function notifyCotisationPaid(params: {
   userId: string;
   amount: string;
