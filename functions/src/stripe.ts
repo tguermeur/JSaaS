@@ -315,7 +315,10 @@ export const createCheckoutSession = onCall(functionConfig, async (request) => {
     const structureSnapshot = await admin.firestore().collection('structures').doc(structureId).get();
     const structureData = structureSnapshot.data();
 
-    const isAdminOrAdminStructure = (userData?.status === 'admin' || userData?.status === 'admin_structure') && userData?.structureId === structureId;
+    const isSuperAdmin = userData?.status === 'superadmin';
+    const isAdminOrAdminStructure =
+      ((userData?.status === 'admin' || userData?.status === 'admin_structure') && userData?.structureId === structureId)
+      || isSuperAdmin;
     const isCreatorJustSignedUp = request.auth.uid === userId && structureData?.createdBy === userId;
 
     if ((!userData || !isAdminOrAdminStructure) && !isCreatorJustSignedUp) {

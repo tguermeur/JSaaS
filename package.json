@@ -28,6 +28,7 @@
     "test:watch": "vitest",
     "test:rules": "firebase emulators:exec --only firestore --project demo-jsaas-rules \"vitest run --config vitest.rules.config.js\"",
     "test:quota": "firebase emulators:exec --only firestore --project demo-jsaas-quota \"vitest run --config vitest.quota.config.js\"",
+    "test:stripe": "vitest run --config vitest.stripe.config.js",
     "build:analyze": "ANALYZE=true npm run build",
     "bundle:check": "node scripts/check-bundle-size.mjs",
     "prebuild": "node scripts/build-extension.js && node scripts/build-extension-zip.js",
