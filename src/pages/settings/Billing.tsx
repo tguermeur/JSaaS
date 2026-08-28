@@ -10,15 +10,17 @@ import {
   useMediaQuery,
   Chip,
   Divider,
-  Button,
 } from '@mui/material';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSnackbar } from 'notistack';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useSearchParams } from 'react-router-dom';
-import { getStripeCustomers, fetchPaymentHistory } from '../../services/stripeApiService';
-import { subscribeToAmbassadorEnterpriseAccess } from '../../services/ambassadorEnterpriseAccessService';
+import { getStripeCustomers, fetchInvoiceHistory } from '../../services/stripeApiService';
+import {
+  AmbassadorEnterpriseAccessPanel,
+  type AmbassadorEnterpriseAccessState,
+} from '../../components/ambassadors/AmbassadorEnterpriseAccessPanel';
 import { tokens } from '../../theme/tokens';
 import { settingsPageStyles, SettingsPanel } from '../../components/ds';
 
@@ -65,15 +67,19 @@ interface StripePayment {
   currency: string;
   status: string;
   created: number;
-  receipt_url: string;
+  receipt_url: string | null;
   description?: string;
+  subscriptionType?: 'classic' | 'ambassador_enterprise_access' | 'other';
 }
 
-interface AmbassadorEnterpriseAccess {
-  active?: boolean;
-  status?: string;
-  currentPeriodEnd?: { toDate?: () => Date } | Date;
-}
+const SUBSCRIPTION_TYPE_LABELS: Record<
+  NonNullable<StripePayment['subscriptionType']>,
+  string
+> = {
+  classic: 'Abonnement classique',
+  ambassador_enterprise_access: 'Accès Entreprise — Ambassadeurs',
+  other: 'Autre',
+};
 
 const Billing: React.FC = () => {
   const { currentUser } = useAuth();
@@ -95,8 +101,7 @@ const Billing: React.FC = () => {
   const [loadingStripeCustomers, setLoadingStripeCustomers] = useState(false);
   const [structureType, setStructureType] = useState<'jobservice' | 'junior' | null>(null);
   const [ambassadorEnterpriseAccess, setAmbassadorEnterpriseAccess] =
-    useState<AmbassadorEnterpriseAccess | null>(null);
-  const [loadingAmbassadorCheckout, setLoadingAmbassadorCheckout] = useState(false);
+    useState<AmbassadorEnterpriseAccessState | null>(null);
   
   useEffect(() => {
     const checkAdminStatus = async () => {
@@ -141,7 +146,7 @@ const Billing: React.FC = () => {
         console.log('Données de la structure:', data);
         setStructureType(data.structureType || 'jobservice');
         setAmbassadorEnterpriseAccess(
-          (data.ambassadorEnterpriseAccess as AmbassadorEnterpriseAccess | undefined) ?? null
+          (data.ambassadorEnterpriseAccess as AmbassadorEnterpriseAccessState | undefined) ?? null
         );
       } else {
         console.log('Document structure n\'existe pas');
@@ -241,69 +246,38 @@ const Billing: React.FC = () => {
     fetchStripeCustomers();
   }, [currentUser, organizationEmail, enqueueSnackbar]);
 
-  // Récupération de l'historique des paiements
+  // Récupération de l'historique des factures
   useEffect(() => {
     const fetchPayments = async () => {
-      if (!organizationEmail || !currentUser || !isStripeCustomer) {
-        console.log('Conditions non remplies pour récupérer les paiements:', { 
-          organizationEmail, 
-          currentUser: !!currentUser, 
-          isStripeCustomer 
+      if (!structureId || !currentUser || !isStripeCustomer) {
+        console.log('Conditions non remplies pour récupérer les factures:', {
+          structureId,
+          currentUser: !!currentUser,
+          isStripeCustomer,
         });
         return;
       }
-      
+
       setLoadingPayments(true);
       try {
-        console.log('Tentative de récupération des paiements pour:', organizationEmail);
-        console.log('Utilisateur authentifié:', currentUser.uid);
-        
-        const payments = await fetchPaymentHistory(organizationEmail);
-        console.log('Paiements récupérés avec succès:', payments);
-        setPayments(payments);
-        
-      } catch (err: any) {
-        console.error('Erreur détaillée lors de la récupération des paiements Stripe:', err);
-        console.error('Message d\'erreur:', err?.message);
-        
-        // Gestion des erreurs
-        if (err?.message?.includes('Token d\'authentification non disponible')) {
+        const invoices = await fetchInvoiceHistory(structureId);
+        setPayments(invoices);
+      } catch (err: unknown) {
+        console.error('Erreur lors de la récupération des factures Stripe:', err);
+        const message = err instanceof Error ? err.message : '';
+        if (message.includes('Token d\'authentification non disponible')) {
           enqueueSnackbar('Vous devez être connecté pour accéder à cette fonctionnalité.', { variant: 'error' });
-        } else if (err?.message?.includes('Erreur HTTP: 403')) {
+        } else if (message.includes('Erreur HTTP: 403')) {
           enqueueSnackbar('Vous n\'avez pas les permissions nécessaires.', { variant: 'error' });
-        } else if (err?.message?.includes('Erreur HTTP: 404')) {
-          console.log('Aucun paiement trouvé pour cette structure');
-          setPayments([]);
         } else {
-          enqueueSnackbar('Erreur lors de la récupération de l\'historique des paiements. Veuillez réessayer.', { variant: 'error' });
+          enqueueSnackbar('Erreur lors de la récupération de l\'historique des factures. Veuillez réessayer.', { variant: 'error' });
         }
       } finally {
         setLoadingPayments(false);
       }
     };
     fetchPayments();
-  }, [organizationEmail, currentUser, isStripeCustomer, enqueueSnackbar]);
-
-  const handleAmbassadorEnterpriseSubscribe = async () => {
-    if (!currentUser || !structureId) return;
-
-    try {
-      setLoadingAmbassadorCheckout(true);
-      await subscribeToAmbassadorEnterpriseAccess(structureId, currentUser.uid);
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : 'Erreur lors de la création de la session de paiement';
-      enqueueSnackbar(message, { variant: 'error' });
-      setLoadingAmbassadorCheckout(false);
-    }
-  };
-
-  const ambassadorAccessActive = ambassadorEnterpriseAccess?.active === true;
-  const ambassadorPeriodEnd = ambassadorEnterpriseAccess?.currentPeriodEnd;
-  const ambassadorPeriodEndDate =
-    ambassadorPeriodEnd instanceof Date
-      ? ambassadorPeriodEnd
-      : ambassadorPeriodEnd?.toDate?.() ?? null;
+  }, [structureId, currentUser, isStripeCustomer, enqueueSnackbar]);
 
 
   if (error) {
@@ -386,63 +360,15 @@ const Billing: React.FC = () => {
         </SettingsPanel>
       )}
 
-      {isAdmin && structureType === 'jobservice' && (
-        <SettingsPanel
-          title="Accès Entreprise — Ambassadeurs"
-          desc="Add-on mensuel pour les structures Job Service (149,90 €/mois)"
-        >
-          <Box sx={{ textAlign: 'center' }}>
-            <Chip
-              label={
-                ambassadorAccessActive
-                  ? 'Add-on actif'
-                  : 'Add-on inactif'
-              }
-              color={ambassadorAccessActive ? 'success' : 'default'}
-              size="small"
-              sx={{ fontWeight: 500, mb: 2 }}
-            />
-            {ambassadorAccessActive && ambassadorPeriodEndDate && (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Prochaine échéance :{' '}
-                {ambassadorPeriodEndDate.toLocaleDateString('fr-FR', {
-                  day: 'numeric',
-                  month: 'long',
-                  year: 'numeric',
-                })}
-              </Typography>
-            )}
-            {!ambassadorAccessActive && (
-              <>
-                <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 420, mx: 'auto', mb: 2 }}>
-                  Souscrivez à l&apos;add-on Accès Entreprise — Ambassadeurs pour activer les
-                  fonctionnalités entreprise dédiées aux ambassadeurs (facturation indépendante de
-                  l&apos;abonnement JS Connect Pro).
-                </Typography>
-                <Button
-                  variant="contained"
-                  disabled={loadingAmbassadorCheckout || !structureId || !currentUser}
-                  onClick={handleAmbassadorEnterpriseSubscribe}
-                  sx={{
-                    textTransform: 'none',
-                    fontWeight: 500,
-                    bgcolor: tokens.colors.brandTeal,
-                    '&:hover': { bgcolor: tokens.colors.brandTeal700 },
-                  }}
-                >
-                  {loadingAmbassadorCheckout ? (
-                    <CircularProgress size={22} color="inherit" />
-                  ) : (
-                    'Souscrire — 149,90 €/mois'
-                  )}
-                </Button>
-              </>
-            )}
-          </Box>
-        </SettingsPanel>
+      {isAdmin && structureType === 'jobservice' && structureId && currentUser && (
+        <AmbassadorEnterpriseAccessPanel
+          structureId={structureId}
+          userId={currentUser.uid}
+          ambassadorEnterpriseAccess={ambassadorEnterpriseAccess}
+        />
       )}
 
-      <SettingsPanel title="Historique des paiements" desc="Vos transactions Stripe récentes">
+      <SettingsPanel title="Historique des paiements" desc="Vos factures Stripe récentes">
         {loadingPayments ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
             <CircularProgress />
@@ -477,7 +403,7 @@ const Billing: React.FC = () => {
               >
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <Box sx={{ flex: 1 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
                     <Typography variant="body1" sx={{ fontWeight: 600 }}>
                       {payment.description === 'Subscription update' ? 'Paiement mensuel' :
                        payment.description === 'subscription creation' ? 'Création d\'abonnement' :
@@ -485,13 +411,19 @@ const Billing: React.FC = () => {
                        payment.description === 'Subscription Creation' ? 'Création d\'abonnement' :
                        payment.description}
                     </Typography>
+                    {payment.subscriptionType && (
+                      <Chip
+                        label={SUBSCRIPTION_TYPE_LABELS[payment.subscriptionType]}
+                        size="small"
+                        variant="outlined"
+                        sx={{ fontWeight: 500 }}
+                      />
+                    )}
                     <Chip 
                       label={payment.status === 'succeeded' ? 'Effectué' : payment.status}
                       color={payment.status === 'succeeded' ? 'success' : 'default'}
                       size="small"
-                      sx={{ 
-                        fontWeight: 500
-                      }}
+                      sx={{ fontWeight: 500 }}
                     />
                   </Box>
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
@@ -515,7 +447,7 @@ const Billing: React.FC = () => {
                     style={{ textDecoration: 'none' }}
                   >
                     <Chip 
-                      label="Télécharger le reçu" 
+                      label="Voir la facture" 
                       size="small" 
                       color="primary" 
                       variant="outlined"

@@ -18,8 +18,9 @@ interface StripePayment {
   currency: string;
   status: string;
   created: number;
-  receipt_url: string;
+  receipt_url: string | null;
   description?: string;
+  subscriptionType?: 'classic' | 'ambassador_enterprise_access' | 'other';
 }
 
 const FUNCTIONS_BASE_URL = getFunctionsBaseUrl();
@@ -80,13 +81,24 @@ export const getStripeCustomers = async (): Promise<StripeCustomer[]> => {
   }
 };
 
-// Récupérer l'historique des paiements
+// Récupérer l'historique des paiements (legacy charges)
 export const fetchPaymentHistory = async (email: string): Promise<StripePayment[]> => {
   try {
     const result = await callFirebaseFunction('fetchPaymentHistory', { email });
     return result.result || [];
   } catch (error) {
     console.error('Erreur lors de la récupération des paiements:', error);
+    throw error;
+  }
+};
+
+// Récupérer l'historique des factures avec typage abonnement
+export const fetchInvoiceHistory = async (structureId: string): Promise<StripePayment[]> => {
+  try {
+    const result = await callFirebaseFunction('fetchInvoiceHistory', { structureId });
+    return result.result || [];
+  } catch (error) {
+    console.error('Erreur lors de la récupération des factures:', error);
     throw error;
   }
 };

@@ -39,13 +39,13 @@ function debugLog(location: string, message: string, data: any, hypothesisId: st
 // #region agent log
 debugLog('index.ts:1', 'Module loading started', {}, 'D');
 // #endregion
-import { onCall, onRequest } from 'firebase-functions/v2/https';
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 // #region agent log
 debugLog('index.ts:4', 'Before importing stripe module', {}, 'D');
 // #endregion
-import { createCheckoutSession, createCheckoutSessionForSignup, checkEmailDomainAvailable, getSignupCompletionData, completeSignupAfterPayment, initStructurePermissions, cancelSubscription, createSubscription, handleStripeWebhook, getStripeProducts, getStripeCustomers, cancelStripeSubscription, fetchPaymentHistory, createCotisationSession, getStructureCotisations, handleCotisationWebhook } from './stripe';
+import { createCheckoutSession, createCheckoutSessionForSignup, checkEmailDomainAvailable, getSignupCompletionData, completeSignupAfterPayment, initStructurePermissions, cancelSubscription, createSubscription, handleStripeWebhook, getStripeProducts, getStripeCustomers, cancelStripeSubscription, fetchPaymentHistory, fetchInvoiceHistory, createCotisationSession, getStructureCotisations, handleCotisationWebhook } from './stripe';
 import { saveStructureStripeSecret, fetchUserStripePaymentIntents, resolveStructureByEmail } from './structureStripeSecrets';
 // #region agent log
 debugLog('index.ts:6', 'After importing stripe module', {}, 'D');
@@ -56,6 +56,7 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import axios from 'axios'; // Assurez-vous d'avoir axios installé: npm install axios dans functions/
 import { assertSuperAdmin, assertCanManageStructure, assertContactRateLimit } from './authHelpers';
+import { assertAmbassadorEnterpriseAccessForContactUser } from './contactUserBillingGate';
 
 // #region agent log
 debugLog('index.ts:11', 'Before dotenv.config', { __dirname }, 'C');
@@ -814,6 +815,12 @@ export const createContactUser = onCall(lowResourceConfig, async (request) => {
     }
     await assertCanManageStructure(request.auth.uid, structureId);
 
+    const structureSnap = await admin.firestore().collection('structures').doc(structureId).get();
+    if (!structureSnap.exists) {
+      throw new HttpsError('not-found', 'Structure introuvable.');
+    }
+    assertAmbassadorEnterpriseAccessForContactUser(structureSnap.data());
+
     // Créer user Auth
     const userRecord = await admin.auth().createUser({
       email,
@@ -860,12 +867,16 @@ export const createContactUser = onCall(lowResourceConfig, async (request) => {
     }, { merge: true });
 
     return { success: true, uid: userRecord.uid };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Erreur createContactUser:', error);
-    if (error.code === 'auth/email-already-exists') {
-        throw new functions.https.HttpsError('already-exists', 'Cet email est déjà utilisé par un autre compte.');
+    if (error instanceof HttpsError) {
+      throw error;
     }
-    throw new functions.https.HttpsError('internal', error.message || 'Erreur inconnue');
+    const err = error as { code?: string; message?: string };
+    if (err.code === 'auth/email-already-exists') {
+      throw new HttpsError('already-exists', 'Cet email est déjà utilisé par un autre compte.');
+    }
+    throw new HttpsError('internal', err.message || 'Erreur inconnue');
   }
 });
 
@@ -1449,6 +1460,7 @@ export {
   getStripeCustomers,
   cancelStripeSubscription,
   fetchPaymentHistory,
+  fetchInvoiceHistory,
   createCotisationSession,
   getStructureCotisations,
   handleCotisationWebhook

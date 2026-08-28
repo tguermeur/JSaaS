@@ -1199,6 +1199,105 @@ export const fetchPaymentHistory = onCall(lowResourceConfig, async (request) => 
   }
 });
 
+export type InvoiceSubscriptionType = 'classic' | 'ambassador_enterprise_access' | 'other';
+
+// Historique factures Stripe avec typage classic / add-on ambassadeurs
+export const fetchInvoiceHistory = onCall(lowResourceConfig, async (request) => {
+  try {
+    if (!request.auth) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'Vous devez être connecté pour accéder à cette fonction.'
+      );
+    }
+
+    const { structureId } = request.data as { structureId?: string };
+    if (!structureId) {
+      throw new functions.https.HttpsError('invalid-argument', 'structureId requis');
+    }
+
+    const userDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+    const userData = userDoc.data();
+    const isAdminOfStructure =
+      userData?.structureId === structureId &&
+      (userData?.status === 'admin' || userData?.status === 'admin_structure');
+    if (!isAdminOfStructure) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'Vous n\'avez pas les permissions nécessaires pour consulter les factures.'
+      );
+    }
+
+    const structureSnap = await admin.firestore().collection('structures').doc(structureId).get();
+    if (!structureSnap.exists) {
+      return [];
+    }
+    const structureData = structureSnap.data()!;
+    const classicSubId = structureData.subscriptionId as string | undefined;
+    const ambassadorSubId = structureData.ambassadorEnterpriseAccess?.stripeSubscriptionId as
+      | string
+      | undefined;
+
+    const stripeCustomerSnap = await admin.firestore().collection('stripeCustomers').doc(structureId).get();
+    let customerId = stripeCustomerSnap.data()?.customerId as string | undefined;
+
+    if (!customerId && structureData.email) {
+      const customers = await getStripeInstance().customers.list({ email: structureData.email, limit: 1 });
+      customerId = customers.data[0]?.id;
+    }
+
+    if (!customerId) {
+      return [];
+    }
+
+    const invoices = await getStripeInstance().invoices.list({
+      customer: customerId,
+      limit: 50,
+      expand: ['data.lines.data.price.product'],
+    });
+
+    const formattedInvoices = invoices.data.map((invoice) => {
+      const subscriptionRef = invoice.subscription;
+      const subscriptionId =
+        typeof subscriptionRef === 'string' ? subscriptionRef : subscriptionRef?.id;
+
+      let subscriptionType: InvoiceSubscriptionType = 'other';
+      if (subscriptionId && classicSubId && subscriptionId === classicSubId) {
+        subscriptionType = 'classic';
+      } else if (subscriptionId && ambassadorSubId && subscriptionId === ambassadorSubId) {
+        subscriptionType = 'ambassador_enterprise_access';
+      }
+
+      const lineDescription = invoice.lines?.data?.[0]?.description;
+      const receiptUrl = invoice.hosted_invoice_url || invoice.invoice_pdf || null;
+
+      return {
+        id: invoice.id,
+        amount: invoice.amount_paid,
+        currency: invoice.currency,
+        status: invoice.status === 'paid' ? 'succeeded' : invoice.status || 'unknown',
+        created: invoice.created,
+        receipt_url: receiptUrl,
+        description: lineDescription || invoice.description || 'Facture',
+        subscriptionType,
+      };
+    });
+
+    formattedInvoices.sort((a, b) => b.created - a.created);
+    return formattedInvoices;
+  } catch (error: unknown) {
+    const err = error as { type?: string; message?: string };
+    console.error('fetchInvoiceHistory - Erreur:', err);
+    if (err.type === 'StripeError') {
+      throw new functions.https.HttpsError('internal', `Erreur Stripe: ${err.message}`);
+    }
+    throw new functions.https.HttpsError(
+      'internal',
+      err.message || 'Erreur lors de la récupération des factures'
+    );
+  }
+});
+
 
 // Interface pour les données de création de session de cotisation
 interface CreateCotisationSessionData {

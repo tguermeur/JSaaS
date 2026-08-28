@@ -46,13 +46,17 @@ import {
   CloudUpload as CloudUploadIcon,
 } from '@mui/icons-material';
 import { uploadCompanyLogo } from '../../firebase/storage';
-import { collection, getDocs, query, where, doc, getDoc, updateDoc, addDoc, deleteDoc, setDoc } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, getDoc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { batchDecryptForStructure } from '../../utils/batchDecrypt';
 import { app, db, getAppFunctions } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { Company, Contact } from '../../pages/Entreprises';
 import { tokens } from '../../theme/tokens';
+import {
+  AmbassadorEnterpriseAccessPanel,
+  type AmbassadorEnterpriseAccessState,
+} from '../ambassadors/AmbassadorEnterpriseAccessPanel';
 
 const appleFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 
@@ -116,12 +120,44 @@ export const CompanyInfoTab: React.FC = () => {
   const [creatingAccess, setCreatingAccess] = useState(false);
   const [contactForAccess, setContactForAccess] = useState<ContactWithAccess | null>(null);
   const [isTrialVersion, setIsTrialVersion] = useState(false);
+  const [structureType, setStructureType] = useState<'jobservice' | 'junior' | null>(null);
+  const [ambassadorEnterpriseAccess, setAmbassadorEnterpriseAccess] =
+    useState<AmbassadorEnterpriseAccessState | null>(null);
+  const [createCompanyMode, setCreateCompanyMode] = useState(false);
+  const [savingCompany, setSavingCompany] = useState(false);
   const [logoUploading, setLogoUploading] = useState<'square' | 'large' | null>(null);
   const squareLogoInputRef = useRef<HTMLInputElement>(null);
   const largeLogoInputRef = useRef<HTMLInputElement>(null);
 
-  // Vérifier si l'utilisateur est superadmin
+  // Vérifier si l'utilisateur est superadmin ou admin de structure
   const isSuperAdmin = userData?.status === 'superadmin';
+  const isStructureAdmin =
+    isSuperAdmin ||
+    userData?.status === 'admin' ||
+    userData?.status === 'admin_structure';
+  const isEnterpriseContact = userData?.status === 'entreprise';
+
+  const requiresAmbassadorAddon = structureType === 'jobservice';
+  const ambassadorAddonInactive =
+    requiresAmbassadorAddon && ambassadorEnterpriseAccess?.active !== true;
+
+  const isCreateAccessBlockedByTrial = (contact: ContactWithAccess) =>
+    isTrialVersion && (contact.canViewEvents || contact.canManageAmbassadors);
+
+  const isCreateAccessBlockedByAddon = () => ambassadorAddonInactive;
+
+  const getCreateAccessBlockReason = (contact: ContactWithAccess): string | undefined => {
+    if (isCreateAccessBlockedByTrial(contact)) {
+      return "Version d'essai : Création d'accès non disponible pour les contacts avec permissions";
+    }
+    if (isCreateAccessBlockedByAddon()) {
+      return "Souscrivez à l'add-on Accès Entreprise — Ambassadeurs ci-dessus pour créer des accès.";
+    }
+    return undefined;
+  };
+
+  const isCreateAccessDisabled = (contact: ContactWithAccess) =>
+    isCreateAccessBlockedByTrial(contact) || isCreateAccessBlockedByAddon();
 
   // Charger les entreprises de la structure et l'entreprise sauvegardée
   useEffect(() => {
@@ -155,26 +191,27 @@ export const CompanyInfoTab: React.FC = () => {
           return;
         }
 
-        // Pour les superadmins, récupérer l'entreprise sauvegardée et la liste des entreprises
-        if (isSuperAdmin) {
-          // Récupérer l'entreprise sauvegardée
+        // Admins de structure : entreprise sauvegardée + liste des entreprises
+        if (isStructureAdmin && userStructureId) {
           const settingsRef = doc(db, 'ambassadorSettings', userStructureId);
           const settingsDoc = await getDoc(settingsRef);
-          if (settingsDoc.exists()) {
-            const settings = settingsDoc.data() as AmbassadorSettings;
-            setSavedCompanyId(settings.companyId || '');
-            setSelectedCompanyId(settings.companyId || '');
+          const savedSettingsCompanyId = settingsDoc.exists()
+            ? (settingsDoc.data() as AmbassadorSettings).companyId || ''
+            : '';
+
+          if (savedSettingsCompanyId) {
+            setSavedCompanyId(savedSettingsCompanyId);
+            setSelectedCompanyId(savedSettingsCompanyId);
           }
 
-          // Récupérer les entreprises de la structure
           const companiesRef = collection(db, 'companies');
           const companiesQuery = query(companiesRef, where('structureId', '==', userStructureId));
           const companiesSnapshot = await getDocs(companiesQuery);
-        
-          const companiesData = companiesSnapshot.docs.map(doc => {
-            const data = doc.data();
+
+          const companiesData = companiesSnapshot.docs.map((companyDoc) => {
+            const data = companyDoc.data();
             return {
-              id: doc.id,
+              id: companyDoc.id,
               name: data.name || '',
               nSiret: data.nSiret || '',
               description: data.description || '',
@@ -191,19 +228,23 @@ export const CompanyInfoTab: React.FC = () => {
               totalRevenue: data.totalRevenue || 0,
               createdAt: data.createdAt?.toDate() || new Date(),
               updatedAt: data.updatedAt?.toDate(),
-              structureId: data.structureId || userStructureId
+              structureId: data.structureId || userStructureId,
             } as Company;
           });
-          
+
           setCompanies(companiesData);
+
+          if (companiesData.length === 0 && !savedSettingsCompanyId) {
+            setCreateCompanyMode(true);
+            setEditedCompany({ name: '' });
+          }
         } else {
-          // Pour les non-superadmins (admins, membres, contacts avec accès), charger l'entreprise automatiquement
+          // Pour les non-admins (membres, contacts entreprise), charger l'entreprise automatiquement
           // Si c'est un contact avec accès, utiliser son companyId
-          if (userData?.status === 'entreprise' && userData?.companyId) {
-            setSelectedCompanyId(userData.companyId);
-            setSavedCompanyId(userData.companyId);
+          if (userDataDoc?.status === 'entreprise' && userDataDoc?.companyId) {
+            setSelectedCompanyId(userDataDoc.companyId);
+            setSavedCompanyId(userDataDoc.companyId);
           } else if (userStructureId) {
-            // Pour les admins/membres, essayer de récupérer l'entreprise sauvegardée
             const settingsRef = doc(db, 'ambassadorSettings', userStructureId);
             const settingsDoc = await getDoc(settingsRef);
             if (settingsDoc.exists()) {
@@ -223,7 +264,32 @@ export const CompanyInfoTab: React.FC = () => {
     };
 
     fetchData();
-  }, [currentUser, isSuperAdmin, userData?.companyId, userData?.status]);
+  }, [currentUser, isStructureAdmin, userData?.companyId, userData?.status]);
+
+  // structureType + add-on ambassadeurs (lecture seule)
+  useEffect(() => {
+    if (!structureId) {
+      setStructureType(null);
+      setAmbassadorEnterpriseAccess(null);
+      return;
+    }
+
+    const structureRef = doc(db, 'structures', structureId);
+    const unsubscribe = onSnapshot(structureRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setStructureType((data.structureType as 'jobservice' | 'junior') || 'jobservice');
+        setAmbassadorEnterpriseAccess(
+          (data.ambassadorEnterpriseAccess as AmbassadorEnterpriseAccessState | undefined) ?? null
+        );
+      } else {
+        setStructureType(null);
+        setAmbassadorEnterpriseAccess(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [structureId]);
 
   // Vérifier le statut d'abonnement pour détecter les versions d'essai
   useEffect(() => {
@@ -266,20 +332,25 @@ export const CompanyInfoTab: React.FC = () => {
     checkSubscriptionStatus();
   }, [structureId, currentUser]);
 
-  // Sauvegarder le choix de l'entreprise
-  const handleSaveCompanySelection = async () => {
-    if (!selectedCompanyId || !structureId || !currentUser) return;
+  // Sauvegarder le choix de l'entreprise (sélection existante ou nouvel id créé)
+  const handleSaveCompanySelection = async (companyIdOverride?: string) => {
+    const companyIdToSave = companyIdOverride ?? selectedCompanyId;
+    if (!companyIdToSave || !structureId || !currentUser) return;
 
     try {
       const settingsRef = doc(db, 'ambassadorSettings', structureId);
       await setDoc(settingsRef, {
-        companyId: selectedCompanyId,
-        structureId: structureId,
+        companyId: companyIdToSave,
+        structureId,
         updatedAt: new Date(),
         updatedBy: currentUser.uid,
       });
 
-      setSavedCompanyId(selectedCompanyId);
+      setSavedCompanyId(companyIdToSave);
+      if (companyIdOverride) {
+        setSelectedCompanyId(companyIdOverride);
+      }
+      setCreateCompanyMode(false);
       setSnackbar({
         open: true,
         message: 'Entreprise sauvegardée avec succès',
@@ -292,6 +363,78 @@ export const CompanyInfoTab: React.FC = () => {
         message: 'Erreur lors de la sauvegarde',
         severity: 'error',
       });
+    }
+  };
+
+  const handleCreateCompany = async () => {
+    if (!structureId || !currentUser || !editedCompany.name?.trim()) {
+      setSnackbar({
+        open: true,
+        message: 'Le nom de l\'entreprise est requis',
+        severity: 'warning',
+      });
+      return;
+    }
+
+    try {
+      setSavingCompany(true);
+      const payload: Record<string, unknown> = {
+        name: editedCompany.name.trim(),
+        structureId,
+        createdAt: new Date(),
+        createdBy: currentUser.uid,
+      };
+
+      const optionalFields = [
+        'nSiret',
+        'address',
+        'city',
+        'postalCode',
+        'country',
+        'phone',
+        'email',
+        'website',
+        'description',
+      ] as const;
+      for (const field of optionalFields) {
+        const value = editedCompany[field];
+        if (value !== undefined && value !== '') {
+          payload[field] = value;
+        }
+      }
+
+      const companyRef = await addDoc(collection(db, 'companies'), payload);
+      const newCompany: Company = {
+        id: companyRef.id,
+        name: editedCompany.name.trim(),
+        nSiret: editedCompany.nSiret,
+        description: editedCompany.description,
+        address: editedCompany.address,
+        city: editedCompany.city,
+        postalCode: editedCompany.postalCode,
+        country: editedCompany.country,
+        phone: editedCompany.phone,
+        email: editedCompany.email,
+        website: editedCompany.website,
+        logo: editedCompany.logo,
+        logoLarge: editedCompany.logoLarge,
+        missionsCount: 0,
+        totalRevenue: 0,
+        createdAt: new Date(),
+        structureId,
+      };
+
+      setCompanies((prev) => [...prev, newCompany]);
+      await handleSaveCompanySelection(companyRef.id);
+    } catch (error) {
+      console.error('Erreur lors de la création de l\'entreprise:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de la création de l\'entreprise',
+        severity: 'error',
+      });
+    } finally {
+      setSavingCompany(false);
     }
   };
 
@@ -738,11 +881,19 @@ export const CompanyInfoTab: React.FC = () => {
   };
 
   const handleCreateAccessClick = (contact: ContactWithAccess) => {
-    // Vérifier si c'est une version d'essai et si le contact a des permissions
-    if (isTrialVersion && (contact.canViewEvents || contact.canManageAmbassadors)) {
+    if (isCreateAccessBlockedByTrial(contact)) {
       setSnackbar({
         open: true,
         message: 'Version d\'essai : La création d\'accès pour les contacts avec permissions n\'est pas disponible. Veuillez passer à un abonnement actif.',
+        severity: 'warning',
+      });
+      return;
+    }
+
+    if (isCreateAccessBlockedByAddon()) {
+      setSnackbar({
+        open: true,
+        message: 'Souscrivez à l\'add-on Accès Entreprise — Ambassadeurs ci-dessus pour créer des accès.',
         severity: 'warning',
       });
       return;
@@ -756,11 +907,19 @@ export const CompanyInfoTab: React.FC = () => {
   const handleCreateAccessConfirm = async () => {
     if (!contactForAccess || !accessPassword || !selectedCompanyId) return;
 
-    // Vérifier si c'est une version d'essai et si le contact a des permissions
-    if (isTrialVersion && (contactForAccess.canViewEvents || contactForAccess.canManageAmbassadors)) {
+    if (isCreateAccessBlockedByTrial(contactForAccess)) {
       setSnackbar({
         open: true,
         message: 'Version d\'essai : La création d\'accès pour les contacts avec permissions n\'est pas disponible. Veuillez passer à un abonnement actif.',
+        severity: 'warning',
+      });
+      return;
+    }
+
+    if (isCreateAccessBlockedByAddon()) {
+      setSnackbar({
+        open: true,
+        message: 'Souscrivez à l\'add-on Accès Entreprise — Ambassadeurs ci-dessus pour créer des accès.',
         severity: 'warning',
       });
       return;
@@ -824,8 +983,17 @@ export const CompanyInfoTab: React.FC = () => {
 
   return (
     <Box sx={{ fontFamily: appleFont }}>
-      {/* Sélecteur d'entreprise avec bouton de sauvegarde - Réservé aux superadmins */}
-      {isSuperAdmin && (
+      {isStructureAdmin && structureType === 'jobservice' && !isEnterpriseContact && structureId && currentUser && (
+        <AmbassadorEnterpriseAccessPanel
+          variant="embedded"
+          structureId={structureId}
+          userId={currentUser.uid}
+          ambassadorEnterpriseAccess={ambassadorEnterpriseAccess}
+        />
+      )}
+
+      {/* Sélecteur d'entreprise — admins de structure */}
+      {isStructureAdmin && !createCompanyMode && companies.length > 0 && (
         <Box sx={{ mb: 4, display: 'flex', gap: 2, alignItems: 'flex-end' }}>
           <FormControl fullWidth sx={{ maxWidth: '500px' }}>
             <InputLabel id="company-select-label" sx={{ fontFamily: appleFont }}>
@@ -850,7 +1018,7 @@ export const CompanyInfoTab: React.FC = () => {
           </FormControl>
           <Button
             variant="contained"
-            onClick={handleSaveCompanySelection}
+            onClick={() => handleSaveCompanySelection()}
             disabled={!selectedCompanyId || selectedCompanyId === savedCompanyId}
             startIcon={<SaveIcon />}
             sx={{
@@ -863,6 +1031,126 @@ export const CompanyInfoTab: React.FC = () => {
             {selectedCompanyId === savedCompanyId ? 'Sauvegardé' : 'Sauvegarder'}
           </Button>
         </Box>
+      )}
+
+      {isStructureAdmin && createCompanyMode && (
+        <Paper
+          elevation={0}
+          sx={{
+            p: 4,
+            mb: 4,
+            borderRadius: tokens.radius.xl,
+            backgroundColor: '#fff',
+            border: '1px solid #f3f4f6',
+          }}
+        >
+          <Typography variant="h6" sx={{ fontFamily: appleFont, fontWeight: 600, mb: 1 }}>
+            Aucune entreprise enregistrée
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 3, fontFamily: appleFont }}>
+            Créez l&apos;entreprise associée à votre portail ambassadeurs.
+          </Typography>
+          <Grid container spacing={3}>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Nom *"
+                fullWidth
+                required
+                value={editedCompany.name || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, name: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="nSiret"
+                fullWidth
+                value={editedCompany.nSiret || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, nSiret: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                label="Adresse"
+                fullWidth
+                value={editedCompany.address || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, address: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Code postal"
+                fullWidth
+                value={editedCompany.postalCode || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, postalCode: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Ville"
+                fullWidth
+                value={editedCompany.city || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, city: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Pays"
+                fullWidth
+                value={editedCompany.country || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, country: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Téléphone"
+                fullWidth
+                value={editedCompany.phone || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, phone: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Email"
+                fullWidth
+                value={editedCompany.email || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, email: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                label="Site web"
+                fullWidth
+                value={editedCompany.website || ''}
+                onChange={(e) => setEditedCompany((prev) => ({ ...prev, website: e.target.value }))}
+                sx={{ fontFamily: appleFont }}
+              />
+            </Grid>
+          </Grid>
+          <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end' }}>
+            <Button
+              variant="contained"
+              onClick={handleCreateCompany}
+              disabled={savingCompany || !editedCompany.name?.trim()}
+              startIcon={savingCompany ? <CircularProgress size={18} color="inherit" /> : <AddIcon />}
+              sx={{
+                fontFamily: appleFont,
+                borderRadius: tokens.radius.md,
+                textTransform: 'none',
+                fontWeight: 600,
+              }}
+            >
+              {savingCompany ? 'Création...' : 'Créer l\'entreprise'}
+            </Button>
+          </Box>
+        </Paper>
       )}
 
       {/* Détails de l'entreprise */}
@@ -1371,10 +1659,8 @@ export const CompanyInfoTab: React.FC = () => {
                             size="small"
                             onClick={() => handleCreateAccessClick(contact)}
                             sx={{ color: '#f59e0b' }}
-                            title={isTrialVersion && (contact.canViewEvents || contact.canManageAmbassadors) 
-                              ? "Version d'essai : Création d'accès non disponible pour les contacts avec permissions"
-                              : "Créer un accès utilisateur"}
-                            disabled={isTrialVersion && (contact.canViewEvents || contact.canManageAmbassadors)}
+                            title={getCreateAccessBlockReason(contact) ?? 'Créer un accès utilisateur'}
+                            disabled={isCreateAccessDisabled(contact)}
                           >
                             <LockIcon fontSize="small" />
                           </IconButton>
@@ -1402,7 +1688,7 @@ export const CompanyInfoTab: React.FC = () => {
             )}
           </Paper>
         </Box>
-      ) : (
+      ) : createCompanyMode ? null : (
         <Paper
           elevation={0}
           sx={{
@@ -1420,7 +1706,9 @@ export const CompanyInfoTab: React.FC = () => {
               color: '#6b7280',
             }}
           >
-            Sélectionnez une entreprise pour afficher ses informations.
+            {isStructureAdmin
+              ? 'Sélectionnez une entreprise pour afficher ses informations.'
+              : 'Aucune entreprise associée à afficher.'}
           </Typography>
         </Paper>
       )}
